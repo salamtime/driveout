@@ -25,6 +25,7 @@ import { canEditRentalPrice } from '../../utils/permissionHelpers';
 import { 
   getMoroccoTodayString, 
   getMoroccoDateOffset, 
+  getMoroccoCurrentTime,
   getMoroccoHourlyTimes,
   isAfter, 
   parseDateAsLocal, 
@@ -302,12 +303,60 @@ const normalizeEditWorkflowFieldValue = (field, value) => {
   }
 
   if (field === 'rental_start_date' || field === 'rental_end_date') {
-    if (!value) return '';
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+    return normalizeDateFieldValue(value);
   }
 
   return String(value ?? '');
+};
+
+const normalizeDateFieldValue = (value) => {
+  if (!value) return '';
+
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+
+  if (raw.includes('T')) {
+    return raw.split('T')[0];
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : formatDateToYYYYMMDD(parsed);
+};
+
+const formatTimeToHHMM = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
+
+const getEffectiveCreateStartDate = (candidateDate) => {
+  const today = getMoroccoTodayString();
+  const normalizedCandidate = normalizeDateFieldValue(candidateDate);
+
+  if (!normalizedCandidate || normalizedCandidate < today) {
+    return today;
+  }
+
+  return normalizedCandidate;
+};
+
+const getEffectiveCreateStartTime = (candidateTime) => {
+  const raw = String(candidateTime ?? '').trim();
+  return raw ? raw.slice(0, 5) : getMoroccoCurrentTime();
+};
+
+const getDateDifferenceInDays = (fromDateString, toDateString) => {
+  const fromDate = parseDateAsLocal(fromDateString);
+  const toDate = parseDateAsLocal(toDateString);
+  if (!fromDate || !toDate) return 0;
+  fromDate.setHours(0, 0, 0, 0);
+  toDate.setHours(0, 0, 0, 0);
+  return Math.round((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
 };
 
 const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
@@ -742,8 +791,8 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       const today = getMoroccoTodayString();
       setFormData(prev => ({
         ...prev,
-        rental_start_date: prev.rental_start_date || today,
-        rental_end_date: prev.rental_end_date || today,
+        rental_start_date: getEffectiveCreateStartDate(prev.rental_start_date || today),
+        rental_end_date: getEffectiveCreateStartDate(prev.rental_end_date || today),
       }));
       
       if (initialData && mode === 'edit') {
@@ -757,6 +806,53 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
   useEffect(() => {
     loadRentalTimingSettings();
   }, []);
+
+  useEffect(() => {
+    if (mode === 'edit' || isCustomerVerificationOnlyMode) {
+      return;
+    }
+
+    const today = getMoroccoTodayString();
+    const normalizedStartDate = normalizeDateFieldValue(formData.rental_start_date);
+    if (!normalizedStartDate || normalizedStartDate >= today) {
+      return;
+    }
+
+    const daysBehind = getDateDifferenceInDays(normalizedStartDate, today);
+    if (daysBehind <= 0) {
+      return;
+    }
+
+    setFormData((prev) => {
+      const prevStartDate = normalizeDateFieldValue(prev.rental_start_date);
+      if (!prevStartDate || prevStartDate >= today) {
+        return prev;
+      }
+
+      const shiftedEndDateBase = normalizeDateFieldValue(prev.rental_end_date) || prevStartDate;
+      const nextStartDate = today;
+      let nextEndDate = shiftedEndDateBase;
+
+      const shiftedEndDate = parseDateAsLocal(shiftedEndDateBase);
+      if (shiftedEndDate) {
+        shiftedEndDate.setDate(shiftedEndDate.getDate() + daysBehind);
+        nextEndDate = formatDateToYYYYMMDD(shiftedEndDate);
+      }
+
+      if (nextEndDate < nextStartDate) {
+        nextEndDate =
+          prev.rental_type === 'daily'
+            ? getMoroccoDateOffset(1, nextStartDate)
+            : nextStartDate;
+      }
+
+      return {
+        ...prev,
+        rental_start_date: nextStartDate,
+        rental_end_date: nextEndDate,
+      };
+    });
+  }, [formData.rental_end_date, formData.rental_start_date, formData.rental_type, isCustomerVerificationOnlyMode, mode]);
 
   // ==================== NEW: AUTO-SELECT DEFAULT PRESET ====================
   useEffect(() => {
@@ -1177,14 +1273,14 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
     if (data.rental_start_date) {
       const startDate = new Date(data.rental_start_date);
       if (!isNaN(startDate.getTime())) {
-        startTime = startDate.toTimeString().slice(0, 5);
+        startTime = formatTimeToHHMM(startDate);
       }
     }
 
     if (data.rental_end_date) {
       const endDate = new Date(data.rental_end_date);
       if (!isNaN(endDate.getTime())) {
-        endTime = endDate.toTimeString().slice(0, 5);
+        endTime = formatTimeToHHMM(endDate);
       }
     }
 
@@ -1723,16 +1819,17 @@ const calculateFinancials = () => {
         endDatetime = new Date(endDatetime);
         endDatetime.setDate(endDatetime.getDate() + 1);
         updatedEndDate = formatDateToYYYYMMDD(endDatetime);
-        updatedEndTime = endDatetime.toTimeString().slice(0, 5);
+        updatedEndTime = formatTimeToHHMM(endDatetime);
       }
       
       const diffHours = (endDatetime - startDatetime) / (1000 * 60 * 60);
       quantity = Math.max(Math.round(Math.max(diffHours, 0.5) * 2) / 2, 0.5);
     } else {
-      const startDateOnly = new Date(rental_start_date);
+      const startDateOnly = parseDateAsLocal(rental_start_date);
+      const endDateOnly = parseDateAsLocal(rental_end_date);
+      if (!startDateOnly || !endDateOnly) return;
+
       startDateOnly.setHours(0, 0, 0, 0);
-      
-      const endDateOnly = new Date(rental_end_date);
       endDateOnly.setHours(0, 0, 0, 0);
       
       const diffTime = endDateOnly - startDateOnly;
@@ -1820,7 +1917,7 @@ const calculateFinancials = () => {
     const endDatetime = new Date(startDatetime.getTime() + millisecondsToAdd);
 
     draftFormData.rental_end_date = formatDateToYYYYMMDD(endDatetime);
-    draftFormData.rental_end_time = endDatetime.toTimeString().slice(0, 5);
+    draftFormData.rental_end_time = formatTimeToHHMM(endDatetime);
     draftFormData.quantity_days = unitsToUse;
     draftFormData.quantity_hours = draftFormData.rental_type === 'hourly' ? unitsToUse : null;
 
@@ -1939,8 +2036,8 @@ const calculateFinancials = () => {
 
   // ==================== QUICK HOUR SELECT HANDLER ====================
   const handleQuickHourSelect = (hours) => {
-    const startDate = formData.rental_start_date || getMoroccoTodayString();
-    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+    const startDate = getEffectiveCreateStartDate(formData.rental_start_date);
+    const startTime = getEffectiveCreateStartTime(formData.rental_start_time);
     const startDateTime = composeDateTime(startDate, startTime);
     if (!startDateTime) {
       toast.error(tr('Invalid start date/time', 'Date/heure de début invalide'));
@@ -1967,7 +2064,7 @@ const calculateFinancials = () => {
       rental_start_date: startDate,
       rental_start_time: startTime,
       rental_end_date: formatDateToYYYYMMDD(endDateTime),
-        rental_end_time: endDateTime.toTimeString().slice(0, 5),
+        rental_end_time: formatTimeToHHMM(endDateTime),
         quantity_days: hours,
         quantity_hours: hours,
         ...(shouldClearSelectedPackage ? {
@@ -1994,8 +2091,8 @@ const calculateFinancials = () => {
   };
 
   const handleQuickDaySelect = (days) => {
-    const startDate = formData.rental_start_date || getMoroccoTodayString();
-    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+    const startDate = getEffectiveCreateStartDate(formData.rental_start_date);
+    const startTime = getEffectiveCreateStartTime(formData.rental_start_time);
     const startDateTime = composeDateTime(startDate, startTime);
 
     if (startDateTime) {
@@ -2013,7 +2110,7 @@ const calculateFinancials = () => {
         rental_start_date: startDate,
         rental_start_time: startTime,
         rental_end_date: formatDateToYYYYMMDD(endDateTime),
-        rental_end_time: endDateTime.toTimeString().slice(0, 5),
+        rental_end_time: formatTimeToHHMM(endDateTime),
         quantity_days: days,
         quantity_hours: null,
         ...(shouldClearSelectedPackage ? {
@@ -2329,13 +2426,9 @@ const calculateFinancials = () => {
       preserveCreateFinancialOverrideRef.current = false;
       setSelectedQuickDuration(null);
       
-      const today = getMoroccoTodayString();
-      const currentTime = new Date().toTimeString().slice(0, 5);
+      const currentTime = getEffectiveCreateStartTime(newFormData.rental_start_time);
       
-      let startDateToUse = newFormData.rental_start_date || today;
-      if (startDateToUse && startDateToUse.includes('T')) {
-        startDateToUse = startDateToUse.split('T')[0];
-      }
+      let startDateToUse = getEffectiveCreateStartDate(newFormData.rental_start_date);
 
       if (value === 'hourly') {
         const currentHour = parseInt(currentTime.split(':')[0]);
@@ -2351,7 +2444,7 @@ const calculateFinancials = () => {
           newFormData.rental_start_time = currentTime;
           const endTime = new Date();
           endTime.setHours(endTime.getHours() + 1);
-          newFormData.rental_end_time = endTime.toTimeString().slice(0, 5);
+          newFormData.rental_end_time = formatTimeToHHMM(endTime);
         }
       } else if (value === 'daily') {
         const tomorrowStr = getMoroccoDateOffset(1, startDateToUse);
@@ -2362,7 +2455,7 @@ const calculateFinancials = () => {
         const startDateTime = composeDateTime(startDateToUse, currentTime);
         if (startDateTime) {
           const endDateTime = new Date(startDateTime.getTime() + (24 * 60 * 60 * 1000));
-          newFormData.rental_end_time = endDateTime.toTimeString().slice(0, 5);
+          newFormData.rental_end_time = formatTimeToHHMM(endDateTime);
         } else {
           newFormData.rental_end_time = currentTime;
         }
@@ -2906,7 +2999,7 @@ const calculateFinancials = () => {
         submissionReadyFormData.rental_end_date = submissionReadyFormData.rental_start_date;
       }
 
-      const currentTime = new Date().toTimeString().slice(0, 5);
+      const currentTime = getMoroccoCurrentTime();
       
       if (!submissionReadyFormData.rental_start_time) {
         submissionReadyFormData.rental_start_time = currentTime;
@@ -4074,7 +4167,7 @@ const calculateFinancials = () => {
               adjustedEndDatetime.setDate(adjustedEndDatetime.getDate() + 1);
               
               const adjustedEndDate = formatDateToYYYYMMDD(adjustedEndDatetime);
-              const adjustedEndTime = adjustedEndDatetime.toTimeString().slice(0, 5);
+              const adjustedEndTime = formatTimeToHHMM(adjustedEndDatetime);
               
               setFormData(prev => ({
                 ...prev,
@@ -4085,24 +4178,20 @@ const calculateFinancials = () => {
             }
           } else {
             if (startDatetime >= endDatetime) {
-              let newStartDatetime = new Date(endDatetime);
-              
-              if (formData.rental_type === 'hourly') {
-                newStartDatetime.setHours(newStartDatetime.getHours() - 1);
-              } else {
-                newStartDatetime.setDate(newStartDatetime.getDate() - 1);
-              }
+              const minimumDays = Math.max(Number(formData.quantity_days) || 1, 1);
+              const adjustedEndDatetime = new Date(startDatetime);
+              adjustedEndDatetime.setDate(adjustedEndDatetime.getDate() + minimumDays);
 
-              const newStartDate = formatDateToYYYYMMDD(newStartDatetime);
-              const newStartTime = newStartDatetime.toTimeString().slice(0, 5);
+              const adjustedEndDate = formatDateToYYYYMMDD(adjustedEndDatetime);
+              const adjustedEndTime = formatTimeToHHMM(adjustedEndDatetime);
 
-              if (formData.rental_start_date !== newStartDate || formData.rental_start_time !== newStartTime) {
+              if (formData.rental_end_date !== adjustedEndDate || formData.rental_end_time !== adjustedEndTime) {
                 setFormData(prev => ({
                   ...prev,
-                  rental_start_date: newStartDate,
-                  rental_start_time: newStartTime,
+                  rental_end_date: adjustedEndDate,
+                  rental_end_time: adjustedEndTime,
                 }));
-                setDateError(tr('Start time was automatically adjusted to be before the end time.', "L'heure de début a été automatiquement ajustée pour être antérieure à l'heure de fin."));
+                setDateError(tr('End time was automatically adjusted to be after the start time.', "L'heure de fin a été automatiquement ajustée pour être postérieure à l'heure de début."));
                 return;
               }
             } else {
@@ -9521,8 +9610,8 @@ const SimplifiedRentalWizard = ({
   }, [handleReset, setLightFlowTransitionFor]);
 
   const handleLightRentalTypeSelect = useCallback((type) => {
-    const startDate = formData.rental_start_date || getMoroccoTodayString();
-    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+    const startDate = getEffectiveCreateStartDate(formData.rental_start_date);
+    const startTime = getEffectiveCreateStartTime(formData.rental_start_time);
 
     if (lightSectionTransitionTimeoutRef.current) {
       window.clearTimeout(lightSectionTransitionTimeoutRef.current);
