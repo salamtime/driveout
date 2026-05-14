@@ -9,6 +9,7 @@ const DEFAULT_PUBLIC_FEATURES = Object.freeze({
 const TenantWorkspaceContext = createContext({
   ready: true,
   tenant: null,
+  tenantSettings: {},
   publicFeatures: DEFAULT_PUBLIC_FEATURES,
   featureAccess: {},
   effectiveFeatureAccess: {},

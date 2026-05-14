@@ -25,7 +25,7 @@ import { buildLegacyDedicatedInfrastructure } from './legacyDedicatedTenant.js';
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
 const LOCAL_TENANT_PORT_MAP = Object.freeze({
-  '5174': 'owner1',
+  '5174': 'offroad',
 });
 
 const isAutomaticSignupModeEnabled = () => {

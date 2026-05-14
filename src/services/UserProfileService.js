@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase';
 import { TABLE_NAMES } from '../config/tableNames';
 import FuelTransactionService from './FuelTransactionService';
 import { adminApiRequest } from './adminApi';
-import { buildTenantScopedStoragePath } from '../utils/storageUpload';
+import { buildStoragePathCandidates, buildTenantScopedStoragePath } from '../utils/storageUpload';
 import { getCurrentOrganizationId } from './OrganizationService';
 
 class UserProfileService {
@@ -111,6 +111,15 @@ class UserProfileService {
     };
   }
 
+  isStorageRlsError(error) {
+    const message = String(error?.message || error?.details || error || '').toLowerCase();
+    return (
+      message.includes('row-level security') ||
+      message.includes('violates row-level security policy') ||
+      message.includes('permission denied')
+    );
+  }
+
   // Get user profile with role information
   async getUserProfile(userId) {
     try {
@@ -198,28 +207,51 @@ class UserProfileService {
       // Create unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `${userId}_${Date.now()}.${fileExt}`;
-      const filePath = buildTenantScopedStoragePath({
+      const preferredFilePath = buildTenantScopedStoragePath({
         organizationId,
         pathPrefix: `users/${userId}`,
         fileName,
       });
+      const prefixCandidates = buildStoragePathCandidates(organizationId, `users/${userId}`);
+      const filePathCandidates = [
+        preferredFilePath,
+        ...prefixCandidates.map((prefix) => `${prefix}/${fileName}`),
+        `${userId}/${fileName}`,
+      ].filter(Boolean);
 
-      // Upload file to Supabase storage
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('profile-pictures')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: true
-        });
+      let uploadData = null;
+      let uploadError = null;
+      let resolvedFilePath = preferredFilePath;
 
-      if (uploadError) {
+      for (const candidatePath of [...new Set(filePathCandidates)]) {
+        const result = await supabase.storage
+          .from('profile-pictures')
+          .upload(candidatePath, file, {
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        uploadData = result.data || null;
+        uploadError = result.error || null;
+
+        if (!uploadError) {
+          resolvedFilePath = candidatePath;
+          break;
+        }
+
+        if (!this.isStorageRlsError(uploadError)) {
+          break;
+        }
+      }
+
+      if (uploadError || !uploadData) {
         throw uploadError;
       }
 
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('profile-pictures')
-        .getPublicUrl(filePath);
+        .getPublicUrl(resolvedFilePath);
 
       // Persist to auth metadata first because the users table may not have a
       // profile_picture_url column in older deployments.

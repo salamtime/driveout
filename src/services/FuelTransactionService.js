@@ -15,7 +15,7 @@ const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const FUEL_OVERVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
 const VEHICLE_FUEL_STATES_CACHE_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_TRANSACTIONS_CACHE_TTL_MS = 2 * 60 * 1000;
-const FUEL_OPERATION_LOGS_FAILURE_COOLDOWN_MS = 60 * 1000;
+const FUEL_SOURCE_FAILURE_COOLDOWN_MS = 60 * 1000;
 const FUEL_HEALTH_REQUEST_TIMEOUT_MS = 8000;
 const roundToHalfLiter = (value) => roundTo(Math.round((Number(value) || 0) * 2) / 2, 1);
 const isSoldVehicleRecord = (vehicle = {}) => String(vehicle?.status || '').trim().toLowerCase() === 'sold';
@@ -180,6 +180,14 @@ class FuelTransactionService {
     const probePromise = (async () => {
       try {
         const { error } = await supabase.from(tableName).select('*').limit(1);
+        if (error && (this.isRetryableSchemaError(error) || this.isTransientServiceError(error))) {
+          this.tableAvailabilityCache.set(tableName, false);
+          this.markTableFailureCooldown(tableName);
+          if (typeof window !== 'undefined') {
+            window.sessionStorage.setItem(storageKey, 'false');
+          }
+          return false;
+        }
         const normalizedMessage = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
         const isMissingRelation =
           error?.code === '42P01' ||
@@ -327,7 +335,7 @@ class FuelTransactionService {
     return true;
   }
 
-  markTableFailureCooldown(tableName, durationMs = FUEL_OPERATION_LOGS_FAILURE_COOLDOWN_MS) {
+  markTableFailureCooldown(tableName, durationMs = FUEL_SOURCE_FAILURE_COOLDOWN_MS) {
     this.tableFailureCooldowns.set(tableName, Date.now() + durationMs);
   }
 
@@ -946,6 +954,10 @@ class FuelTransactionService {
   async getDefaultTransactionsFeed(options = {}) {
     const { limit = 20, offset = 0 } = options;
 
+    if (this.isTableInFailureCooldown(this.defaultTransactionsFeedView)) {
+      return null;
+    }
+
     if (!(await this.tableExists(this.defaultTransactionsFeedView))) {
       return null;
     }
@@ -992,7 +1004,8 @@ class FuelTransactionService {
       .range(offset, end);
 
     if (error) {
-      if (this.isRetryableSchemaError(error)) {
+      if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
+        this.markTableFailureCooldown(this.defaultTransactionsFeedView);
         console.warn('Default fuel transactions feed view unavailable; falling back to client merge:', error);
       } else {
         this.markTableUnavailable(this.defaultTransactionsFeedView);
@@ -1264,6 +1277,10 @@ class FuelTransactionService {
       }));
     }
 
+    if (this.isTableInFailureCooldown(this.fuelRefillsTable)) {
+      return [];
+    }
+
     if (!(await this.tableExists(this.fuelRefillsTable))) {
       return [];
     }
@@ -1289,7 +1306,8 @@ class FuelTransactionService {
     );
 
     if (error) {
-      if (this.isRetryableSchemaError(error)) {
+      if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
+        this.markTableFailureCooldown(this.fuelRefillsTable);
         console.warn('Fuel refill schema mismatch detected; returning empty tank refills:', error);
       } else {
         this.markTableUnavailable(this.fuelRefillsTable);
@@ -1338,7 +1356,7 @@ class FuelTransactionService {
       }));
     }
 
-    if (await this.tableExists(this.vehicleFuelRefillsTable)) {
+    if (!this.isTableInFailureCooldown(this.vehicleFuelRefillsTable) && await this.tableExists(this.vehicleFuelRefillsTable)) {
       let query = supabase
         .from(this.vehicleFuelRefillsTable)
         .select('id, vehicle_id, refill_date, liters, price_per_liter, total_cost, odometer_km, invoice_url, notes, created_by, created_at, invoice_image')
@@ -1348,6 +1366,9 @@ class FuelTransactionService {
       }
 
       const { data, error } = await query;
+      if (error && (this.isRetryableSchemaError(error) || this.isTransientServiceError(error))) {
+        this.markTableFailureCooldown(this.vehicleFuelRefillsTable);
+      }
       if (!error) {
         results.push(
           ...(data || []).map((row) => ({
@@ -1373,7 +1394,7 @@ class FuelTransactionService {
 
     // Legacy/live-db compatibility: many environments still store direct vehicle refills
     // in fuel_refills with vehicle_id populated instead of using vehicle_fuel_refills.
-    if (await this.tableExists(this.fuelRefillsTable)) {
+    if (!this.isTableInFailureCooldown(this.fuelRefillsTable) && await this.tableExists(this.fuelRefillsTable)) {
       const configureQuery = (baseQuery) => {
         let nextQuery = baseQuery
           .not('vehicle_id', 'is', null)
@@ -1396,7 +1417,8 @@ class FuelTransactionService {
       );
 
       if (error) {
-        if (this.isRetryableSchemaError(error)) {
+        if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
+          this.markTableFailureCooldown(this.fuelRefillsTable);
           console.warn('Vehicle refill schema mismatch detected; skipping legacy fuel_refills rows:', error);
         } else {
           this.markTableUnavailable(this.fuelRefillsTable);
@@ -1501,10 +1523,10 @@ class FuelTransactionService {
       includeRentalVehicleLookup = true,
       includeRentalReferenceLookup = true,
     } = options;
-    if (!(await this.tableExists(this.fuelOperationLogsTable))) {
+    if (this.isTableInFailureCooldown(this.fuelOperationLogsTable)) {
       return [];
     }
-    if (this.isTableInFailureCooldown(this.fuelOperationLogsTable)) {
+    if (!(await this.tableExists(this.fuelOperationLogsTable))) {
       return [];
     }
 

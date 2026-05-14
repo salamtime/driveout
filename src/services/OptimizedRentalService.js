@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
-import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 
 /**
@@ -281,6 +281,7 @@ class OptimizedRentalService {
           end: rental.rental_end_date || rental.end_date,
           total: rental.total_amount ?? 0,
           createdBy: rental.created_by_name || rental.created_by || '',
+          documentCount: countRentalDocuments(rental),
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

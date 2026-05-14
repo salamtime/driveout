@@ -437,7 +437,22 @@ const ProfilePage = () => {
       full_name: fallbackFullName,
       first_name: fallbackFirstName || derivedName.first_name || '',
       last_name: fallbackLastName || derivedName.last_name || '',
-      profile_picture_url: metadata.profile_picture_url || metadata.avatar_url || null,
+      profile_picture_url:
+        userProfile?.profile_picture_url ||
+        userProfile?.avatar_url ||
+        metadata.profile_picture_url ||
+        metadata.avatar_url ||
+        user?.app_metadata?.profile_picture_url ||
+        user?.app_metadata?.avatar_url ||
+        null,
+      avatar_url:
+        userProfile?.avatar_url ||
+        userProfile?.profile_picture_url ||
+        metadata.avatar_url ||
+        metadata.profile_picture_url ||
+        user?.app_metadata?.avatar_url ||
+        user?.app_metadata?.profile_picture_url ||
+        null,
       phone: userProfile?.phone || userProfile?.phone_number || metadata.phone || '',
       address: userProfile?.address || metadata.address || '',
       date_of_birth: userProfile?.date_of_birth || metadata.date_of_birth || '',
@@ -477,6 +492,17 @@ const ProfilePage = () => {
     () => profile || fallbackProfile,
     [fallbackProfile, profile]
   );
+  const resolvedProfilePictureUrl = String(
+    displayProfile?.profile_picture_url ||
+    displayProfile?.avatar_url ||
+    userProfile?.profile_picture_url ||
+    userProfile?.avatar_url ||
+    user?.user_metadata?.profile_picture_url ||
+    user?.user_metadata?.avatar_url ||
+    user?.app_metadata?.profile_picture_url ||
+    user?.app_metadata?.avatar_url ||
+    ''
+  ).trim();
   const loadFailedMessage = tr(
     'profile.errors.loadFailed',
     'Unable to load profile. Showing your account information instead.'
@@ -819,10 +845,17 @@ const ProfilePage = () => {
   };
 
   const handleProfilePictureUpdate = (newPictureUrl) => {
-      setProfile((prev) => ({
+    const normalizedUrl = String(newPictureUrl || '').trim() || null;
+    const nextProfilePicturePatch = {
+      profile_picture_url: normalizedUrl,
+      avatar_url: normalizedUrl,
+    };
+
+    setProfile((prev) => ({
       ...(prev || fallbackProfile),
-      profile_picture_url: newPictureUrl,
+      ...nextProfilePicturePatch,
     }));
+    updateCurrentUserProfile?.(nextProfilePicturePatch);
   };
 
   const handleTelegramPreferencesSave = async () => {
@@ -1023,7 +1056,7 @@ const ProfilePage = () => {
               <ProfilePictureUpload
                 userId={user.id}
                 fallbackLabel={displayName || user.email}
-                currentPictureUrl={displayProfile?.profile_picture_url}
+                currentPictureUrl={resolvedProfilePictureUrl}
                 fallbackImageUrl={tenantLogoUrl || inheritedTenantLogoUrl}
                 onPictureUpdate={handleProfilePictureUpdate}
                 size="large"

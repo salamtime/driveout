@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Book ATVs, tours, and desert experiences with SaharaX." />
-  <meta name="keywords" content="ATV rental, Morocco tours, off-road adventures, quad bikes, desert tours" />
+  <meta name="description" content="Manage rentals, fleet, customers, and operations on Driveout." />
+  <meta name="keywords" content="rental management, fleet operations, customer management, driveout workspace" />
   
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="/assets/logo.png" />
@@ -17,17 +17,17 @@
   <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Scheherazade+New:wght@400;700&display=swap" rel="stylesheet">
   
   <!-- Open Graph / Social Media Meta Tags -->
-  <meta property="og:title" content="SaharaX - ATV Rentals & Desert Tours in Morocco" />
-  <meta property="og:description" content="Book ATVs, tours, and desert experiences with SaharaX." />
-  <meta property="og:image" content="https://www.saharax.co/og-image.png" />
-  <meta property="og:url" content="https://www.saharax.co" />
+  <meta property="og:title" content="Driveout Workspace" />
+  <meta property="og:description" content="Manage rentals, fleet, customers, and operations on Driveout." />
+  <meta property="og:image" content="/assets/logo.png" />
+  <meta property="og:url" content="https://driveout.io" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="SaharaX - ATV Rentals & Desert Tours in Morocco" />
-  <meta name="twitter:description" content="Book ATVs, tours, and desert experiences with SaharaX." />
-  <meta name="twitter:image" content="https://www.saharax.co/og-image.png" />
+  <meta name="twitter:title" content="Driveout Workspace" />
+  <meta name="twitter:description" content="Manage rentals, fleet, customers, and operations on Driveout." />
+  <meta name="twitter:image" content="/assets/logo.png" />
   
-  <title>SaharaX - ATV Rentals & Tours in Morocco</title>
+  <title>Driveout Workspace</title>
   
   <script src="/js/error-handler.js"></script>
 
@@ -46,6 +46,71 @@
         }
       };
       setTimeout(() => { Object.defineProperty = originalDefineProperty; }, 2000);
+    })();
+  </script>
+
+  <script>
+    (function() {
+      'use strict';
+
+      const hostname = String(window.location.hostname || '').toLowerCase();
+      const isDriveoutTenantHost =
+        hostname.endsWith('.driveout.io') &&
+        !hostname.startsWith('www.') &&
+        !hostname.startsWith('admin.') &&
+        !hostname.startsWith('app.') &&
+        !hostname.startsWith('driveout.');
+
+      if (!isDriveoutTenantHost) return;
+
+      const tenantSlug = hostname.split('.')[0] || '';
+      if (!tenantSlug || tenantSlug === 'saharax') return;
+
+      const workspaceLabel = tenantSlug
+        .split(/[\s-_]+/)
+        .filter(Boolean)
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
+        .join(' ') || 'Driveout';
+      const isAdminPath = String(window.location.pathname || '').startsWith('/admin');
+      const title = isAdminPath ? `${workspaceLabel} Admin` : `${workspaceLabel} Workspace`;
+      const description = isAdminPath
+        ? `Manage rentals, fleet, customers, and operations for ${workspaceLabel}.`
+        : `Open the ${workspaceLabel} workspace on Driveout.`;
+      const initials = workspaceLabel
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part.charAt(0).toUpperCase())
+        .join('') || 'DW';
+      const svg = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">',
+        '<defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0f172a" /><stop offset="100%" stop-color="#334155" /></linearGradient></defs>',
+        '<rect width="64" height="64" rx="18" fill="url(#g)" />',
+        `<text x="32" y="38" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${initials}</text>`,
+        '</svg>',
+      ].join('');
+      const iconHref = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+
+      document.title = title;
+
+      const setMeta = (selector, content) => {
+        const element = document.head.querySelector(selector);
+        if (element) element.setAttribute('content', content);
+      };
+
+      setMeta('meta[name="description"]', description);
+      setMeta('meta[property="og:title"]', title);
+      setMeta('meta[property="og:description"]', description);
+      setMeta('meta[property="og:url"]', window.location.origin);
+      setMeta('meta[property="og:image"]', iconHref);
+      setMeta('meta[name="twitter:title"]', title);
+      setMeta('meta[name="twitter:description"]', description);
+      setMeta('meta[name="twitter:image"]', iconHref);
+
+      const favicon = document.head.querySelector('link[rel="icon"]');
+      if (favicon) {
+        favicon.setAttribute('href', iconHref);
+      }
     })();
   </script>
 </head>

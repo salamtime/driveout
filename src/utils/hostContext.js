@@ -7,7 +7,7 @@ export const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 export const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
 const LOCAL_TENANT_PORT_MAP = {
-  '5174': 'owner1',
+  '5174': 'offroad',
 };
 const LOCAL_TENANT_SLUG_PORT_MAP = Object.entries(LOCAL_TENANT_PORT_MAP).reduce((accumulator, [port, slug]) => {
   if (slug) {

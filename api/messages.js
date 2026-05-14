@@ -432,8 +432,11 @@ const isMissingMessageMediaSchemaError = (error) => {
   const code = String(error?.code || '').toLowerCase();
   return (
     code === '42p01' ||
+    code === '42703' ||
     code === 'pgrst205' ||
     (message.includes('relation') && message.includes('does not exist')) ||
+    (message.includes('shared_message_media') && message.includes('organization_id')) ||
+    (message.includes('column') && message.includes('organization_id') && message.includes('does not exist')) ||
     message.includes('could not find the table') ||
     message.includes('not found')
   );
@@ -1192,7 +1195,7 @@ const handlePost = async (req, res) => {
           expiredRows: 0,
           deletedFiles: 0,
           failedFiles: [],
-          warning: 'Shared message media schema is not available yet. Run create_shared_message_media.sql.',
+          warning: 'Shared message media shared-tenant schema is not ready yet. Run the shared message media + organization column migration.',
         });
       }
       return sendJson(res, 500, { error: error.message || 'Message media cleanup failed' });

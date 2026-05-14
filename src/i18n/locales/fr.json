@@ -242,6 +242,28 @@
       "notifications": "Notifications",
       "notificationsDescription": "Choisissez comment recevoir les mises à jour du compte."
     },
+    "subscription": {
+      "title": "Abonnement",
+      "heading": "Activation du propriétaire d'entreprise",
+      "currentPlan": "Forfait actuel",
+      "currentStatus": "Statut",
+      "trialRemaining": "Essai restant",
+      "daysRemaining": "{{count}} jours restants",
+      "billing": "Facturation",
+      "trialNote": "Sélectionnez le bon forfait avant la fin de votre période d'essai.",
+      "plans": {
+        "freeTrial": "Essai gratuit"
+      },
+      "planSummary": {
+        "freeTrial": "Vous êtes encore dans la période d'essai d'activation."
+      },
+      "status": {
+        "trial": "Essai"
+      },
+      "actions": {
+        "choose": "Choisir un forfait"
+      }
+    },
     "activity": {
       "title": "Activité",
       "noActivity": "Aucune activité enregistrée pour le moment."

@@ -2916,6 +2916,28 @@
       "notifications": "Notifications",
       "notificationsDescription": "Choose how you want to receive account updates."
     },
+    "subscription": {
+      "title": "Subscription",
+      "heading": "Business Owner Activation",
+      "currentPlan": "Current plan",
+      "currentStatus": "Status",
+      "trialRemaining": "Trial remaining",
+      "daysRemaining": "{{count}} days remaining",
+      "billing": "Billing",
+      "trialNote": "Select the right package before your trial expires.",
+      "plans": {
+        "freeTrial": "Free Trial"
+      },
+      "planSummary": {
+        "freeTrial": "You are still in the activation trial period."
+      },
+      "status": {
+        "trial": "Trial"
+      },
+      "actions": {
+        "choose": "Choose a Plan"
+      }
+    },
     "telegram": {
       "title": "Telegram Notifications",
       "description": "Choose which Telegram alerts you want to receive from the rental workspace.",

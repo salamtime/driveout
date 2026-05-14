@@ -18,7 +18,7 @@ const getPort = () => {
 };
 
 const LOCAL_TENANT_PORT_MAP = Object.freeze({
-  '5174': 'owner1',
+  '5174': 'offroad',
 });
 
 const buildHostStorageScope = () => {

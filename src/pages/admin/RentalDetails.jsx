@@ -514,6 +514,7 @@ const getRentalAttentionState = (rental, vehicleReport) => {
     report.status === 'maintenance_completed'
   ) {
     return {
+      status: 'maintenance_closed',
       text: tr('Maintenance Closed', 'Maintenance clôturée'),
       className: 'bg-slate-100 text-slate-800 border border-slate-300',
       detailText: tr(
@@ -529,6 +530,7 @@ const getRentalAttentionState = (rental, vehicleReport) => {
     ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(report.status)
   ) {
     return {
+      status: 'under_maintenance',
       text: tr('Under Maintenance', 'En maintenance'),
       className: 'bg-orange-100 text-orange-800 border border-orange-200',
       detailText: tr('Vehicle report linked to Quad Maintenance', 'Rapport véhicule lié à la maintenance du quad'),
@@ -542,6 +544,7 @@ const getRentalAttentionState = (rental, vehicleReport) => {
   };
 
   return {
+    status: 'vehicle_report',
     text: labels[report.report_type] || tr('Vehicle Report Saved', 'Rapport véhicule enregistré'),
     className: 'bg-red-100 text-red-800 border border-red-200',
     detailText: tr(
@@ -9941,6 +9944,13 @@ const handleFuelChargeToggle = async (enabled) => {
 
   const finalizeRentalCompletion = async () => {
     try {
+      const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+      const actorName =
+        actingUser?.full_name ||
+        actingUser?.name ||
+        actingUser?.email ||
+        user?.email ||
+        'Staff';
       let latestReport = vehicleReport;
       if (vehicleReportDraft.enabled) {
         latestReport = await persistVehicleReport();
@@ -9977,6 +9987,9 @@ const handleFuelChargeToggle = async (enabled) => {
         rental_status: 'completed', 
         status: 'completed',
         completed_at: completedAt,
+        completed_by: actingUser?.id || null,
+        completed_by_name: actorName,
+        status_changed_by: actorName,
         actual_end_date: actualReturnEndTime,
         ending_odometer: effectiveEndingOdometer,
         end_fuel_level: effectiveEndFuelLevel,
@@ -10062,6 +10075,7 @@ const handleFuelChargeToggle = async (enabled) => {
           total_kilometers_driven: resolveRentalTelegramDistance(
             (completedRental || effectiveCompletionRental || rental)
           ),
+          completedBy: actorName,
           start_odometer:
             (completedRental || effectiveCompletionRental)?.start_odometer
             ?? rental.start_odometer
@@ -10088,6 +10102,9 @@ const handleFuelChargeToggle = async (enabled) => {
         vehicleStatus: targetVehicleStatus,
         extraRentalFields: {
           actual_end_date: actualReturnEndTime,
+          completed_by: actingUser?.id || null,
+          completed_by_name: actorName,
+          status_changed_by: actorName,
           ...(overtimeAdjustment ? {
             rental_end_date: actualReturnEndTime,
             quantity_hours: overtimeAdjustment.billedHours,
@@ -11031,8 +11048,8 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
     const nextDraft = {
       ...vehicleReportDraft,
-      enabled: false,
-      send_to_maintenance: false,
+      enabled: maintenanceReturnReportEnabled,
+      send_to_maintenance: maintenanceReturnReportEnabled,
     };
 
     if (maintenanceReturnReport && !vehicleReport?.id) {
@@ -12726,6 +12743,13 @@ useEffect(() => {
 
     // Step 4: If all finish readings exist, complete the rental
     try {
+      const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+      const actorName =
+        actingUser?.full_name ||
+        actingUser?.name ||
+        actingUser?.email ||
+        user?.email ||
+        'Staff';
       const completedAt = new Date().toISOString();
       const billingCloseTime = getReturnWorkflowCloseTime(completedAt);
       const { rental: completionRental } = await maybeAutoVoidLatestExtensionOnReturn({
@@ -12744,6 +12768,9 @@ useEffect(() => {
           rental_status: 'completed', 
           status: 'completed',
           completed_at: completedAt,
+          completed_by: actingUser?.id || null,
+          completed_by_name: actorName,
+          status_changed_by: actorName,
           actual_end_date: actualReturnEndTime,
         })
         .eq('id', rental.id);
@@ -12770,6 +12797,7 @@ useEffect(() => {
           total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
           remaining: effectiveCompletionRental?.remaining_amount || rental.remaining_amount || 0,
+          completedBy: actorName,
           total_kilometers_driven: resolveRentalTelegramDistance(effectiveCompletionRental || rental),
           start_odometer:
             effectiveCompletionRental?.start_odometer
@@ -12800,13 +12828,8 @@ useEffect(() => {
         }
       }
       try {
-        const actorName =
-          currentUser?.full_name ||
-          currentUser?.name ||
-          currentUser?.email ||
-          'Staff';
         await insertSharedActivityLog({
-          user_id: currentUser?.id || null,
+          user_id: actingUser?.id || null,
           created_by: actorName,
           action: 'rental_completed',
           description: `Completed rental ${rental.rental_id || rental.id}`,
@@ -13086,9 +13109,11 @@ useEffect(() => {
           start: rental.rental_start_date,
           end: rental.rental_end_date,
           total: rental.total_amount || 0,
+          cancelledAt: cancelledAt,
           refundAmount: rentalRefundSelected ? refundAmount : 0,
           refundDestination,
           refundStatus,
+          cancelledBy: actorName,
           depositReturnedAmount: depositReturnUpdate?.deposit_return_amount || 0,
           depositDeductionAmount: depositReturnUpdate?.deposit_deduction_amount || 0,
           cancellationReason: `${tr('Vehicle issue', 'Problème véhicule')} — ${internalNote}`,
@@ -13334,15 +13359,17 @@ useEffect(() => {
         void dispatchRentalLifecycleTelegramEvent({
           eventType: 'rental_cancelled',
           actor: 'admin',
-          rental: {
-            id: rental.id,
-            reference: rental.rental_id || '',
-            vehicle: buildRentalTelegramVehicleLabel(rental),
-            customer: rental.customer_name,
-            start: rental.rental_start_date,
-            end: rental.rental_end_date,
-            total: rental.total_amount || 0,
-            cancellationReason: scheduledNote
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rental.total_amount || 0,
+          cancelledAt: cancelledAt,
+          cancelledBy: actorName,
+          cancellationReason: scheduledNote
               ? `${isFrench ? scheduledReasonOption.label.fr : scheduledReasonOption.label.en} — ${scheduledNote}`
               : (isFrench ? scheduledReasonOption.label.fr : scheduledReasonOption.label.en),
           },
@@ -13408,16 +13435,18 @@ useEffect(() => {
         void dispatchRentalLifecycleTelegramEvent({
           eventType: 'rental_cancelled',
           actor: 'admin',
-          rental: {
-            id: rental.id,
-            reference: rental.rental_id || '',
-            vehicle: buildRentalTelegramVehicleLabel(rental),
-            customer: rental.customer_name,
-            start: rental.rental_start_date,
-            end: rental.rental_end_date,
-            total: rental.total_amount || 0,
-            cancellationReason: 'Cancelled by staff',
-          },
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rental.total_amount || 0,
+          cancelledAt: cancelledAt,
+          cancelledBy: actorName,
+          cancellationReason: 'Cancelled by staff',
+        },
         });
         
         toast.success('Rental cancelled successfully!');
@@ -13441,6 +13470,12 @@ useEffect(() => {
     try {
       const cancelledAt = new Date().toISOString();
       const actingUser = resolvedCurrentUser || currentUser || userProfile;
+      const actorName =
+        actingUser?.full_name ||
+        actingUser?.name ||
+        actingUser?.email ||
+        user?.email ||
+        'Staff';
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({
@@ -13449,6 +13484,7 @@ useEffect(() => {
           cancelled_at: cancelledAt,
           cancelled_by: actingUser?.id || null,
           cancellation_reason: 'no_show',
+          status_changed_by: actorName,
           updated_at: cancelledAt,
         })
         .eq('id', rental.id);
@@ -13462,6 +13498,7 @@ useEffect(() => {
         cancelled_at: cancelledAt,
         cancelled_by: actingUser?.id || null,
         cancellation_reason: 'no_show',
+        status_changed_by: actorName,
         updated_at: cancelledAt,
       }) : prev);
 
@@ -13485,6 +13522,8 @@ useEffect(() => {
           start: rental.rental_start_date,
           end: rental.rental_end_date,
           total: rental.total_amount || 0,
+          cancelledAt: cancelledAt,
+          cancelledBy: actorName,
           cancellationReason: 'No-show',
         },
       });
@@ -14574,6 +14613,11 @@ useEffect(() => {
           ...basePayload,
           end: completedAt,
           completed_at: completedAt,
+          completedBy:
+            rental?.completed_by_name ||
+            (rental?.completed_by && !isLikelyUuid(rental.completed_by) ? rental.completed_by : null) ||
+            rental?.status_changed_by ||
+            '',
         };
       case 'payment_received':
         return {
@@ -14584,7 +14628,13 @@ useEffect(() => {
       case 'rental_cancelled':
         return {
           ...basePayload,
+          cancelledAt: rental?.cancelled_at || rental?.updated_at || '',
           cancellationReason: rental?.cancellation_reason || 'Cancelled by staff',
+          cancelledBy:
+            rental?.cancelled_by_name ||
+            (rental?.cancelled_by && !isLikelyUuid(rental.cancelled_by) ? rental.cancelled_by : null) ||
+            rental?.status_changed_by ||
+            '',
         };
       default:
         return basePayload;
@@ -15615,6 +15665,20 @@ useEffect(() => {
   const startedByDisplay = rental?.started_by_name
     || (rental?.started_by && !isLikelyUuid(rental.started_by) ? rental.started_by : null)
     || null;
+  const closedByDisplay = rental?.completed_by_name
+    || (rental?.completed_by && !isLikelyUuid(rental.completed_by) ? rental.completed_by : null)
+    || ((String(rental?.rental_status || rental?.status || '').toLowerCase() === 'completed' || rental?.completed_at)
+      ? rental?.status_changed_by || null
+      : null);
+  const cancelledByDisplay =
+    String(rental?.rental_status || rental?.status || '').toLowerCase() === 'cancelled'
+      ? (
+          rental?.cancelled_by_name
+          || (rental?.cancelled_by && !isLikelyUuid(rental.cancelled_by) ? rental.cancelled_by : null)
+          || rental?.status_changed_by
+          || null
+        )
+      : null;
   const rentalElapsedTone = isActive ? getRentalElapsedTone(rental, currentTimeRef.current) : null;
 
   useEffect(() => {
@@ -15695,8 +15759,32 @@ useEffect(() => {
     return driver.id_scan_url || driver.customer_id_image || driver.id_image || null;
   };
 
+  const dedupeDocumentUrls = (...values) => {
+    const normalized = new Set();
+    values.flat().forEach((value) => {
+      if (Array.isArray(value)) {
+        value.forEach((entry) => {
+          const raw = String(entry?.url || entry || '').trim();
+          if (raw) normalized.add(raw.split('?')[0].split('#')[0]);
+        });
+        return;
+      }
+
+      const raw = String(value?.url || value || '').trim();
+      if (raw) normalized.add(raw.split('?')[0].split('#')[0]);
+    });
+    return [...normalized];
+  };
+
   
   const secondDriversList = getSecondDrivers(rental);
+  const customerDocumentCount = dedupeDocumentUrls(
+    rental?.customer_id_image,
+    rental?.id_scan_url,
+    rental?.customer_uploaded_images,
+    rental?.customer_id_scan_history,
+    linkedCustomerProfile?.scan_metadata?.id_scan_history,
+  ).length;
   const isPendingApproval = rental?.approval_status === 'pending';
   const hasAppliedManualPriceOverride = ['approved', 'auto'].includes(String(rental?.approval_status || '').toLowerCase());
   const isAdmin = canApproveRentalExtensions(resolvedCurrentUser);
@@ -17755,7 +17843,25 @@ useEffect(() => {
                             {step.description}
                           </p>
                         </div>
-                        <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : finishWorkflowTheme.incompleteStepAccent}`} />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={step.onAction}
+                            disabled={isFinishWorkflowSoftLocked}
+                            aria-label={step.actionLabel}
+                            title={step.actionLabel}
+                            className={`inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border shadow-sm transition ${
+                              isFinishWorkflowSoftLocked
+                                ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                                : step.complete
+                                  ? 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+                                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            <Edit className="h-3.5 w-3.5" />
+                          </button>
+                          <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : finishWorkflowTheme.incompleteStepAccent}`} />
+                        </div>
                       </div>
                       {step.extraNode ? (
                         step.extraNode
@@ -17940,6 +18046,12 @@ useEffect(() => {
         ? tr('Staff linked', 'Personnel lié')
         : null,
       syncedCustomerDetails.fullName || rental?.customer_name || null,
+      customerDocumentCount > 0
+        ? tr(
+            `${customerDocumentCount} ID document${customerDocumentCount > 1 ? 's' : ''}`,
+            `${customerDocumentCount} document${customerDocumentCount > 1 ? 's' : ''} ID`
+          )
+        : null,
       hasSecondDriver
         ? tr(
             `${secondDriversList.length} additional driver${secondDriversList.length > 1 ? 's' : ''}`,
@@ -18006,6 +18118,13 @@ useEffect(() => {
         ].filter(Boolean).join(' • ')
       : '',
   };
+  const hasLinkedMaintenanceForVehicleReport = Boolean(
+    vehicleReport?.maintenance?.id ||
+    vehicleReport?.maintenance_id ||
+    rental?.linked_maintenance_id
+  );
+  const shouldHighlightVehicleReportAsCritical =
+    shouldShowVehicleReport && hasLinkedMaintenanceForVehicleReport;
 
   const renderVehicleReportSectionBody = () => (
     <div className="space-y-4">
@@ -18297,21 +18416,47 @@ useEffect(() => {
     </div>
   );
 
-  const renderLightRentalInfoSection = ({ sectionKey, eyebrow, title, preview, icon: Icon, children, sectionRef = null }) => {
+  const renderLightRentalInfoSection = ({
+    sectionKey,
+    eyebrow,
+    title,
+    preview,
+    icon: Icon,
+    children,
+    sectionRef = null,
+    accentTone = 'violet',
+  }) => {
     if (!isLightRentalDetailsMode) {
       return <>{children}</>;
     }
 
     const isOpen = Boolean(lightRentalInfoOpenSections?.[sectionKey]);
     const useActiveAccent = isOpen;
+    const isDangerTone = accentTone === 'danger';
+    const activeShellClass = isDangerTone
+      ? 'border-rose-200 shadow-[0_0_0_1px_rgba(244,63,94,0.14),0_18px_40px_rgba(225,29,72,0.10)]'
+      : 'border-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.14),0_18px_40px_rgba(109,40,217,0.10)]';
+    const idleShellClass = isDangerTone
+      ? 'border-rose-100 shadow-[0_12px_30px_rgba(225,29,72,0.06)]'
+      : 'border-violet-100 shadow-[0_12px_30px_rgba(76,29,149,0.06)]';
+    const activeIconClass = isDangerTone
+      ? 'border-rose-200 bg-rose-50/90 text-rose-600 shadow-[0_10px_24px_rgba(225,29,72,0.10)]'
+      : 'border-violet-200 bg-violet-50/90 shadow-[0_10px_24px_rgba(109,40,217,0.10)]';
+    const idleIconClass = isDangerTone
+      ? 'border-rose-100 bg-rose-50 text-rose-600'
+      : 'border-violet-100 bg-violet-50 text-violet-600';
+    const eyebrowClass = isDangerTone ? 'text-rose-500' : 'text-violet-500';
+    const chevronActiveClass = isDangerTone
+      ? 'bg-rose-100 text-rose-600 shadow-[0_8px_18px_rgba(225,29,72,0.10)]'
+      : 'bg-violet-100 text-violet-600 shadow-[0_8px_18px_rgba(109,40,217,0.10)]';
 
     return (
       <div
         ref={sectionRef}
         className={`overflow-hidden rounded-[24px] border bg-white transition-[border-color,box-shadow] duration-200 ${
           useActiveAccent
-            ? 'border-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.14),0_18px_40px_rgba(109,40,217,0.10)]'
-            : 'border-violet-100 shadow-[0_12px_30px_rgba(76,29,149,0.06)]'
+            ? activeShellClass
+            : idleShellClass
         }`}
       >
         <button
@@ -18322,10 +18467,10 @@ useEffect(() => {
           <div className="flex min-w-0 items-start gap-3">
             {Icon ? (
               <div
-                className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border text-violet-600 shadow-sm transition-[border-color,background-color,box-shadow] duration-200 ${
+                className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-[border-color,background-color,box-shadow,color] duration-200 ${
                   useActiveAccent
-                    ? 'border-violet-200 bg-violet-50/90 shadow-[0_10px_24px_rgba(109,40,217,0.10)]'
-                    : 'border-violet-100 bg-violet-50'
+                    ? activeIconClass
+                    : idleIconClass
                 }`}
               >
                 <Icon className="h-5 w-5" />
@@ -18333,7 +18478,7 @@ useEffect(() => {
             ) : null}
             <div className="min-w-0">
               {eyebrow ? (
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${eyebrowClass}`}>
                   {eyebrow}
                 </p>
               ) : null}
@@ -18344,7 +18489,7 @@ useEffect(() => {
           <div
             className={`rounded-full p-2 transition-[background-color,color,box-shadow] duration-200 ${
               useActiveAccent
-                ? 'bg-violet-100 text-violet-600 shadow-[0_8px_18px_rgba(109,40,217,0.10)]'
+                ? chevronActiveClass
                 : 'bg-slate-100 text-slate-500'
             }`}
           >
@@ -18399,13 +18544,13 @@ useEffect(() => {
 
   const renderAdvancedPeopleSectionBody = () => (
     <>
-      {(createdByDisplay || startedByDisplay || signedByDisplay) && (
+      {(createdByDisplay || startedByDisplay || signedByDisplay || closedByDisplay || cancelledByDisplay) && (
         <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-slate-900">👤 {tr('Rental Staff', 'Personnel de location')}</h3>
               <p className="mt-1 text-xs text-slate-500">
-                {tr('Who created, signed, and started this rental.', 'Qui a créé, signé et démarré cette location.')}
+                {tr('Who created, signed, started, closed, or cancelled this rental.', 'Qui a créé, signé, démarré, clôturé ou annulé cette location.')}
               </p>
             </div>
             <button
@@ -18418,10 +18563,12 @@ useEffect(() => {
               {showHistory ? tr('Hide', 'Masquer') : `📋 ${tr('History', 'Historique')}`}
             </button>
           </div>
-          <div className="grid grid-cols-1 gap-1 text-sm text-slate-700 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-1 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-3">
             <p><strong>{tr('Created by:', 'Créée par :')}</strong> {createdByDisplay}</p>
             {signedByDisplay && <p><strong>{tr('Signed by:', 'Signée par :')}</strong> {signedByDisplay}</p>}
             {startedByDisplay && <p><strong>{tr('Started by:', 'Démarrée par :')}</strong> {startedByDisplay}</p>}
+            {closedByDisplay && <p><strong>{tr('Closed by:', 'Clôturée par :')}</strong> {closedByDisplay}</p>}
+            {cancelledByDisplay && <p><strong>{tr('Cancelled by:', 'Annulée par :')}</strong> {cancelledByDisplay}</p>}
           </div>
           {showHistory && (
             <div className="mt-3 border-t border-violet-100 pt-3">
@@ -20837,6 +20984,11 @@ useEffect(() => {
                     <Badge className={`${getStatusColor(displayRentalStatus)} border px-3 py-1 text-xs font-semibold tracking-wide`}>
                       {translateRentalStatusLabel(displayRentalStatus)}
                     </Badge>
+                    {rentalAttention && ['under_maintenance', 'maintenance_closed'].includes(String(rentalAttention.status || '')) ? (
+                      <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${rentalAttention.className}`}>
+                        {rentalAttention.text}
+                      </span>
+                    ) : null}
                     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${dynamicPaymentState.chipClass}`}>
                       {dynamicPaymentState.label}
                     </span>
@@ -23545,6 +23697,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               title: tr('Inspection report and maintenance', 'Rapport d’inspection et maintenance'),
               preview: lightRentalInfoPreview.report,
               icon: AlertTriangle,
+              accentTone: shouldHighlightVehicleReportAsCritical ? 'danger' : 'violet',
               children: renderVehicleReportSectionBody(),
             })}
           </div>
@@ -23678,12 +23831,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <CardTitle className="text-xl text-slate-900">{tr('Rental Information', 'Informations de location')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6 p-5 sm:p-6">
-          {(createdByDisplay || startedByDisplay || signedByDisplay) && (
+          {(createdByDisplay || startedByDisplay || signedByDisplay || closedByDisplay || cancelledByDisplay) && (
             <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">👤 {tr('Rental Staff', 'Personnel de location')}</h3>
-                  <p className="mt-1 text-xs text-slate-500">{tr('Who created, signed, and started this rental.', 'Qui a créé, signé et démarré cette location.')}</p>
+                  <p className="mt-1 text-xs text-slate-500">{tr('Who created, signed, started, closed, or cancelled this rental.', 'Qui a créé, signé, démarré, clôturé ou annulé cette location.')}</p>
                 </div>
                 <button
                   onClick={async () => {
@@ -23695,10 +23848,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   {showHistory ? tr('Hide', 'Masquer') : `📋 ${tr('History', 'Historique')}`}
                 </button>
               </div>
-              <div className="grid grid-cols-1 gap-1 text-sm text-slate-700 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-1 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-3">
                 <p><strong>{tr('Created by:', 'Créée par :')}</strong> {createdByDisplay}</p>
                 {signedByDisplay && <p><strong>{tr('Signed by:', 'Signée par :')}</strong> {signedByDisplay}</p>}
                 {startedByDisplay && <p><strong>{tr('Started by:', 'Démarrée par :')}</strong> {startedByDisplay}</p>}
+                {closedByDisplay && <p><strong>{tr('Closed by:', 'Clôturée par :')}</strong> {closedByDisplay}</p>}
+                {cancelledByDisplay && <p><strong>{tr('Cancelled by:', 'Annulée par :')}</strong> {cancelledByDisplay}</p>}
               </div>
               {showHistory && (
                 <div className="mt-3 border-t border-violet-100 pt-3">
@@ -23754,6 +23909,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <p><strong>{tr('Email:', 'Email :')}</strong> {syncedCustomerDetails.email || tr('N/A', 'N/D')}</p>
               <p><strong>{tr('Phone:', 'Téléphone :')}</strong> {syncedCustomerDetails.phone || tr('N/A', 'N/D')}</p>
               <p><strong>{tr('ID/License:', 'ID/Permis :')}</strong> {syncedCustomerDetails.licenceNumber || tr('N/A', 'N/D')}</p>
+              <p><strong>{tr('Documents:', 'Documents :')}</strong> {customerDocumentCount}</p>
             </div>
             {renderCustomerRiskSnapshot()}
           </div>

@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguageContext } from '../../contexts/LanguageContext';
+import { useTenantWorkspaceContext } from '../../contexts/TenantWorkspaceContext';
 import RentalMediaRetentionService from '../../services/RentalMediaRetentionService';
 import MessageMediaRetentionService from '../../services/MessageMediaRetentionService';
 import WebsiteBookingExpiryService from '../../services/WebsiteBookingExpiryService';
@@ -53,6 +54,13 @@ const getTenantLogoFallback = () => {
   return isSaharaXBrandingHost() ? SAHARAX_DEFAULT_LOGO_URL : '';
 };
 
+const toTitleCaseWords = (value = '') =>
+  String(value || '')
+    .split(/[\s-_]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
+    .join(' ');
+
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
     return window.requestIdleCallback(callback, { timeout: 1200 });
@@ -95,6 +103,7 @@ const AdminLayout = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, userProfile, signOut, hasPermission, hasFeature, platformAccess, tenantSession } = useAuth();
+  const { tenant, tenantSettings } = useTenantWorkspaceContext();
   const { i18n } = useTranslation();
   const { setLanguage } = useLanguageContext();
   const profileMenuRef = useRef(null);
@@ -104,6 +113,26 @@ const AdminLayout = () => {
   const inheritedTenantLogoUrl = getTenantLogoFallback();
   const hostContext = getHostContext();
   const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !isSaharaXBrandingHost(hostContext);
+  const resolvedTenantSettings =
+    tenantSettings && typeof tenantSettings === 'object'
+      ? tenantSettings
+      : {};
+  const workspaceBrandName = String(
+    resolvedTenantSettings.public_display_name ||
+    resolvedTenantSettings.brand_name ||
+    tenantSession?.tenantName ||
+    tenant?.name ||
+    tenant?.tenant_name ||
+    toTitleCaseWords(tenantSession?.tenantSlug || tenant?.slug || tenant?.tenant_slug || hostContext.tenantSlug || '') ||
+    'Driveout'
+  ).trim();
+  const workspaceBrandSubtitle = isFrench ? 'Espace opérations' : 'Operations workspace';
+  const workspaceLogoUrl = String(
+    resolvedTenantSettings.logo_url ||
+    tenantLogoUrl ||
+    inheritedTenantLogoUrl ||
+    ''
+  ).trim();
   const personalProfileImage =
     userProfile?.profile_picture_url ||
     userProfile?.avatar_url ||
@@ -112,7 +141,7 @@ const AdminLayout = () => {
     user?.user_metadata?.picture ||
     user?.user_metadata?.photo_url ||
     '';
-  const resolvedProfileImage = personalProfileImage || tenantLogoUrl || inheritedTenantLogoUrl || '';
+  const resolvedProfileImage = personalProfileImage || workspaceLogoUrl || '';
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
   const hasPlatformControlAccess =
@@ -944,12 +973,20 @@ const AdminLayout = () => {
         <div className="flex-shrink-0 border-b border-violet-100/80 px-5 py-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]">
-                <Sparkles className="h-5 w-5" />
-              </div>
+              {workspaceLogoUrl ? (
+                <img
+                  src={workspaceLogoUrl}
+                  alt={`${workspaceBrandName} logo`}
+                  className="h-11 w-11 rounded-2xl border border-violet-100/80 bg-white object-cover shadow-[0_14px_30px_rgba(79,70,229,0.16)]"
+                />
+              ) : (
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]">
+                  <Sparkles className="h-5 w-5" />
+                </div>
+              )}
               <div>
-                <div className="text-base font-semibold text-slate-900">SaharaX Admin</div>
-                <div className="mt-0.5 text-xs font-medium text-slate-500">Operations workspace</div>
+                <div className="text-base font-semibold text-slate-900">{workspaceBrandName} Admin</div>
+                <div className="mt-0.5 text-xs font-medium text-slate-500">{workspaceBrandSubtitle}</div>
               </div>
             </div>
             {shouldShowHamburger && (
@@ -979,7 +1016,7 @@ const AdminLayout = () => {
                 >
                   <OptimizedAvatar
                     src={personalProfileImage}
-                    fallbackImageSrc={tenantLogoUrl || inheritedTenantLogoUrl}
+                    fallbackImageSrc={workspaceLogoUrl}
                     name={user?.email || userProfile?.fullName || 'User'}
                     size={36}
                     className="rounded-2xl"

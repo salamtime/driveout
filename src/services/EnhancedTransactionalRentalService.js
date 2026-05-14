@@ -12,7 +12,7 @@
 
 import { supabase } from '../lib/supabase';
 import TransactionalRentalService from './TransactionalRentalService';
-import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 
 const getRawStorageValue = (value) => {
@@ -526,6 +526,7 @@ class EnhancedTransactionalRentalService {
           end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
           total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
           createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
+          documentCount: countRentalDocuments(newRental),
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

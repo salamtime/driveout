@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   X, User, Phone, Mail, Calendar, MapPin, CreditCard, FileText, 
@@ -125,6 +125,7 @@ const ViewCustomerDetailsDrawer = ({
   const [uploadError, setUploadError] = useState(null);
   const [alertMessage, setAlertMessage] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [showAllSecondIdScans, setShowAllSecondIdScans] = useState(false);
   const fileInputRef = useRef(null);
   const isSecondDriverOnlyView = viewMode === 'drivers';
 
@@ -161,6 +162,12 @@ const ViewCustomerDetailsDrawer = ({
       loadRentalHistory(customerData.id);
     }
   }, [customerData, isSecondDriverOnlyView]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setShowAllSecondIdScans(false);
+    }
+  }, [isOpen]);
 
   const loadCustomerData = async () => {
     setLoading(true);
@@ -422,8 +429,6 @@ const ViewCustomerDetailsDrawer = ({
     setSelectedImage({ url: imageUrl, label: title });
   };
 
-  if (!isOpen) return null;
-
   const idScanUrl = customerData?.id_scan_url;
   const customerIdImage = customerData?.customer_id_image;
   const extraImages = customerData?.extra_images || [];
@@ -444,6 +449,35 @@ const ViewCustomerDetailsDrawer = ({
         ? tr('Secondary ID', 'Pièce secondaire')
         : tr(`Additional ID ${index}`, `Pièce supplémentaire ${index}`),
   }));
+  const secondDriverIdScans = useMemo(() => (
+    secondDrivers
+      .flatMap((driver, driverIndex) => {
+        const primaryUrl = String(
+          driver?.id_scan_url ||
+          driver?.customer_id_image ||
+          driver?.id_image ||
+          ''
+        ).trim();
+        const uploadedImages = Array.isArray(driver?.uploaded_images)
+          ? driver.uploaded_images
+          : [];
+        const normalizedUrls = [
+          primaryUrl,
+          ...uploadedImages.map((entry) => String(entry?.url || entry || '').trim()),
+        ].filter(Boolean);
+        const uniqueUrls = [...new Set(normalizedUrls.map((url) => url.split('?')[0].split('#')[0]))];
+
+        return uniqueUrls.map((url, imageIndex) => ({
+          url,
+          label: imageIndex === 0
+            ? `${driver?.full_name || tr('Second driver', 'Conducteur secondaire')} · ${tr('Second ID', 'Pièce secondaire')}`
+            : `${driver?.full_name || tr('Second driver', 'Conducteur secondaire')} · ${tr('Additional ID', 'Pièce supplémentaire')} ${imageIndex}`,
+          driverName: driver?.full_name || `${tr('Driver', 'Conducteur')} ${driverIndex + 1}`,
+        }));
+      })
+      .filter((entry) => entry.url)
+  ), [secondDrivers]);
+  const secondDriverIdScanPreview = secondDriverIdScans.slice(0, 1);
   const sectionCardClass = 'rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]';
   const sectionTitleIconClass = 'h-4 w-4 mr-2 text-violet-600';
   const customerProfileRentalId = rental?.id || customerData?._rentalId || '';
@@ -453,6 +487,8 @@ const ViewCustomerDetailsDrawer = ({
   const customerProfileHref = customerData?.id
     ? `/admin/customers/${encodeURIComponent(String(customerData.id))}/profile${customerProfileSearch}`
     : '/admin/customers';
+
+  if (!isOpen) return null;
 
   return (
     <div
@@ -623,6 +659,15 @@ const ViewCustomerDetailsDrawer = ({
                           <span className="text-sm text-gray-500">{tr('ID Number:', 'N° ID :')}</span>
                       </div>
                       <span className="text-sm text-gray-900 break-words">{customerData?.id_number ?? tr('N/A', 'N/D')}</span>
+                  </div>
+                  <div className="flex items-start">
+                      <div className="w-28 flex-shrink-0 flex items-center">
+                          <Camera className="h-4 w-4 text-gray-400 mr-2" />
+                          <span className="text-sm text-gray-500">{tr('Documents:', 'Documents :')}</span>
+                      </div>
+                      <span className="text-sm text-gray-900 break-words">
+                        {customerIdScans.length} {customerIdScans.length === 1 ? tr('ID file', 'document ID') : tr('ID files', 'documents ID')}
+                      </span>
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
@@ -842,6 +887,40 @@ const ViewCustomerDetailsDrawer = ({
                   emptyMessage={tr('No ID documents available. Please scan or import an ID to complete customer verification.', "Aucun document d'identité disponible. Veuillez scanner ou importer une pièce d'identité pour terminer la vérification du client.")}
                   gridLayout={false}
                 />
+                {secondDriverIdScans.length > 0 && (
+                  <div className="mt-5 rounded-2xl border border-violet-100 bg-slate-50/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{tr('Second ID', 'Pièce secondaire')}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {secondDriverIdScans.length === 1
+                            ? tr('1 second driver ID is attached to this rental.', '1 pièce du conducteur secondaire est liée à cette location.')
+                            : tr(
+                                `${secondDriverIdScans.length} second driver ID files are attached to this rental.`,
+                                `${secondDriverIdScans.length} pièces du conducteur secondaire sont liées à cette location.`
+                              )}
+                        </p>
+                      </div>
+                      {secondDriverIdScans.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllSecondIdScans((prev) => !prev)}
+                          className="rounded-full border border-violet-200 bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 transition-colors hover:bg-violet-50"
+                        >
+                          {showAllSecondIdScans ? tr('Collapse', 'Réduire') : tr('View all', 'Voir tout')}
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-4">
+                      <ImageGallery
+                        images={showAllSecondIdScans ? secondDriverIdScans : secondDriverIdScanPreview}
+                        title={tr('Second ID', 'Pièce secondaire')}
+                        emptyMessage={tr('No second driver ID available.', "Aucune pièce secondaire disponible.")}
+                        gridLayout={false}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
               )}
               

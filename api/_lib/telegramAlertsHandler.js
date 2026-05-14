@@ -34,6 +34,13 @@ const parseBody = (body) => {
 };
 
 const safeText = (value) => String(value ?? '').trim();
+const resolveRentalDocumentCount = (data = {}) => {
+  const explicitCount = Number(data?.documentCount ?? data?.documentsCount ?? data?.document_count);
+  if (Number.isFinite(explicitCount) && explicitCount >= 0) {
+    return explicitCount;
+  }
+  return 0;
+};
 
 const normalizeHostname = (value = '') => {
   const trimmed = String(value || '').trim().toLowerCase();
@@ -183,6 +190,18 @@ const buildOpenedByLine = (value) => {
   return `Opened by: ${normalized}`;
 };
 
+const buildClosedByLine = (value) => {
+  const normalized = safeText(value);
+  if (!normalized) return '';
+  return `Closed by: ${normalized}`;
+};
+
+const buildCancelledByLine = (value) => {
+  const normalized = safeText(value);
+  if (!normalized) return '';
+  return `Cancelled by: ${normalized}`;
+};
+
 const buildOverdueAge = (endValue) => {
   const end = endValue ? new Date(endValue) : null;
   if (!(end instanceof Date) || Number.isNaN(end?.getTime?.())) return '';
@@ -258,6 +277,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
   const paymentReceivedNow = safeText(formatMoney(data.paymentReceivedNow));
   const discountApplied = safeText(formatMoney(data.companyDiscount));
   const total = safeText(formatMoney(data.total));
+  const rentalDocumentCount = resolveRentalDocumentCount(data);
   const reference = safeText(data.reference || data.rental_reference || '');
   const rentalIdentityLine = reference ? `Ref: ${reference}` : '';
   const customerLine = customer && customer !== 'Unknown customer' ? customer : '';
@@ -275,6 +295,20 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
     data.created_by_name ||
     data.actorName
   );
+  const closedByLine = buildClosedByLine(
+    data.closedBy ||
+    data.completedBy ||
+    data.completed_by_name ||
+    data.status_changed_by ||
+    data.actorName
+  );
+  const cancelledByLine = buildCancelledByLine(
+    data.cancelledBy ||
+    data.canceledBy ||
+    data.cancelled_by_name ||
+    data.status_changed_by ||
+    data.actorName
+  );
   const linkLine = ['👉 Open rental', rentalUrl].join('\n');
   const isStaffLayout = recipientLayout === 'staff';
 
@@ -288,6 +322,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...windowLines,
         ...(distanceLine ? [distanceLine] : []),
         ...(closedAtLine ? [closedAtLine] : []),
+        ...(closedByLine ? [closedByLine] : []),
         `Paid: ${paid} MAD`,
         ...(Number(data.remaining || 0) > 0 ? [`Due: ${remaining} MAD`] : []),
         ...(rentalIdentityLine ? [rentalIdentityLine] : []),
@@ -394,6 +429,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
         ...(safeText(data.cancellationReason) ? [`Reason: ${safeText(data.cancellationReason)}`] : []),
+        ...(cancelledByLine ? [cancelledByLine] : []),
         ...(safeText(formatMoney(data.refundAmount)) !== '0'
           ? [`Refunded: ${safeText(formatMoney(data.refundAmount))} MAD`]
           : []),
@@ -449,6 +485,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
         ...(openedByLine ? [openedByLine] : []),
+        ...(rentalDocumentCount > 0 ? [`Documents: ${rentalDocumentCount}`] : []),
         '',
         linkLine,
       ].join('\n');
@@ -460,6 +497,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
       ...(customerLine ? [customerLine] : []),
       ...windowLines,
       ...(openedByLine ? [openedByLine] : []),
+      ...(rentalDocumentCount > 0 ? [`Documents: ${rentalDocumentCount}`] : []),
       `${total} MAD`,
       ...(rentalIdentityLine ? [rentalIdentityLine] : []),
       '',
@@ -868,7 +906,6 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
     case 'rental_started':
     case 'rental_vehicle_replaced':
     case 'rental_completed':
-    case 'rental_cancelled':
     case 'rental_overdue':
       parts.push(
         safeText(payload?.reference || payload?.rental_reference),
@@ -880,6 +917,31 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
         safeText(payload?.old_vehicle_id || payload?.oldVehicle || payload?.old_vehicle_name),
         safeText(payload?.new_vehicle_id || payload?.newVehicle || payload?.new_vehicle_name),
         safeText(payload?.replacementReason || payload?.replacement_reason || payload?.replacement_reason_label),
+        safeText(
+          resolveDistanceValue(payload) ||
+          payload?.total_kilometers_driven ||
+          payload?.total_distance ||
+          payload?.totalDistance ||
+          payload?.distance_km
+        ),
+      );
+      break;
+    case 'rental_cancelled':
+      parts.push(
+        safeText(payload?.reference || payload?.rental_reference),
+        safeText(payload?.start),
+        safeText(payload?.end),
+        safeText(payload?.total),
+        safeText(payload?.remaining),
+        safeText(payload?.amountPaid),
+        safeText(payload?.cancelledAt || payload?.cancelled_at),
+        safeText(payload?.cancelledBy || payload?.canceledBy || payload?.cancelled_by_name || payload?.status_changed_by),
+        safeText(payload?.cancellationReason || payload?.cancellation_reason),
+        safeText(payload?.refundAmount),
+        safeText(payload?.refundStatus),
+        safeText(payload?.refundDestination),
+        safeText(payload?.depositReturnedAmount),
+        safeText(payload?.depositDeductionAmount),
         safeText(
           resolveDistanceValue(payload) ||
           payload?.total_kilometers_driven ||

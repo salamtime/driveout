@@ -23,6 +23,7 @@ import FleetLocationsManager from './admin/FleetLocationsManager';
 import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
 import i18n from '../i18n';
 import FleetLocationService from '../services/FleetLocationService';
+import VehicleService from '../services/VehicleService';
 import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleService';
 import VehicleDispositionService from '../services/VehicleDispositionService';
 import useAdminModalFocus from '../hooks/useAdminModalFocus';
@@ -40,6 +41,8 @@ const scheduleBackgroundTask = (callback: () => void) => {
   return window.setTimeout(callback, 0);
 };
 const STORAGE_DOCUMENT_COUNT_FAILURE_COOLDOWN_MS = 60 * 1000;
+const PRIORITY_DOCUMENT_COUNT_LIMIT = 8;
+const DOCUMENT_COUNT_BATCH_SIZE = 4;
 let vehicleDocumentCountCooldownUntil = 0;
 
 const isTransientStorageListError = (error: unknown) => {
@@ -58,6 +61,18 @@ const isTransientStorageListError = (error: unknown) => {
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
+
+const chunkVehicles = <T,>(items: T[], size: number) => {
+  if (!Array.isArray(items) || size <= 0) {
+    return [];
+  }
+
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
 
 interface Vehicle {
   id: number;
@@ -350,18 +365,36 @@ const VehicleManagement: React.FC = () => {
     }
   };
 
-  const loadVehicleDocumentCounts = async (vehicleList: Vehicle[]) => {
+  const loadVehicleDocumentCounts = async (
+    vehicleList: Vehicle[],
+    options: {
+      batchSize?: number;
+      onBatch?: (vehiclesWithCounts: Vehicle[]) => void;
+    } = {}
+  ) => {
     try {
-      const vehiclesWithCounts = await Promise.all(
-        vehicleList.map(async (vehicle) => {
-          const documentCount = await getVehicleDocumentCount(vehicle.id);
-          return {
-            ...vehicle,
-            document_count: documentCount
-          };
-        })
-      );
-      
+      const vehiclesWithCounts: Vehicle[] = [];
+      const batches = chunkVehicles(vehicleList, options.batchSize || DOCUMENT_COUNT_BATCH_SIZE);
+
+      for (const batch of batches) {
+        const resolvedBatch = await Promise.all(
+          batch.map(async (vehicle) => {
+            const documentCount = await getVehicleDocumentCount(vehicle.id);
+            return {
+              ...vehicle,
+              document_count: documentCount
+            };
+          })
+        );
+
+        vehiclesWithCounts.push(...resolvedBatch);
+        options.onBatch?.(resolvedBatch);
+
+        if (batches.length > 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+
       return vehiclesWithCounts;
     } catch (error) {
       console.error('Error loading vehicle document counts:', error);
@@ -406,15 +439,6 @@ const VehicleManagement: React.FC = () => {
       setMaintenanceRecords([]);
     }
   };
-
-  // Fixed useEffect with proper dependency handling
-  useEffect(() => {
-    try {
-      loadMaintenanceData();
-    } catch (error) {
-      console.error('Error setting up subscriptions:', error);
-    }
-  }, []);
 
   const sanitizeFormData = (data: any) => {
     const sanitized = { ...data };
@@ -549,35 +573,15 @@ const VehicleManagement: React.FC = () => {
     setError(null);
     
     try {
-      // Fetch vehicles
-      const vehicleSelectColumns = 'id, name, model, vehicle_type, power_cc, capacity, color, location_id, status, image_url, features, plate_number, current_odometer, engine_hours, last_oil_change_date, last_oil_change_odometer, next_oil_change_due, next_oil_change_odometer, registration_number, registration_date, registration_expiry_date, insurance_policy_number, insurance_provider, insurance_expiry_date, general_notes, notes, created_at, updated_at, vehicle_model_id, purchase_cost_mad, purchase_date, purchase_supplier, purchase_invoice_url, sold_date, sale_price_mad, sold_buyer_name, sale_proof_url, sale_proof_name, sale_notes';
-      const fallbackVehicleSelectColumns = 'id, name, model, vehicle_type, power_cc, capacity, color, location_id, status, image_url, features, plate_number, current_odometer, engine_hours, last_oil_change_date, last_oil_change_odometer, next_oil_change_due, next_oil_change_odometer, registration_number, registration_expiry_date, insurance_policy_number, insurance_provider, insurance_expiry_date, general_notes, notes, created_at, updated_at, vehicle_model_id, purchase_cost_mad, purchase_date, purchase_supplier, purchase_invoice_url';
-      let { data: vehiclesData, error: vehiclesError } = await supabase
-        .from(TBL.VEHICLES)
-        .select(vehicleSelectColumns)
-        .order('created_at', { ascending: false })
-        .limit(50);
+      const vehiclesData = await VehicleService.getFleetVehicles();
 
-      if (vehiclesError?.message?.includes('registration_date') || vehiclesError?.message?.includes('sold_date') || vehiclesError?.message?.includes('sale_') || vehiclesError?.message?.includes('sold_buyer')) {
-        const fallbackResult = await supabase
-          .from(TBL.VEHICLES)
-          .select(fallbackVehicleSelectColumns)
-          .order('created_at', { ascending: false })
-          .limit(50);
-        vehiclesData = fallbackResult.data;
-        vehiclesError = fallbackResult.error;
-      }
-
-      if (vehiclesError) {
-        console.error('Vehicles fetch failed:', vehiclesError);
-        throw vehiclesError;
-      }
-
-      const fetchedLocations = await FleetLocationService.listLocations(true).catch((locationError) => {
-        console.error('Fleet locations fetch failed:', locationError);
-        return [];
-      });
-      setVehicleDispositions(await VehicleDispositionService.refreshDispositions());
+      const [fetchedLocations] = await Promise.all([
+        FleetLocationService.listLocations(true).catch((locationError) => {
+          console.error('Fleet locations fetch failed:', locationError);
+          return [];
+        }),
+      ]);
+      setVehicleDispositions(VehicleDispositionService.hydrateDispositionsFromVehicles(vehiclesData || []));
       const locationNameById = new Map(
         (fetchedLocations || []).map((fleetLocation: FleetLocation) => [String(fleetLocation.id), fleetLocation.name])
       );
@@ -590,11 +594,21 @@ const VehicleManagement: React.FC = () => {
       let openMaintenanceVehicleIds = new Set<string>();
 
       if (vehicleIds.length > 0) {
-        const { data: rentalOverlayData, error: rentalOverlayError } = await supabase
-          .from('app_4c3a7a6153_rentals')
-          .select('vehicle_id, rental_status, is_impounded, impounded_at, released_from_impound_at, updated_at, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
-          .in('vehicle_id', vehicleIds)
-          .order('updated_at', { ascending: false });
+        const [
+          { data: rentalOverlayData, error: rentalOverlayError },
+          { data: openMaintenanceData, error: openMaintenanceError },
+        ] = await Promise.all([
+          supabase
+            .from('app_4c3a7a6153_rentals')
+            .select('vehicle_id, rental_status, is_impounded, impounded_at, released_from_impound_at, updated_at, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
+            .in('vehicle_id', vehicleIds)
+            .order('updated_at', { ascending: false }),
+          supabase
+            .from('app_687f658e98_maintenance')
+            .select('vehicle_id, status')
+            .in('vehicle_id', vehicleIds)
+            .in('status', ['scheduled', 'in_progress', 'pending']),
+        ]);
 
         if (rentalOverlayError) {
           console.error('Vehicle rental status overlay fetch failed:', rentalOverlayError);
@@ -631,12 +645,6 @@ const VehicleManagement: React.FC = () => {
               .map((record: any) => String(record.vehicle_id))
           );
         }
-
-        const { data: openMaintenanceData, error: openMaintenanceError } = await supabase
-          .from('app_687f658e98_maintenance')
-          .select('vehicle_id, status')
-          .in('vehicle_id', vehicleIds)
-          .in('status', ['scheduled', 'in_progress', 'pending']);
 
         if (openMaintenanceError) {
           console.error('Open maintenance overlay fetch failed:', openMaintenanceError);
@@ -749,30 +757,14 @@ const VehicleManagement: React.FC = () => {
             });
         }
 
-        const priorityVehicles = (vehiclesData || []).slice(0, 12) as Vehicle[];
-        const remainingVehicles = (vehiclesData || []).slice(12) as Vehicle[];
+        const priorityVehicles = (vehiclesData || []).slice(0, PRIORITY_DOCUMENT_COUNT_LIMIT) as Vehicle[];
+        const remainingVehicles = (vehiclesData || []).slice(PRIORITY_DOCUMENT_COUNT_LIMIT) as Vehicle[];
 
-        const [priorityVehiclesWithCounts, modelsResult] = await Promise.all([
-          priorityVehicles.length > 0 ? loadVehicleDocumentCounts(priorityVehicles) : Promise.resolve([] as Vehicle[]),
-          supabase
-            .from('saharax_0u4w4d_vehicle_models')
-            .select('*')
-            .order('name', { ascending: true }),
-        ]);
+        const { data: modelsData, error: modelsError } = await supabase
+          .from('saharax_0u4w4d_vehicle_models')
+          .select('*')
+          .order('name', { ascending: true });
 
-        const prioritizedVehicleMap = new Map(priorityVehiclesWithCounts.map((vehicle) => [vehicle.id, vehicle]));
-        const firstPassVehicles = baseVehicles.map((vehicle) => prioritizedVehicleMap.get(vehicle.id) || vehicle);
-        setVehicles(firstPassVehicles as Vehicle[]);
-
-        if (remainingVehicles.length > 0) {
-          scheduleBackgroundTask(async () => {
-            const remainingVehiclesWithCounts = await loadVehicleDocumentCounts(remainingVehicles);
-            const remainingVehicleMap = new Map(remainingVehiclesWithCounts.map((vehicle) => [vehicle.id, vehicle]));
-            setVehicles((currentVehicles) => currentVehicles.map((vehicle) => remainingVehicleMap.get(vehicle.id) || vehicle));
-          });
-        }
-
-        const { data: modelsData, error: modelsError } = modelsResult;
         if (modelsError) {
           console.error('Models fetch error:', modelsError);
           setVehicleModels([]);
@@ -793,12 +785,35 @@ const VehicleManagement: React.FC = () => {
         } else {
           setVehicleModels([]);
         }
-      });
 
-      scheduleBackgroundTask(() => {
-        loadMaintenanceData();
-      });
+        if (priorityVehicles.length > 0) {
+          scheduleBackgroundTask(async () => {
+            await loadVehicleDocumentCounts(priorityVehicles, {
+              batchSize: DOCUMENT_COUNT_BATCH_SIZE,
+              onBatch: (resolvedBatch) => {
+                const prioritizedVehicleMap = new Map(resolvedBatch.map((vehicle) => [vehicle.id, vehicle]));
+                setVehicles((currentVehicles) =>
+                  currentVehicles.map((vehicle) => prioritizedVehicleMap.get(vehicle.id) || vehicle)
+                );
+              },
+            });
+          });
+        }
 
+        if (remainingVehicles.length > 0) {
+          scheduleBackgroundTask(async () => {
+            await loadVehicleDocumentCounts(remainingVehicles, {
+              batchSize: DOCUMENT_COUNT_BATCH_SIZE,
+              onBatch: (resolvedBatch) => {
+                const remainingVehicleMap = new Map(resolvedBatch.map((vehicle) => [vehicle.id, vehicle]));
+                setVehicles((currentVehicles) =>
+                  currentVehicles.map((vehicle) => remainingVehicleMap.get(vehicle.id) || vehicle)
+                );
+              },
+            });
+          });
+        }
+      });
     } catch (error) {
       console.error('Error in fetchData:', error);
       setError(`Impossible de charger les données : ${error.message}`);

@@ -2591,15 +2591,24 @@ const Rentals = () => {
 
   const handleViewRental = useCallback((rental) => {
     const snapshot = buildRentalsReturnSnapshot();
+    const attentionState = getRentalAttentionState(rental);
+    const openUnderMaintenanceResolution = attentionState?.status === 'under_maintenance';
     if (typeof window !== 'undefined') {
       try {
         window.sessionStorage.setItem(RENTALS_RETURN_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
       } catch {}
     }
 
-    navigate(`/admin/rentals/${rental.id}`, {
+    navigate(`/admin/rentals/${rental.id}${openUnderMaintenanceResolution ? '?view=light' : ''}`, {
       state: {
         rentalsReturnContext: snapshot,
+        ...(openUnderMaintenanceResolution
+          ? {
+              maintenanceReturnMode: 'vehicle_issue',
+              maintenanceReturnReportEnabled: true,
+              maintenanceReturnSource: 'rentals_under_maintenance',
+            }
+          : {}),
       },
     });
   }, [buildRentalsReturnSnapshot, navigate]);
@@ -2837,6 +2846,7 @@ const Rentals = () => {
       report.status === 'maintenance_completed'
     ) {
       return {
+        status: 'maintenance_closed',
         text: tr('Maintenance Closed', 'Maintenance clôturée'),
         className: 'bg-slate-100 text-slate-800 border border-slate-300',
         detailText: tr('This rental had a linked maintenance issue that was resolved after return', 'Cette location avait un problème de maintenance lié qui a été résolu après le retour'),
@@ -2849,6 +2859,7 @@ const Rentals = () => {
       ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(report.status)
     ) {
       return {
+        status: 'under_maintenance',
         text: tr('Under Maintenance', 'En maintenance'),
         className: 'bg-orange-100 text-orange-800 border border-orange-200',
         detailText: tr('Vehicle report linked to Quad Maintenance', 'Rapport véhicule lié à la maintenance du quad'),
@@ -2862,6 +2873,7 @@ const Rentals = () => {
     };
 
     return {
+      status: 'vehicle_report',
       text: labels[report.report_type] || tr('Vehicle Report', 'Rapport véhicule'),
       className: 'bg-red-100 text-red-800 border border-red-200',
       detailText: tr('Vehicle inspection report saved on this rental', "Rapport d'inspection véhicule enregistré sur cette location"),

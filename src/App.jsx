@@ -123,6 +123,112 @@ const shouldUseFirstPartyTenantUnifiedShell = (host, pathname, search = '') => {
   return isFirstPartyUnifiedPath(normalizedPath);
 };
 
+const toTitleCaseWords = (value = '') =>
+  String(value || '')
+    .split(/[\s-_]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
+    .join(' ');
+
+const buildFallbackWorkspaceLabel = (tenant = {}, host = {}) => {
+  const tenantSettings =
+    tenant?.tenantSettings && typeof tenant.tenantSettings === 'object'
+      ? tenant.tenantSettings
+      : {};
+
+  return String(
+    tenantSettings.public_display_name ||
+    tenantSettings.brand_name ||
+    tenant?.name ||
+    tenant?.tenant_name ||
+    toTitleCaseWords(tenant?.slug || tenant?.tenant_slug || host?.tenantSlug || '')
+  ).trim();
+};
+
+const buildBrandMonogramDataUrl = (label = '') => {
+  const normalizedLabel = String(label || '').trim();
+  const initials = normalizedLabel
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('') || 'DW';
+
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0f172a" />
+          <stop offset="100%" stop-color="#334155" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="18" fill="url(#g)" />
+      <text x="32" y="38" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffffff">${initials}</text>
+    </svg>
+  `.trim();
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const applyWorkspaceDocumentBranding = ({ tenant = null, host = {} } = {}) => {
+  if (typeof document === 'undefined') return;
+
+  const tenantSettings =
+    tenant?.tenantSettings && typeof tenant.tenantSettings === 'object'
+      ? tenant.tenantSettings
+      : {};
+  const workspaceLabel = buildFallbackWorkspaceLabel(tenant, host) || 'Driveout';
+  const isAdminHost = String(window.location.pathname || '').startsWith('/admin');
+  const title = isAdminHost
+    ? `${workspaceLabel} Admin`
+    : `${workspaceLabel} Workspace`;
+  const description = isAdminHost
+    ? `Manage rentals, fleet, customers, and operations for ${workspaceLabel}.`
+    : `Open the ${workspaceLabel} workspace on Driveout.`;
+  const logoUrl = String(tenantSettings.logo_url || '').trim();
+  const faviconHref = logoUrl || buildBrandMonogramDataUrl(workspaceLabel);
+
+  document.title = title;
+
+  const ensureMeta = (selector, attrs) => {
+    let element = document.head.querySelector(selector);
+    if (!element) {
+      element = document.createElement('meta');
+      Object.entries(attrs).forEach(([key, value]) => {
+        element.setAttribute(key, value);
+      });
+      document.head.appendChild(element);
+    }
+    return element;
+  };
+
+  const ensureLink = (selector, attrs) => {
+    let element = document.head.querySelector(selector);
+    if (!element) {
+      element = document.createElement('link');
+      Object.entries(attrs).forEach(([key, value]) => {
+        element.setAttribute(key, value);
+      });
+      document.head.appendChild(element);
+    }
+    return element;
+  };
+
+  ensureMeta('meta[name="description"]', { name: 'description' }).setAttribute('content', description);
+  ensureMeta('meta[property="og:title"]', { property: 'og:title' }).setAttribute('content', title);
+  ensureMeta('meta[property="og:description"]', { property: 'og:description' }).setAttribute('content', description);
+  ensureMeta('meta[property="og:url"]', { property: 'og:url' }).setAttribute('content', window.location.origin);
+  ensureMeta('meta[name="twitter:title"]', { name: 'twitter:title' }).setAttribute('content', title);
+  ensureMeta('meta[name="twitter:description"]', { name: 'twitter:description' }).setAttribute('content', description);
+
+  if (faviconHref) {
+    ensureMeta('meta[property="og:image"]', { property: 'og:image' }).setAttribute('content', faviconHref);
+    ensureMeta('meta[name="twitter:image"]', { name: 'twitter:image' }).setAttribute('content', faviconHref);
+    const faviconLink = ensureLink('link[rel="icon"]', { rel: 'icon', type: 'image/png' });
+    faviconLink.setAttribute('href', faviconHref);
+  }
+};
+
 const TenantWorkspaceBoot = ({ children }) => {
   const host = getHostContext();
   const location = useLocation();
@@ -238,6 +344,10 @@ const TenantWorkspaceBoot = ({ children }) => {
   const contextValue = useMemo(() => ({
     ready: state.status === 'ready',
     tenant: state.tenant || null,
+    tenantSettings:
+      state.tenant?.tenantSettings && typeof state.tenant.tenantSettings === 'object'
+        ? state.tenant.tenantSettings
+        : {},
     publicFeatures:
       state.publicFeatures && typeof state.publicFeatures === 'object'
         ? state.publicFeatures
@@ -255,6 +365,17 @@ const TenantWorkspaceBoot = ({ children }) => {
     organizationSlug: state.tenant?.organizationSlug || null,
     planType: state.tenant?.planType || 'starter',
   }), [state.effectiveFeatureAccess, state.featureAccess, state.publicFeatures, state.status, state.tenant]);
+
+  useEffect(() => {
+    if (host.kind !== 'tenant' || state.status !== 'ready') {
+      return;
+    }
+
+    applyWorkspaceDocumentBranding({
+      tenant: state.tenant || null,
+      host,
+    });
+  }, [host, state.status, state.tenant]);
 
   if (state.status === 'loading') {
     return null;

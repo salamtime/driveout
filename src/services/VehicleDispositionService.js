@@ -70,6 +70,15 @@ class VehicleDispositionService {
     this.dispositionCache = [];
   }
 
+  hydrateDispositionsFromVehicles(vehicles = []) {
+    this.dispositionCache = (Array.isArray(vehicles) ? vehicles : [])
+      .map(buildDispositionFromVehicle)
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.event_date || b.updated_at || 0).getTime() - new Date(a.event_date || a.updated_at || 0).getTime());
+
+    return this.listDispositions();
+  }
+
   canUseStorage() {
     return typeof window !== 'undefined' && Boolean(window.localStorage);
   }

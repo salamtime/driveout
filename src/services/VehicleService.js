@@ -156,6 +156,137 @@ class VehicleService {
     }
   }
 
+  async getFleetVehicles() {
+    const cacheKey = this.getCacheKey('fleet_vehicles');
+    const cached = this.getCache(cacheKey);
+    if (cached) return cached;
+
+    const fleetSelectColumns = `
+      id,
+      name,
+      model,
+      vehicle_type,
+      power_cc,
+      capacity,
+      color,
+      location_id,
+      status,
+      image_url,
+      features,
+      plate_number,
+      current_odometer,
+      engine_hours,
+      last_oil_change_date,
+      last_oil_change_odometer,
+      next_oil_change_due,
+      next_oil_change_odometer,
+      registration_number,
+      registration_date,
+      registration_expiry_date,
+      insurance_policy_number,
+      insurance_provider,
+      insurance_expiry_date,
+      general_notes,
+      notes,
+      created_at,
+      updated_at,
+      vehicle_model_id,
+      purchase_cost_mad,
+      purchase_date,
+      purchase_supplier,
+      purchase_invoice_url,
+      sold_date,
+      sale_price_mad,
+      sold_buyer_name,
+      sale_proof_url,
+      sale_proof_name,
+      sale_notes
+    `;
+    const fallbackFleetSelectColumns = `
+      id,
+      name,
+      model,
+      vehicle_type,
+      power_cc,
+      capacity,
+      color,
+      location_id,
+      status,
+      image_url,
+      features,
+      plate_number,
+      current_odometer,
+      engine_hours,
+      last_oil_change_date,
+      last_oil_change_odometer,
+      next_oil_change_due,
+      next_oil_change_odometer,
+      registration_number,
+      registration_expiry_date,
+      insurance_policy_number,
+      insurance_provider,
+      insurance_expiry_date,
+      general_notes,
+      notes,
+      created_at,
+      updated_at,
+      vehicle_model_id,
+      purchase_cost_mad,
+      purchase_date,
+      purchase_supplier,
+      purchase_invoice_url
+    `;
+
+    try {
+      console.log('🔄 Loading fleet vehicles from shared vehicle service...');
+
+      const result = await this.withRetry(async () => {
+        let query = await this.applyReadScope(
+          supabase
+            .from('saharax_0u4w4d_vehicles')
+            .select(fleetSelectColumns)
+            .order('created_at', { ascending: false })
+            .limit(50)
+        );
+
+        let { data, error } = await query;
+
+        if (
+          error?.message?.includes('registration_date') ||
+          error?.message?.includes('sold_date') ||
+          error?.message?.includes('sale_') ||
+          error?.message?.includes('sold_buyer')
+        ) {
+          query = await this.applyReadScope(
+            supabase
+              .from('saharax_0u4w4d_vehicles')
+              .select(fallbackFleetSelectColumns)
+              .order('created_at', { ascending: false })
+              .limit(50)
+          );
+          ({ data, error } = await query);
+        }
+
+        if (error) throw error;
+
+        const operationalVehicles = (data || []).filter(
+          (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+        );
+
+        console.log(
+          `✅ Loaded ${operationalVehicles.length} fleet vehicles from shared vehicle service (${data?.length || 0} raw)`
+        );
+        return operationalVehicles;
+      });
+
+      this.setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      console.error('❌ Error loading fleet vehicles from shared vehicle service:', error);
+      throw error;
+    }
+  }
+
   /**
    * Legacy method for backward compatibility
    */
