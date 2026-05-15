@@ -260,11 +260,16 @@ const VehicleManagement: React.FC = () => {
 
   const [formData, setFormData] = useState(getEmptyFormData());
 
+  const normalizeVehicleTypeForModelFilter = (value: string) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'quad' ? 'atv' : normalized;
+  };
+
   const availableModelsForType = useMemo(
     () =>
       vehicleModels.filter((model) => {
         if (!formData.vehicle_type) return true;
-        return String(model.vehicle_type || '').toLowerCase() === String(formData.vehicle_type || '').toLowerCase();
+        return normalizeVehicleTypeForModelFilter(model.vehicle_type) === normalizeVehicleTypeForModelFilter(formData.vehicle_type);
       }),
     [vehicleModels, formData.vehicle_type]
   );

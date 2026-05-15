@@ -61,6 +61,8 @@ const TourPackagePricingManager = ({
   const [extraDurations, setExtraDurations] = useState([]);
   const [savingRowId, setSavingRowId] = useState('');
   const [savingSelection, setSavingSelection] = useState(false);
+  const [savingDefaultKey, setSavingDefaultKey] = useState('');
+  const [defaultPriceDrafts, setDefaultPriceDrafts] = useState({});
   const [vehicleModelToAdd, setVehicleModelToAdd] = useState('');
   const touchedPricesRef = React.useRef(new Set());
   const effectivePackageId = String((embedded ? controlledPackageId || selectedPackageId || GLOBAL_TOUR_PRICING_KEY : controlledPackageId || selectedPackageId) || GLOBAL_TOUR_PRICING_KEY);
@@ -315,11 +317,11 @@ const TourPackagePricingManager = ({
     setCustomDuration('');
   };
 
-  const handleAddVehicleModel = () => {
-    const modelId = String(vehicleModelToAdd || '');
+  const addVehicleModelPricingRow = (modelIdValue) => {
+    const modelId = String(modelIdValue || '');
     if (!modelId) {
       toast.error('Choisissez d’abord un modèle de véhicule');
-      return;
+      return false;
     }
 
     setDraftRows((current) => {
@@ -341,6 +343,12 @@ const TourPackagePricingManager = ({
         },
       };
     });
+    return true;
+  };
+
+  const handleAddVehicleModel = () => {
+    const added = addVehicleModelPricingRow(vehicleModelToAdd);
+    if (!added) return;
     setVehicleModelToAdd('');
   };
 
@@ -356,6 +364,58 @@ const TourPackagePricingManager = ({
       return;
     }
     handlePriceChange(modelId, packageDuration, defaultPrice);
+  };
+
+  const handleDefaultPriceDraftChange = (modelId, duration, value) => {
+    const key = `${modelId}::${String(Number(duration))}`;
+    setDefaultPriceDrafts((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
+
+  const saveDefaultPriceForPackageDuration = async (modelId, duration) => {
+    const durationKey = String(Number(duration));
+    const draftKey = `${modelId}::${durationKey}`;
+    const price = Number(defaultPriceDrafts[draftKey] || 0);
+
+    if (!Number.isFinite(price) || price <= 0) {
+      toast.error('Enter a default price first');
+      return;
+    }
+
+    setSavingDefaultKey(draftKey);
+    try {
+      const existingDefault = pricingRows.find((row) => (
+        String(row.package_id) === GLOBAL_TOUR_PRICING_KEY
+        && String(row.vehicle_model_id) === String(modelId)
+        && Number(row.duration_hours) === Number(duration)
+      ));
+
+      await upsertTourPackageModelPrice({
+        id: existingDefault?.id,
+        package_id: GLOBAL_TOUR_PRICING_KEY,
+        vehicle_model_id: modelId,
+        duration_hours: duration,
+        price_mad: price,
+        is_active: true,
+      });
+
+      const refreshed = await fetchTourPackageModelPrices();
+      setPricingRows(refreshed || []);
+      onPricingRowsChange?.(refreshed || []);
+      handlePriceChange(modelId, duration, price);
+      setDefaultPriceDrafts((current) => ({
+        ...current,
+        [draftKey]: '',
+      }));
+      toast.success('Default price saved. Save package pricing to use it here.');
+    } catch (error) {
+      console.error('Failed to save default tour price:', error);
+      toast.error(error?.message || 'Failed to save default price');
+    } finally {
+      setSavingDefaultKey('');
+    }
   };
 
   const savePackageSelection = async () => {
@@ -719,7 +779,7 @@ const TourPackagePricingManager = ({
           <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <p className="font-semibold">Pricing still needs to be completed</p>
             <p className="mt-1">
-              Add shared prices for {missingDurationLabels.map((duration) => formatDurationLabel(duration)).join(', ')} so packages using those durations are ready for bookings.
+              Add the missing default prices below for {missingDurationLabels.map((duration) => formatDurationLabel(duration)).join(', ')} so packages using those durations are ready for bookings.
             </p>
           </div>
         )}
@@ -790,12 +850,16 @@ const TourPackagePricingManager = ({
                   const defaultPrice = getDefaultPrice(modelId, packageDuration);
                   const currentPrice = Number(draftRows?.[modelId]?.prices?.[packageDurationKey] || 0);
                   const isSelected = currentPrice > 0;
+                  const canUseDefaultPrice = defaultPrice > 0;
+                  const defaultDraftKey = `${modelId}::${packageDurationKey}`;
                   return (
                     <div
                       key={modelId}
                       className={`flex flex-col gap-3 rounded-2xl border px-4 py-4 text-left transition ${
                         isSelected
                           ? 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(124,58,237,0.15)]'
+                          : !canUseDefaultPrice
+                            ? 'border-amber-200 bg-amber-50/60'
                           : 'border-slate-200 bg-white hover:border-violet-200'
                       }`}
                     >
@@ -804,21 +868,53 @@ const TourPackagePricingManager = ({
                         <button
                           type="button"
                           onClick={() => toggleModelSelection(modelId)}
+                          disabled={!isSelected && !canUseDefaultPrice}
                           className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
                             isSelected
                               ? 'bg-violet-600 text-white hover:bg-violet-700'
+                              : !canUseDefaultPrice
+                                ? 'cursor-not-allowed bg-amber-100 text-amber-700'
                               : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                           }`}
                         >
-                          {isSelected ? 'Selected' : 'Tap to add'}
+                          {isSelected ? 'Selected' : canUseDefaultPrice ? 'Tap to add' : 'Set default first'}
                         </button>
                       </div>
                       <div className="text-lg font-black text-slate-900">
-                        {defaultPrice > 0 ? `${defaultPrice.toLocaleString('en-MA')} MAD` : 'Set default price'}
+                        {canUseDefaultPrice ? `${defaultPrice.toLocaleString('en-MA')} MAD` : 'Set a default price first'}
                       </div>
                       <div className="text-xs font-semibold text-slate-500">
                         Duration: {formatDurationLabel(packageDuration)}
                       </div>
+                      {!canUseDefaultPrice && (
+                        <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
+                          <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+                            Default price for {formatDurationLabel(packageDuration)}
+                          </label>
+                          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={defaultPriceDrafts[defaultDraftKey] ?? ''}
+                              onChange={(event) => handleDefaultPriceDraftChange(modelId, packageDuration, event.target.value)}
+                              className="min-w-0 flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-black text-slate-900 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                              placeholder="MAD"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => saveDefaultPriceForPackageDuration(modelId, packageDuration)}
+                              disabled={savingDefaultKey === defaultDraftKey}
+                              className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-amber-700 disabled:opacity-60"
+                            >
+                              {savingDefaultKey === defaultDraftKey ? 'Saving...' : 'Save default price'}
+                            </button>
+                          </div>
+                          <p className="mt-2 text-xs font-semibold text-amber-800">
+                            This saves the shared default, then this package can use it.
+                          </p>
+                        </div>
+                      )}
                       {isSelected && (
                         <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
                           <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Edit price (optional)</label>
@@ -842,9 +938,39 @@ const TourPackagePricingManager = ({
               </div>
             </div>
           ) : configuredModels.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
-              Add a vehicle model to start pricing this package timing matrix.
-            </div>
+            isGlobalDefaults ? (
+              <div className="rounded-2xl border border-dashed border-violet-200 bg-violet-50/40 p-6">
+                <div className="flex flex-col gap-2 text-left">
+                  <p className="text-sm font-black uppercase tracking-[0.16em] text-violet-600">Quick add pricing rows</p>
+                  <h4 className="text-2xl font-black text-slate-900">Choose a model, then enter its default prices</h4>
+                  <p className="text-sm font-semibold text-slate-600">
+                    Add a pricing row first. The duration inputs appear immediately after that row is added.
+                  </p>
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {vehicleModels.map((model) => {
+                    const modelId = String(model.id);
+                    return (
+                      <button
+                        key={modelId}
+                        type="button"
+                        onClick={() => addVehicleModelPricingRow(modelId)}
+                        className="group rounded-2xl border border-violet-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-[0_14px_32px_rgba(124,58,237,0.14)]"
+                      >
+                        <span className="block text-lg font-black text-slate-900">{modelLabel(model)}</span>
+                        <span className="mt-2 inline-flex rounded-full bg-violet-100 px-3 py-1 text-xs font-black text-violet-700 group-hover:bg-violet-600 group-hover:text-white">
+                          Add pricing row
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                Add a vehicle model to start pricing this package timing matrix.
+              </div>
+            )
           ) : (
             configuredModels.map((model) => {
               const rowKey = String(model.id);

@@ -254,8 +254,7 @@ class VehicleService {
           supabase
             .from(VEHICLES_TABLE)
             .select(fleetSelectColumns)
-            .order('created_at', { ascending: false })
-            .limit(50),
+            .order('created_at', { ascending: false }),
           VEHICLES_TABLE,
           'Workspace organization context is required to load fleet vehicles.'
         );
@@ -272,8 +271,7 @@ class VehicleService {
             supabase
               .from(VEHICLES_TABLE)
               .select(fallbackFleetSelectColumns)
-              .order('created_at', { ascending: false })
-              .limit(50),
+              .order('created_at', { ascending: false }),
             VEHICLES_TABLE,
             'Workspace organization context is required to load fleet vehicles.'
           );
@@ -287,14 +285,10 @@ class VehicleService {
           'Fleet vehicles returned rows outside the active workspace.'
         );
 
-        const operationalVehicles = (data || []).filter(
-          (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
-        );
-
         console.log(
-          `✅ Loaded ${operationalVehicles.length} fleet vehicles from shared vehicle service (${data?.length || 0} raw)`
+          `✅ Loaded ${data?.length || 0} fleet vehicles from shared vehicle service`
         );
-        return operationalVehicles;
+        return data || [];
       });
 
       this.setCache(cacheKey, result);
