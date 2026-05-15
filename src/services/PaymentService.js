@@ -1,10 +1,37 @@
 import { supabase } from '../utils/supabaseClient';
 import { TBL } from '../config/tables.js';
+import { TABLE_NAMES } from '../config/tableNames.js';
+import { applyOrganizationScope, getCurrentOrganizationId } from './OrganizationService';
 
 /**
  * PaymentService provides methods for handling payment operations
  */
 class PaymentService {
+  async getBookingTableName(bookingType = 'rental') {
+    const normalizedType = String(bookingType || 'rental').trim().toLowerCase();
+    if (normalizedType === 'tour') {
+      return TABLE_NAMES.TOUR_BOOKINGS;
+    }
+    return 'saharax_0u4w4d_rental_bookings';
+  }
+
+  async updateScopedBookingRecord(tableName, bookingId, payload, bookingType = 'rental') {
+    let query = supabase
+      .from(tableName)
+      .update(payload)
+      .eq('id', bookingId);
+
+    if (String(bookingType || '').trim().toLowerCase() === 'tour') {
+      const organizationId = await getCurrentOrganizationId();
+      query = applyOrganizationScope(query, organizationId);
+    }
+
+    const { error } = await query;
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+
   async getCurrentUserEmail(fallbackEmail = '') {
     if (fallbackEmail) return fallbackEmail;
     const { data: { user } } = await supabase.auth.getUser();
@@ -210,22 +237,17 @@ class PaymentService {
 
     if (bookingData?.id) {
       const bookingType = bookingData?.type || 'rental';
-      const tableName = bookingType === 'rental'
-        ? 'saharax_0u4w4d_rental_bookings'
-        : 'saharax_0u4w4d_tour_bookings';
-
-      const { error } = await supabase
-        .from(tableName)
-        .update({
+      const tableName = await this.getBookingTableName(bookingType);
+      await this.updateScopedBookingRecord(
+        tableName,
+        bookingData.id,
+        {
           payment_status: 'paid',
           payment_id: paymentRecord.id,
           updated_at: new Date().toISOString(),
-        })
-        .eq('id', bookingData.id);
-
-      if (error) {
-        throw new Error(error.message);
-      }
+        },
+        bookingType
+      );
     }
 
     return updatedPayment;
@@ -277,10 +299,7 @@ class PaymentService {
   }
 
   async syncBookingPaymentStatus({ bookingId, bookingType = 'rental', paymentId = null, paymentStatus }) {
-    const tableName = bookingType === 'rental'
-      ? 'saharax_0u4w4d_rental_bookings'
-      : 'saharax_0u4w4d_tour_bookings';
-
+    const tableName = await this.getBookingTableName(bookingType);
     const updatePayload = {
       payment_status: paymentStatus,
       updated_at: new Date().toISOString(),
@@ -290,14 +309,7 @@ class PaymentService {
       updatePayload.payment_id = paymentId;
     }
 
-    const { error } = await supabase
-      .from(tableName)
-      .update(updatePayload)
-      .eq('id', bookingId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
+    await this.updateScopedBookingRecord(tableName, bookingId, updatePayload, bookingType);
   }
 }
 

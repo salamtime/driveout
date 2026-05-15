@@ -12,6 +12,9 @@ import {
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
+const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5174': 'offroad',
+});
 
 const normalizeHostname = (value = '') => {
   const trimmed = String(value || '').trim().toLowerCase();
@@ -33,7 +36,13 @@ const normalizeUrlHostname = (value = '') => {
 };
 
 const getTenantSlugFromHostname = (hostname = '') => {
+  const rawHostname = String(hostname || '').trim().toLowerCase();
   const normalizedHostname = normalizeHostname(hostname);
+  const localPort = rawHostname.split(':')[1] || '';
+  if ((normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[localPort]) {
+    return LOCAL_TENANT_PORT_MAP[localPort];
+  }
+
   if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
 
   const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));

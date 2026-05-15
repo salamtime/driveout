@@ -20,11 +20,13 @@ import {
   normalizeSubscriptionStatus,
   sanitizeTenantSlug,
 } from './_lib/tenantRegistry.js';
+import { resolveRequestTenantScope } from './_lib/sharedTenantIsolation.js';
 import { getTenantPlanLimits, normalizeTenantPlanType } from '../src/config/tenantPlans.js';
 import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.js';
 import crypto from 'crypto';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set(['business_owner', 'operator', 'business', 'rental_business']);
+const SHARED_TENANT_USER_ALLOWLIST = new Set(['oualidazzouni10@gmail.com']);
 const BASE_APP_USER_FIELDS = 'id, email, username, full_name, first_name, last_name, role, phone_number, whatsapp_notifications, preferences, permissions, salary_amount, created_at, updated_at, access_enabled, primary_organization_id';
 const BUSINESS_OWNER_APP_USER_FIELDS = `${BASE_APP_USER_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
 
@@ -746,6 +748,144 @@ const normalizePlatformAdminPermissions = (value) => {
   };
 };
 
+const normalizeEmail = (value = '') => String(value || '').trim().toLowerCase();
+
+const isSharedTenantUserAllowlisted = (candidate = {}) =>
+  SHARED_TENANT_USER_ALLOWLIST.has(normalizeEmail(candidate?.email));
+
+const resolveOrganizationMemberRole = (role = '') => {
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  if (normalizedRole === 'owner' || normalizedRole === 'admin') return 'org_admin';
+  if (normalizedRole === 'guide') return 'guide';
+  if (normalizedRole === 'mechanic') return 'mechanic';
+  if (normalizedRole === 'finance') return 'finance';
+  return 'org_member';
+};
+
+const loadTenantScopedUserIds = async (adminClient, tenantScope) => {
+  if (!tenantScope?.isShared || !tenantScope?.organizationId) {
+    return null;
+  }
+
+  const organizationId = String(tenantScope.organizationId || '').trim();
+  if (!organizationId) {
+    return null;
+  }
+
+  const [profileResult, membershipResult] = await Promise.all([
+    adminClient
+      .from(APP_USERS_TABLE)
+      .select('id')
+      .eq('primary_organization_id', organizationId),
+    adminClient
+      .from(ORGANIZATION_MEMBERS_TABLE)
+      .select('user_id, membership_status')
+      .eq('organization_id', organizationId),
+  ]);
+
+  if (profileResult.error) {
+    throw profileResult.error;
+  }
+
+  if (membershipResult.error) {
+    throw membershipResult.error;
+  }
+
+  const scopedIds = new Set(
+    (profileResult.data || [])
+      .map((row) => String(row?.id || '').trim())
+      .filter(Boolean)
+  );
+
+  (membershipResult.data || []).forEach((row) => {
+    const membershipStatus = String(row?.membership_status || '').trim().toLowerCase();
+    if (!['active', 'invited'].includes(membershipStatus)) {
+      return;
+    }
+    const userId = String(row?.user_id || '').trim();
+    if (userId) {
+      scopedIds.add(userId);
+    }
+  });
+
+  return scopedIds;
+};
+
+const filterUsersForTenantScope = ({
+  users = [],
+  scopedUserIds = null,
+  currentUserId = null,
+} = {}) => {
+  if (!(scopedUserIds instanceof Set)) {
+    return users;
+  }
+
+  const normalizedCurrentUserId = String(currentUserId || '').trim();
+  return users.filter((candidate) => {
+    const candidateId = String(candidate?.id || '').trim();
+    if (candidateId && candidateId === normalizedCurrentUserId) {
+      return true;
+    }
+    if (candidateId && scopedUserIds.has(candidateId)) {
+      return true;
+    }
+    return isSharedTenantUserAllowlisted(candidate);
+  });
+};
+
+const ensureTenantScopedStaffMembership = async ({
+  adminClient,
+  tenantScope,
+  userId,
+  email = '',
+  role = 'employee',
+  fullName = '',
+} = {}) => {
+  if (!tenantScope?.isShared || !tenantScope?.organizationId || !userId || isSharedTenantUserAllowlisted({ email })) {
+    return;
+  }
+
+  const organizationId = String(tenantScope.organizationId || '').trim();
+  if (!organizationId) {
+    return;
+  }
+
+  const normalizedRole = String(role || 'employee').trim().toLowerCase() || 'employee';
+  const profilePayload = {
+    id: userId,
+    email: email || null,
+    full_name: fullName || email || null,
+    role: normalizedRole,
+    primary_organization_id: organizationId,
+    access_enabled: true,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: profileError } = await adminClient
+    .from(APP_USERS_TABLE)
+    .upsert(profilePayload, { onConflict: 'id' });
+
+  if (profileError && !isSchemaCompatibilityError(profileError)) {
+    throw profileError;
+  }
+
+  const { error: membershipError } = await adminClient
+    .from(ORGANIZATION_MEMBERS_TABLE)
+    .upsert(
+      {
+        organization_id: organizationId,
+        user_id: userId,
+        member_role: resolveOrganizationMemberRole(normalizedRole),
+        membership_status: 'active',
+      },
+      { onConflict: 'organization_id,user_id' }
+    );
+
+  if (membershipError) {
+    throw membershipError;
+  }
+};
+
 const listAllAuthUsers = async (adminClient) => {
   const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
 
@@ -986,6 +1126,8 @@ export default async function handler(req, res) {
     const { adminClient, user } = scopedAuth;
 
     try {
+      const tenantScope = await resolveRequestTenantScope({ req, adminClient });
+      const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope);
       const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
 
       if (error) {
@@ -1001,24 +1143,28 @@ export default async function handler(req, res) {
       }
 
       const appUserMap = new Map(appUsers.map((candidate) => [String(candidate.id), candidate]));
-      const mergedUsers = authUsers
-        .map((authUser) => mergeAuthUserWithAppUser(authUser, appUserMap.get(String(authUser.id)) || {}))
-        .filter((candidate) => {
-          const role = String(candidate?.role || '').trim().toLowerCase();
-          return ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(role) && String(candidate?.id || '') !== String(user?.id || '');
-        })
-        .map((candidate) => ({
-          id: candidate.id,
-          email: candidate.email,
-          full_name: candidate.full_name || null,
-          first_name: candidate.first_name || null,
-          last_name: candidate.last_name || null,
-          username: candidate.username || null,
-          role: candidate.role || 'employee',
-          access_enabled: candidate.access_enabled !== false,
-          created_at: candidate.created_at || null,
-          updated_at: candidate.updated_at || null,
-        }));
+      const mergedUsers = filterUsersForTenantScope({
+        users: authUsers
+          .map((authUser) => mergeAuthUserWithAppUser(authUser, appUserMap.get(String(authUser.id)) || {}))
+          .filter((candidate) => {
+            const role = String(candidate?.role || '').trim().toLowerCase();
+            return ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(role) && String(candidate?.id || '') !== String(user?.id || '');
+          })
+          .map((candidate) => ({
+            id: candidate.id,
+            email: candidate.email,
+            full_name: candidate.full_name || null,
+            first_name: candidate.first_name || null,
+            last_name: candidate.last_name || null,
+            username: candidate.username || null,
+            role: candidate.role || 'employee',
+            access_enabled: candidate.access_enabled !== false,
+            created_at: candidate.created_at || null,
+            updated_at: candidate.updated_at || null,
+          })),
+        scopedUserIds,
+        currentUserId: user?.id || null,
+      });
 
       res.status(200).json({ users: mergedUsers });
       return;
@@ -1044,6 +1190,9 @@ export default async function handler(req, res) {
   const userId = req.query?.userId ? String(req.query.userId) : null;
 
   try {
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient });
+    const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope);
+
     if (req.method === 'GET' && !userId) {
       const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
 
@@ -1061,9 +1210,13 @@ export default async function handler(req, res) {
       }
 
       const appUserMap = new Map(appUsers.map((user) => [String(user.id), user]));
-      const mergedUsers = authUsers.map((authUser) =>
-        mergeAuthUserWithAppUser(authUser, appUserMap.get(String(authUser.id)) || {})
-      );
+      const mergedUsers = filterUsersForTenantScope({
+        users: authUsers.map((authUser) =>
+          mergeAuthUserWithAppUser(authUser, appUserMap.get(String(authUser.id)) || {})
+        ),
+        scopedUserIds,
+        currentUserId: auth.user?.id || null,
+      });
 
       res.status(200).json({ users: mergedUsers });
       return;
@@ -1085,7 +1238,19 @@ export default async function handler(req, res) {
         appUser = appUserData.find((candidate) => String(candidate?.id) === String(userId)) || {};
       }
 
-      res.status(200).json({ user: mergeAuthUserWithAppUser(targetAuthUser, appUser) });
+      const mergedUser = mergeAuthUserWithAppUser(targetAuthUser, appUser);
+      const visibleUsers = filterUsersForTenantScope({
+        users: [mergedUser],
+        scopedUserIds,
+        currentUserId: auth.user?.id || null,
+      });
+
+      if (visibleUsers.length === 0) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+
+      res.status(200).json({ user: visibleUsers[0] });
       return;
     }
 
@@ -1215,6 +1380,15 @@ export default async function handler(req, res) {
         if (upsertError) {
           console.warn('Failed to sync app user profile during create:', upsertError);
         }
+
+        await ensureTenantScopedStaffMembership({
+          adminClient,
+          tenantScope,
+          userId: createdUser.id,
+          email: createdUser.email || email,
+          role: upsertPayload.role,
+          fullName: upsertPayload.full_name,
+        });
       }
 
       res.status(201).json({ user: createdUser });
@@ -1555,6 +1729,9 @@ export default async function handler(req, res) {
       if (app_profile.salary_amount !== undefined && app_profile.salary_amount !== '') {
         appUserUpdate.salary_amount = Number(app_profile.salary_amount) || 0;
       }
+      if (tenantScope?.isShared && tenantScope.organizationId && !isSharedTenantUserAllowlisted({ email })) {
+        appUserUpdate.primary_organization_id = tenantScope.organizationId;
+      }
 
       if (Array.isArray(app_profile.staff_id_documents)) {
         const existingAuthUser = updatedUser || (await adminClient.auth.admin.getUserById(userId))?.data?.user;
@@ -1592,11 +1769,90 @@ export default async function handler(req, res) {
         }
       }
 
+      await ensureTenantScopedStaffMembership({
+        adminClient,
+        tenantScope,
+        userId,
+        email: email || updatedUser?.email || '',
+        role: app_profile.role || user_metadata?.role || updatedUser?.user_metadata?.role || 'employee',
+        fullName:
+          app_profile.full_name ||
+          user_metadata?.full_name ||
+          updatedUser?.user_metadata?.full_name ||
+          updatedUser?.email ||
+          '',
+      });
+
       res.status(200).json({ user: updatedUser });
       return;
     }
 
     if (req.method === 'DELETE' && userId) {
+      const isTenantHostRequest = Boolean(String(tenantScope?.tenantSlug || '').trim());
+
+      if (isTenantHostRequest && tenantScope?.tenancyMode === 'shared' && !tenantScope?.organizationId) {
+        res.status(409).json({
+          error: 'Workspace user removal is unavailable because the tenant organization context could not be resolved.',
+        });
+        return;
+      }
+
+      if (tenantScope?.isShared && tenantScope.organizationId) {
+        const { data: targetProfile, error: targetProfileError } = await adminClient
+          .from(APP_USERS_TABLE)
+          .select('id, email, primary_organization_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (targetProfileError && !isSchemaCompatibilityError(targetProfileError)) {
+          throw targetProfileError;
+        }
+
+        const targetEmail = targetProfile?.email || '';
+        if (!isSharedTenantUserAllowlisted({ email: targetEmail })) {
+          const normalizedTenantOrganizationId = String(tenantScope.organizationId || '').trim();
+
+          const { error: membershipDetachError } = await adminClient
+            .from(ORGANIZATION_MEMBERS_TABLE)
+            .update({
+              membership_status: 'suspended',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('organization_id', normalizedTenantOrganizationId)
+            .eq('user_id', userId);
+
+          if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
+            throw membershipDetachError;
+          }
+
+          const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
+          if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
+            const { error: detachError } = await adminClient
+              .from(APP_USERS_TABLE)
+              .update({
+                primary_organization_id: null,
+                access_enabled: false,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', userId);
+
+            if (detachError && !isSchemaCompatibilityError(detachError)) {
+              throw detachError;
+            }
+          }
+        }
+
+        res.status(200).json({ success: true, detached: true });
+        return;
+      }
+
+      if (isTenantHostRequest) {
+        res.status(409).json({
+          error: 'Workspace user removal is limited to the current tenant scope and cannot fall back to a global account delete.',
+        });
+        return;
+      }
+
       const { error } = await adminClient.auth.admin.deleteUser(userId);
 
       if (error) {

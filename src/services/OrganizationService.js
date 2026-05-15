@@ -79,8 +79,18 @@ export const getCurrentOrganizationContext = async () => {
   }
 
   organizationContextCache.promise = (async () => {
-    const response = await adminApiRequest('/api/me/profile');
-    const profile = response?.profile || null;
+    const hostContext = getHostContext();
+    const shouldUseTenantSession = shouldScopeSharedTenantData(hostContext);
+
+    const [profileResponse, tenantSessionResponse] = await Promise.all([
+      adminApiRequest('/api/me/profile'),
+      shouldUseTenantSession
+        ? adminApiRequest('/api/tenants?resource=session').catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const profile = profileResponse?.profile || null;
+    const tenantSession = tenantSessionResponse?.session || null;
 
     if (!profile) {
       organizationContextCache.value = null;
@@ -88,12 +98,23 @@ export const getCurrentOrganizationContext = async () => {
       return null;
     }
 
+    const tenantOrganizationId =
+      String(tenantSession?.organization_id || tenantSession?.organizationId || '').trim() || null;
+
     const context = {
-      organizationId: getScopedOrganizationId(profile),
+      organizationId: tenantOrganizationId || getScopedOrganizationId(profile),
       organizationName: profile.organization_name || profile.organizationName || '',
       organizationRole: profile.organization_role || profile.organizationRole || '',
-      organizationStatus: profile.organization_status || profile.organizationStatus || '',
-      isPlatformOrganization: Boolean(profile.is_platform_organization || profile.isPlatformOrganization),
+      organizationStatus:
+        tenantSession?.organization_status ||
+        tenantSession?.tenant_status ||
+        profile.organization_status ||
+        profile.organizationStatus ||
+        '',
+      isPlatformOrganization:
+        tenantOrganizationId
+          ? false
+          : Boolean(profile.is_platform_organization || profile.isPlatformOrganization),
     };
     organizationContextCache.value = context;
     organizationContextCache.timestamp = Date.now();

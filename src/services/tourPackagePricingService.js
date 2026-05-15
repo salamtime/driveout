@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { TABLE_NAMES } from '../config/tableNames';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  requireCurrentOrganizationId,
+} from './OrganizationService';
 
 const TOUR_PACKAGE_MODEL_PRICES_TABLE = TABLE_NAMES.TOUR_PACKAGE_MODEL_PRICES;
 export const GLOBAL_TOUR_PRICING_KEY = '__global_tour_pricing__';
@@ -28,19 +33,24 @@ const normalizeRow = (row = {}) => ({
 export const TOUR_PRICING_DEFAULT_DURATIONS = DEFAULT_DURATIONS;
 
 export const fetchTourPackageModelPrices = async () => {
-  const { data, error } = await supabase
-    .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
-    .select('*')
-    .eq('is_active', true)
-    .order('package_id', { ascending: true })
-    .order('vehicle_model_id', { ascending: true })
-    .order('duration_hours', { ascending: true });
+  const organizationId = await requireCurrentOrganizationId();
+  const { data, error } = await applyOrganizationScope(
+    supabase
+      .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
+      .select('*')
+      .eq('is_active', true)
+      .order('package_id', { ascending: true })
+      .order('vehicle_model_id', { ascending: true })
+      .order('duration_hours', { ascending: true }),
+    organizationId
+  );
 
   if (error) throw error;
   return Array.isArray(data) ? data.map(normalizeRow) : [];
 };
 
 export const upsertTourPackageModelPrice = async (entry = {}) => {
+  const organizationId = await requireCurrentOrganizationId();
   const payload = normalizeRow({
     ...entry,
     id: entry.id || createPricingId(),
@@ -48,7 +58,7 @@ export const upsertTourPackageModelPrice = async (entry = {}) => {
 
   const { data, error } = await supabase
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
-    .upsert([payload], {
+    .upsert([applyOrganizationMatch(payload, organizationId)], {
       onConflict: 'package_id,vehicle_model_id,duration_hours',
     })
     .select('*')
@@ -59,21 +69,25 @@ export const upsertTourPackageModelPrice = async (entry = {}) => {
 };
 
 export const deleteTourPackageModelPrice = async (id) => {
+  const organizationId = await requireCurrentOrganizationId();
   const { error } = await supabase
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
     .delete()
-    .eq('id', id);
+    .eq('id', id)
+    .eq('organization_id', organizationId);
 
   if (error) throw error;
   return true;
 };
 
 export const deleteTourPackageModelPricesForModel = async (packageId, vehicleModelId) => {
+  const organizationId = await requireCurrentOrganizationId();
   const { error } = await supabase
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
     .delete()
     .eq('package_id', packageId)
-    .eq('vehicle_model_id', vehicleModelId);
+    .eq('vehicle_model_id', vehicleModelId)
+    .eq('organization_id', organizationId);
 
   if (error) throw error;
   return true;

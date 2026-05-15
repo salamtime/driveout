@@ -72,7 +72,6 @@ export const updatePaymentStatus = createAsyncThunk(
         }
 
         // Update the booking payment status
-        const tableName = bookingType === 'rental' ? 'saharax_0u4w4d_rental_bookings' : 'saharax_0u4w4d_tour_bookings';
         await PaymentService.syncBookingPaymentStatus({
           bookingId: updatedPayment.booking_id,
           bookingType,

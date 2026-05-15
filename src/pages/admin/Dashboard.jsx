@@ -14,6 +14,7 @@ import { getStaffDirectory } from '../../services/UserService';
 import { getTaskStats } from '../../services/TaskService';
 import dashboardWorkspaceService from '../../services/DashboardWorkspaceService';
 import { buildTourTrackingUrl } from '../../services/tourTrackingService';
+import { applyOrganizationScope, requireCurrentOrganizationId } from '../../services/OrganizationService';
 import { uploadFile } from '../../utils/storageUpload';
 import { normalizeAdminRecipients } from '../../utils/receiveFundsUi';
 import { buildExpenseNote, loadExpenseLabelPresets, saveExpenseLabelPresets, uniqueLabels } from '../../utils/expenseLabels';
@@ -132,10 +133,14 @@ const fetchDashboardTourRows = async (accessToken) => {
     console.warn('Dashboard direct API tour fetch failed, falling back to direct table query:', error);
   }
 
-  const { data, error } = await supabase
-    .from('app_687f658e98_tour_bookings')
-    .select('*')
-    .order('created_at', { ascending: false });
+  const organizationId = await requireCurrentOrganizationId();
+  const { data, error } = await applyOrganizationScope(
+    supabase
+      .from('app_687f658e98_tour_bookings')
+      .select('*')
+      .order('created_at', { ascending: false }),
+    organizationId
+  );
 
   if (!error && Array.isArray(data)) {
     return data;

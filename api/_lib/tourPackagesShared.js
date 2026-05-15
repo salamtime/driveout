@@ -2,6 +2,11 @@ import { createClient } from '@supabase/supabase-js';
 import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients, getSharedSupabaseTenantConfig } from './supabase.js';
 import { authenticateRequest, getBearerToken, getServiceRoleKeyForProject } from './auth.js';
 import {
+  applyTenantQueryScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './sharedTenantIsolation.js';
+import {
   resolveTenantTenancyMode,
   runPlatformTenantSelectWithModeFallback,
 } from './tenantRegistry.js';
@@ -649,11 +654,14 @@ export const toPackageTableRow = async (pkg = {}) => {
 export const createPackageId = () =>
   `tour_pkg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-export const readPackagesFromTable = async (adminClient) => {
-  const { data, error } = await adminClient
-    .from(TOUR_PACKAGES_TABLE)
-    .select('*')
-    .order('name', { ascending: true });
+export const readPackagesFromTable = async (adminClient, tenantScope = null) => {
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
+      .from(TOUR_PACKAGES_TABLE)
+      .select('*')
+      .order('name', { ascending: true }),
+    tenantScope
+  );
 
   if (error) throw error;
   const normalizedPackages = Array.isArray(data) ? data.map(normalizePackage) : [];
@@ -676,7 +684,8 @@ export const readPackagesFromTable = async (adminClient) => {
             stop_count: normalized.routeStops.length,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', normalized.id);
+          .eq('id', normalized.id)
+          .match(stampTenantPayload({}, tenantScope));
         if (repairError) {
           console.warn('Failed to repair route roadmap on read:', repairError);
         }
@@ -711,19 +720,25 @@ const normalizeVehicleModel = (model = {}) => ({
   capacity_max: Number(model.capacity_max || model.capacity || 0) || null,
 });
 
-export const readTourPackagePricingContext = async (adminClient) => {
+export const readTourPackagePricingContext = async (adminClient, tenantScope = null) => {
   const [pricingResult, modelResult] = await Promise.all([
-    adminClient
-      .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
-      .select('id,package_id,vehicle_model_id,duration_hours,price_mad,is_active')
-      .eq('is_active', true)
-      .order('package_id', { ascending: true })
-      .order('vehicle_model_id', { ascending: true })
-      .order('duration_hours', { ascending: true }),
-    adminClient
-      .from(VEHICLE_MODELS_TABLE)
-      .select('id,name,model,vehicle_type,image_url,capacity_min,capacity_max')
-      .order('name', { ascending: true }),
+    applyTenantQueryScope(
+      adminClient
+        .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
+        .select('id,package_id,vehicle_model_id,duration_hours,price_mad,is_active')
+        .eq('is_active', true)
+        .order('package_id', { ascending: true })
+        .order('vehicle_model_id', { ascending: true })
+        .order('duration_hours', { ascending: true }),
+      tenantScope
+    ),
+    applyTenantQueryScope(
+      adminClient
+        .from(VEHICLE_MODELS_TABLE)
+        .select('id,name,model,vehicle_type,image_url,capacity_min,capacity_max')
+        .order('name', { ascending: true }),
+      tenantScope
+    ),
   ]);
 
   if (pricingResult.error) throw pricingResult.error;
@@ -734,8 +749,8 @@ export const readTourPackagePricingContext = async (adminClient) => {
   };
 };
 
-export const createPackageInTable = async (adminClient, pkg) => {
-  const tableRow = await toPackageTableRow(pkg);
+export const createPackageInTable = async (adminClient, pkg, tenantScope = null) => {
+  const tableRow = stampTenantPayload(await toPackageTableRow(pkg), tenantScope);
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
     .insert([tableRow])
@@ -746,12 +761,13 @@ export const createPackageInTable = async (adminClient, pkg) => {
   return enrichPackageInstagramMedia(normalizePackage(data));
 };
 
-export const updatePackageInTable = async (adminClient, pkg) => {
-  const tableRow = await toPackageTableRow(pkg);
+export const updatePackageInTable = async (adminClient, pkg, tenantScope = null) => {
+  const tableRow = stampTenantPayload(await toPackageTableRow(pkg), tenantScope);
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
     .update(tableRow)
     .eq('id', pkg.id)
+    .match(stampTenantPayload({}, tenantScope))
     .select('*')
     .single();
 
@@ -759,11 +775,12 @@ export const updatePackageInTable = async (adminClient, pkg) => {
   return enrichPackageInstagramMedia(normalizePackage(data));
 };
 
-export const deactivatePackageInTable = async (adminClient, packageId) => {
+export const deactivatePackageInTable = async (adminClient, packageId, tenantScope = null) => {
   const { error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
     .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq('id', packageId);
+    .eq('id', packageId)
+    .match(stampTenantPayload({}, tenantScope));
 
   if (error) throw error;
 };
@@ -797,6 +814,7 @@ export const handleTourPackages = async (req, res, json) => {
   if (req.method === 'GET') {
     try {
       let adminClient = null;
+      let tenantScope = null;
       const bearerToken = getBearerToken(req);
 
       if (bearerToken) {
@@ -805,13 +823,19 @@ export const handleTourPackages = async (req, res, json) => {
           return json(res, auth.error.status, auth.error.body);
         }
         adminClient = auth.adminClient;
+        tenantScope = await resolveRequestTenantScope({
+          req,
+          adminClient,
+          tenantRuntime: auth.tenantRuntime || null,
+        });
       } else {
         adminClient = await resolveAdminClientForPublicTenantRequest(req);
+        tenantScope = await resolveRequestTenantScope({ req, adminClient });
       }
 
       const [packages, pricingContext] = await Promise.all([
-        readPackagesFromTable(adminClient),
-        readTourPackagePricingContext(adminClient).catch((pricingError) => {
+        readPackagesFromTable(adminClient, tenantScope),
+        readTourPackagePricingContext(adminClient, tenantScope).catch((pricingError) => {
           console.warn('tour-packages pricing context unavailable:', pricingError);
           return { pricingRows: [], vehicleModels: [] };
         }),
@@ -843,6 +867,7 @@ export const handleTourPackages = async (req, res, json) => {
 
   try {
     const { adminClient } = auth;
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime: auth.tenantRuntime || null });
     const body = parseBody(req.body);
 
     if (req.method === 'POST') {
@@ -856,7 +881,7 @@ export const handleTourPackages = async (req, res, json) => {
       if (!payload.name) {
         return json(res, 400, { error: 'Package name is required' });
       }
-      const created = await createPackageInTable(adminClient, payload);
+      const created = await createPackageInTable(adminClient, payload, tenantScope);
       return json(res, 200, { success: true, data: created });
     }
 
@@ -870,6 +895,7 @@ export const handleTourPackages = async (req, res, json) => {
         .from(TOUR_PACKAGES_TABLE)
         .select('*')
         .eq('id', packageId)
+        .match(stampTenantPayload({}, tenantScope))
         .maybeSingle();
 
       if (existingTableError) {
@@ -939,6 +965,7 @@ export const handleTourPackages = async (req, res, json) => {
             updated_at: new Date().toISOString(),
           })
           .eq('id', packageId)
+          .match(stampTenantPayload({}, tenantScope))
           .select('*')
           .single();
 
@@ -1018,6 +1045,7 @@ export const handleTourPackages = async (req, res, json) => {
             updated_at: new Date().toISOString(),
           })
           .eq('id', packageId)
+          .match(stampTenantPayload({}, tenantScope))
           .select('*')
           .single();
 
@@ -1067,6 +1095,7 @@ export const handleTourPackages = async (req, res, json) => {
               updated_at: new Date().toISOString(),
             })
             .eq('id', packageId)
+            .match(stampTenantPayload({}, tenantScope))
             .select('*')
             .single();
 
@@ -1092,6 +1121,7 @@ export const handleTourPackages = async (req, res, json) => {
                   updated_at: new Date().toISOString(),
                 })
                 .eq('id', packageId)
+                .match(stampTenantPayload({}, tenantScope))
                 .select('*')
                 .single();
               if (!repairError && repairedRow) {
@@ -1132,7 +1162,7 @@ export const handleTourPackages = async (req, res, json) => {
         return json(res, 400, { error: 'Package name is required' });
       }
       const removedTargets = resolveRemovedMediaTargets(existingPackage, payload);
-      const updated = await updatePackageInTable(adminClient, payload);
+      const updated = await updatePackageInTable(adminClient, payload, tenantScope);
       await removeStorageTargets(adminClient, removedTargets);
       return json(res, 200, { success: true, data: updated });
     }
@@ -1142,7 +1172,7 @@ export const handleTourPackages = async (req, res, json) => {
       return json(res, 400, { error: 'Package id is required' });
     }
 
-    await deactivatePackageInTable(adminClient, packageId);
+    await deactivatePackageInTable(adminClient, packageId, tenantScope);
     return json(res, 200, { success: true, id: packageId });
   } catch (error) {
     console.error('tour-packages write failed:', error);

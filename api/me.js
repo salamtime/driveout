@@ -15,7 +15,7 @@ import {
   runPlatformTenantSelectWithModeFallback,
 } from './_lib/tenantRegistry.js';
 import { authenticateRequest } from './_lib/auth.js';
-import { stampTenantPayload } from './_lib/sharedTenantIsolation.js';
+import { resolveRequestTenantScope, stampTenantPayload } from './_lib/sharedTenantIsolation.js';
 import { getTenantPlanLimits } from '../src/config/tenantPlans.js';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus } from '../src/utils/rentalLifecycle.js';
 import { buildDefaultPermissionsForRole, buildBusinessOwnerPermissionMap } from '../src/utils/permissionCatalog.js';
@@ -2165,7 +2165,38 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
   };
 };
 
-const loadOrganizationContext = async (adminClient, userId, profile) => {
+const loadOrganizationContext = async (adminClient, userId, profile, tenantScope = null) => {
+  const tenantScopedOrganizationId = String(tenantScope?.organizationId || '').trim();
+
+  if (tenantScope?.isShared && tenantScopedOrganizationId) {
+    const [organizationResult, membershipResult] = await Promise.all([
+      adminClient
+        .from(ORGANIZATIONS_TABLE)
+        .select('id, name, organization_status, is_platform_organization')
+        .eq('id', tenantScopedOrganizationId)
+        .maybeSingle(),
+      adminClient
+        .from(ORGANIZATION_MEMBERS_TABLE)
+        .select('member_role, membership_status')
+        .eq('organization_id', tenantScopedOrganizationId)
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ]);
+
+    if (!organizationResult.error && organizationResult.data) {
+      return {
+        organization_id: organizationResult.data.id,
+        organization_name: organizationResult.data.name,
+        organization_role: membershipResult.data?.member_role || null,
+        organization_status:
+          organizationResult.data.organization_status ||
+          membershipResult.data?.membership_status ||
+          null,
+        is_platform_organization: Boolean(organizationResult.data.is_platform_organization),
+      };
+    }
+  }
+
   const primaryOrganizationId = profile?.primary_organization_id || null;
 
   if (primaryOrganizationId) {
@@ -2470,7 +2501,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { user, adminClient } = auth;
+  const { user, adminClient, tenantRuntime } = auth;
 
   try {
     if (req.method === 'GET' && resource === 'profile') {
@@ -2481,7 +2512,17 @@ export default async function handler(req, res) {
       }
 
       const repairedProfile = await ensureStaffProfileWithDefaults(adminClient, user, data || null);
-      const organizationContext = await loadOrganizationContext(adminClient, user.id, repairedProfile || null);
+      const tenantScope = await resolveRequestTenantScope({
+        req,
+        adminClient,
+        tenantRuntime: tenantRuntime || null,
+      });
+      const organizationContext = await loadOrganizationContext(
+        adminClient,
+        user.id,
+        repairedProfile || null,
+        tenantScope
+      );
       res.status(200).json({
         profile: buildProfileFromAuthUser(user, {
           ...(repairedProfile || {}),
