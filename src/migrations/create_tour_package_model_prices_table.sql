@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS public.app_687f658e98_tour_package_model_prices (
   id text PRIMARY KEY,
+  organization_id uuid REFERENCES public.app_organizations(id) ON DELETE SET NULL,
   package_id text NOT NULL,
   vehicle_model_id uuid NOT NULL,
   duration_hours numeric(4,1) NOT NULL,
@@ -7,8 +8,11 @@ CREATE TABLE IF NOT EXISTS public.app_687f658e98_tour_package_model_prices (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT tour_package_model_prices_unique UNIQUE (package_id, vehicle_model_id, duration_hours)
+  CONSTRAINT tour_package_model_prices_unique UNIQUE (organization_id, package_id, vehicle_model_id, duration_hours)
 );
+
+CREATE INDEX IF NOT EXISTS idx_tour_package_model_prices_organization
+  ON public.app_687f658e98_tour_package_model_prices (organization_id);
 
 CREATE INDEX IF NOT EXISTS idx_tour_package_model_prices_package
   ON public.app_687f658e98_tour_package_model_prices (package_id, is_active);

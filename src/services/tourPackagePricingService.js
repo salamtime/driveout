@@ -59,7 +59,7 @@ export const upsertTourPackageModelPrice = async (entry = {}) => {
   const { data, error } = await supabase
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
     .upsert([applyOrganizationMatch(payload, organizationId)], {
-      onConflict: 'package_id,vehicle_model_id,duration_hours',
+      onConflict: 'organization_id,package_id,vehicle_model_id,duration_hours',
     })
     .select('*')
     .single();

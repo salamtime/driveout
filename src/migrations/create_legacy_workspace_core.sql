@@ -198,6 +198,7 @@ create table if not exists public.app_4c3a7a6153_rental_km_packages (
 
 create table if not exists public.app_4c3a7a6153_transport_fees (
   id uuid primary key default gen_random_uuid(),
+  organization_id uuid references public.app_organizations(id) on delete set null,
   from_location text,
   to_location text,
   vehicle_type text,

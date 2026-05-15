@@ -9,8 +9,12 @@ declare
   constraint_name text;
   tenant_tables_with_uuid_org text[] := array[
     'pricing_tiers',
+    'rental_extension_rules',
     'rental_extensions',
+    'app_4c3a7a6153_transport_fees',
+    'app_687f658e98_tour_packages',
     'app_687f658e98_tour_package_model_prices',
+    'fuel_pricing',
     'tour_vehicle_snapshots',
     'fuel_tank',
     'fuel_refills',
