@@ -4,6 +4,12 @@ import VehicleDispositionService from './VehicleDispositionService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { fetchTourBookings } from './tourBookingService';
 import { getRentalCollectedAmount } from '../utils/rentalFinancials';
+import {
+  scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
+  requireCurrentOrganizationId,
+  verifyTenantOwnedRows,
+} from './OrganizationService';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
@@ -1381,13 +1387,22 @@ class FinanceApiServiceV2 {
     if (this.tableExistenceCache.get(tableName) === false) return [];
 
     try {
-      const { data, error } = await supabase.from(tableName).select(columns).limit(maxRows);
+      let query = supabase.from(tableName).select(columns).limit(maxRows);
+      query = await scopeTenantOwnedQuery(query, tableName, {
+        message: `Workspace organization context is required to load ${tableName}.`,
+      });
+
+      const { data, error } = await query;
       if (error) {
         console.warn(`Unable to load ${tableName}:`, error.message);
         if (error.code === '42P01' || /does not exist/i.test(error.message || '')) {
           this.tableExistenceCache.set(tableName, false);
         } else if (columns !== '*' && /column|schema cache|could not find/i.test(error.message || '')) {
-          const fallback = await supabase.from(tableName).select('*').limit(maxRows);
+          let fallbackQuery = supabase.from(tableName).select('*').limit(maxRows);
+          fallbackQuery = await scopeTenantOwnedQuery(fallbackQuery, tableName, {
+            message: `Workspace organization context is required to load ${tableName}.`,
+          });
+          const fallback = await fallbackQuery;
           if (!fallback.error) {
             this.tableExistenceCache.set(tableName, true);
             return fallback.data || [];
@@ -1396,6 +1411,9 @@ class FinanceApiServiceV2 {
         return [];
       }
       this.tableExistenceCache.set(tableName, true);
+      await verifyTenantOwnedRows(data || [], tableName, {
+        message: `${tableName} returned rows outside the active workspace.`,
+      });
       return data || [];
     } catch (error) {
       console.warn(`Unable to load ${tableName}:`, error);
@@ -1405,18 +1423,27 @@ class FinanceApiServiceV2 {
 
   private async loadRentalFuelSnapshots(limit = 250): Promise<any[]> {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select(FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS)
         .gt('linked_fuel_consumed_liters', 0)
         .or('linked_fuel_expense_total.gt.0,linked_fuel_average_unit_cost.gt.0')
         .order('linked_fuel_synced_at', { ascending: false })
         .limit(limit);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to load rental fuel snapshots.',
+      });
+
+      const { data, error } = await query;
 
       if (error) {
         console.warn('Unable to load rental fuel snapshots:', error.message);
         return [];
       }
+
+      await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+        message: 'Rental fuel snapshots returned rows outside the active workspace.',
+      });
 
       return data || [];
     } catch (error) {
@@ -2997,15 +3024,24 @@ class FinanceApiServiceV2 {
   }
 
   async getVehicles(orgId: string = 'current'): Promise<Vehicle[]> {
-    const { data, error } = await supabase
+    let query = supabase
       .from('saharax_0u4w4d_vehicles')
       .select('id, name, model, plate_number, purchase_cost_mad, purchase_date, purchase_supplier')
       .order('name', { ascending: true });
+    query = await scopeTenantOwnedQuery(query, 'saharax_0u4w4d_vehicles', {
+      message: 'Workspace organization context is required to load vehicles.',
+    });
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('financeApiV2.getVehicles error:', error);
       return [];
     }
+
+    await verifyTenantOwnedRows(data || [], 'saharax_0u4w4d_vehicles', {
+      message: 'Finance vehicle list returned rows outside the active workspace.',
+    });
 
     return (data || []).map((vehicle: any) => ({
       id: String(vehicle.id),
@@ -3022,14 +3058,27 @@ class FinanceApiServiceV2 {
   }
 
   async getCustomers(orgId: string = 'current'): Promise<Customer[]> {
+    const requireScopedCustomers = shouldScopeSharedTenantData();
+    const scopedOrgId = requireScopedCustomers
+      ? await requireCurrentOrganizationId('Workspace organization context is required to load customers.')
+      : null;
+
     const [rentalsResult, toursResult] = await Promise.allSettled([
-      supabase
+      scopeTenantOwnedQuery(
+        supabase
         .from('app_4c3a7a6153_rentals')
         .select('customer_id, customer_name, customer_email')
         .not('customer_id', 'is', null),
-      supabase
+        'app_4c3a7a6153_rentals',
+        { organizationId: scopedOrgId, message: 'Workspace organization context is required to load customers.' }
+      ).then((query) => query),
+      scopeTenantOwnedQuery(
+        supabase
         .from('app_687f658e98_tour_bookings')
         .select('customer_name, customer_email'),
+        'app_687f658e98_tour_bookings',
+        { organizationId: scopedOrgId, message: 'Workspace organization context is required to load customers.' }
+      ).then((query) => query),
     ]);
 
     const grouped = new Map<string, Customer>();
@@ -3053,10 +3102,18 @@ class FinanceApiServiceV2 {
     };
 
     if (rentalsResult.status === 'fulfilled' && !rentalsResult.value.error) {
+      await verifyTenantOwnedRows(rentalsResult.value.data || [], 'app_4c3a7a6153_rentals', {
+        organizationId: scopedOrgId,
+        message: 'Finance customer rentals returned rows outside the active workspace.',
+      });
       ingestRows(rentalsResult.value.data || []);
     }
 
     if (toursResult.status === 'fulfilled' && !toursResult.value.error) {
+      await verifyTenantOwnedRows(toursResult.value.data || [], 'app_687f658e98_tour_bookings', {
+        organizationId: scopedOrgId,
+        message: 'Finance customer tours returned rows outside the active workspace.',
+      });
       ingestRows(toursResult.value.data || []);
     }
 

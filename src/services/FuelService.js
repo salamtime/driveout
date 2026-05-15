@@ -7,9 +7,8 @@
 
 import { supabase } from '../lib/supabase';
 import {
-  applyOrganizationMatch,
-  applyOrganizationScope,
-  getCurrentOrganizationId,
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
 } from './OrganizationService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
@@ -46,25 +45,26 @@ class FuelService {
   async checkDatabaseSetup() {
     try {
       console.log('🔍 Checking database access for fuel tables...');
-      const organizationId = await getCurrentOrganizationId();
       
       // Test access to fuel_refills table
-      const { data: refillsTest, error: refillsError } = await applyOrganizationScope(
-        supabase
+      let refillsQuery = supabase
         .from('fuel_refills')
         .select('id')
-        .limit(1),
-        organizationId
-      );
+        .limit(1);
+      refillsQuery = await scopeTenantOwnedQuery(refillsQuery, 'fuel_refills', {
+        message: 'Workspace organization context is required to load fuel refills.',
+      });
+      const { data: refillsTest, error: refillsError } = await refillsQuery;
         
       // Test access to fuel_withdrawals table  
-      const { data: withdrawalsTest, error: withdrawalsError } = await applyOrganizationScope(
-        supabase
+      let withdrawalsQuery = supabase
         .from('fuel_withdrawals')
         .select('id')
-        .limit(1),
-        organizationId
-      );
+        .limit(1);
+      withdrawalsQuery = await scopeTenantOwnedQuery(withdrawalsQuery, 'fuel_withdrawals', {
+        message: 'Workspace organization context is required to load fuel withdrawals.',
+      });
+      const { data: withdrawalsTest, error: withdrawalsError } = await withdrawalsQuery;
 
       if (refillsError) {
         console.error('❌ fuel_refills table access error:', refillsError);
@@ -199,7 +199,6 @@ class FuelService {
   async addRefill(refillData) {
     try {
       console.log('🚀 Adding fuel refill to DATABASE + localStorage:', refillData);
-      const organizationId = await getCurrentOrganizationId();
       
       const refill = {
         liters_added: parseFloat(refillData.liters_added),
@@ -224,9 +223,12 @@ class FuelService {
       if (this.useDatabase) {
         try {
           console.log('💾 Saving refill to fuel_refills table...');
+          const payload = await matchTenantOwnedPayload(refill, 'fuel_refills', {
+            message: 'Workspace organization context is required to create fuel refills.',
+          });
           const { data: dbRefill, error: dbError } = await supabase
             .from('fuel_refills')
-            .insert([applyOrganizationMatch(refill, organizationId)])
+            .insert([payload])
             .select()
             .single();
 
@@ -282,7 +284,6 @@ class FuelService {
   async addWithdrawal(withdrawalData) {
     try {
       console.log('🚀 Adding fuel withdrawal to DATABASE + localStorage:', withdrawalData);
-      const organizationId = await getCurrentOrganizationId();
       
       const withdrawal = {
         vehicle_id: parseInt(withdrawalData.vehicle_id) || null,
@@ -306,9 +307,12 @@ class FuelService {
       if (this.useDatabase) {
         try {
           console.log('💾 Saving withdrawal to fuel_withdrawals table...');
+          const payload = await matchTenantOwnedPayload(withdrawal, 'fuel_withdrawals', {
+            message: 'Workspace organization context is required to create fuel withdrawals.',
+          });
           const { data: dbWithdrawal, error: dbError } = await supabase
             .from('fuel_withdrawals')
-            .insert([applyOrganizationMatch(withdrawal, organizationId)])
+            .insert([payload])
             .select()
             .single();
 
@@ -368,7 +372,6 @@ class FuelService {
   async deleteTransaction(id, type, currentUserId) {
     try {
       console.log('🗑️ Deleting transaction:', { id, type, currentUserId });
-      const organizationId = await getCurrentOrganizationId();
 
       // Extract the actual database ID from the prefixed ID
       const dbId = id.replace(/^(refill|withdrawal)-/, '');
@@ -393,12 +396,14 @@ class FuelService {
       if (this.useDatabase) {
         try {
           // First, fetch the record to verify ownership
-          const { data: record, error: fetchError } = await supabase
+          let fetchQuery = supabase
             .from(tableName)
             .select('*')
-            .eq('id', dbId)
-            .eq('organization_id', organizationId)
-            .single();
+            .eq('id', dbId);
+          fetchQuery = await scopeTenantOwnedQuery(fetchQuery, tableName, {
+            message: 'Workspace organization context is required to load fuel transactions.',
+          });
+          const { data: record, error: fetchError } = await fetchQuery.single();
 
           if (fetchError) {
             console.error('❌ Error fetching record for ownership check:', fetchError);
@@ -426,11 +431,14 @@ class FuelService {
 
           // Delete from database
           console.log(`💾 Deleting from ${tableName} table...`);
-          const { error: deleteError } = await supabase
+          let deleteQuery = supabase
             .from(tableName)
             .delete()
-            .eq('id', dbId)
-            .eq('organization_id', organizationId);
+            .eq('id', dbId);
+          deleteQuery = await scopeTenantOwnedQuery(deleteQuery, tableName, {
+            message: 'Workspace organization context is required to delete fuel transactions.',
+          });
+          const { error: deleteError } = await deleteQuery;
 
           if (deleteError) {
             console.error('❌ Database delete error:', deleteError);
@@ -471,21 +479,21 @@ class FuelService {
   async getRecentRefills(limit = 10) {
     try {
       console.log('🔄 Loading recent refills from DATABASE + localStorage...');
-      const organizationId = await getCurrentOrganizationId();
       
       let dbRefills = [];
       
       // Try to load from database first
       if (this.useDatabase) {
         try {
-          const { data: refillsFromDB, error: dbError } = await applyOrganizationScope(
-            supabase
+          let query = supabase
             .from('fuel_refills')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(limit),
-            organizationId
-          );
+            .limit(limit);
+          query = await scopeTenantOwnedQuery(query, 'fuel_refills', {
+            message: 'Workspace organization context is required to load fuel refills.',
+          });
+          const { data: refillsFromDB, error: dbError } = await query;
 
           if (dbError) {
             console.error('❌ Database error loading refills:', dbError);
@@ -543,21 +551,21 @@ class FuelService {
   async getRecentWithdrawals(limit = 10) {
     try {
       console.log('🔄 Loading recent withdrawals from DATABASE + localStorage...');
-      const organizationId = await getCurrentOrganizationId();
       
       let dbWithdrawals = [];
       
       // Try to load from database first
       if (this.useDatabase) {
         try {
-          const { data: withdrawalsFromDB, error: dbError } = await applyOrganizationScope(
-            supabase
+          let query = supabase
             .from('fuel_withdrawals')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(limit),
-            organizationId
-          );
+            .limit(limit);
+          query = await scopeTenantOwnedQuery(query, 'fuel_withdrawals', {
+            message: 'Workspace organization context is required to load fuel withdrawals.',
+          });
+          const { data: withdrawalsFromDB, error: dbError } = await query;
 
           if (dbError) {
             console.error('❌ Database error loading withdrawals:', dbError);
@@ -666,14 +674,12 @@ class FuelService {
     console.log('🔍 Querying saharax_0u4w4d_vehicles table with correct columns...');
     
     try {
-      const organizationId = await getCurrentOrganizationId();
       // Force a fresh query every time - no caching
       const timestamp = new Date().toISOString();
       console.log(`🕐 Query timestamp: ${timestamp}`);
       
       // Only select columns that actually exist in the table
-      const { data: vehicles, error } = await applyOrganizationScope(
-        supabase
+      let query = supabase
         .from('saharax_0u4w4d_vehicles')
         .select(`
           id,
@@ -695,9 +701,11 @@ class FuelService {
           created_at,
           updated_at
         `)
-        .order('name', { ascending: true }),
-        organizationId
-      );
+        .order('name', { ascending: true });
+      query = await scopeTenantOwnedQuery(query, 'saharax_0u4w4d_vehicles', {
+        message: 'Workspace organization context is required to load vehicles.',
+      });
+      const { data: vehicles, error } = await query;
 
       console.log('📊 SUPABASE RESPONSE:', { 
         error: error, 
@@ -773,16 +781,15 @@ class FuelService {
   async getFuelRefillsForReporting(startDate, endDate) {
     try {
       console.log('📊 Loading fuel refills for reporting:', { startDate, endDate });
-      const organizationId = await getCurrentOrganizationId();
       
       if (this.useDatabase) {
-        let query = applyOrganizationScope(
-          supabase
+        let query = supabase
           .from('fuel_refills')
           .select('*')
-          .order('refill_date', { ascending: false }),
-          organizationId
-        );
+          .order('refill_date', { ascending: false });
+        query = await scopeTenantOwnedQuery(query, 'fuel_refills', {
+          message: 'Workspace organization context is required to load fuel refills.',
+        });
           
         if (startDate) {
           query = query.gte('refill_date', startDate);

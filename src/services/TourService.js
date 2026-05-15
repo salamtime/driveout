@@ -1,4 +1,5 @@
 import { supabase } from '../utils/supabaseClient';
+import { scopeTenantOwnedQuery, matchTenantOwnedPayload } from './OrganizationService';
 
 const TOURS_TABLE = 'app_b30c02e74da644baad4668e3587d86b1_tours';
 
@@ -6,10 +7,15 @@ class TourService {
   // Get all active tours from database
   async getAllTours() {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from(TOURS_TABLE)
         .select('*')
         .order('created_at', { ascending: false });
+      query = await scopeTenantOwnedQuery(query, TOURS_TABLE, {
+        message: 'Workspace organization context is required to load tours.',
+      });
+
+      const { data, error } = await query;
       
       if (error) throw error;
       return data || [];
@@ -22,11 +28,15 @@ class TourService {
   // Get tour by ID
   async getTourById(id) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from(TOURS_TABLE)
         .select('*')
-        .eq('id', id)
-        .single();
+        .eq('id', id);
+      query = await scopeTenantOwnedQuery(query, TOURS_TABLE, {
+        message: 'Workspace organization context is required to load tours.',
+      });
+
+      const { data, error } = await query.single();
       
       if (error) throw error;
       return data;
@@ -50,12 +60,16 @@ class TourService {
       };
 
       // DIRECT UPDATE - Skip the problematic existence check
-      const { data, error } = await supabase
+      let query = supabase
         .from(TOURS_TABLE)
         .update(updateData)
         .eq('id', id)
         .select();
+      query = await scopeTenantOwnedQuery(query, TOURS_TABLE, {
+        message: 'Workspace organization context is required to update tours.',
+      });
       
+      const { data, error } = await query;
       console.log('🔧 Direct update result:', { data, error, rowsAffected: data?.length || 0 });
 
       if (error) {
@@ -67,21 +81,29 @@ class TourService {
         console.log('🔧 NO ROWS UPDATED - Investigating...');
         
         // Check if tour exists with simple select
-        const { data: checkTour, error: checkError } = await supabase
+        let checkQuery = supabase
           .from(TOURS_TABLE)
           .select('id, name')
           .eq('id', id);
+        checkQuery = await scopeTenantOwnedQuery(checkQuery, TOURS_TABLE, {
+          message: 'Workspace organization context is required to load tours.',
+        });
+        const { data: checkTour, error: checkError } = await checkQuery;
         
         console.log('🔧 Tour existence check:', { checkTour, checkError });
         
         if (checkTour && checkTour.length > 0) {
           console.log('🔧 TOUR EXISTS BUT UPDATE FAILED - This is the bug!');
           // Tour exists but update didn't work - try again with explicit casting
-          const { data: retryData, error: retryError } = await supabase
+          let retryQuery = supabase
             .from(TOURS_TABLE)
             .update(updateData)
             .eq('id', String(id))
             .select();
+          retryQuery = await scopeTenantOwnedQuery(retryQuery, TOURS_TABLE, {
+            message: 'Workspace organization context is required to update tours.',
+          });
+          const { data: retryData, error: retryError } = await retryQuery;
           
           console.log('🔧 Retry with string cast:', { retryData, retryError });
           
@@ -92,10 +114,14 @@ class TourService {
         }
         
         // Get all tours for comparison
-        const { data: allTours } = await supabase
+        let allToursQuery = supabase
           .from(TOURS_TABLE)
           .select('id, name')
           .limit(10);
+        allToursQuery = await scopeTenantOwnedQuery(allToursQuery, TOURS_TABLE, {
+          message: 'Workspace organization context is required to load tours.',
+        });
+        const { data: allTours } = await allToursQuery;
         
         console.log('🔧 All available tours:', allTours);
         
@@ -120,11 +146,21 @@ class TourService {
         updated_at: new Date().toISOString()
       };
 
-      const { data, error } = await supabase
+      const newTourPayload = await matchTenantOwnedPayload({
+        ...newTour,
+      }, TOURS_TABLE, {
+        message: 'Workspace organization context is required to create tours.',
+      });
+
+      let query = supabase
         .from(TOURS_TABLE)
-        .insert([newTour])
-        .select()
-        .single();
+        .insert([newTourPayload])
+        .select();
+      query = await scopeTenantOwnedQuery(query, TOURS_TABLE, {
+        message: 'Workspace organization context is required to create tours.',
+      });
+
+      const { data, error } = await query.single();
       
       if (error) throw error;
       return data;
@@ -137,10 +173,15 @@ class TourService {
   // Delete a tour
   async deleteTour(id) {
     try {
-      const { error } = await supabase
+      let query = supabase
         .from(TOURS_TABLE)
         .delete()
         .eq('id', id);
+      query = await scopeTenantOwnedQuery(query, TOURS_TABLE, {
+        message: 'Workspace organization context is required to delete tours.',
+      });
+
+      const { error } = await query;
       
       if (error) throw error;
       return true;
@@ -166,11 +207,16 @@ class TourService {
   async searchTours(query) {
     try {
       const searchTerm = query.toLowerCase();
-      const { data, error } = await supabase
+      let searchQuery = supabase
         .from(TOURS_TABLE)
         .select('*')
         .or(`name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,type.ilike.%${searchTerm}%`)
         .order('created_at', { ascending: false });
+      searchQuery = await scopeTenantOwnedQuery(searchQuery, TOURS_TABLE, {
+        message: 'Workspace organization context is required to search tours.',
+      });
+
+      const { data, error } = await searchQuery;
       
       if (error) throw error;
       return data || [];

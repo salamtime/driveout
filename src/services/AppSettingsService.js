@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { shouldScopeSharedTenantData } from './OrganizationService';
 
 /**
  * AppSettingsService - Manage application-wide settings
@@ -15,6 +16,11 @@ class AppSettingsService {
    * Get transport fees - DATABASE FIRST, then cache fallback
    */
   static async getTransportFees() {
+    if (shouldScopeSharedTenantData()) {
+      console.warn('Shared tenant isolation: skipped global app_settings transport fee read.');
+      return { pickup_fee: 0, dropoff_fee: 0 };
+    }
+
     try {
       console.log('📡 [DATABASE] Loading transport fees from app_settings table...');
       
@@ -58,6 +64,10 @@ class AppSettingsService {
    * Save transport fees - SAVE TO DATABASE FIRST
    */
   static async saveTransportFees(fees) {
+    if (shouldScopeSharedTenantData()) {
+      throw new Error('Shared tenant workspaces cannot write global app_settings transport fees.');
+    }
+
     try {
       console.log('💾 [DATABASE] Saving to app_settings table:', fees);
 
@@ -298,6 +308,11 @@ class AppSettingsService {
    * Get deposit settings - DATABASE FIRST, then defaults
    */
   static async getDepositSettings() {
+    if (shouldScopeSharedTenantData()) {
+      console.warn('Shared tenant isolation: skipped global app_settings deposit settings read.');
+      return this.getDefaultDepositSettings();
+    }
+
     try {
       console.log('📡 [DATABASE] Loading deposit settings from app_settings table...');
       

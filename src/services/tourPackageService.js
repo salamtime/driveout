@@ -54,6 +54,10 @@ let cachedTourPackages = null;
 let cachedTourPackagesAt = 0;
 let inFlightTourPackagesRequest = null;
 
+const isTenantIsolationSchemaError = (error) =>
+  /organization_id/i.test(String(error?.message || error?.details || error || '')) &&
+  /does not exist|schema cache|not installed/i.test(String(error?.message || error?.details || error || ''));
+
 const clearTourPackagesCache = () => {
   cachedTourPackages = null;
   cachedTourPackagesAt = 0;
@@ -111,6 +115,10 @@ export const fetchTourPackages = async () => {
     return result;
   } catch (apiError) {
     inFlightTourPackagesRequest = null;
+    if (isTenantIsolationSchemaError(apiError)) {
+      console.warn('Tour packages isolation is not installed yet for this workspace; returning an empty package board.');
+      return { data: [], pricingRows: [], vehicleModels: [], error: null };
+    }
     console.warn('Tour packages request failed:', apiError.message);
     return { data: null, error: apiError };
   }

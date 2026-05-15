@@ -6,6 +6,7 @@ import KilometerPricingHelpModal from './KilometerPricingHelpModal';
 import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { scopeTenantOwnedQuery, shouldScopeSharedTenantData, verifyTenantOwnedRows } from '../services/OrganizationService';
 
 interface RentalPackage {
   id: number;
@@ -257,11 +258,13 @@ const KilometerPricingTab: React.FC = () => {
         PackageService.getPackages(),
         PackageService.getRateTypes(),
         PackageService.getVehicleModels(),
-        supabase
-          .from('app_settings')
-          .select('damage_deposit_presets')
-          .eq('id', 1)
-          .limit(1)
+        shouldScopeSharedTenantData()
+          ? Promise.resolve({ data: [], error: null })
+          : supabase
+              .from('app_settings')
+              .select('damage_deposit_presets')
+              .eq('id', 1)
+              .limit(1)
       ]);
       setPackages(packagesData);
       setFilteredPackages(packagesData);
@@ -340,15 +343,22 @@ const KilometerPricingTab: React.FC = () => {
       console.log('🗑️ Attempting to delete package ID:', id);
       
       // First, check if this package is used in any rentals
-      const { data: rentals, error: checkError } = await supabase
+      let rentalsQuery = supabase
         .from('app_4c3a7a6153_rentals')
-        .select('id, rental_id')
+        .select('id, rental_id, organization_id')
         .eq('package_id', id);
+      rentalsQuery = await scopeTenantOwnedQuery(rentalsQuery, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to inspect package rentals.',
+      });
+      const { data: rentals, error: checkError } = await rentalsQuery;
 
       if (checkError) {
         console.error('Error checking rentals:', checkError);
         throw new Error('Failed to check package usage');
       }
+      await verifyTenantOwnedRows(rentals || [], 'app_4c3a7a6153_rentals', {
+        message: 'Package rental usage returned rows outside the active workspace.',
+      });
 
       // If package is used in rentals, warn the user
       if (rentals && rentals.length > 0) {
@@ -362,10 +372,14 @@ const KilometerPricingTab: React.FC = () => {
         }
         
         // Update rentals to remove package association
-        const { error: updateError } = await supabase
+        let updateQuery = supabase
           .from('app_4c3a7a6153_rentals')
           .update({ package_id: null })
           .eq('package_id', id);
+        updateQuery = await scopeTenantOwnedQuery(updateQuery, 'app_4c3a7a6153_rentals', {
+          message: 'Workspace organization context is required to update package rentals.',
+        });
+        const { error: updateError } = await updateQuery;
         
         if (updateError) {
           console.error('Error updating rentals:', updateError);
@@ -376,10 +390,14 @@ const KilometerPricingTab: React.FC = () => {
       }
 
       // Check if package is used in mapping table
-      const { data: mappings, error: mappingError } = await supabase
+      let mappingQuery = supabase
         .from('package_vehicle_type_mapping')
         .select('*')
         .eq('package_id', id);
+      mappingQuery = await scopeTenantOwnedQuery(mappingQuery, 'package_vehicle_type_mapping', {
+        message: 'Workspace organization context is required to inspect package mappings.',
+      });
+      const { data: mappings, error: mappingError } = await mappingQuery;
 
       if (mappingError) {
         console.error('Error checking mappings:', mappingError);
@@ -388,10 +406,14 @@ const KilometerPricingTab: React.FC = () => {
 
       // Delete from mapping table first (if any exist)
       if (mappings && mappings.length > 0) {
-        const { error: deleteMappingError } = await supabase
+        let deleteMappingQuery = supabase
           .from('package_vehicle_type_mapping')
           .delete()
           .eq('package_id', id);
+        deleteMappingQuery = await scopeTenantOwnedQuery(deleteMappingQuery, 'package_vehicle_type_mapping', {
+          message: 'Workspace organization context is required to delete package mappings.',
+        });
+        const { error: deleteMappingError } = await deleteMappingQuery;
         
         if (deleteMappingError) {
           console.error('Error deleting mappings:', deleteMappingError);
@@ -402,10 +424,14 @@ const KilometerPricingTab: React.FC = () => {
       }
 
       // Finally, delete the package itself
-      const { error: deleteError } = await supabase
+      let deleteQuery = supabase
         .from('app_4c3a7a6153_rental_km_packages')
         .delete()
         .eq('id', id);
+      deleteQuery = await scopeTenantOwnedQuery(deleteQuery, 'app_4c3a7a6153_rental_km_packages', {
+        message: 'Workspace organization context is required to delete packages.',
+      });
+      const { error: deleteError } = await deleteQuery;
 
       if (deleteError) {
         console.error('Error deleting package:', deleteError);
@@ -484,14 +510,23 @@ const KilometerPricingTab: React.FC = () => {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('fuel_pricing')
-          .select('price_per_line, hourly_price_per_line, daily_price_per_line')
-          .eq('model_id', formData.vehicle_model_id)
-          .single();
+        const fuelPricingQuery = await scopeTenantOwnedQuery(
+          supabase
+            .from('fuel_pricing')
+            .select('organization_id, price_per_line, hourly_price_per_line, daily_price_per_line')
+            .eq('model_id', formData.vehicle_model_id),
+          'fuel_pricing',
+          {
+            message: 'Workspace organization context is required to load fuel pricing.',
+          }
+        );
+        const { data, error } = await fuelPricingQuery.maybeSingle();
 
         if (error && error.code !== 'PGRST116') throw error;
         if (cancelled) return;
+        await verifyTenantOwnedRows(data || [], 'fuel_pricing', {
+          message: 'Fuel pricing returned rows outside the active workspace.',
+        });
 
         const selectedRateType = rateTypes.find((rateType) => rateType.id === formData.rate_type_id);
         const rateTypeName = String(selectedRateType?.name || '').toLowerCase();

@@ -1,13 +1,15 @@
 import { supabase } from '../lib/supabase';
 import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
 import {
-  applyOrganizationMatch,
-  applyOrganizationScope,
   getCurrentOrganizationId,
-  shouldScopeSharedTenantData,
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
+  verifyTenantOwnedRows,
 } from './OrganizationService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
+const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 const isExpiredScheduledConflict = (rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) => {
   if (String(rentalLike?.rental_status || '').toLowerCase() !== 'scheduled' || !rentalLike?.rental_start_date) {
@@ -37,12 +39,12 @@ class VehicleService {
     };
   }
 
-  async applyReadScope(query, columnName = 'organization_id') {
-    const organizationId = await getCurrentOrganizationId();
-    if (!shouldScopeSharedTenantData()) {
-      return query;
-    }
-    return applyOrganizationScope(query, organizationId, columnName);
+  async applyReadScope(query, tableName = VEHICLES_TABLE, message = null) {
+    return scopeTenantOwnedQuery(query, tableName, { message });
+  }
+
+  async verifyScopedRows(rows, tableName = VEHICLES_TABLE, message = null) {
+    return verifyTenantOwnedRows(rows, tableName, { message });
   }
 
   // =================== CACHE MANAGEMENT ===================
@@ -110,7 +112,7 @@ class VehicleService {
       const result = await this.withRetry(async () => {
         const { data, error } = await this.applyReadScope(
           supabase
-          .from('saharax_0u4w4d_vehicles')
+          .from(VEHICLES_TABLE)
           .select(`
             id,
             name,
@@ -132,10 +134,17 @@ class VehicleService {
             sale_proof_url,
             sale_proof_name
           `)
-          .order('name', { ascending: true })
+          .order('name', { ascending: true }),
+          VEHICLES_TABLE,
+          'Workspace organization context is required to load vehicles.'
         );
 
         if (error) throw error;
+        await this.verifyScopedRows(
+          data || [],
+          VEHICLES_TABLE,
+          'Vehicle list returned rows outside the active workspace.'
+        );
         
         const operationalVehicles = (data || []).filter(
           (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
@@ -243,10 +252,12 @@ class VehicleService {
       const result = await this.withRetry(async () => {
         let query = await this.applyReadScope(
           supabase
-            .from('saharax_0u4w4d_vehicles')
+            .from(VEHICLES_TABLE)
             .select(fleetSelectColumns)
             .order('created_at', { ascending: false })
-            .limit(50)
+            .limit(50),
+          VEHICLES_TABLE,
+          'Workspace organization context is required to load fleet vehicles.'
         );
 
         let { data, error } = await query;
@@ -259,15 +270,22 @@ class VehicleService {
         ) {
           query = await this.applyReadScope(
             supabase
-              .from('saharax_0u4w4d_vehicles')
+              .from(VEHICLES_TABLE)
               .select(fallbackFleetSelectColumns)
               .order('created_at', { ascending: false })
-              .limit(50)
+              .limit(50),
+            VEHICLES_TABLE,
+            'Workspace organization context is required to load fleet vehicles.'
           );
           ({ data, error } = await query);
         }
 
         if (error) throw error;
+        await this.verifyScopedRows(
+          data || [],
+          VEHICLES_TABLE,
+          'Fleet vehicles returned rows outside the active workspace.'
+        );
 
         const operationalVehicles = (data || []).filter(
           (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
@@ -316,7 +334,7 @@ class VehicleService {
         console.log(`🚗 Loading available vehicles (attempt ${attempt + 1})...`);
         const { data: vehicles, error } = await this.applyReadScope(
           supabase
-          .from('saharax_0u4w4d_vehicles')
+          .from(VEHICLES_TABLE)
           .select(`
             id,
             name,
@@ -337,10 +355,17 @@ class VehicleService {
             sale_proof_name
           `)
           .eq('status', 'available')
-          .order('name', { ascending: true })
+          .order('name', { ascending: true }),
+          VEHICLES_TABLE,
+          'Workspace organization context is required to load available vehicles.'
         );
 
         if (error) throw error;
+        await this.verifyScopedRows(
+          vehicles || [],
+          VEHICLES_TABLE,
+          'Available vehicles returned rows outside the active workspace.'
+        );
 
         let availableVehicles = (vehicles || []).filter(
           (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
@@ -352,10 +377,17 @@ class VehicleService {
           
           const { data: conflictingRentals } = await this.applyReadScope(
             supabase
-            .from('app_4c3a7a6153_rentals')
-            .select('vehicle_id')
+            .from(RENTALS_TABLE)
+            .select('organization_id, vehicle_id')
             .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
-            .in('rental_status', ['scheduled', 'active', 'confirmed'])
+            .in('rental_status', ['scheduled', 'active', 'confirmed']),
+            RENTALS_TABLE,
+            'Workspace organization context is required to load rental conflicts.'
+          );
+          await this.verifyScopedRows(
+            conflictingRentals || [],
+            RENTALS_TABLE,
+            'Rental conflicts returned rows outside the active workspace.'
           );
 
           const activeConflicts = (conflictingRentals || []).filter((rental) => !isExpiredScheduledConflict(rental));
@@ -415,7 +447,7 @@ class VehicleService {
       console.log('🔍 Loading vehicle details...', id);
       const { data: vehicle, error } = await this.applyReadScope(
         supabase
-        .from('saharax_0u4w4d_vehicles')
+        .from(VEHICLES_TABLE)
         .select(`
           id,
           name,
@@ -423,13 +455,21 @@ class VehicleService {
           vehicle_model_id,
           vehicle_type,
           plate_number,
-          status
+          status,
+          organization_id
         `)
         .eq('id', id)
-        .single()
+        .single(),
+        VEHICLES_TABLE,
+        'Workspace organization context is required to load vehicles.'
       );
 
       if (error) throw error;
+      await this.verifyScopedRows(
+        vehicle,
+        VEHICLES_TABLE,
+        'Vehicle details returned data outside the active workspace.'
+      );
 
       this.setCache(cacheKey, vehicle);
       return { success: true, vehicle };
@@ -451,16 +491,23 @@ class VehicleService {
     try {
       const { data: vehicle, error } = await this.applyReadScope(
         supabase
-        .from('saharax_0u4w4d_vehicles')
+        .from(VEHICLES_TABLE)
         .select('*')
         .eq('owner_user_id', ownerId)
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle()
+        .maybeSingle(),
+        VEHICLES_TABLE,
+        'Workspace organization context is required to load vehicles.'
       );
 
       if (error) throw error;
+      await this.verifyScopedRows(
+        vehicle || null,
+        VEHICLES_TABLE,
+        'Vehicle lookup returned data outside the active workspace.'
+      );
       return { success: true, vehicle: vehicle || null };
     } catch (error) {
       console.error('❌ Error loading vehicle by owner and plate:', error);
@@ -480,15 +527,22 @@ class VehicleService {
     try {
       const { data: vehicle, error } = await this.applyReadScope(
         supabase
-        .from('saharax_0u4w4d_vehicles')
+        .from(VEHICLES_TABLE)
         .select('*')
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle()
+        .maybeSingle(),
+        VEHICLES_TABLE,
+        'Workspace organization context is required to load vehicles.'
       );
 
       if (error) throw error;
+      await this.verifyScopedRows(
+        vehicle || null,
+        VEHICLES_TABLE,
+        'Vehicle lookup returned data outside the active workspace.'
+      );
       return { success: true, vehicle: vehicle || null };
     } catch (error) {
       console.error('❌ Error loading vehicle by plate:', error);
@@ -504,8 +558,12 @@ class VehicleService {
       console.log('💾 Creating new vehicle...');
       await assertCanCreateVehicle();
       const organizationId = await getCurrentOrganizationId();
+      const stampedVehicleData = await matchTenantOwnedPayload(vehicleData, VEHICLES_TABLE, {
+        organizationId,
+        message: 'Workspace organization context is required to create vehicles.',
+      });
       let compatiblePayload = {
-        ...applyOrganizationMatch(vehicleData, organizationId),
+        ...stampedVehicleData,
         current_odometer: Number.isFinite(Number(vehicleData?.current_odometer))
           ? Number(vehicleData.current_odometer)
           : 0,
@@ -540,6 +598,11 @@ class VehicleService {
       if (!vehicle) {
         throw new Error('Unable to create vehicle with the current fleet schema.');
       }
+      await this.verifyScopedRows(
+        vehicle,
+        VEHICLES_TABLE,
+        'Created vehicle returned data outside the active workspace.'
+      );
 
       // Clear cache
       this.clearCache();
@@ -568,8 +631,12 @@ class VehicleService {
     try {
       console.log('📝 Updating vehicle...', id);
       const organizationId = await getCurrentOrganizationId();
+      const stampedUpdates = await matchTenantOwnedPayload(updates, VEHICLES_TABLE, {
+        organizationId,
+        message: 'Workspace organization context is required to update vehicles.',
+      });
       let compatiblePayload = {
-        ...applyOrganizationMatch(updates, organizationId),
+        ...stampedUpdates,
         updated_at: new Date().toISOString(),
       };
       let vehicle = null;
@@ -602,6 +669,11 @@ class VehicleService {
       if (!vehicle) {
         throw new Error('Unable to update vehicle with the current fleet schema.');
       }
+      await this.verifyScopedRows(
+        vehicle,
+        VEHICLES_TABLE,
+        'Updated vehicle returned data outside the active workspace.'
+      );
 
       // Clear cache
       this.clearCache();
@@ -669,11 +741,19 @@ class VehicleService {
       console.log('📊 Loading vehicle statistics from database table...');
       const { data: vehicles, error } = await this.applyReadScope(
         supabase
-        .from('saharax_0u4w4d_vehicles')
+        .from(VEHICLES_TABLE)
         .select('status, vehicle_model_id, organization_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model')
+        ,
+        VEHICLES_TABLE,
+        'Workspace organization context is required to load vehicle statistics.'
       );
 
       if (error) throw error;
+      await this.verifyScopedRows(
+        vehicles || [],
+        VEHICLES_TABLE,
+        'Vehicle statistics returned rows outside the active workspace.'
+      );
 
       const visibleVehicles = (vehicles || []).filter(
         (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
@@ -717,11 +797,9 @@ class VehicleService {
 
     try {
       console.log('🔍 Searching vehicles...', searchTerm);
-      const organizationId = await getCurrentOrganizationId();
-
-      const { data: vehicles, error } = await applyOrganizationScope(
+      const query = await this.applyReadScope(
         supabase
-        .from('saharax_0u4w4d_vehicles')
+        .from(VEHICLES_TABLE)
         .select(`
           id,
           name,
@@ -743,10 +821,17 @@ class VehicleService {
         `)
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
         .order('name', { ascending: true }),
-        organizationId
+        VEHICLES_TABLE,
+        'Workspace organization context is required to search vehicles.'
       );
+      const { data: vehicles, error } = await query;
 
       if (error) throw error;
+      await this.verifyScopedRows(
+        vehicles || [],
+        VEHICLES_TABLE,
+        'Vehicle search returned rows outside the active workspace.'
+      );
 
       return {
         success: true,
@@ -768,32 +853,45 @@ class VehicleService {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         console.log('🔍 Checking specific vehicle availability...', { vehicleId, startDate, endDate, attempt: attempt + 1 });
-        const organizationId = await getCurrentOrganizationId();
 
         // First get the current status from the vehicle table
-        const { data: vehicle, error: statusError } = await applyOrganizationScope(
+        const vehicleQuery = await this.applyReadScope(
           supabase
-          .from('saharax_0u4w4d_vehicles')
-          .select('status')
+          .from(VEHICLES_TABLE)
+          .select('organization_id, status')
           .eq('id', vehicleId)
           .single(),
-          organizationId
+          VEHICLES_TABLE,
+          'Workspace organization context is required to load vehicles.'
         );
+        const { data: vehicle, error: statusError } = await vehicleQuery;
 
         if (statusError) throw statusError;
+        await this.verifyScopedRows(
+          vehicle,
+          VEHICLES_TABLE,
+          'Vehicle availability returned data outside the active workspace.'
+        );
 
         // Then check for conflicts in the specific date range
-        const { data: conflicts, error: conflictError } = await applyOrganizationScope(
+        const conflictQuery = await this.applyReadScope(
           supabase
-          .from('app_4c3a7a6153_rentals')
-          .select('rental_start_date, rental_end_date, rental_status')
+          .from(RENTALS_TABLE)
+          .select('organization_id, rental_start_date, rental_end_date, rental_status')
           .eq('vehicle_id', vehicleId)
           .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
           .in('rental_status', ['scheduled', 'active', 'confirmed']),
-          organizationId
+          RENTALS_TABLE,
+          'Workspace organization context is required to load rental conflicts.'
         );
+        const { data: conflicts, error: conflictError } = await conflictQuery;
 
         if (conflictError) throw conflictError;
+        await this.verifyScopedRows(
+          conflicts || [],
+          RENTALS_TABLE,
+          'Vehicle availability conflicts returned rows outside the active workspace.'
+        );
 
         const activeConflicts = (conflicts || []).filter((rental) => !isExpiredScheduledConflict(rental));
 

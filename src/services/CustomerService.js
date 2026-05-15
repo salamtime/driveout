@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { scopeTenantOwnedQuery } from './OrganizationService';
 
 /**
  * CustomerService - Service for managing customer data operations
@@ -148,8 +149,8 @@ class CustomerService {
       // Integer format - try to fetch from database
       if (this.isInteger(customerId)) {
         console.log('🔍 Fetching integer customer from database:', customerId);
-        
-        const { data, error } = await supabase
+
+        let query = supabase
           .from('app_4c3a7a6153_customers')
           .select(`
             id,
@@ -166,8 +167,13 @@ class CustomerService {
             place_of_birth,
             id_scan_url
           `)
-          .eq('id', parseInt(customerId))
-          .single();
+          .eq('id', parseInt(customerId));
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_customers', {
+          message: 'Workspace organization context is required to load customers.',
+        });
+
+        const { data, error } = await query.single();
 
         if (error) {
           if (error.code === 'PGRST116') {

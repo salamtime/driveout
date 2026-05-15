@@ -26,7 +26,6 @@ import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.j
 import crypto from 'crypto';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set(['business_owner', 'operator', 'business', 'rental_business']);
-const SHARED_TENANT_USER_ALLOWLIST = new Set(['oualidazzouni10@gmail.com']);
 const BASE_APP_USER_FIELDS = 'id, email, username, full_name, first_name, last_name, role, phone_number, whatsapp_notifications, preferences, permissions, salary_amount, created_at, updated_at, access_enabled, primary_organization_id';
 const BUSINESS_OWNER_APP_USER_FIELDS = `${BASE_APP_USER_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
 
@@ -750,9 +749,6 @@ const normalizePlatformAdminPermissions = (value) => {
 
 const normalizeEmail = (value = '') => String(value || '').trim().toLowerCase();
 
-const isSharedTenantUserAllowlisted = (candidate = {}) =>
-  SHARED_TENANT_USER_ALLOWLIST.has(normalizeEmail(candidate?.email));
-
 const resolveOrganizationMemberRole = (role = '') => {
   const normalizedRole = String(role || '').trim().toLowerCase();
   if (normalizedRole === 'owner' || normalizedRole === 'admin') return 'org_admin';
@@ -829,7 +825,7 @@ const filterUsersForTenantScope = ({
     if (candidateId && scopedUserIds.has(candidateId)) {
       return true;
     }
-    return isSharedTenantUserAllowlisted(candidate);
+    return false;
   });
 };
 
@@ -841,7 +837,7 @@ const ensureTenantScopedStaffMembership = async ({
   role = 'employee',
   fullName = '',
 } = {}) => {
-  if (!tenantScope?.isShared || !tenantScope?.organizationId || !userId || isSharedTenantUserAllowlisted({ email })) {
+  if (!tenantScope?.isShared || !tenantScope?.organizationId || !userId) {
     return;
   }
 
@@ -1190,7 +1186,11 @@ export default async function handler(req, res) {
   const userId = req.query?.userId ? String(req.query.userId) : null;
 
   try {
-    const tenantScope = await resolveRequestTenantScope({ req, adminClient });
+    const tenantScope = await resolveRequestTenantScope({
+      req,
+      adminClient,
+      payload: req.method === 'PATCH' || req.method === 'POST' ? req.body : null,
+    });
     const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope);
 
     if (req.method === 'GET' && !userId) {
@@ -1263,33 +1263,36 @@ export default async function handler(req, res) {
       }
 
       let createdUser = null;
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      const fallbackMetadata = {
+        ...user_metadata,
+        full_name: user_metadata.full_name || app_profile.full_name || email,
+        role: user_metadata.role || app_profile.role || 'employee',
+        permissions: resolveStaffPermissions(
+          user_metadata.role || app_profile.role || 'employee',
+          user_metadata.permissions && typeof user_metadata.permissions === 'object' && !Array.isArray(user_metadata.permissions)
+            ? user_metadata.permissions
+            : app_profile.permissions
+        ),
+        account_type: 'staff',
+        staff_access_prepared: true,
+        staff_access_prepared_at: new Date().toISOString(),
+      };
 
-      if (promote_existing) {
+      let existingUser = null;
+
+      if (promote_existing || tenantScope?.isShared) {
         const { data: existingUsers, error: listError } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
         if (listError) {
           throw listError;
         }
 
-        const normalizedEmail = String(email || '').trim().toLowerCase();
-        const existingUser = (existingUsers?.users || []).find(
+        existingUser = (existingUsers?.users || []).find(
           (candidate) => String(candidate.email || '').trim().toLowerCase() === normalizedEmail
-        );
+        ) || null;
+      }
 
-        const fallbackMetadata = {
-          ...user_metadata,
-          full_name: user_metadata.full_name || app_profile.full_name || email,
-          role: user_metadata.role || app_profile.role || 'employee',
-          permissions: resolveStaffPermissions(
-            user_metadata.role || app_profile.role || 'employee',
-            user_metadata.permissions && typeof user_metadata.permissions === 'object' && !Array.isArray(user_metadata.permissions)
-              ? user_metadata.permissions
-              : app_profile.permissions
-          ),
-          account_type: 'staff',
-          staff_access_prepared: true,
-          staff_access_prepared_at: new Date().toISOString(),
-        };
-
+      if (promote_existing) {
         if (!existingUser?.id) {
           const generatedPassword = `${crypto.randomBytes(24).toString('base64url')}Aa1!`;
           const { data: pendingAuthUser, error: createPendingError } = await adminClient.auth.admin.createUser({
@@ -1326,18 +1329,40 @@ export default async function handler(req, res) {
           createdUser = updatedAuthUser?.user || existingUser;
         }
       } else {
-        const { data, error } = await adminClient.auth.admin.createUser({
-          email,
-          password,
-          email_confirm,
-          user_metadata,
-        });
+        if (tenantScope?.isShared && existingUser?.id) {
+          const mergedMetadata = {
+            ...(existingUser.user_metadata || {}),
+            ...fallbackMetadata,
+            full_name:
+              user_metadata.full_name ||
+              existingUser.user_metadata?.full_name ||
+              existingUser.user_metadata?.name ||
+              email,
+          };
 
-        if (error) {
-          throw error;
+          const { data: updatedAuthUser, error: updateError } = await adminClient.auth.admin.updateUserById(existingUser.id, {
+            user_metadata: mergedMetadata,
+          });
+
+          if (updateError) {
+            throw updateError;
+          }
+
+          createdUser = updatedAuthUser?.user || existingUser;
+        } else {
+          const { data, error } = await adminClient.auth.admin.createUser({
+            email,
+            password,
+            email_confirm,
+            user_metadata,
+          });
+
+          if (error) {
+            throw error;
+          }
+
+          createdUser = data?.user || null;
         }
-
-        createdUser = data?.user || null;
       }
 
       if (createdUser?.id) {
@@ -1430,6 +1455,99 @@ export default async function handler(req, res) {
       if (req.body?.action) {
         const action = String(req.body.action || '').trim();
         console.log('admin-users business-owner action start:', { action, userId, actorId: auth.user?.id || null });
+        if (action === 'detach_workspace_user') {
+          let effectiveTenantScope = tenantScope;
+          const explicitHostname = String(
+            req.body?.hostname ||
+            req.query?.hostname ||
+            ''
+          ).trim().toLowerCase();
+
+          if ((!effectiveTenantScope?.isShared || !effectiveTenantScope.organizationId) && explicitHostname) {
+            effectiveTenantScope = await resolveRequestTenantScope({
+              req: {
+                ...req,
+                headers: {
+                  ...(req.headers || {}),
+                  host: explicitHostname,
+                  'x-forwarded-host': explicitHostname,
+                },
+                query: {
+                  ...(req.query || {}),
+                  hostname: explicitHostname,
+                },
+              },
+              adminClient,
+              payload: {
+                ...(req.body || {}),
+                hostname: explicitHostname,
+              },
+            });
+          }
+
+          console.log('admin-users detach_workspace_user scope:', {
+            explicitHostname,
+            requestedHostname: effectiveTenantScope?.requestedHostname || null,
+            tenantSlug: effectiveTenantScope?.tenantSlug || null,
+            tenancyMode: effectiveTenantScope?.tenancyMode || null,
+            organizationId: effectiveTenantScope?.organizationId || null,
+            isShared: effectiveTenantScope?.isShared === true,
+          });
+
+          if (!effectiveTenantScope?.isShared || !effectiveTenantScope.organizationId) {
+            res.status(400).json({ error: 'Workspace detach is only available inside a shared tenant workspace.' });
+            return;
+          }
+
+          if (String(auth.user?.id || '').trim() === String(userId || '').trim()) {
+            res.status(400).json({ error: 'You cannot remove your own account from the current workspace.' });
+            return;
+          }
+
+          const normalizedTenantOrganizationId = String(effectiveTenantScope.organizationId || '').trim();
+          const { data: targetProfile, error: targetProfileError } = await adminClient
+            .from(APP_USERS_TABLE)
+            .select('id, email, primary_organization_id')
+            .eq('id', userId)
+            .maybeSingle();
+
+          if (targetProfileError && !isSchemaCompatibilityError(targetProfileError)) {
+            throw targetProfileError;
+          }
+
+          const { error: membershipDetachError } = await adminClient
+            .from(ORGANIZATION_MEMBERS_TABLE)
+            .update({
+              membership_status: 'suspended',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('organization_id', normalizedTenantOrganizationId)
+            .eq('user_id', userId);
+
+          if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
+            throw membershipDetachError;
+          }
+
+          const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
+          if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
+            const { error: detachError } = await adminClient
+              .from(APP_USERS_TABLE)
+              .update({
+                primary_organization_id: null,
+                access_enabled: false,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', userId);
+
+            if (detachError && !isSchemaCompatibilityError(detachError)) {
+              throw detachError;
+            }
+          }
+
+          res.status(200).json({ success: true, detached: true });
+          return;
+        }
+
         if (![
           'approve_business_owner',
           'reject_business_owner',
@@ -1729,7 +1847,7 @@ export default async function handler(req, res) {
       if (app_profile.salary_amount !== undefined && app_profile.salary_amount !== '') {
         appUserUpdate.salary_amount = Number(app_profile.salary_amount) || 0;
       }
-      if (tenantScope?.isShared && tenantScope.organizationId && !isSharedTenantUserAllowlisted({ email })) {
+      if (tenantScope?.isShared && tenantScope.organizationId) {
         appUserUpdate.primary_organization_id = tenantScope.organizationId;
       }
 
@@ -1808,37 +1926,34 @@ export default async function handler(req, res) {
           throw targetProfileError;
         }
 
-        const targetEmail = targetProfile?.email || '';
-        if (!isSharedTenantUserAllowlisted({ email: targetEmail })) {
-          const normalizedTenantOrganizationId = String(tenantScope.organizationId || '').trim();
+        const normalizedTenantOrganizationId = String(tenantScope.organizationId || '').trim();
 
-          const { error: membershipDetachError } = await adminClient
-            .from(ORGANIZATION_MEMBERS_TABLE)
+        const { error: membershipDetachError } = await adminClient
+          .from(ORGANIZATION_MEMBERS_TABLE)
+          .update({
+            membership_status: 'suspended',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('organization_id', normalizedTenantOrganizationId)
+          .eq('user_id', userId);
+
+        if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
+          throw membershipDetachError;
+        }
+
+        const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
+        if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
+          const { error: detachError } = await adminClient
+            .from(APP_USERS_TABLE)
             .update({
-              membership_status: 'suspended',
+              primary_organization_id: null,
+              access_enabled: false,
               updated_at: new Date().toISOString(),
             })
-            .eq('organization_id', normalizedTenantOrganizationId)
-            .eq('user_id', userId);
+            .eq('id', userId);
 
-          if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
-            throw membershipDetachError;
-          }
-
-          const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
-          if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
-            const { error: detachError } = await adminClient
-              .from(APP_USERS_TABLE)
-              .update({
-                primary_organization_id: null,
-                access_enabled: false,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', userId);
-
-            if (detachError && !isSchemaCompatibilityError(detachError)) {
-              throw detachError;
-            }
+          if (detachError && !isSchemaCompatibilityError(detachError)) {
+            throw detachError;
           }
         }
 

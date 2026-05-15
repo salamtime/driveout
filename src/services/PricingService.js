@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { assertTenantFeatureEnabled } from './TenantLimitService';
+import { matchTenantOwnedPayload, scopeTenantOwnedQuery } from './OrganizationService';
 
 export class PricingService {
   constructor() {
@@ -30,15 +31,15 @@ export class PricingService {
         
         let query = supabase
           .from('app_4c3a7a6153_base_prices')
-          .select(`
-            *,
-            saharax_0u4w4d_vehicles!inner(id, name, model, vehicle_type)
-          `, { count: 'exact' });
+          .select('*', { count: 'exact' });
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_base_prices', {
+          message: 'Workspace organization context is required to load base prices.',
+        });
 
         if (search && search.trim()) {
           query = query.or(
-            `vehicle_type.ilike.%${search}%,location.ilike.%${search}%`,
-            { foreignTable: 'saharax_0u4w4d_vehicles' }
+            `vehicle_type.ilike.%${search}%,location.ilike.%${search}%`
           );
         }
 
@@ -58,8 +59,8 @@ export class PricingService {
 
       const processedData = prices?.map(price => ({
         id: price.id,
-        vehicle: price.saharax_0u4w4d_vehicles,
-        vehicleType: price.saharax_0u4w4d_vehicles?.vehicle_type || 'Unknown',
+        vehicle: null,
+        vehicleType: price.vehicle_type || 'Unknown',
         location: price.location || 'Default',
         basePrice: Number(price.base_price) || 0,
         currency: price.currency || 'MAD',
@@ -92,22 +93,23 @@ export class PricingService {
       console.log('➕ Creating base price...');
       
       const result = await this.withRetry(async () => {
+        const payload = await matchTenantOwnedPayload({
+          vehicle_id: priceData.vehicleId,
+          vehicle_type: priceData.vehicleType,
+          location: priceData.location || 'Default',
+          base_price: Number(priceData.basePrice),
+          currency: priceData.currency || 'MAD',
+          effective_date: priceData.effectiveDate || new Date().toISOString().split('T')[0],
+          is_active: priceData.isActive !== false,
+          created_at: new Date().toISOString()
+        }, 'app_4c3a7a6153_base_prices', {
+          message: 'Workspace organization context is required to create base prices.',
+        });
+
         return await supabase
           .from('app_4c3a7a6153_base_prices')
-          .insert([{
-            vehicle_id: priceData.vehicleId,
-            vehicle_type: priceData.vehicleType,
-            location: priceData.location || 'Default',
-            base_price: Number(priceData.basePrice),
-            currency: priceData.currency || 'MAD',
-            effective_date: priceData.effectiveDate || new Date().toISOString().split('T')[0],
-            is_active: priceData.isActive !== false,
-            created_at: new Date().toISOString()
-          }])
-          .select(`
-            *,
-            saharax_0u4w4d_vehicles!inner(id, name, model, vehicle_type)
-          `)
+          .insert([payload])
+          .select('*')
           .single();
       });
 
@@ -136,7 +138,7 @@ export class PricingService {
       console.log('✏️ Updating base price:', id);
       
       const result = await this.withRetry(async () => {
-        return await supabase
+        let query = supabase
           .from('app_4c3a7a6153_base_prices')
           .update({
             base_price: Number(updateData.basePrice),
@@ -147,11 +149,13 @@ export class PricingService {
             updated_at: new Date().toISOString()
           })
           .eq('id', id)
-          .select(`
-            *,
-            saharax_0u4w4d_vehicles!inner(id, name, model, vehicle_type)
-          `)
-          .single();
+          .select('*');
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_base_prices', {
+          message: 'Workspace organization context is required to update base prices.',
+        });
+
+        return await query.single();
       });
 
       const { data: price, error } = result;
@@ -179,10 +183,16 @@ export class PricingService {
       console.log('🗑️ Deleting base price:', id);
       
       const result = await this.withRetry(async () => {
-        return await supabase
+        let query = supabase
           .from('app_4c3a7a6153_base_prices')
           .delete()
           .eq('id', id);
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_base_prices', {
+          message: 'Workspace organization context is required to delete base prices.',
+        });
+
+        return await query;
       });
 
       const { error } = result;
@@ -224,6 +234,10 @@ export class PricingService {
         let query = supabase
           .from('app_4c3a7a6153_transport_fees')
           .select('*', { count: 'exact' });
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_transport_fees', {
+          message: 'Workspace organization context is required to load transport fees.',
+        });
 
         if (search && search.trim()) {
           query = query.or(
@@ -321,15 +335,20 @@ export class PricingService {
   async getBasePriceForVehicle(vehicleId, location = 'Default') {
     try {
       const result = await this.withRetry(async () => {
-        return await supabase
+        let query = supabase
           .from('app_4c3a7a6153_base_prices')
           .select('base_price')
           .eq('vehicle_id', vehicleId)
           .eq('location', location)
           .eq('is_active', true)
           .order('effective_date', { ascending: false })
-          .limit(1)
-          .single();
+          .limit(1);
+
+        query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_base_prices', {
+          message: 'Workspace organization context is required to load base prices.',
+        });
+
+        return await query.single();
       });
 
       const { data: price, error } = result;
@@ -359,10 +378,16 @@ export class PricingService {
       console.log('🏷️ Fetching vehicle type pricing...');
       
       const result = await this.withRetry(async () => {
-        return await supabase
+        let query = supabase
           .from('saharax_0u4w4d_vehicles')
           .select('model, vehicle_type')
           .eq('status', 'available');
+
+        query = await scopeTenantOwnedQuery(query, 'saharax_0u4w4d_vehicles', {
+          message: 'Workspace organization context is required to load vehicle pricing types.',
+        });
+
+        return await query;
       });
 
       const { data: vehicles, error } = result;

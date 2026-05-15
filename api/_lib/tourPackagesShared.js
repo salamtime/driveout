@@ -13,7 +13,7 @@ import {
 
 export const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
 export const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
-export const VEHICLE_MODELS_TABLE = 'saharax_0u4w4d_vehicle_models';
+export const VEHICLE_MODELS_TABLE = 'app_4c3a7a6153_vehicle_models';
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);

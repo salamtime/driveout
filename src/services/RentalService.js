@@ -1,14 +1,17 @@
 import { supabase } from '../lib/supabase';
 import {
-  applyOrganizationMatch,
-  applyOrganizationScope,
-  getCurrentOrganizationId,
+  matchTenantOwnedPayload,
   requireCurrentOrganizationId,
-  shouldScopeSharedTenantData,
+  scopeTenantOwnedQuery,
+  verifyTenantOwnedRows,
 } from './OrganizationService';
+
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
+const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
 
 const RENTAL_SELECT = `
   *,
+  organization_id,
   vehicle:saharax_0u4w4d_vehicles(
     id,
     name,
@@ -24,22 +27,24 @@ const RENTAL_SELECT = `
 `;
 
 class RentalService {
-  async applyReadScope(query) {
-    const organizationId = await getCurrentOrganizationId();
-    if (!shouldScopeSharedTenantData()) {
-      return query;
-    }
+  async applyReadScope(query, tableName, message) {
+    return scopeTenantOwnedQuery(query, tableName, { message });
+  }
 
-    return applyOrganizationScope(query, organizationId);
+  async verifyScopedRows(rows, tableName, message) {
+    return verifyTenantOwnedRows(rows, tableName, { message });
   }
 
   async getActiveRentalsCount() {
-    const { count, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-      .from('app_4c3a7a6153_rentals')
+      .from(RENTALS_TABLE)
       .select('*', { count: 'exact', head: true })
-      .eq('rental_status', 'active')
+      .eq('rental_status', 'active'),
+      RENTALS_TABLE,
+      'Workspace organization context is required to count active rentals.'
     );
+    const { count, error } = await query;
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
@@ -48,139 +53,199 @@ class RentalService {
   }
 
   async getTotalRevenue() {
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-      .from('app_4c3a7a6153_rentals')
-      .select('total_amount')
-      .eq('payment_status', 'paid')
+      .from(RENTALS_TABLE)
+      .select('organization_id, total_amount')
+      .eq('payment_status', 'paid'),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental revenue.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data ? data.reduce((acc, item) => acc + item.total_amount, 0) : 0;
+    const scopedData = await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Rental revenue returned rows outside the active workspace.'
+    );
+    return scopedData.length ? scopedData.reduce((acc, item) => acc + item.total_amount, 0) : 0;
   }
 
   async getRecentBookings(limit = 5) {
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-      .from("app_4c3a7a6153_rentals")
+      .from(RENTALS_TABLE)
       .select("*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*)")
       .order("created_at", { ascending: false })
-      .limit(limit)
+      .limit(limit),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load recent bookings.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Error fetching recent bookings', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || [];
+    return await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Recent bookings returned rows outside the active workspace.'
+    );
   }
 
   async getRevenueTrend(days = 7) {
     const date = new Date();
     date.setDate(date.getDate() - days);
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-      .from('app_4c3a7a6153_rentals')
-      .select('created_at, total_amount')
+      .from(RENTALS_TABLE)
+      .select('organization_id, created_at, total_amount')
       .eq('payment_status', 'paid')
-      .gte('created_at', date.toISOString())
+      .gte('created_at', date.toISOString()),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental revenue trends.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || [];
+    return await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Rental revenue trends returned rows outside the active workspace.'
+    );
   }
 
   async getAllRentals() {
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-      .from('app_4c3a7a6153_rentals')
-      .select('vehicle_id')
+      .from(RENTALS_TABLE)
+      .select('organization_id, vehicle_id'),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rentals.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || [];
+    return await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Rentals returned rows outside the active workspace.'
+    );
   }
 
   async getAllRentalsDetailed() {
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-        .from('app_4c3a7a6153_rentals')
+        .from(RENTALS_TABLE)
         .select(RENTAL_SELECT)
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: false }),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental details.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Error fetching rentals', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || [];
+    return await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Rental details returned rows outside the active workspace.'
+    );
   }
 
   async getRentalById(id) {
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-        .from('app_4c3a7a6153_rentals')
+        .from(RENTALS_TABLE)
         .select(RENTAL_SELECT)
         .eq('id', id)
-        .maybeSingle()
+        .maybeSingle(),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental details.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Error fetching rental by id', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || null;
+    const scoped = await this.verifyScopedRows(
+      data || null,
+      RENTALS_TABLE,
+      'Rental details returned data outside the active workspace.'
+    );
+    return scoped || null;
   }
 
   async getLatestRentalByCustomerId(customerId) {
     if (!customerId) return null;
-    const { data, error } = await this.applyReadScope(
+    const query = await this.applyReadScope(
       supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('*')
+        .from(RENTALS_TABLE)
+        .select('*, organization_id')
         .eq('customer_id', customerId)
         .order('created_at', { ascending: false })
         .limit(1)
-        .maybeSingle()
+        .maybeSingle(),
+      RENTALS_TABLE,
+      'Workspace organization context is required to load customer rentals.'
     );
+    const { data, error } = await query;
     if (error) {
       console.error('❌ Error fetching latest customer rental', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data || null;
+    const scoped = await this.verifyScopedRows(
+      data || null,
+      RENTALS_TABLE,
+      'Customer rental lookup returned data outside the active workspace.'
+    );
+    return scoped || null;
   }
 
   async createRentalRecord(rentalData) {
-    const organizationId = await requireCurrentOrganizationId();
+    const payload = await matchTenantOwnedPayload({
+      ...rentalData,
+      created_at: rentalData?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, RENTALS_TABLE, {
+      message: 'Workspace organization context is required to create rentals.',
+    });
     const { data, error } = await supabase
-      .from('app_4c3a7a6153_rentals')
-      .insert([{
-        ...applyOrganizationMatch({}, organizationId),
-        ...rentalData,
-        created_at: rentalData?.created_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }])
+      .from(RENTALS_TABLE)
+      .insert([payload])
       .select(RENTAL_SELECT)
       .single();
     if (error) {
       console.error('❌ Error creating rental', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data;
+    return await this.verifyScopedRows(
+      data,
+      RENTALS_TABLE,
+      'Created rental returned data outside the active workspace.'
+    );
   }
 
   async updateRentalRecord(id, updates) {
     const organizationId = await requireCurrentOrganizationId();
+    const payload = await matchTenantOwnedPayload({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    }, RENTALS_TABLE, {
+      organizationId,
+      message: 'Workspace organization context is required to update rentals.',
+    });
     const { data, error } = await supabase
-      .from('app_4c3a7a6153_rentals')
-      .update({
-        ...applyOrganizationMatch({}, organizationId),
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
+      .from(RENTALS_TABLE)
+      .update(payload)
       .eq('id', id)
       .eq('organization_id', organizationId)
       .select(RENTAL_SELECT)
@@ -189,13 +254,17 @@ class RentalService {
       console.error('❌ Error updating rental', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
-    return data;
+    return await this.verifyScopedRows(
+      data,
+      RENTALS_TABLE,
+      'Updated rental returned data outside the active workspace.'
+    );
   }
 
   async deleteRentalRecord(id) {
     const organizationId = await requireCurrentOrganizationId();
     const { error } = await supabase
-      .from('app_4c3a7a6153_rentals')
+      .from(RENTALS_TABLE)
       .delete()
       .eq('id', id)
       .eq('organization_id', organizationId);
@@ -223,12 +292,17 @@ class RentalService {
 
   async expireRentalAndReleaseVehicle(rentalId, vehicleId = null) {
     const organizationId = await requireCurrentOrganizationId();
+    const rentalPayload = await matchTenantOwnedPayload(
+      { rental_status: 'expired', updated_at: new Date().toISOString() },
+      RENTALS_TABLE,
+      {
+        organizationId,
+        message: 'Workspace organization context is required to expire rentals.',
+      }
+    );
     const { error: rentalError } = await supabase
-      .from('app_4c3a7a6153_rentals')
-      .update({
-        ...applyOrganizationMatch({ rental_status: 'expired' }, organizationId),
-        updated_at: new Date().toISOString(),
-      })
+      .from(RENTALS_TABLE)
+      .update(rentalPayload)
       .eq('id', rentalId)
       .eq('organization_id', organizationId);
 
@@ -238,12 +312,17 @@ class RentalService {
     }
 
     if (vehicleId) {
+      const vehiclePayload = await matchTenantOwnedPayload(
+        { status: 'available', updated_at: new Date().toISOString() },
+        VEHICLES_TABLE,
+        {
+          organizationId,
+          message: 'Workspace organization context is required to release vehicles.',
+        }
+      );
       const { error: vehicleError } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .update({
-          ...applyOrganizationMatch({ status: 'available' }, organizationId),
-          updated_at: new Date().toISOString(),
-        })
+        .from(VEHICLES_TABLE)
+        .update(vehiclePayload)
         .eq('id', vehicleId)
         .eq('organization_id', organizationId);
 
@@ -257,15 +336,15 @@ class RentalService {
   }
 
   async checkRentalConflicts({ vehicleId, startDate, endDate, excludeBookingId = null }) {
-    const organizationId = await requireCurrentOrganizationId();
-    let query = applyOrganizationScope(
+    let query = await this.applyReadScope(
       supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, rental_start_date, rental_end_date, rental_status')
+        .from(RENTALS_TABLE)
+        .select('organization_id, id, rental_start_date, rental_end_date, rental_status')
         .eq('vehicle_id', vehicleId)
         .in('rental_status', ['scheduled', 'confirmed', 'active'])
         .or(`rental_start_date.lte.${endDate},rental_end_date.gte.${startDate}`),
-      organizationId
+      RENTALS_TABLE,
+      'Workspace organization context is required to check rental conflicts.'
     );
 
     if (excludeBookingId) {
@@ -277,29 +356,39 @@ class RentalService {
       console.error('❌ Error checking rental conflicts', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
+    const scopedData = await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Rental conflicts returned rows outside the active workspace.'
+    );
     return {
-      hasConflicts: Boolean(data?.length),
-      conflicts: data || [],
+      hasConflicts: Boolean(scopedData.length),
+      conflicts: scopedData,
     };
   }
 
   async getSchedulingConflictsForRange({ startDate, endDate }) {
-    const organizationId = await requireCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const query = await this.applyReadScope(
       supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, vehicle_id, rental_start_date, rental_end_date, rental_status')
+        .from(RENTALS_TABLE)
+        .select('organization_id, id, vehicle_id, rental_start_date, rental_end_date, rental_status')
         .in('rental_status', ['confirmed', 'scheduled', 'active'])
         .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`),
-      organizationId
+      RENTALS_TABLE,
+      'Workspace organization context is required to load scheduling conflicts.'
     );
+    const { data, error } = await query;
 
     if (error) {
       console.error('❌ Error fetching scheduling conflicts', { message: error.message, details: error.details, hint: error.hint, code: error.code });
       throw error;
     }
 
-    return data || [];
+    return await this.verifyScopedRows(
+      data || [],
+      RENTALS_TABLE,
+      'Scheduling conflicts returned rows outside the active workspace.'
+    );
   }
 }
 

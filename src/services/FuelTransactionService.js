@@ -10,6 +10,7 @@ import {
 } from '../utils/fuelMath';
 import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
 import sharedQueryCacheService from './SharedQueryCacheService';
+import { scopeTenantOwnedQuery, matchTenantOwnedPayload } from './OrganizationService';
 
 const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const FUEL_OVERVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -156,6 +157,18 @@ class FuelTransactionService {
     return () => {
       this.clientChangeSubscribers.delete(callback);
     };
+  }
+
+  async scopeFuelQuery(query, tableName, message = null) {
+    return scopeTenantOwnedQuery(query, tableName, {
+      message: message || `Workspace organization context is required for ${tableName}.`,
+    });
+  }
+
+  async scopeFuelPayload(payload, tableName, message = null) {
+    return matchTenantOwnedPayload(payload, tableName, {
+      message: message || `Workspace organization context is required for ${tableName}.`,
+    });
   }
 
   async tableExists(tableName) {
@@ -520,12 +533,17 @@ class FuelTransactionService {
       };
     }
 
-    const { data, error } = await supabase
+    let tankQuery = supabase
       .from(this.fuelTankTable)
       .select('*')
       .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
+    tankQuery = await this.scopeFuelQuery(
+      tankQuery,
+      this.fuelTankTable,
+      'Workspace organization context is required to load fuel tank data.',
+    );
+    const { data, error } = await tankQuery.maybeSingle();
 
     if (error || !data) {
       const currentVolumeLiters = await this.calculateCurrentTankVolume(this.defaultTankSettings);
@@ -740,7 +758,7 @@ class FuelTransactionService {
     const hasExplicitFuelTypeUpdate = Object.prototype.hasOwnProperty.call(tankData, 'fuel_type');
     const hasExplicitNameUpdate = Object.prototype.hasOwnProperty.call(tankData, 'name');
 
-    const payload = {
+    const basePayload = {
       ...(hasExplicitNameUpdate ? { name: resolvedName } : {}),
       ...(hasExplicitCapacityUpdate ? { capacity_liters: resolvedCapacity } : {}),
       ...(hasExplicitInitialVolumeUpdate ? { initial_volume: resolvedInitialVolume } : {}),
@@ -848,6 +866,7 @@ class FuelTransactionService {
     for (let index = 0; index < selectCandidates.length; index += 1) {
       let query = supabase.from(tableName).select(selectCandidates[index]);
       query = configureQuery(query);
+      query = await this.scopeFuelQuery(query, tableName);
       const result = await query;
       data = result.data;
       error = result.error;
@@ -905,10 +924,17 @@ class FuelTransactionService {
       return new Map();
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(this.vehiclesTable)
       .select('id, name, plate_number, model, vehicle_type')
       .in('id', uniqueIds);
+    query = await this.scopeFuelQuery(
+      query,
+      this.vehiclesTable,
+      'Workspace organization context is required to load fuel vehicles.',
+    );
+
+    const { data, error } = await query;
 
     if (error) {
       return new Map();
@@ -963,7 +989,7 @@ class FuelTransactionService {
     }
 
     const end = Math.max(offset, offset + limit - 1);
-    const { data, error, count } = await supabase
+    let feedQuery = supabase
       .from(this.defaultTransactionsFeedView)
       .select(
         [
@@ -1002,6 +1028,13 @@ class FuelTransactionService {
       )
       .order('transaction_date', { ascending: false })
       .range(offset, end);
+    feedQuery = await this.scopeFuelQuery(
+      feedQuery,
+      this.defaultTransactionsFeedView,
+      'Workspace organization context is required to load fuel logs.',
+    );
+
+    const { data, error, count } = await feedQuery;
 
     if (error) {
       if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
@@ -1118,10 +1151,17 @@ class FuelTransactionService {
       return new Map();
     }
 
-    const { data, error } = await supabase
+    let rentalsQuery = supabase
       .from(RENTALS_TABLE)
       .select('id, vehicle_id')
       .in('id', uniqueRentalIds);
+    rentalsQuery = await this.scopeFuelQuery(
+      rentalsQuery,
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental vehicle mappings.',
+    );
+
+    const { data, error } = await rentalsQuery;
 
     if (error) {
       return new Map();
@@ -1150,14 +1190,22 @@ class FuelTransactionService {
     }
 
     const [byInternalId, byReference] = await Promise.all([
-      supabase
+      this.scopeFuelQuery(
+        supabase
         .from(RENTALS_TABLE)
         .select('id, rental_id')
         .in('id', uniqueRentalIds),
-      supabase
+        RENTALS_TABLE,
+        'Workspace organization context is required to load rental references.',
+      ).then((query) => query),
+      this.scopeFuelQuery(
+        supabase
         .from(RENTALS_TABLE)
         .select('id, rental_id')
         .in('rental_id', uniqueRentalIds),
+        RENTALS_TABLE,
+        'Workspace organization context is required to load rental references.',
+      ).then((query) => query),
     ]);
 
     const rows = [
@@ -1183,9 +1231,15 @@ class FuelTransactionService {
 
   async getVehicleModelsForFuelState() {
     if (this.vehicleModelTankCapacitySupport === false) {
-      const fallbackResult = await supabase
+      let fallbackQuery = supabase
         .from(this.vehicleModelsTable)
         .select('id, name, model');
+      fallbackQuery = await this.scopeFuelQuery(
+        fallbackQuery,
+        this.vehicleModelsTable,
+        'Workspace organization context is required to load vehicle models.',
+      );
+      const fallbackResult = await fallbackQuery;
 
       if (fallbackResult.error) {
         return [];
@@ -1197,9 +1251,15 @@ class FuelTransactionService {
       }));
     }
 
-    const fullResult = await supabase
+    let fullQuery = supabase
       .from(this.vehicleModelsTable)
       .select('id, name, model, tank_capacity_liters');
+    fullQuery = await this.scopeFuelQuery(
+      fullQuery,
+      this.vehicleModelsTable,
+      'Workspace organization context is required to load vehicle models.',
+    );
+    const fullResult = await fullQuery;
 
     if (!fullResult.error) {
       this.vehicleModelTankCapacitySupport = true;
@@ -1218,9 +1278,15 @@ class FuelTransactionService {
       window.sessionStorage.setItem('fuel:vehicle-models:tank-capacity-support', 'false');
     }
 
-    const fallbackResult = await supabase
+    let fallbackQuery = supabase
       .from(this.vehicleModelsTable)
       .select('id, name, model');
+    fallbackQuery = await this.scopeFuelQuery(
+      fallbackQuery,
+      this.vehicleModelsTable,
+      'Workspace organization context is required to load vehicle models.',
+    );
+    const fallbackResult = await fallbackQuery;
 
     if (fallbackResult.error) {
       return [];
@@ -1364,6 +1430,12 @@ class FuelTransactionService {
       if (limit) {
         query = query.limit(limit);
       }
+
+      query = await this.scopeFuelQuery(
+        query,
+        this.vehicleFuelRefillsTable,
+        'Workspace organization context is required to load vehicle fuel refills.',
+      );
 
       const { data, error } = await query;
       if (error && (this.isRetryableSchemaError(error) || this.isTransientServiceError(error))) {
@@ -1591,7 +1663,7 @@ class FuelTransactionService {
     }
 
     const actor = this.buildActor(logData.actor || logData);
-    const payload = {
+    const basePayload = {
       transaction_type: logData.transaction_type,
       source: logData.source || logData.transaction_type,
       tank_id: logData.tank_id || null,
@@ -1619,11 +1691,22 @@ class FuelTransactionService {
       created_at: logData.created_at || new Date().toISOString(),
     };
 
-    const { data, error } = await supabase
+    const payload = await this.scopeFuelPayload(
+      basePayload,
+      this.fuelOperationLogsTable,
+      'Workspace organization context is required to save fuel logs.',
+    );
+
+    let query = supabase
       .from(this.fuelOperationLogsTable)
       .insert([payload])
-      .select('*')
-      .maybeSingle();
+      .select('*');
+    query = await this.scopeFuelQuery(
+      query,
+      this.fuelOperationLogsTable,
+      'Workspace organization context is required to save fuel logs.',
+    );
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
@@ -1643,11 +1726,17 @@ class FuelTransactionService {
       return new Map();
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(RENTALS_TABLE)
       .select('id, vehicle_id, start_fuel_level, end_fuel_level, updated_at, created_at, customer_name')
       .order('updated_at', { ascending: false })
       .limit(500);
+    query = await this.scopeFuelQuery(
+      query,
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental fuel snapshots.',
+    );
+    const { data, error } = await query;
 
     if (error) {
       return new Map();
@@ -1831,10 +1920,14 @@ class FuelTransactionService {
 
     const requestPromise = (async () => {
     const [vehiclesResult, hasVehicleFuelStateTable, rentalSnapshots, vehicleModels] = await Promise.all([
-      supabase
-        .from(this.vehiclesTable)
-        .select('id, name, plate_number, model, vehicle_type, status, current_odometer, vehicle_model_id')
-        .order('name'),
+      this.scopeFuelQuery(
+        supabase
+          .from(this.vehiclesTable)
+          .select('id, name, plate_number, model, vehicle_type, status, current_odometer, vehicle_model_id')
+          .order('name'),
+        this.vehiclesTable,
+        'Workspace organization context is required to load vehicle fuel states.',
+      ).then((query) => query),
       this.tableExists(this.vehicleFuelStateTable),
       this.getLatestRentalFuelSnapshots(),
       this.getVehicleModelsForFuelState(),
@@ -1847,9 +1940,15 @@ class FuelTransactionService {
     let stateMap = new Map();
     const vehicleModelMap = new Map((vehicleModels || []).map((model) => [String(model.id), model]));
     if (hasVehicleFuelStateTable) {
-      const { data } = await supabase
+      let stateQuery = supabase
         .from(this.vehicleFuelStateTable)
         .select('*');
+      stateQuery = await this.scopeFuelQuery(
+        stateQuery,
+        this.vehicleFuelStateTable,
+        'Workspace organization context is required to load vehicle fuel states.',
+      );
+      const { data } = await stateQuery;
       stateMap = new Map((data || []).map((row) => [String(row.vehicle_id), row]));
     }
 
@@ -1918,10 +2017,14 @@ class FuelTransactionService {
 
     const requestPromise = (async () => {
       const [vehiclesResult, hasVehicleFuelStateTable] = await Promise.all([
-        supabase
-          .from(this.vehiclesTable)
-          .select('id, name, plate_number, model, vehicle_type, status, current_odometer, vehicle_model_id')
-          .order('name'),
+        this.scopeFuelQuery(
+          supabase
+            .from(this.vehiclesTable)
+            .select('id, name, plate_number, model, vehicle_type, status, current_odometer, vehicle_model_id')
+            .order('name'),
+          this.vehiclesTable,
+          'Workspace organization context is required to load vehicle fuel states.',
+        ).then((query) => query),
         this.tableExists(this.vehicleFuelStateTable),
       ]);
 
@@ -1931,9 +2034,15 @@ class FuelTransactionService {
 
       let stateMap = new Map();
       if (hasVehicleFuelStateTable) {
-        const { data, error } = await supabase
+        let stateQuery = supabase
           .from(this.vehicleFuelStateTable)
           .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at');
+        stateQuery = await this.scopeFuelQuery(
+          stateQuery,
+          this.vehicleFuelStateTable,
+          'Workspace organization context is required to load vehicle fuel states.',
+        );
+        const { data, error } = await stateQuery;
 
         if (!error) {
           stateMap = new Map((data || []).map((row) => [String(row.vehicle_id), row]));
@@ -2012,7 +2121,7 @@ class FuelTransactionService {
       return { success: true, skipped: true, state: normalized };
     }
 
-    const payload = {
+    const payload = await this.scopeFuelPayload({
       vehicle_id: vehicleId,
       current_fuel_liters: normalized.liters,
       current_fuel_lines: normalized.lines,
@@ -2022,13 +2131,14 @@ class FuelTransactionService {
       last_transaction_id: transactionId,
       last_rental_id: rentalId,
       last_updated_at: new Date().toISOString(),
-    };
+    }, this.vehicleFuelStateTable, 'Workspace organization context is required to save vehicle fuel states.');
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(this.vehicleFuelStateTable)
       .upsert(payload, { onConflict: 'vehicle_id' })
-      .select('*')
-      .maybeSingle();
+      .select('*');
+    query = await this.scopeFuelQuery(query, this.vehicleFuelStateTable, 'Workspace organization context is required to save vehicle fuel states.');
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       return { success: false, error: error.message };
@@ -2074,12 +2184,13 @@ class FuelTransactionService {
       return { success: true, skipped: true };
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(this.vehiclesTable)
       .update({ current_odometer: normalizedValue })
       .eq('id', vehicleId)
-      .select('id, current_odometer')
-      .maybeSingle();
+      .select('id, current_odometer');
+    query = await this.scopeFuelQuery(query, this.vehiclesTable, 'Workspace organization context is required to update vehicle odometer.');
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       return { success: false, error: error.message };
@@ -2105,11 +2216,12 @@ class FuelTransactionService {
       return { success: true, skipped: true };
     }
 
-    const { data: rental, error } = await supabase
+    let rentalQuery = supabase
       .from(RENTALS_TABLE)
       .select('id, start_fuel_level, end_fuel_level')
-      .eq('id', rentalId)
-      .maybeSingle();
+      .eq('id', rentalId);
+    rentalQuery = await this.scopeFuelQuery(rentalQuery, RENTALS_TABLE, 'Workspace organization context is required to load rental fuel snapshots.');
+    const { data: rental, error } = await rentalQuery.maybeSingle();
 
     if (error) {
       return { success: false, error: error.message };
@@ -2139,10 +2251,12 @@ class FuelTransactionService {
       linked_fuel_synced_at: new Date().toISOString(),
     };
 
-    const { error: updateError } = await supabase
+    let updateQuery = supabase
       .from(RENTALS_TABLE)
       .update(snapshotPayload)
       .eq('id', rentalId);
+    updateQuery = await this.scopeFuelQuery(updateQuery, RENTALS_TABLE, 'Workspace organization context is required to save rental fuel snapshots.');
+    const { error: updateError } = await updateQuery;
 
     if (updateError) {
       return { success: false, error: updateError.message };
@@ -2765,10 +2879,16 @@ class FuelTransactionService {
       return new Map();
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(RENTALS_TABLE)
       .select('id, vehicle_id, start_fuel_level, end_fuel_level')
       .in('id', uniqueIds);
+    query = await this.scopeFuelQuery(
+      query,
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental fuel levels.',
+    );
+    const { data, error } = await query;
 
     if (error) {
       return new Map();

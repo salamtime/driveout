@@ -35,6 +35,19 @@ const normalizeUrlHostname = (value = '') => {
   }
 };
 
+const buildTenantHostnameCandidates = (hostname = '') => {
+  const rawHostname = String(hostname || '').trim().toLowerCase();
+  const normalizedHostname = normalizeHostname(hostname);
+  const candidates = new Set([rawHostname, normalizedHostname].filter(Boolean));
+  const tenantSlug = getTenantSlugFromHostname(hostname);
+
+  if (tenantSlug) {
+    candidates.add(`${tenantSlug}.${DRIVEOUT_BASE_DOMAIN}`);
+  }
+
+  return Array.from(candidates);
+};
+
 const getTenantSlugFromHostname = (hostname = '') => {
   const rawHostname = String(hostname || '').trim().toLowerCase();
   const normalizedHostname = normalizeHostname(hostname);
@@ -50,13 +63,13 @@ const getTenantSlugFromHostname = (hostname = '') => {
 };
 
 export const getRequestedHostname = (req, payload = null) =>
-  normalizeHostname(
+  String(
     payload?.hostname ||
     req.query?.hostname ||
     req.headers['x-forwarded-host'] ||
     req.headers.host ||
     ''
-  );
+  ).trim().toLowerCase();
 
 const getTenantMetadata = (tenant = {}) => (
   tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
@@ -77,17 +90,24 @@ const findTenantByHostname = async ({ adminClient, hostname }) => {
   if (slugError) throw slugError;
   if (bySlug) return bySlug;
 
+  const hostnameCandidates = buildTenantHostnameCandidates(hostname);
   const { data, error } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
     adminClient
       .from(PLATFORM_TENANTS_TABLE)
       .select(selectClause)
-      .ilike('tenant_app_url', `%${hostname}%`)
-      .limit(10)
+      .limit(100)
   );
 
   if (error) throw error;
 
-  return (data || []).find((tenant) => normalizeUrlHostname(tenant.tenant_app_url) === hostname) || null;
+  return (
+    (data || []).find((tenant) => {
+      const tenantUrlHostname = normalizeUrlHostname(tenant.tenant_app_url);
+      const normalizedTenantSlug = String(tenant?.tenant_slug || '').trim().toLowerCase();
+
+      return hostnameCandidates.includes(tenantUrlHostname) || (tenantSlug && normalizedTenantSlug === tenantSlug);
+    }) || null
+  );
 };
 
 const resolveTenantOrganizationContext = async ({ adminClient, tenant }) => {

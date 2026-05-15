@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase.js';
 import { getUsers } from '../../services/UserService';
 import { shortenUrl } from '../../services/UrlShortenerService';
+import { scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import {
   addTaskComment,
   claimTask,
@@ -291,26 +292,70 @@ const safeLoadLabelSource = async (label, query) => {
 
 const loadLabelSources = async () => {
   const [vehicles, rentals, maintenance, tours] = await Promise.all([
-    safeLoadLabelSource('Vehicle', supabase
-      .from('saharax_0u4w4d_vehicles')
-      .select('id,plate_number,name,model')
-      .order('plate_number', { ascending: true })
-      .limit(120)),
-    safeLoadLabelSource('Rental', supabase
-      .from('app_4c3a7a6153_rentals')
-      .select('id,rental_id,customer_name,created_at')
-      .order('created_at', { ascending: false })
-      .limit(120)),
-    safeLoadLabelSource('Maintenance', supabase
-      .from('app_687f658e98_maintenance')
-      .select('id,vehicle_id,created_at')
-      .order('created_at', { ascending: false })
-      .limit(120)),
-    safeLoadLabelSource('Tours', supabase
-      .from(TABLE_NAMES.TOUR_BOOKINGS)
-      .select('id,tour_id,customer_name,booking_payload,booking_status,scheduled_for,rental_status,package_name,route_type,guide_id,guide_name,scheduled_date,scheduled_time,scheduled_end_at,notes,quad_count')
-      .order('scheduled_for', { ascending: true })
-      .limit(120)),
+    (async () => {
+      const query = await scopeTenantOwnedQuery(
+        supabase
+          .from(TABLE_NAMES.VEHICLES)
+          .select('id,organization_id,plate_number,name,model')
+          .order('plate_number', { ascending: true })
+          .limit(120),
+        TABLE_NAMES.VEHICLES,
+        { message: 'Workspace organization context is required to load task vehicle labels.' }
+      );
+      const data = await safeLoadLabelSource('Vehicle', query);
+      await verifyTenantOwnedRows(data || [], TABLE_NAMES.VEHICLES, {
+        message: 'Task vehicle labels returned rows outside the active workspace.',
+      });
+      return data;
+    })(),
+    (async () => {
+      const query = await scopeTenantOwnedQuery(
+        supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('id,organization_id,rental_id,customer_name,created_at')
+          .order('created_at', { ascending: false })
+          .limit(120),
+        'app_4c3a7a6153_rentals',
+        { message: 'Workspace organization context is required to load task rental labels.' }
+      );
+      const data = await safeLoadLabelSource('Rental', query);
+      await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+        message: 'Task rental labels returned rows outside the active workspace.',
+      });
+      return data;
+    })(),
+    (async () => {
+      const query = await scopeTenantOwnedQuery(
+        supabase
+          .from('app_687f658e98_maintenance')
+          .select('id,organization_id,vehicle_id,created_at')
+          .order('created_at', { ascending: false })
+          .limit(120),
+        'app_687f658e98_maintenance',
+        { message: 'Workspace organization context is required to load task maintenance labels.' }
+      );
+      const data = await safeLoadLabelSource('Maintenance', query);
+      await verifyTenantOwnedRows(data || [], 'app_687f658e98_maintenance', {
+        message: 'Task maintenance labels returned rows outside the active workspace.',
+      });
+      return data;
+    })(),
+    (async () => {
+      const query = await scopeTenantOwnedQuery(
+        supabase
+          .from(TABLE_NAMES.TOUR_BOOKINGS)
+          .select('id,organization_id,tour_id,customer_name,booking_payload,booking_status,scheduled_for,rental_status,package_name,route_type,guide_id,guide_name,scheduled_date,scheduled_time,scheduled_end_at,notes,quad_count')
+          .order('scheduled_for', { ascending: true })
+          .limit(120),
+        TABLE_NAMES.TOUR_BOOKINGS,
+        { message: 'Workspace organization context is required to load task tour labels.' }
+      );
+      const data = await safeLoadLabelSource('Tours', query);
+      await verifyTenantOwnedRows(data || [], TABLE_NAMES.TOUR_BOOKINGS, {
+        message: 'Task tour labels returned rows outside the active workspace.',
+      });
+      return data;
+    })(),
   ]);
 
   return {

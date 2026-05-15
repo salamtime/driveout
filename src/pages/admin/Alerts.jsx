@@ -35,6 +35,7 @@ import inventoryAlertsService from '../../services/AlertsService';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
 import { buildTourTrackingUrl } from '../../services/tourTrackingService';
+import { scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import i18n from '../../i18n';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
@@ -140,6 +141,32 @@ const extractTourBookingMeta = (value) => {
 };
 
 const formatAmount = (amount) => `${Number(amount || 0).toLocaleString()} MAD`;
+
+const loadScopedVehiclesByIds = async (vehicleIds = []) => {
+  const normalizedIds = [...new Set((vehicleIds || []).filter(Boolean).map(String))];
+  if (normalizedIds.length === 0) return new Map();
+
+  const query = await scopeTenantOwnedQuery(
+    supabase
+      .from(TABLE_NAMES.VEHICLES)
+      .select('id,organization_id,name,model,plate_number')
+      .in('id', normalizedIds),
+    TABLE_NAMES.VEHICLES,
+    { message: 'Workspace organization context is required to load alert vehicles.' }
+  );
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn('Alert vehicle lookup unavailable:', error.message || error);
+    return new Map();
+  }
+
+  await verifyTenantOwnedRows(data || [], TABLE_NAMES.VEHICLES, {
+    message: 'Alert vehicle lookup returned rows outside the active workspace.',
+  });
+
+  return new Map((data || []).map((vehicle) => [String(vehicle.id), vehicle]));
+};
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -350,26 +377,24 @@ const Alerts = () => {
       const now = new Date();
       const dueSoonWindow = new Date(now.getTime() + RETURN_DUE_SOON_HOURS * 60 * 60 * 1000);
 
-      const { data, error: rentalsError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select(`
-          id,
-          customer_name,
-          customer_phone,
-          rental_end_date,
-          rental_status,
-          total_amount,
-          remaining_amount,
-          rental_completed_at,
-          vehicle_id,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(id, name, model, plate_number)
-        `)
-        .is('rental_completed_at', null)
-        .neq('rental_status', 'cancelled')
-        .neq('rental_status', 'completed')
-        .order('rental_end_date', { ascending: true });
+      const rentalsQuery = await scopeTenantOwnedQuery(
+        supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('id,organization_id,customer_name,customer_phone,rental_end_date,rental_status,total_amount,remaining_amount,rental_completed_at,vehicle_id')
+          .is('rental_completed_at', null)
+          .neq('rental_status', 'cancelled')
+          .neq('rental_status', 'completed')
+          .order('rental_end_date', { ascending: true }),
+        'app_4c3a7a6153_rentals',
+        { message: 'Workspace organization context is required to load rental alerts.' }
+      );
+      const { data, error: rentalsError } = await rentalsQuery;
 
       if (rentalsError) throw rentalsError;
+      await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+        message: 'Rental alerts returned rows outside the active workspace.',
+      });
+      const vehicleMap = await loadScopedVehiclesByIds((data || []).map((rental) => rental.vehicle_id));
 
       return (data || []).flatMap((rental) => {
         const dueDate = new Date(rental.rental_end_date);
@@ -379,8 +404,9 @@ const Alerts = () => {
 
         const hoursUntilDue = Math.abs(dueDate.getTime() - now.getTime()) / (1000 * 60 * 60);
         const amountDue = Math.max(0, Number(rental.remaining_amount || 0));
-        const vehicleName = rental.vehicle?.model || rental.vehicle?.name || tr('Vehicle', 'Vehicule');
-        const plateNumber = rental.vehicle?.plate_number || tr('N/A', 'N/D');
+        const vehicle = vehicleMap.get(String(rental.vehicle_id || '')) || null;
+        const vehicleName = vehicle?.model || vehicle?.name || tr('Vehicle', 'Vehicule');
+        const plateNumber = vehicle?.plate_number || tr('N/A', 'N/D');
 
         return [{
           id: `rental-${rental.id}-${isOverdue ? 'overdue' : 'due'}`,
@@ -410,29 +436,29 @@ const Alerts = () => {
 
   const loadPriceApprovalAlerts = useCallback(async () => {
     try {
-      const { data, error: approvalError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select(`
-          id,
-          customer_name,
-          pending_total_request,
-          total_amount,
-          price_override_reason,
-          created_at,
-          vehicle_id,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(id, name, model, plate_number)
-        `)
-        .eq('approval_status', 'pending')
-        .order('created_at', { ascending: false });
+      const approvalQuery = await scopeTenantOwnedQuery(
+        supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('id,organization_id,customer_name,pending_total_request,total_amount,price_override_reason,created_at,vehicle_id')
+          .eq('approval_status', 'pending')
+          .order('created_at', { ascending: false }),
+        'app_4c3a7a6153_rentals',
+        { message: 'Workspace organization context is required to load pricing approval alerts.' }
+      );
+      const { data, error: approvalError } = await approvalQuery;
 
       if (approvalError) throw approvalError;
+      await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+        message: 'Price approval alerts returned rows outside the active workspace.',
+      });
+      const vehicleMap = await loadScopedVehiclesByIds((data || []).map((rental) => rental.vehicle_id));
 
       return (data || []).map((rental) => ({
         id: `approval-${rental.id}`,
         title: tr('Price approval required', 'Validation tarifaire requise'),
         message: isFrench
-          ? `${rental.customer_name} a demande ${formatAmount(rental.pending_total_request)} pour ${rental.vehicle?.model || rental.vehicle?.name || 'vehicule'}.`
-          : `${rental.customer_name} requested ${formatAmount(rental.pending_total_request)} for ${rental.vehicle?.model || rental.vehicle?.name || 'vehicle'}.`,
+          ? `${rental.customer_name} a demande ${formatAmount(rental.pending_total_request)} pour ${vehicleMap.get(String(rental.vehicle_id || ''))?.model || vehicleMap.get(String(rental.vehicle_id || ''))?.name || 'vehicule'}.`
+          : `${rental.customer_name} requested ${formatAmount(rental.pending_total_request)} for ${vehicleMap.get(String(rental.vehicle_id || ''))?.model || vehicleMap.get(String(rental.vehicle_id || ''))?.name || 'vehicle'}.`,
         type: 'warning',
         priority: 'high',
         category: 'rental',

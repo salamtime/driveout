@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { scopeTenantOwnedQuery } from './OrganizationService';
 
 export class FinanceService {
   constructor() {
@@ -46,12 +47,17 @@ export class FinanceService {
 
   async getTotalRevenue(startDate, endDate) {
     try {
-      const { data: rentals, error } = await supabase
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select('total_amount')
         .gte('rental_start_date', startDate)
         .lte('rental_end_date', endDate)
         .in('status', ['completed', 'active']);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to load finance revenue.',
+      });
+
+      const { data: rentals, error } = await query;
 
       if (error) {
         console.error('❌ Error fetching revenue:', error);
@@ -86,7 +92,7 @@ export class FinanceService {
 
   async getVehicleFinancialStats(startDate, endDate) {
     try {
-      const { data: rentals, error } = await supabase
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select(`
           vehicle_id,
@@ -98,6 +104,11 @@ export class FinanceService {
         .gte('rental_start_date', startDate)
         .lte('rental_end_date', endDate)
         .in('status', ['completed', 'active']);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to load vehicle finance data.',
+      });
+
+      const { data: rentals, error } = await query;
 
       if (error) {
         console.error('❌ Error fetching vehicle stats:', error);
@@ -149,7 +160,7 @@ export class FinanceService {
       
       const offset = (page - 1) * pageSize;
       
-      const { data: rentals, error, count } = await supabase
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select(`
           *,
@@ -161,6 +172,11 @@ export class FinanceService {
         .lte('rental_end_date', endDate)
         .order('rental_start_date', { ascending: false })
         .range(offset, offset + pageSize - 1);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to load rental P&L.',
+      });
+
+      const { data: rentals, error, count } = await query;
 
       if (error) {
         console.error('❌ Error fetching rental P&L:', error);
@@ -210,7 +226,7 @@ export class FinanceService {
     try {
       console.log('🏆 Fetching top performing vehicles...');
       
-      const { data: rentals, error } = await supabase
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select(`
           vehicle_id,
@@ -222,6 +238,11 @@ export class FinanceService {
         .gte('rental_start_date', startDate)
         .lte('rental_end_date', endDate)
         .in('status', ['completed', 'active']);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        message: 'Workspace organization context is required to load vehicle performance.',
+      });
+
+      const { data: rentals, error } = await query;
 
       if (error) {
         console.error('❌ Error fetching vehicle performance:', error);

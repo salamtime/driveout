@@ -150,13 +150,12 @@ const getVehicleCount = async () => {
 };
 
 const getStaffCount = async () => {
-  const { count, error } = await supabase
-    .from('users')
-    .select('id', { count: 'exact', head: true })
-    .in('role', STAFF_ROLES);
+  const data = await adminApiRequest('/api/admin/users');
+  const users = Array.isArray(data?.users) ? data.users : [];
 
-  if (error) throw error;
-  return Number(count || 0);
+  return users.filter((user) =>
+    STAFF_ROLES.includes(String(user?.role || '').trim().toLowerCase())
+  ).length;
 };
 
 const getListingCount = async () => {

@@ -10,7 +10,12 @@ import AdminModuleHero from './admin/AdminModuleHero';
 import i18n from '../i18n';
 import { useAuth } from '../contexts/AuthContext';
 import VehicleModelService from '../services/VehicleModelService';
-import { getCurrentOrganizationId, shouldScopeSharedTenantData } from '../services/OrganizationService';
+import {
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
+  verifyTenantOwnedRows,
+} from '../services/OrganizationService';
 
 const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -27,38 +32,66 @@ const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
 
 const applyPricingOrganizationScope = async (query: any, label: string) => {
-  const organizationId = await getCurrentOrganizationId();
+  const tableName = label === 'base prices'
+    ? 'app_4c3a7a6153_base_prices'
+    : label === 'pricing tiers'
+      ? 'pricing_tiers'
+      : label === 'extension rules'
+        ? 'rental_extension_rules'
+        : label === 'package mappings'
+          ? 'package_vehicle_type_mapping'
+          : null;
 
-  if (shouldScopeSharedTenantData()) {
-    if (!organizationId) {
-      throw new Error(`Workspace organization context is required to load ${label}.`);
-    }
-    return query.eq('organization_id', organizationId);
+  if (!tableName) {
+    return query;
   }
 
-  if (organizationId) {
-    return query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
-  }
-
-  return query.is('organization_id', null);
+  return scopeTenantOwnedQuery(query, tableName, {
+    message: `Workspace organization context is required to load ${label}.`,
+  });
 };
 
 const buildPricingOrganizationPayload = async (payload: Record<string, any>, label: string) => {
-  const organizationId = await getCurrentOrganizationId();
+  const tableName = label === 'base price'
+    ? 'app_4c3a7a6153_base_prices'
+    : label === 'pricing tier'
+      ? 'pricing_tiers'
+      : label === 'extension rule'
+        ? 'rental_extension_rules'
+        : label === 'package mapping'
+          ? 'package_vehicle_type_mapping'
+          : null;
 
-  if (shouldScopeSharedTenantData()) {
-    if (!organizationId) {
-      throw new Error(`Workspace organization context is required to save ${label}.`);
-    }
-    return {
-      ...payload,
-      organization_id: organizationId,
-    };
+  if (!tableName) {
+    return payload;
   }
 
-  const { organization_id: _organizationId, ...legacyPayload } = payload || {};
-  return legacyPayload;
+  return matchTenantOwnedPayload(payload, tableName, {
+    message: `Workspace organization context is required to save ${label}.`,
+  });
 };
+
+const attachVehicleModelDetails = (prices: BasePrice[] = [], vehicleModels: VehicleModel[] = []): BasePrice[] => {
+  const vehicleModelMap = new Map(vehicleModels.map((model) => [String(model.id), model]));
+  return prices.map((price) => ({
+    ...price,
+    vehicle_model: vehicleModelMap.has(String(price.vehicle_model_id))
+      ? {
+          name: vehicleModelMap.get(String(price.vehicle_model_id))?.name || '',
+          model: vehicleModelMap.get(String(price.vehicle_model_id))?.model || '',
+          vehicle_type: vehicleModelMap.get(String(price.vehicle_model_id))?.vehicle_type || '',
+        }
+      : price.vehicle_model,
+  }));
+};
+
+const isGlobalPricingSettingsBlocked = () => shouldScopeSharedTenantData();
+
+const getSharedSettingsBlockedMessage = () =>
+  tr(
+    'Shared tenant workspaces cannot read or write the global pricing settings row. This tab is isolated and will stay empty until tenant-specific settings storage is installed.',
+    'Les espaces tenant partagés ne peuvent pas lire ni écrire la ligne globale des paramètres tarifaires. Cet onglet reste isolé et vide jusqu’à l’installation du stockage de paramètres par tenant.'
+  );
 
 interface BasePrice {
   id: string;
@@ -420,6 +453,11 @@ const DynamicPricingManagement: React.FC = () => {
 
   // NEW: Fetch tier enforcement settings
   const fetchTierEnforcementSettings = async () => {
+    if (isGlobalPricingSettingsBlocked()) {
+      console.warn('Shared tenant pricing isolation: skipped global app_settings tier enforcement read.');
+      return;
+    }
+
     try {
       console.log('📡 Loading tier enforcement settings...');
       
@@ -449,6 +487,11 @@ const DynamicPricingManagement: React.FC = () => {
 
   // NEW: Fetch deposit settings from database
   const fetchDepositSettings = async () => {
+    if (isGlobalPricingSettingsBlocked()) {
+      console.warn('Shared tenant pricing isolation: skipped global app_settings deposit read.');
+      return;
+    }
+
     try {
       console.log('📡 Loading deposit settings from app_settings...');
       
@@ -485,31 +528,31 @@ const DynamicPricingManagement: React.FC = () => {
     setError(null);
     
     try {
+      const shouldBlockGlobalSettings = isGlobalPricingSettingsBlocked();
       const [vehicleModelsResult, basePricesResult, appSettingsResult] = await Promise.allSettled([
         VehicleModelService.getActiveModels(),
         applyPricingOrganizationScope(
           supabase
             .from('app_4c3a7a6153_base_prices')
-            .select(`
-              *,
-              vehicle_model:saharax_0u4w4d_vehicle_models (
-                name,
-                model,
-                vehicle_type
-              )
-            `)
+            .select('*')
             .order('created_at', { ascending: false }),
           'base prices'
         ),
-        supabase
-          .from('app_settings')
-          .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
-          .eq('id', 1)
-          .limit(1),
+        shouldBlockGlobalSettings
+          ? Promise.resolve({ data: [], error: null })
+          : supabase
+              .from('app_settings')
+              .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
+              .eq('id', 1)
+              .limit(1),
       ]);
 
+      const resolvedVehicleModels = vehicleModelsResult.status === 'fulfilled'
+        ? (vehicleModelsResult.value || [])
+        : [];
+
       if (vehicleModelsResult.status === 'fulfilled') {
-        setVehicleModels(vehicleModelsResult.value || []);
+        setVehicleModels(resolvedVehicleModels);
       } else {
         console.error('❌ Error fetching vehicle models:', vehicleModelsResult.reason);
         setVehicleModels([]);
@@ -520,10 +563,22 @@ const DynamicPricingManagement: React.FC = () => {
         if (pricesError) {
           throw new Error(`Base prices error: ${pricesError.message}`);
         }
-        setBasePrices(pricesData || []);
+        await verifyTenantOwnedRows(pricesData || [], 'app_4c3a7a6153_base_prices', {
+          message: 'Base prices returned rows outside the active workspace.',
+        });
+        setBasePrices(attachVehicleModelDetails(pricesData || [], resolvedVehicleModels));
       }
 
-      if (appSettingsResult.status === 'fulfilled') {
+      if (shouldBlockGlobalSettings) {
+        setTransportFees({ pickup_fee: 0, dropoff_fee: 0 });
+        setTransportFeeFormData({ pickup_fee: 0, dropoff_fee: 0 });
+        setDepositSettings({ vehicleModelPresets: {}, allowCustomDeposit: true });
+        setTierEnforcement({
+          enabled: true,
+          requireTierForExtensions: true,
+          fallbackToHourly: false
+        });
+      } else if (appSettingsResult.status === 'fulfilled') {
         const { data: dbData, error: dbError } = appSettingsResult.value;
         const appSettingsRow = Array.isArray(dbData) ? dbData[0] : null;
         if (!dbError && appSettingsRow) {
@@ -573,14 +628,20 @@ const DynamicPricingManagement: React.FC = () => {
               .order('min_hours', { ascending: true }),
             'pricing tiers'
           ),
-          supabase
-            .from('rental_extension_rules')
-            .select('*'),
+          applyPricingOrganizationScope(
+            supabase
+              .from('rental_extension_rules')
+              .select('*'),
+            'extension rules'
+          ),
         ]);
 
         if (tiersResult.status === 'fulfilled') {
           const { data: tiersData, error: tiersError } = tiersResult.value;
           if (!tiersError) {
+            await verifyTenantOwnedRows(tiersData || [], 'pricing_tiers', {
+              message: 'Pricing tiers returned rows outside the active workspace.',
+            });
             setPricingTiers(tiersData || []);
           }
         }
@@ -588,6 +649,9 @@ const DynamicPricingManagement: React.FC = () => {
         if (rulesResult.status === 'fulfilled') {
           const { data: rulesData, error: rulesError } = rulesResult.value;
           if (!rulesError) {
+            await verifyTenantOwnedRows(rulesData || [], 'rental_extension_rules', {
+              message: 'Extension rules returned rows outside the active workspace.',
+            });
             setExtensionRules(rulesData || []);
           }
         }
@@ -628,6 +692,10 @@ const DynamicPricingManagement: React.FC = () => {
     setTierEnforcementSuccess(null);
 
     try {
+      if (isGlobalPricingSettingsBlocked()) {
+        throw new Error(getSharedSettingsBlockedMessage());
+      }
+
       const { error } = await supabase
         .from('app_settings')
         .upsert({
@@ -668,14 +736,18 @@ const DynamicPricingManagement: React.FC = () => {
     const maxValue = tierData[maxField];
 
     // Check for overlapping tiers
-    const { data: overlappingTiers } = await supabase
-      .from('pricing_tiers')
-      .select('*')
-      .eq('vehicle_model_id', tierData.vehicle_model_id)
-      .eq('duration_type', tierData.duration_type)
-      .eq('is_active', true)
-      .neq('id', editingTier?.id || '')
-      .or(`and(${minField}.lte.${maxValue},${maxField}.gte.${minValue})`);
+    const overlappingQuery = await applyPricingOrganizationScope(
+      supabase
+        .from('pricing_tiers')
+        .select('*')
+        .eq('vehicle_model_id', tierData.vehicle_model_id)
+        .eq('duration_type', tierData.duration_type)
+        .eq('is_active', true)
+        .neq('id', editingTier?.id || '')
+        .or(`and(${minField}.lte.${maxValue},${maxField}.gte.${minValue})`),
+      'pricing tiers'
+    );
+    const { data: overlappingTiers } = await overlappingQuery;
 
     if (overlappingTiers && overlappingTiers.length > 0) {
       const firstOverlap = overlappingTiers[0];
@@ -688,14 +760,18 @@ const DynamicPricingManagement: React.FC = () => {
     }
 
     // Check if this creates any gaps
-    const { data: allTiers } = await supabase
-      .from('pricing_tiers')
-      .select('*')
-      .eq('vehicle_model_id', tierData.vehicle_model_id)
-      .eq('duration_type', tierData.duration_type)
-      .eq('is_active', true)
-      .neq('id', editingTier?.id || '')
-      .order(minField, { ascending: true });
+    const allTiersQuery = await applyPricingOrganizationScope(
+      supabase
+        .from('pricing_tiers')
+        .select('*')
+        .eq('vehicle_model_id', tierData.vehicle_model_id)
+        .eq('duration_type', tierData.duration_type)
+        .eq('is_active', true)
+        .neq('id', editingTier?.id || '')
+        .order(minField, { ascending: true }),
+      'pricing tiers'
+    );
+    const { data: allTiers } = await allTiersQuery;
 
     // Analyze coverage
     const tiers = allTiers || [];
@@ -830,17 +906,23 @@ const DynamicPricingManagement: React.FC = () => {
         
         console.log('✅ Price updated:', result);
       } else {
-        const { data, error } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .insert([{
-            ...priceData,
-            created_at: new Date().toISOString()
-          }])
-          .select()
-          .single();
+        const insertQuery = await applyPricingOrganizationScope(
+          supabase
+            .from('app_4c3a7a6153_base_prices')
+            .insert([{
+              ...priceData,
+              created_at: new Date().toISOString()
+            }])
+            .select(),
+          'base prices'
+        );
+        const { data, error } = await insertQuery.single();
 
         if (error) throw error;
-        result = data;
+        await verifyTenantOwnedRows(data, 'app_4c3a7a6153_base_prices', {
+          message: 'Created base price returned data outside the active workspace.',
+        });
+        result = attachVehicleModelDetails([data], vehicleModels)[0] || data;
         
         setBasePrices(prev => [result, ...prev]);
         
@@ -973,16 +1055,22 @@ const DynamicPricingManagement: React.FC = () => {
         tier.id === editingTier.id ? data : tier
       ));
     } else {
-      const { data, error } = await supabase
-        .from('pricing_tiers')
-        .insert([{
-          ...tierData,
-          created_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
+      const insertQuery = await applyPricingOrganizationScope(
+        supabase
+          .from('pricing_tiers')
+          .insert([{
+            ...tierData,
+            created_at: new Date().toISOString()
+          }])
+          .select(),
+        'pricing tiers'
+      );
+      const { data, error } = await insertQuery.single();
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, 'pricing_tiers', {
+        message: 'Created pricing tier returned data outside the active workspace.',
+      });
       
       setPricingTiers(prev => [...prev, data]);
     }
@@ -1027,10 +1115,14 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm('Are you sure you want to delete this extension rule?')) return;
 
     try {
-      const { error } = await supabase
-        .from('rental_extension_rules')
-        .delete()
-        .eq('id', id);
+      const deleteQuery = await applyPricingOrganizationScope(
+        supabase
+          .from('rental_extension_rules')
+          .delete()
+          .eq('id', id),
+        'extension rules'
+      );
+      const { error } = await deleteQuery;
 
       if (error) throw error;
 
@@ -1049,39 +1141,51 @@ const DynamicPricingManagement: React.FC = () => {
     setSubmitting(true);
 
     try {
-      const ruleData = {
+      const ruleData = await buildPricingOrganizationPayload({
         base_price_id: extensionFormData.base_price_id,
         grace_period_minutes: parseInt(extensionFormData.grace_period_minutes.toString()),
         extension_price_multiplier: parseFloat(extensionFormData.extension_price_multiplier.toString()),
         auto_adjust_enabled: extensionFormData.auto_adjust_enabled,
         requires_manual_extension: extensionFormData.requires_manual_extension,
         updated_at: new Date().toISOString()
-      };
+      }, 'extension rule');
 
       if (editingExtension) {
-        const { data, error } = await supabase
-          .from('rental_extension_rules')
-          .update(ruleData)
-          .eq('id', editingExtension.id)
-          .select()
-          .single();
+        const updateQuery = await applyPricingOrganizationScope(
+          supabase
+            .from('rental_extension_rules')
+            .update(ruleData)
+            .eq('id', editingExtension.id)
+            .select(),
+          'extension rules'
+        );
+        const { data, error } = await updateQuery.single();
 
         if (error) throw error;
+        await verifyTenantOwnedRows(data, 'rental_extension_rules', {
+          message: 'Updated extension rule returned data outside the active workspace.',
+        });
         
         setExtensionRules(prev => prev.map(rule => 
           rule.id === editingExtension.id ? data : rule
         ));
       } else {
-        const { data, error } = await supabase
-          .from('rental_extension_rules')
-          .insert([{
-            ...ruleData,
-            created_at: new Date().toISOString()
-          }])
-          .select()
-          .single();
+        const insertQuery = await applyPricingOrganizationScope(
+          supabase
+            .from('rental_extension_rules')
+            .insert([{
+              ...ruleData,
+              created_at: new Date().toISOString()
+            }])
+            .select(),
+          'extension rules'
+        );
+        const { data, error } = await insertQuery.single();
 
         if (error) throw error;
+        await verifyTenantOwnedRows(data, 'rental_extension_rules', {
+          message: 'Created extension rule returned data outside the active workspace.',
+        });
         
         setExtensionRules(prev => [...prev, data]);
       }
@@ -1136,6 +1240,10 @@ const DynamicPricingManagement: React.FC = () => {
     setTransportFeeSuccess(null);
 
     try {
+      if (isGlobalPricingSettingsBlocked()) {
+        throw new Error(getSharedSettingsBlockedMessage());
+      }
+
       if (transportFeeFormData.pickup_fee < 0 || transportFeeFormData.dropoff_fee < 0) {
         throw new Error('Fees cannot be negative');
       }
@@ -1257,6 +1365,10 @@ const DynamicPricingManagement: React.FC = () => {
     setDepositSettingsSuccess(null);
 
     try {
+      if (isGlobalPricingSettingsBlocked()) {
+        throw new Error(getSharedSettingsBlockedMessage());
+      }
+
       // Validation for all vehicle models
       Object.entries(depositSettings.vehicleModelPresets).forEach(([vehicleId, presets]) => {
         presets.forEach((preset, index) => {
@@ -2101,13 +2213,19 @@ const DynamicPricingManagement: React.FC = () => {
                   </div>
                   <button
                     onClick={saveTierEnforcementSettings}
-                    disabled={savingTierEnforcement}
+                    disabled={savingTierEnforcement || isGlobalPricingSettingsBlocked()}
                     className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {savingTierEnforcement ? <Loader className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                     {savingTierEnforcement ? 'Enregistrement...' : 'Enregistrer les paramètres'}
                   </button>
                 </div>
+
+                {isGlobalPricingSettingsBlocked() && (
+                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    {getSharedSettingsBlockedMessage()}
+                  </div>
+                )}
 
                 {(tierEnforcementSuccess || tierEnforcementError) && (
                   <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
@@ -2894,6 +3012,12 @@ const DynamicPricingManagement: React.FC = () => {
           </div>
 
           <form onSubmit={handleSaveTransportFees} className="p-6 space-y-6">
+            {isGlobalPricingSettingsBlocked() && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                {getSharedSettingsBlockedMessage()}
+              </div>
+            )}
+
             {/* Success Message */}
             {transportFeeSuccess && (
               <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
@@ -2954,7 +3078,7 @@ const DynamicPricingManagement: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={savingTransportFees}
+                disabled={savingTransportFees || isGlobalPricingSettingsBlocked()}
                 className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingTransportFees ? (
@@ -3000,7 +3124,7 @@ const DynamicPricingManagement: React.FC = () => {
               </div>
               <button
                 onClick={handleSaveDepositSettings}
-                disabled={savingDepositSettings}
+                disabled={savingDepositSettings || isGlobalPricingSettingsBlocked()}
                 className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingDepositSettings ? (
@@ -3016,6 +3140,12 @@ const DynamicPricingManagement: React.FC = () => {
                 )}
               </button>
             </div>
+
+            {isGlobalPricingSettingsBlocked() && (
+              <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                {getSharedSettingsBlockedMessage()}
+              </div>
+            )}
 
             <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
               <select

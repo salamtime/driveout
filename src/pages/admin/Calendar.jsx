@@ -19,6 +19,7 @@ import { Button } from '../../components/ui/button';
 import { supabase } from '../../lib/supabase';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { getTasks } from '../../services/TaskService';
+import { scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import i18n from '../../i18n';
 
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
@@ -506,43 +507,97 @@ const CalendarPage = () => {
   const loadCalendarData = async () => {
     setLoading(true);
     const [vehicles, rentals, tours, maintenance, tasks] = await Promise.all([
-      safeSelect('Vehicles', supabase
-        .from(TABLE_NAMES.VEHICLES)
-        .select('id,plate_number,name,model,status')
-        .limit(500)),
-      safeSelect('Rentals', supabase
-        .from(TABLE_NAMES.RENTALS)
-        .select('id,rental_id,customer_name,rental_status,status,rental_start_date,rental_end_date,started_at,completed_at,actual_end_date,vehicle_id,vehicle_plate_number,total_amount,created_at,updated_at')
-        .order('rental_start_date', { ascending: false })
-        .limit(500)),
-      safeSelectWithFallback({
-        label: 'Tours',
-        primary: supabase
-          .from(TABLE_NAMES.TOUR_BOOKINGS)
-          .select('id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes,vehicle_id')
-          .order('scheduled_for', { ascending: false })
-          .limit(500),
-        fallbackQuery: () => supabase
-          .from(TABLE_NAMES.TOUR_BOOKINGS)
-          .select('id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes')
-          .order('scheduled_for', { ascending: false })
-          .limit(500),
-        shouldFallback: (message) => /vehicle_id/i.test(message) && /does not exist/i.test(message),
-      }),
-      safeSelectWithFallback({
-        label: 'Maintenance',
-        primary: supabase
-          .from('app_687f658e98_maintenance')
-          .select('id,vehicle_id,vehicle_name,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
-          .order('created_at', { ascending: false })
-          .limit(500),
-        fallbackQuery: () => supabase
-          .from('app_687f658e98_maintenance')
-          .select('id,vehicle_id,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
-          .order('created_at', { ascending: false })
-          .limit(500),
-        shouldFallback: (message) => /vehicle_name/i.test(message) && /does not exist/i.test(message),
-      }),
+      (async () => {
+        const query = await scopeTenantOwnedQuery(
+          supabase
+            .from(TABLE_NAMES.VEHICLES)
+            .select('id,organization_id,plate_number,name,model,status')
+            .limit(500),
+          TABLE_NAMES.VEHICLES,
+          { message: 'Workspace organization context is required to load calendar vehicles.' }
+        );
+        const data = await safeSelect('Vehicles', query);
+        await verifyTenantOwnedRows(data || [], TABLE_NAMES.VEHICLES, {
+          message: 'Calendar vehicles returned rows outside the active workspace.',
+        });
+        return data;
+      })(),
+      (async () => {
+        const query = await scopeTenantOwnedQuery(
+          supabase
+            .from(TABLE_NAMES.RENTALS)
+            .select('id,organization_id,rental_id,customer_name,rental_status,status,rental_start_date,rental_end_date,started_at,completed_at,actual_end_date,vehicle_id,vehicle_plate_number,total_amount,created_at,updated_at')
+            .order('rental_start_date', { ascending: false })
+            .limit(500),
+          TABLE_NAMES.RENTALS,
+          { message: 'Workspace organization context is required to load calendar rentals.' }
+        );
+        const data = await safeSelect('Rentals', query);
+        await verifyTenantOwnedRows(data || [], TABLE_NAMES.RENTALS, {
+          message: 'Calendar rentals returned rows outside the active workspace.',
+        });
+        return data;
+      })(),
+      (async () => {
+        const primary = await scopeTenantOwnedQuery(
+          supabase
+            .from(TABLE_NAMES.TOUR_BOOKINGS)
+            .select('id,organization_id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes,vehicle_id')
+            .order('scheduled_for', { ascending: false })
+            .limit(500),
+          TABLE_NAMES.TOUR_BOOKINGS,
+          { message: 'Workspace organization context is required to load calendar tours.' }
+        );
+        const fallbackQuery = async () => scopeTenantOwnedQuery(
+          supabase
+            .from(TABLE_NAMES.TOUR_BOOKINGS)
+            .select('id,organization_id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes')
+            .order('scheduled_for', { ascending: false })
+            .limit(500),
+          TABLE_NAMES.TOUR_BOOKINGS,
+          { message: 'Workspace organization context is required to load calendar tours.' }
+        );
+        const data = await safeSelectWithFallback({
+          label: 'Tours',
+          primary,
+          fallbackQuery,
+          shouldFallback: (message) => /vehicle_id/i.test(message) && /does not exist/i.test(message),
+        });
+        await verifyTenantOwnedRows(data || [], TABLE_NAMES.TOUR_BOOKINGS, {
+          message: 'Calendar tours returned rows outside the active workspace.',
+        });
+        return data;
+      })(),
+      (async () => {
+        const primary = await scopeTenantOwnedQuery(
+          supabase
+            .from('app_687f658e98_maintenance')
+            .select('id,organization_id,vehicle_id,vehicle_name,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
+            .order('created_at', { ascending: false })
+            .limit(500),
+          'app_687f658e98_maintenance',
+          { message: 'Workspace organization context is required to load maintenance calendar entries.' }
+        );
+        const fallbackQuery = async () => scopeTenantOwnedQuery(
+          supabase
+            .from('app_687f658e98_maintenance')
+            .select('id,organization_id,vehicle_id,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
+            .order('created_at', { ascending: false })
+            .limit(500),
+          'app_687f658e98_maintenance',
+          { message: 'Workspace organization context is required to load maintenance calendar entries.' }
+        );
+        const data = await safeSelectWithFallback({
+          label: 'Maintenance',
+          primary,
+          fallbackQuery,
+          shouldFallback: (message) => /vehicle_name/i.test(message) && /does not exist/i.test(message),
+        });
+        await verifyTenantOwnedRows(data || [], 'app_687f658e98_maintenance', {
+          message: 'Calendar maintenance returned rows outside the active workspace.',
+        });
+        return data;
+      })(),
       getTasks().catch((error) => {
         console.warn('Tasks unavailable:', error.message || error);
         return [];

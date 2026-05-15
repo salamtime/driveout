@@ -251,16 +251,18 @@ const PackageService = {
       const { data, error } = await runPackageReadQuery(
         () => supabase
           .from(PACKAGE_TABLE)
-          .select(`
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models(*)
-          `)
+          .select('*')
           .order('id'),
         organizationId
       );
 
       if (error) throw error;
-      return data || [];
+      const vehicleModels = await VehicleModelService.getAllVehicleModels();
+      const modelsById = new Map((vehicleModels || []).map((model) => [String(model.id), model]));
+      return (data || []).map((pkg) => ({
+        ...pkg,
+        vehicle_model: modelsById.get(String(pkg.vehicle_model_id)) || null,
+      }));
     } catch (error) {
       console.error('Error fetching packages:', error);
       throw error;

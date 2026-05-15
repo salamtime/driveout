@@ -32,12 +32,22 @@ export const addUser = async (email, password, name, role, appProfile = {}) => {
     await assertCanCreateStaffUser();
   }
 
-  const data = await adminApiRequest('/api/admin/users', {
+  const host = getHostContext();
+  const currentHostname =
+    typeof window !== 'undefined' && window.location?.host
+      ? String(window.location.host).trim().toLowerCase()
+      : '';
+  const requestPath = host.kind === 'tenant' && currentHostname
+    ? `/api/admin/users?hostname=${encodeURIComponent(currentHostname)}`
+    : '/api/admin/users';
+
+  const data = await adminApiRequest(requestPath, {
     method: 'POST',
     body: JSON.stringify({
       email,
       password,
       email_confirm: true,
+      hostname: host.kind === 'tenant' ? currentHostname || undefined : undefined,
       user_metadata: {
         full_name: name,
         role,
@@ -167,6 +177,26 @@ export const updateUserProfile = async (userId, updates) => {
  * Deletes a user.
  */
 export const deleteUser = async (userId) => {
+  const host = getHostContext();
+  if (host.kind === 'tenant') {
+    const currentHostname =
+      typeof window !== 'undefined' && window.location?.host
+        ? String(window.location.host).trim().toLowerCase()
+        : '';
+    const detachPath = currentHostname
+      ? `/api/admin/users/${userId}?hostname=${encodeURIComponent(currentHostname)}`
+      : `/api/admin/users/${userId}`;
+
+    await adminApiRequest(detachPath, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        action: 'detach_workspace_user',
+        hostname: currentHostname || undefined,
+      }),
+    });
+    return;
+  }
+
   await adminApiRequest(`/api/admin/users/${userId}`, {
     method: 'DELETE',
   });

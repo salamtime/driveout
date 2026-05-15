@@ -1,31 +1,85 @@
 import { supabase } from '../lib/supabase';
+import {
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
+  verifyTenantOwnedRows,
+} from './OrganizationService';
+
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
+const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
+const BASE_PRICES_TABLE = 'app_4c3a7a6153_base_prices';
+const PRICING_TIERS_TABLE = 'pricing_tiers';
+const RENTAL_EXTENSIONS_TABLE = 'rental_extensions';
 
 export class ExtensionPricingService {
+  static async scopeQuery(query, tableName, message) {
+    return scopeTenantOwnedQuery(query, tableName, { message });
+  }
+
+  static async verifyRows(rows, tableName, message) {
+    return verifyTenantOwnedRows(rows, tableName, { message });
+  }
+
+  static async loadRentalWithVehicle(rentalId) {
+    let query = supabase
+      .from(RENTALS_TABLE)
+      .select(`
+        *,
+        organization_id,
+        vehicle:${VEHICLES_TABLE}!app_4c3a7a6153_rentals_vehicle_id_fkey(
+          *,
+          vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
+        )
+      `)
+      .eq('id', rentalId);
+
+    query = await this.scopeQuery(
+      query,
+      RENTALS_TABLE,
+      'Workspace organization context is required to load rental extension details.'
+    );
+
+    const { data, error } = await query.single();
+    if (error) throw error;
+
+    await this.verifyRows(data, RENTALS_TABLE, 'Rental extension details returned data outside the active workspace.');
+    await this.verifyRows(data?.vehicle || [], VEHICLES_TABLE, 'Rental extension vehicle returned data outside the active workspace.');
+
+    return data;
+  }
+
   static async getLatestVoidableExtension(rentalId) {
-    const { data, error } = await supabase
-      .from('rental_extensions')
+    let query = supabase
+      .from(RENTAL_EXTENSIONS_TABLE)
       .select('*')
       .eq('rental_id', rentalId)
       .in('status', ['approved', 'active', 'completed'])
       .order('approved_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
+
+    query = await this.scopeQuery(query, RENTAL_EXTENSIONS_TABLE, 'Workspace organization context is required to load rental extensions.');
+    const { data, error } = await query.maybeSingle();
 
     if (error) throw error;
+    await this.verifyRows(data || [], RENTAL_EXTENSIONS_TABLE, 'Rental extension returned data outside the active workspace.');
     return data || null;
   }
 
   static async getApprovedExtensionSummary(rentalId) {
-    const { data, error } = await supabase
-      .from('rental_extensions')
-      .select('id, extension_hours, extension_price, status, created_at, approved_at')
+    let query = supabase
+      .from(RENTAL_EXTENSIONS_TABLE)
+      .select('id, organization_id, extension_hours, extension_price, status, created_at, approved_at')
       .eq('rental_id', rentalId)
       .eq('status', 'approved')
       .order('approved_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false });
 
+    query = await this.scopeQuery(query, RENTAL_EXTENSIONS_TABLE, 'Workspace organization context is required to load approved rental extensions.');
+    const { data, error } = await query;
     if (error) throw error;
+    await this.verifyRows(data || [], RENTAL_EXTENSIONS_TABLE, 'Approved rental extensions returned data outside the active workspace.');
 
     const approvedExtensions = data || [];
 
@@ -52,14 +106,17 @@ export class ExtensionPricingService {
     
     // 1. Try to fetch from base_prices table (dynamic from DB)
     if (rental.vehicle?.vehicle_model?.id) {
-      const { data: priceData, error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select('hourly_price')
+      let query = supabase
+        .from(BASE_PRICES_TABLE)
+        .select('organization_id, hourly_price')
         .eq('vehicle_model_id', rental.vehicle.vehicle_model.id)
-        .eq('is_active', true)
-        .single();
+        .eq('is_active', true);
+
+      query = await this.scopeQuery(query, BASE_PRICES_TABLE, 'Workspace organization context is required to load extension base prices.');
+      const { data: priceData, error } = await query.maybeSingle();
       
       if (!error && priceData?.hourly_price) {
+        await this.verifyRows(priceData, BASE_PRICES_TABLE, 'Extension base price returned data outside the active workspace.');
         hourlyRate = parseFloat(priceData.hourly_price);
       }
     }
@@ -76,6 +133,10 @@ export class ExtensionPricingService {
     
     // 4. Ultimate fallback based on vehicle type
     if (hourlyRate === 0) {
+      if (shouldScopeSharedTenantData()) {
+        throw new Error('Tenant hourly extension price is missing. Add an hourly base price before extending this rental.');
+      }
+
       const vehicleName = String(rental.vehicle?.name || rental.vehicle?.vehicle_model?.model || '').toUpperCase();
       
       if (vehicleName.includes('AT6')) {
@@ -110,16 +171,20 @@ export class ExtensionPricingService {
    * Find matching daily tier for given number of days
    */
   static async findMatchingDailyTier(vehicleModelId, days) {
-    const { data: tiers, error } = await supabase
-      .from('pricing_tiers')
+    let query = supabase
+      .from(PRICING_TIERS_TABLE)
       .select('*')
       .eq('vehicle_model_id', vehicleModelId)
       .eq('is_active', true)
       .eq('duration_type', 'days')
       .not('min_days', 'is', null)
       .not('max_days', 'is', null);
+
+    query = await this.scopeQuery(query, PRICING_TIERS_TABLE, 'Workspace organization context is required to load daily pricing tiers.');
+    const { data: tiers, error } = await query;
     
     if (error || !tiers) return null;
+    await this.verifyRows(tiers, PRICING_TIERS_TABLE, 'Daily pricing tiers returned data outside the active workspace.');
     
     // Find tier where days falls within min_days and max_days
     return tiers.find(tier => {
@@ -146,19 +211,7 @@ export class ExtensionPricingService {
   static async calculateExtensionPrice(rentalId, extensionValue, extensionType = 'hours') {
     try {
       // 1. Get rental details including vehicle model
-      const { data: rental, error: rentalError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-          )
-        `)
-        .eq('id', rentalId)
-        .single();
-      
-      if (rentalError) throw rentalError;
+      const rental = await this.loadRentalWithVehicle(rentalId);
       
       const vehicleModelId = rental.vehicle?.vehicle_model?.id;
       if (!vehicleModelId) {
@@ -360,16 +413,18 @@ export class ExtensionPricingService {
    */
   static async getBaseDailyPrice(vehicleModelId) {
     try {
-      const { data: basePrice, error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select('daily_price')
+      let query = supabase
+        .from(BASE_PRICES_TABLE)
+        .select('organization_id, daily_price')
         .eq('vehicle_model_id', vehicleModelId)
-        .eq('is_active', true)
-        .single();
+        .eq('is_active', true);
+      query = await this.scopeQuery(query, BASE_PRICES_TABLE, 'Workspace organization context is required to load daily base prices.');
+      const { data: basePrice, error } = await query.maybeSingle();
       
       if (error || !basePrice?.daily_price) {
         return null;
       }
+      await this.verifyRows(basePrice, BASE_PRICES_TABLE, 'Daily base price returned data outside the active workspace.');
       
       return parseFloat(basePrice.daily_price);
     } catch {
@@ -382,16 +437,18 @@ export class ExtensionPricingService {
    */
   static async getBaseHourlyPrice(vehicleModelId) {
     try {
-      const { data: basePrice, error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select('hourly_price')
+      let query = supabase
+        .from(BASE_PRICES_TABLE)
+        .select('organization_id, hourly_price')
         .eq('vehicle_model_id', vehicleModelId)
-        .eq('is_active', true)
-        .single();
+        .eq('is_active', true);
+      query = await this.scopeQuery(query, BASE_PRICES_TABLE, 'Workspace organization context is required to load hourly base prices.');
+      const { data: basePrice, error } = await query.maybeSingle();
       
       if (error || !basePrice?.hourly_price) {
         return null;
       }
+      await this.verifyRows(basePrice, BASE_PRICES_TABLE, 'Hourly base price returned data outside the active workspace.');
       
       return parseFloat(basePrice.hourly_price);
     } catch {
@@ -412,19 +469,7 @@ export class ExtensionPricingService {
       }
       
       // 1. Get rental details including vehicle model
-      const { data: rental, error: rentalError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-          )
-        `)
-        .eq('id', rentalId)
-        .single();
-      
-      if (rentalError) throw rentalError;
+      const rental = await this.loadRentalWithVehicle(rentalId);
       
       const vehicleModelId = rental.vehicle?.vehicle_model?.id;
       if (!vehicleModelId) {
@@ -517,6 +562,14 @@ export class ExtensionPricingService {
    * Get tier enforcement settings from database
    */
   static async getTierEnforcementSettings() {
+    if (shouldScopeSharedTenantData()) {
+      return {
+        enabled: true,
+        requireTierForExtensions: true,
+        fallbackToHourly: false
+      };
+    }
+
     try {
       const { data, error } = await supabase
         .from('app_settings')
@@ -552,16 +605,20 @@ export class ExtensionPricingService {
    * Find matching hourly tier for given hours
    */
   static async findMatchingHourlyTier(vehicleModelId, hours) {
-    const { data: tiers, error } = await supabase
-      .from('pricing_tiers')
+    let query = supabase
+      .from(PRICING_TIERS_TABLE)
       .select('*')
       .eq('vehicle_model_id', vehicleModelId)
       .eq('is_active', true)
       .eq('duration_type', 'hours')
       .not('min_hours', 'is', null)
       .not('max_hours', 'is', null);
+
+    query = await this.scopeQuery(query, PRICING_TIERS_TABLE, 'Workspace organization context is required to load hourly pricing tiers.');
+    const { data: tiers, error } = await query;
     
     if (error || !tiers) return null;
+    await this.verifyRows(tiers, PRICING_TIERS_TABLE, 'Hourly pricing tiers returned data outside the active workspace.');
     
     // Find tier where hours falls within min_hours and max_hours
     return tiers.find(tier => {
@@ -575,13 +632,17 @@ export class ExtensionPricingService {
    * Get all available tiers for a vehicle model
    */
   static async getAvailableTiers(vehicleModelId) {
-    const { data: tiers, error } = await supabase
-      .from('pricing_tiers')
+    let query = supabase
+      .from(PRICING_TIERS_TABLE)
       .select('*')
       .eq('vehicle_model_id', vehicleModelId)
       .eq('is_active', true);
+
+    query = await this.scopeQuery(query, PRICING_TIERS_TABLE, 'Workspace organization context is required to load available pricing tiers.');
+    const { data: tiers, error } = await query;
     
     if (error) return [];
+    await this.verifyRows(tiers || [], PRICING_TIERS_TABLE, 'Available pricing tiers returned data outside the active workspace.');
     return tiers || [];
   }
 
@@ -613,16 +674,19 @@ export class ExtensionPricingService {
     }
     
     // If no daily tier found, use base daily price
-    const { data: basePrice, error } = await supabase
-      .from('app_4c3a7a6153_base_prices')
-      .select('daily_price')
+    let basePriceQuery = supabase
+      .from(BASE_PRICES_TABLE)
+      .select('organization_id, daily_price')
       .eq('vehicle_model_id', vehicleModelId)
-      .eq('is_active', true)
-      .single();
+      .eq('is_active', true);
+
+    basePriceQuery = await this.scopeQuery(basePriceQuery, BASE_PRICES_TABLE, 'Workspace organization context is required to load daily base prices.');
+    const { data: basePrice, error } = await basePriceQuery.maybeSingle();
     
     if (error || !basePrice?.daily_price) {
       throw new Error('Daily price not found for this vehicle model');
     }
+    await this.verifyRows(basePrice, BASE_PRICES_TABLE, 'Daily base price returned data outside the active workspace.');
     
     const extensionPrice = basePrice.daily_price * numberOfDays;
     
@@ -667,16 +731,19 @@ export class ExtensionPricingService {
     }
     
     // Fallback: Get hourly price from base prices
-    const { data: basePrice, error: basePriceError } = await supabase
-      .from('app_4c3a7a6153_base_prices')
-      .select('hourly_price')
+    let basePriceQuery = supabase
+      .from(BASE_PRICES_TABLE)
+      .select('organization_id, hourly_price')
       .eq('vehicle_model_id', vehicleModelId)
-      .eq('is_active', true)
-      .single();
+      .eq('is_active', true);
+
+    basePriceQuery = await this.scopeQuery(basePriceQuery, BASE_PRICES_TABLE, 'Workspace organization context is required to load hourly base prices.');
+    const { data: basePrice, error: basePriceError } = await basePriceQuery.maybeSingle();
     
     if (basePriceError || !basePrice?.hourly_price) {
       throw new Error('Cannot calculate extension price. Hourly rate not found.');
     }
+    await this.verifyRows(basePrice, BASE_PRICES_TABLE, 'Hourly base price returned data outside the active workspace.');
     
     const hourlyPrice = basePrice.hourly_price;
     const extensionPrice = hourlyPrice * hours;
@@ -722,16 +789,19 @@ export class ExtensionPricingService {
     }
     
     // Fallback: Get hourly price from base prices
-    const { data: basePrice, error: basePriceError } = await supabase
-      .from('app_4c3a7a6153_base_prices')
-      .select('hourly_price')
+    let basePriceQuery = supabase
+      .from(BASE_PRICES_TABLE)
+      .select('organization_id, hourly_price')
       .eq('vehicle_model_id', vehicleModelId)
-      .eq('is_active', true)
-      .single();
+      .eq('is_active', true);
+
+    basePriceQuery = await this.scopeQuery(basePriceQuery, BASE_PRICES_TABLE, 'Workspace organization context is required to load hourly base prices.');
+    const { data: basePrice, error: basePriceError } = await basePriceQuery.maybeSingle();
     
     if (basePriceError || !basePrice?.hourly_price) {
       throw new Error('Cannot calculate extension price. Hourly rate not found.');
     }
+    await this.verifyRows(basePrice, BASE_PRICES_TABLE, 'Hourly base price returned data outside the active workspace.');
     
     const hourlyPrice = basePrice.hourly_price;
     const extensionPrice = hourlyPrice * hours;
@@ -776,9 +846,15 @@ export class ExtensionPricingService {
     delete extensionData.isPackage;
     delete extensionData.package_name_display;
 
+    const scopedExtensionData = await matchTenantOwnedPayload(
+      extensionData,
+      RENTAL_EXTENSIONS_TABLE,
+      { message: 'Workspace organization context is required to create rental extensions.' }
+    );
+
     const { data: extension, error } = await supabase
-      .from('rental_extensions')
-      .insert(extensionData)
+      .from(RENTAL_EXTENSIONS_TABLE)
+      .insert(scopedExtensionData)
       .select()
       .single();
 
@@ -830,9 +906,15 @@ export class ExtensionPricingService {
       extensionData.approved_at = new Date().toISOString();
     }
     
+    const scopedExtensionData = await matchTenantOwnedPayload(
+      extensionData,
+      RENTAL_EXTENSIONS_TABLE,
+      { message: 'Workspace organization context is required to create rental extensions.' }
+    );
+
     const { data: extension, error } = await supabase
-      .from('rental_extensions')
-      .insert(extensionData)
+      .from(RENTAL_EXTENSIONS_TABLE)
+      .insert(scopedExtensionData)
       .select()
       .single();
     
@@ -858,13 +940,15 @@ export class ExtensionPricingService {
    */
   static async applyExtensionToRental(rentalId, hours, price) {
     // Get current rental
-    const { data: rental, error: rentalError } = await supabase
-      .from('app_4c3a7a6153_rentals')
+    let rentalQuery = supabase
+      .from(RENTALS_TABLE)
       .select('*')
-      .eq('id', rentalId)
-      .single();
+      .eq('id', rentalId);
+    rentalQuery = await this.scopeQuery(rentalQuery, RENTALS_TABLE, 'Workspace organization context is required to apply rental extensions.');
+    const { data: rental, error: rentalError } = await rentalQuery.single();
     
     if (rentalError) throw rentalError;
+    await this.verifyRows(rental, RENTALS_TABLE, 'Rental extension apply returned data outside the active workspace.');
     
     // Calculate new end date
     const currentEndDate = new Date(rental.rental_end_date);
@@ -902,10 +986,12 @@ export class ExtensionPricingService {
       updated_at: new Date().toISOString()
     };
     
-    const { error: updateError } = await supabase
-      .from('app_4c3a7a6153_rentals')
+    let updateQuery = supabase
+      .from(RENTALS_TABLE)
       .update(updateData)
       .eq('id', rentalId);
+    updateQuery = await this.scopeQuery(updateQuery, RENTALS_TABLE, 'Workspace organization context is required to update rental extensions.');
+    const { error: updateError } = await updateQuery;
     
     if (updateError) throw updateError;
     

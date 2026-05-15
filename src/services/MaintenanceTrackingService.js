@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import MaintenanceService from './MaintenanceService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
+import { scopeTenantOwnedQuery } from './OrganizationService';
 
 class MaintenanceTrackingService {
   // Table references
@@ -193,10 +194,15 @@ class MaintenanceTrackingService {
 
   static async getVehiclesInMaintenance() {
     try {
-      const { data: maintenanceRecords, error: maintenanceError } = await supabase
+      let maintenanceQuery = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
         .in('status', ['scheduled', 'in_progress']);
+      maintenanceQuery = await scopeTenantOwnedQuery(maintenanceQuery, this.MAINTENANCE_RECORDS_TABLE, {
+        message: 'Workspace organization context is required to load maintenance records.',
+      });
+
+      const { data: maintenanceRecords, error: maintenanceError } = await maintenanceQuery;
 
       if (maintenanceError) {
         console.error({
@@ -221,10 +227,15 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      const { data: vehiclesData, error: filteredVehiclesError } = await supabase
+      let vehiclesQuery = supabase
         .from(this.VEHICLES_TABLE)
         .select('id, name, model, plate_number, vehicle_type, status')
         .in('id', vehicleIds);
+      vehiclesQuery = await scopeTenantOwnedQuery(vehiclesQuery, this.VEHICLES_TABLE, {
+        message: 'Workspace organization context is required to load maintenance vehicles.',
+      });
+
+      const { data: vehiclesData, error: filteredVehiclesError } = await vehiclesQuery;
 
       if (filteredVehiclesError) {
         console.error({
@@ -282,11 +293,16 @@ class MaintenanceTrackingService {
 
   static async getUpcomingMaintenance() {
     try {
-      const { data: maintenanceRecords, error } = await supabase
+      let maintenanceQuery = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('*')
         .eq('status', 'scheduled')
         .order('service_date', { ascending: true });
+      maintenanceQuery = await scopeTenantOwnedQuery(maintenanceQuery, this.MAINTENANCE_RECORDS_TABLE, {
+        message: 'Workspace organization context is required to load maintenance records.',
+      });
+
+      const { data: maintenanceRecords, error } = await maintenanceQuery;
 
       if (error) {
         console.error({
@@ -298,9 +314,14 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      const { data: vehicles } = await supabase
+      let vehiclesQuery = supabase
         .from(this.VEHICLES_TABLE)
         .select('id, name, plate_number');
+      vehiclesQuery = await scopeTenantOwnedQuery(vehiclesQuery, this.VEHICLES_TABLE, {
+        message: 'Workspace organization context is required to load maintenance vehicles.',
+      });
+
+      const { data: vehicles } = await vehiclesQuery;
 
       const safeMaintenanceRecords = maintenanceRecords || [];
       const safeVehicles = vehicles || [];
@@ -378,6 +399,10 @@ class MaintenanceTrackingService {
         query = query.limit(options.limit);
       }
 
+      query = await scopeTenantOwnedQuery(query, this.MAINTENANCE_RECORDS_TABLE, {
+        message: 'Workspace organization context is required to load maintenance history.',
+      });
+
       const { data: maintenanceRecords, error } = await query;
 
       if (error) {
@@ -390,9 +415,14 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      const { data: vehicles } = await supabase
+      let vehiclesQuery = supabase
         .from(this.VEHICLES_TABLE)
         .select('id, name, plate_number');
+      vehiclesQuery = await scopeTenantOwnedQuery(vehiclesQuery, this.VEHICLES_TABLE, {
+        message: 'Workspace organization context is required to load maintenance vehicles.',
+      });
+
+      const { data: vehicles } = await vehiclesQuery;
 
       const safeMaintenanceRecords = maintenanceRecords || [];
       const safeVehicles = vehicles || [];
@@ -422,10 +452,15 @@ class MaintenanceTrackingService {
     try {
       console.log('💰 Loading maintenance pricing catalog from:', this.PRICING_CATALOG_TABLE);
       
-      const { data, error } = await supabase
+      let query = supabase
         .from(this.PRICING_CATALOG_TABLE)
         .select('*')
         .order('part_name');
+      query = await scopeTenantOwnedQuery(query, this.PRICING_CATALOG_TABLE, {
+        message: 'Workspace organization context is required to load maintenance pricing.',
+      });
+
+      const { data, error } = await query;
 
       if (error) {
         console.error({
@@ -455,10 +490,15 @@ class MaintenanceTrackingService {
     try {
       console.log('🚗 Loading vehicles from:', this.VEHICLES_TABLE);
       
-      const { data, error } = await supabase
+      let query = supabase
         .from(this.VEHICLES_TABLE)
         .select('id, name, model, plate_number, vehicle_type, status, current_odometer, next_oil_change_odometer, registration_number, organization_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, engine_hours, vehicle_model_id')
         .order('name');
+      query = await scopeTenantOwnedQuery(query, this.VEHICLES_TABLE, {
+        message: 'Workspace organization context is required to load vehicles.',
+      });
+
+      const { data, error } = await query;
 
       if (error) {
         console.error({
@@ -490,9 +530,14 @@ class MaintenanceTrackingService {
     try {
       const monthBoundaries = this.getCurrentMonthBoundaries();
 
-      const { data: allRecords, error: allRecordsError } = await supabase
+      let recordsQuery = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('id, vehicle_id, status, service_date, cost, maintenance_type');
+      recordsQuery = await scopeTenantOwnedQuery(recordsQuery, this.MAINTENANCE_RECORDS_TABLE, {
+        message: 'Workspace organization context is required to load maintenance statistics.',
+      });
+
+      const { data: allRecords, error: allRecordsError } = await recordsQuery;
 
       if (allRecordsError) {
         console.error({

@@ -60,6 +60,11 @@ import {
   isPlatformOwnerEmail,
   resolveManagedAccountType,
 } from '../utils/accountType';
+import {
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
+  verifyTenantOwnedRows,
+} from '../services/OrganizationService';
 import { getHostContext } from '../utils/hostContext';
 import {
   ADMIN_EYEBROW_CLASS,
@@ -70,6 +75,8 @@ import i18n from '../i18n';
 
 // Supabase client imported from lib/supabase.js
 const APP_ID = '4c3a7a6153'; // Keep this for table naming
+const CUSTOMERS_TABLE = `app_${APP_ID}_customers`;
+const RENTALS_TABLE = `app_${APP_ID}_rentals`;
 const PROFILE_SECTION_CLASS = 'rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.35)] backdrop-blur md:p-6';
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
@@ -441,10 +448,19 @@ const persistRecoveredAuthAccounts = async (recoveredCustomers) => {
       return nextCustomer;
     });
 
-  const attemptUpsert = async (rows) =>
-    supabase
-      .from(`app_${APP_ID}_customers`)
-      .upsert(rows, { onConflict: 'id' });
+  const attemptUpsert = async (rows) => {
+    const scopedRows = await Promise.all(
+      (rows || []).map((row) =>
+        matchTenantOwnedPayload(row, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to save customers.',
+        })
+      )
+    );
+
+    return supabase
+      .from(CUSTOMERS_TABLE)
+      .upsert(scopedRows, { onConflict: 'id' });
+  };
 
   const fallbackStrategies = [
     [],
@@ -2368,10 +2384,14 @@ const CustomerManagementDashboard = () => {
       setError(null);
 
       const [customersResponse, authUsers] = await Promise.all([
-        supabase
-          .from(`app_${APP_ID}_customers`)
-          .select('*')
-          .order('created_at', { ascending: false }),
+        scopeTenantOwnedQuery(
+          supabase
+            .from(CUSTOMERS_TABLE)
+            .select('*')
+            .order('created_at', { ascending: false }),
+          CUSTOMERS_TABLE,
+          { message: 'Workspace organization context is required to load customers.' }
+        ).then((query) => query),
         getUsers().catch((authUsersError) => {
           console.warn('Unable to load auth users for customer reconciliation:', authUsersError);
           return [];
@@ -2381,6 +2401,10 @@ const CustomerManagementDashboard = () => {
       if (customersResponse.error) {
         throw new Error(`Le chargement des clients a échoué : ${customersResponse.error.message}`);
       }
+
+      await verifyTenantOwnedRows(customersResponse.data || [], CUSTOMERS_TABLE, {
+        message: 'Customer dashboard returned rows outside the active workspace.',
+      });
 
       let mergedCustomers = mergeCustomersWithRecoveredAuthAccounts(customersResponse.data || [], authUsers);
 
@@ -2425,9 +2449,13 @@ const CustomerManagementDashboard = () => {
       scheduleBackgroundTask(async () => {
         try {
           const [rentalsResponse, marketplaceListingsResponse, marketplaceVehicleProfilesResponse] = await Promise.all([
-            supabase
-              .from(`app_${APP_ID}_rentals`)
-              .select('id, customer_id, rental_status, total_amount, created_at'),
+            scopeTenantOwnedQuery(
+              supabase
+                .from(RENTALS_TABLE)
+                .select('id, organization_id, customer_id, rental_status, total_amount, created_at'),
+              RENTALS_TABLE,
+              { message: 'Workspace organization context is required to load customer rentals.' }
+            ).then((query) => query),
             supabase
               .from('app_marketplace_listings')
               .select('id, owner_id, vehicle_public_profile_id, listing_status, created_at')
@@ -2441,6 +2469,9 @@ const CustomerManagementDashboard = () => {
           if (rentalsResponse.error) {
             setRentals([]);
           } else {
+            await verifyTenantOwnedRows(rentalsResponse.data || [], RENTALS_TABLE, {
+              message: 'Customer rental aggregates returned rows outside the active workspace.',
+            });
             setRentals(rentalsResponse.data || []);
           }
 
@@ -2499,16 +2530,27 @@ const CustomerManagementDashboard = () => {
         const fallbackCustomer = customers.find((customer) => customer.id === targetCustomerId) || null;
         
         // Fetch complete customer record from database (single source of truth)
-        const { data: fullCustomer, error: customerError } = await supabase
-          .from(`app_${APP_ID}_customers`)
-          .select('*')
-          .eq('id', targetCustomerId)
-          .single();
+        const customerQuery = await scopeTenantOwnedQuery(
+          supabase
+            .from(CUSTOMERS_TABLE)
+            .select('*')
+            .eq('id', targetCustomerId)
+            .single(),
+          CUSTOMERS_TABLE,
+          { message: 'Workspace organization context is required to load customers.' }
+        );
+        const { data: fullCustomer, error: customerError } = await customerQuery;
 
         if (customerError) {
           if (!fallbackCustomer) {
             throw customerError;
           }
+        }
+
+        if (fullCustomer) {
+          await verifyTenantOwnedRows(fullCustomer, CUSTOMERS_TABLE, {
+            message: 'Customer profile returned data outside the active workspace.',
+          });
         }
 
         // Fetch rental history separately
@@ -2599,14 +2641,26 @@ const CustomerManagementDashboard = () => {
         });
       }
 
-      const { data, error } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update(safeEditPayload)
+      const scopedEditPayload = await matchTenantOwnedPayload(safeEditPayload, CUSTOMERS_TABLE, {
+        message: 'Workspace organization context is required to update customers.',
+      });
+
+      const updateQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(scopedEditPayload)
         .eq('id', targetCustomerId)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error } = await updateQuery;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setEditModalOpen(false);
       setEditFormData({});
@@ -2717,17 +2771,28 @@ const CustomerManagementDashboard = () => {
         staff_notes_history: nextHistory
       };
 
-      const { data, error } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const notePayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString()
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const noteQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(notePayload)
         .eq('id', detailedCustomer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error } = await noteQuery;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setDetailedCustomer(prev => prev ? {
         ...prev,
@@ -2763,17 +2828,28 @@ const CustomerManagementDashboard = () => {
         staff_notes_history: nextHistory,
       };
 
-      const { data, error } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const noteDeletePayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString()
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const noteDeleteQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(noteDeletePayload)
         .eq('id', detailedCustomer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error } = await noteDeleteQuery;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setDetailedCustomer(prev => prev ? {
         ...prev,
@@ -2812,17 +2888,28 @@ const CustomerManagementDashboard = () => {
         ban_note: nextBanNote
       };
 
-      const { data, error } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const banPayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString()
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const banQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(banPayload)
         .eq('id', detailedCustomer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error } = await banQuery;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setDetailedCustomer(prev => prev ? {
         ...prev,
@@ -2860,17 +2947,28 @@ const CustomerManagementDashboard = () => {
         ban_note: nextBanNote
       };
 
-      const { data, error } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const banNotePayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString()
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const banNoteQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(banNotePayload)
         .eq('id', detailedCustomer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error } = await banNoteQuery;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setDetailedCustomer(prev => prev ? {
         ...prev,
@@ -2933,18 +3031,29 @@ const CustomerManagementDashboard = () => {
         id_scan_history: nextHistory
       };
 
-      const { data, error: updateError } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const uploadPayload = await matchTenantOwnedPayload({
           id_scan_url: publicUrl,
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString()
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const uploadQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(uploadPayload)
         .eq('id', detailedCustomer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error: updateError } = await uploadQuery;
 
       if (updateError) throw updateError;
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setDetailedCustomer(prev => prev ? {
         ...prev,
@@ -3686,19 +3795,31 @@ const CustomerManagementDashboard = () => {
         ban_note: customer.scan_metadata?.ban_note || tr('Disabled from Customer Management.', 'Désactivé depuis la gestion clients.'),
       };
 
-      const { data, error: updateError } = await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const disablePayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString(),
-        })
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const disableQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(disablePayload)
         .eq('id', customer.id)
         .select('*')
-        .single();
+        .single(),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      const { data, error: updateError } = await disableQuery;
 
       if (updateError) {
         throw updateError;
       }
+
+      await verifyTenantOwnedRows(data, CUSTOMERS_TABLE, {
+        message: 'Updated customer returned data outside the active workspace.',
+      });
 
       setCustomers((prev) =>
         prev.map((entry) =>
@@ -3996,13 +4117,21 @@ const CustomerManagementDashboard = () => {
         staff_promoted_by_name: user?.full_name || user?.name || user?.email || 'Owner',
       };
 
-      await supabase
-        .from(`app_${APP_ID}_customers`)
-        .update({
+      const promotePayload = await matchTenantOwnedPayload({
           scan_metadata: nextScanMetadata,
           updated_at: new Date().toISOString(),
-        })
-        .eq('id', detailedCustomer.id);
+        }, CUSTOMERS_TABLE, {
+          message: 'Workspace organization context is required to update customers.',
+        });
+      const promoteQuery = await scopeTenantOwnedQuery(
+        supabase
+        .from(CUSTOMERS_TABLE)
+        .update(promotePayload)
+        .eq('id', detailedCustomer.id),
+        CUSTOMERS_TABLE,
+        { message: 'Workspace organization context is required to update customers.' }
+      );
+      await promoteQuery;
 
       setDetailedCustomer(prev => prev ? { ...prev, scan_metadata: nextScanMetadata } : prev);
       setCustomers(prev => prev.map(customer =>

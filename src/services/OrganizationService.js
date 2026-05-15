@@ -3,23 +3,47 @@ import { getHostContext, isFirstPartyTenantHost } from '../utils/hostContext';
 
 export const BUSINESS_TENANT_TABLES = Object.freeze([
   'saharax_0u4w4d_vehicles',
+  'saharax_0u4w4d_vehicle_models',
   'app_4c3a7a6153_customers',
   'app_4c3a7a6153_rentals',
   'app_4c3a7a6153_base_prices',
   'app_4c3a7a6153_rental_km_packages',
   'app_4c3a7a6153_transport_fees',
+  'pricing_tiers',
+  'rental_extension_rules',
+  'package_vehicle_type_mapping',
+  'fuel_pricing',
   'app_4c3a7a6153_team_tasks',
   'app_4c3a7a6153_task_comments',
   'app_4c3a7a6153_task_notifications',
+  'app_4c3a7a6153_vehicle_reports',
+  'rental_extensions',
+  'app_b30c02e74da644baad4668e3587d86b1_tours',
   'app_687f658e98_maintenance',
   'app_687f658e98_maintenance_parts',
   'app_687f658e98_tour_packages',
+  'app_687f658e98_tour_package_model_prices',
   'app_687f658e98_tour_bookings',
+  'tour_vehicle_snapshots',
   'saharax_0u4w4d_inventory_items',
   'saharax_0u4w4d_inventory_movements',
   'saharax_0u4w4d_inventory_purchases',
   'saharax_0u4w4d_inventory_purchase_lines',
+  'fuel_tank',
+  'fuel_refills',
+  'vehicle_fuel_refills',
+  'fuel_withdrawals',
+  'vehicle_fuel_state',
+  'fuel_operation_logs',
+  'fuel_transactions_default_feed',
+  'finance_expenses',
+  'app_wallet_accounts',
+  'app_wallet_transactions',
+  'app_payment_proofs',
+  'wallet_topups',
 ]);
+
+const BUSINESS_TENANT_TABLE_SET = new Set(BUSINESS_TENANT_TABLES);
 
 export const getScopedOrganizationId = (userProfile) =>
   String(userProfile?.organizationId || userProfile?.organization_id || '').trim() || null;
@@ -37,6 +61,9 @@ export const applyOrganizationScope = (query, organizationId, columnName = 'orga
 
 export const shouldScopeSharedTenantData = (hostContext = getHostContext()) =>
   hostContext?.kind === 'tenant' && !isFirstPartyTenantHost(hostContext);
+
+export const isTenantOwnedSharedTable = (tableName = '') =>
+  BUSINESS_TENANT_TABLE_SET.has(String(tableName || '').trim());
 
 export const applyOrganizationMatch = (payload, organizationId, columnName = 'organization_id') => {
   if (!organizationId) {
@@ -139,4 +166,92 @@ export const requireCurrentOrganizationId = async (message = 'Workspace organiza
     throw new Error(message);
   }
   return organizationId;
+};
+
+export const scopeTenantOwnedQuery = async (
+  query,
+  tableName,
+  {
+    columnName = 'organization_id',
+    organizationId = null,
+    message = null,
+  } = {},
+) => {
+  if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+    return query;
+  }
+
+  const resolvedOrganizationId = organizationId || await requireCurrentOrganizationId(
+    message || `Workspace organization context is required for ${tableName}.`
+  );
+
+  return applyOrganizationScope(query, resolvedOrganizationId, columnName);
+};
+
+export const matchTenantOwnedPayload = async (
+  payload,
+  tableName,
+  {
+    columnName = 'organization_id',
+    organizationId = null,
+    message = null,
+  } = {},
+) => {
+  if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+    return payload;
+  }
+
+  const resolvedOrganizationId = organizationId || await requireCurrentOrganizationId(
+    message || `Workspace organization context is required for ${tableName}.`
+  );
+
+  return applyOrganizationMatch(payload, resolvedOrganizationId, columnName);
+};
+
+const normalizeOrganizationValue = (value) => String(value || '').trim();
+
+export const verifyTenantOwnedRows = async (
+  rows,
+  tableName,
+  {
+    columnName = 'organization_id',
+    organizationId = null,
+    message = null,
+  } = {},
+) => {
+  if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+    return rows;
+  }
+
+  const resolvedOrganizationId = normalizeOrganizationValue(
+    organizationId || await requireCurrentOrganizationId(
+      message || `Workspace organization context is required for ${tableName}.`
+    )
+  );
+
+  const records = Array.isArray(rows)
+    ? rows
+    : rows && typeof rows === 'object'
+      ? [rows]
+      : [];
+
+  for (const record of records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      continue;
+    }
+
+    if (!(columnName in record)) {
+      throw new Error(
+        message || `${tableName} responses must include ${columnName} for shared tenant verification.`
+      );
+    }
+
+    if (normalizeOrganizationValue(record[columnName]) !== resolvedOrganizationId) {
+      throw new Error(
+        message || `${tableName} returned data outside the active workspace organization.`
+      );
+    }
+  }
+
+  return rows;
 };

@@ -14,6 +14,9 @@ import {
   applyOrganizationScope,
   getCurrentOrganizationId,
   requireCurrentOrganizationId,
+  scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
+  verifyTenantOwnedRows,
 } from './OrganizationService.js';
 
 const CUSTOMER_TABLE = 'app_4c3a7a6153_customers';
@@ -43,6 +46,34 @@ const markCustomerTableWithoutOrganizationColumn = () => {
 };
 
 const runCustomerReadQuery = async (buildQuery, organizationId) => {
+  if (shouldScopeSharedTenantData()) {
+    if (!organizationId) {
+      throw new Error('Workspace organization context is required to load customers.');
+    }
+
+    if (customerTableSupportsOrganizationColumn === false) {
+      throw new Error('Customer workspace isolation is not installed yet. Apply the organization isolation migration before loading shared tenant customers.');
+    }
+
+    let query = await scopeTenantOwnedQuery(buildQuery(), CUSTOMER_TABLE, {
+      organizationId,
+      message: 'Workspace organization context is required to load customers.',
+    });
+
+    const result = await query;
+
+    if (organizationId && isMissingOrganizationColumnError(result.error)) {
+      throw new Error('Customer workspace isolation is not installed yet. Apply the organization isolation migration before loading shared tenant customers.');
+    }
+
+    await verifyTenantOwnedRows(result.data || [], CUSTOMER_TABLE, {
+      organizationId,
+      message: 'Customer query returned rows outside the active workspace.',
+    });
+
+    return result;
+  }
+
   if (!organizationId || customerTableSupportsOrganizationColumn === false) {
     return buildQuery();
   }
@@ -1189,6 +1220,11 @@ class EnhancedUnifiedCustomerService {
         console.warn('⚠️ Customer not found for ID:', customerId);
         return { success: false, error: 'Customer not found' };
       }
+
+      await verifyTenantOwnedRows(data, CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer lookup returned data outside the active workspace.',
+      });
       
       console.log('✅ Fetched customer:', data);
       return { success: true, data };
@@ -1231,6 +1267,11 @@ class EnhancedUnifiedCustomerService {
         console.error('❌ Error fetching customers:', error);
         throw new Error(`Failed to fetch customers: ${error.message}`);
       }
+
+      await verifyTenantOwnedRows(data || [], CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer list returned rows outside the active workspace.',
+      });
       
       console.log('✅ Fetched customers:', data?.length || 0);
       return data || [];
@@ -1345,6 +1386,11 @@ class EnhancedUnifiedCustomerService {
         console.error('❌ Error searching customers:', error);
         throw new Error(`Failed to search customers: ${error.message}`);
       }
+
+      await verifyTenantOwnedRows(data || [], CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer search returned rows outside the active workspace.',
+      });
       
       console.log('✅ Found customers:', data?.length || 0);
       return data || [];
@@ -1379,6 +1425,11 @@ class EnhancedUnifiedCustomerService {
         console.error('❌ Error fetching customer by licence:', error);
         throw new Error(`Failed to fetch customer by licence: ${error.message}`);
       }
+
+      await verifyTenantOwnedRows(data, CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer lookup returned data outside the active workspace.',
+      });
       
       console.log('✅ Found customer by licence:', data);
       return data;
@@ -1413,6 +1464,11 @@ class EnhancedUnifiedCustomerService {
         console.error('❌ Error fetching customer by ID number:', error);
         throw new Error(`Failed to fetch customer by ID number: ${error.message}`);
       }
+
+      await verifyTenantOwnedRows(data, CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer lookup returned data outside the active workspace.',
+      });
       
       console.log('✅ Found customer by ID number:', data);
       return data;
@@ -1443,6 +1499,11 @@ class EnhancedUnifiedCustomerService {
         console.error('❌ DEBUG: Error fetching customer:', error);
         return { success: false, error: error.message };
       }
+
+      await verifyTenantOwnedRows(data, CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer debug lookup returned data outside the active workspace.',
+      });
       
       console.log('🔍 DEBUG: Customer record details:');
       console.log('  - ID:', data.id);
@@ -1597,10 +1658,16 @@ class EnhancedUnifiedCustomerService {
       return { success: false, error: 'Customer ID is required.', hasHistory: false };
     }
     try {
-      const { count, error } = await supabase
+      const organizationId = await getCurrentOrganizationId();
+      let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select('*', { count: 'exact', head: true })
         .eq('customer_id', customerId);
+      query = await scopeTenantOwnedQuery(query, 'app_4c3a7a6153_rentals', {
+        organizationId,
+        message: 'Workspace organization context is required to load customer rental history.',
+      });
+      const { count, error } = await query;
 
       if (error) {
         console.error('Error checking rental history:', error);
@@ -1634,6 +1701,10 @@ class EnhancedUnifiedCustomerService {
       );
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+        organizationId,
+        message: 'Customer rental history returned rows outside the active workspace.',
+      });
 
       // 2. Data Normalization (The Safety Net)
       const safeData = data.map(rental => {
@@ -1673,6 +1744,11 @@ class EnhancedUnifiedCustomerService {
     if (error) {
       throw new Error(`Failed to fetch customer rental context: ${error.message}`);
     }
+
+    await verifyTenantOwnedRows(data || null, 'app_4c3a7a6153_rentals', {
+      organizationId,
+      message: 'Customer rental context returned data outside the active workspace.',
+    });
 
     return data || null;
   }
@@ -1717,6 +1793,10 @@ class EnhancedUnifiedCustomerService {
 
     const exactMatches = mergeUniqueCustomersById(...exactMatchGroups);
     if (exactMatches.length > 0) {
+      await verifyTenantOwnedRows(exactMatches, CUSTOMER_TABLE, {
+        organizationId,
+        message: 'Customer identity matching returned rows outside the active workspace.',
+      });
       return exactMatches;
     }
 
@@ -1732,6 +1812,10 @@ class EnhancedUnifiedCustomerService {
     );
 
     if (error) throw error;
+    await verifyTenantOwnedRows(data || [], CUSTOMER_TABLE, {
+      organizationId,
+      message: 'Customer identity matching returned rows outside the active workspace.',
+    });
     return data || [];
   }
 

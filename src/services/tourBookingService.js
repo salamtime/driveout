@@ -1,7 +1,9 @@
 import { supabase } from '../lib/supabase';
 import { adminApiRequest } from './adminApi';
+import { scopeTenantOwnedQuery, matchTenantOwnedPayload } from './OrganizationService';
+import { TABLE_NAMES } from '../config/tableNames';
 
-const VEHICLE_TABLE = 'saharax_0u4w4d_vehicles';
+const VEHICLE_TABLE = TABLE_NAMES.VEHICLES;
 
 const isMissingTableError = (error) => {
   const code = String(error?.code || '').toLowerCase();
@@ -24,10 +26,15 @@ const attachVehicles = async (rows = []) => {
   const vehicleIds = [...new Set(rows.map((row) => row.vehicle_id).filter(Boolean))];
   if (vehicleIds.length === 0) return rows.map((row) => ({ ...row, vehicle: null }));
 
-  const { data: vehicles, error } = await supabase
+  let query = supabase
     .from(VEHICLE_TABLE)
     .select('id, name, model, plate_number, vehicle_type, status, current_odometer')
     .in('id', vehicleIds);
+  query = await scopeTenantOwnedQuery(query, VEHICLE_TABLE, {
+    message: 'Workspace organization context is required to load tour vehicles.',
+  });
+
+  const { data: vehicles, error } = await query;
 
   if (error) {
     return rows.map((row) => ({ ...row, vehicle: null }));
@@ -41,13 +48,20 @@ const updateVehicleStatuses = async (vehicleIds = [], status) => {
   const normalizedVehicleIds = [...new Set(vehicleIds.filter(Boolean).map(String))];
   if (normalizedVehicleIds.length === 0) return;
 
-  const { error } = await supabase
+  let query = supabase
     .from(VEHICLE_TABLE)
-    .update({
+    .update(await matchTenantOwnedPayload({
       status,
       updated_at: new Date().toISOString(),
-    })
+    }, VEHICLE_TABLE, {
+      message: 'Workspace organization context is required to update tour vehicles.',
+    }))
     .in('id', normalizedVehicleIds);
+  query = await scopeTenantOwnedQuery(query, VEHICLE_TABLE, {
+    message: 'Workspace organization context is required to update tour vehicles.',
+  });
+
+  const { error } = await query;
 
   if (error && !isMissingTableError(error) && !isOpaqueSupabaseError(error)) {
     throw error;
@@ -211,10 +225,15 @@ export const reconcileTourVehicleStatuses = async (tourRows = []) => {
       .map(String)
   )];
 
-  const { data: tourVehicles, error } = await supabase
+  let query = supabase
     .from(VEHICLE_TABLE)
     .select('id, status')
     .eq('status', 'tour');
+  query = await scopeTenantOwnedQuery(query, VEHICLE_TABLE, {
+    message: 'Workspace organization context is required to reconcile tour vehicle statuses.',
+  });
+
+  const { data: tourVehicles, error } = await query;
 
   if (error) {
     if (!isMissingTableError(error) && !isOpaqueSupabaseError(error)) {

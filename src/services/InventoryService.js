@@ -1,6 +1,10 @@
 import { supabase } from '../utils/supabaseClient';
 import { normalizeInventoryLabels } from '../config/maintenanceInventoryMapping';
-import { getCurrentOrganizationId } from './OrganizationService';
+import {
+  getCurrentOrganizationId,
+  scopeTenantOwnedQuery,
+  matchTenantOwnedPayload,
+} from './OrganizationService';
 import { buildStoragePathCandidates, buildTenantScopedStoragePath } from '../utils/storageUpload';
 
 class InventoryService {
@@ -165,10 +169,15 @@ class InventoryService {
       const safeItemIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => parseInt(id, 10)).filter(Boolean))];
       if (safeItemIds.length === 0) return {};
 
-      const { data: parts, error: partsError } = await supabase
+      let partsQuery = supabase
         .from('app_687f658e98_maintenance_parts')
         .select('id, item_id, quantity, part_name, part_number, maintenance_id')
         .in('item_id', safeItemIds);
+      partsQuery = await scopeTenantOwnedQuery(partsQuery, 'app_687f658e98_maintenance_parts', {
+        message: 'Workspace organization context is required to load inventory maintenance usage.',
+      });
+
+      const { data: parts, error: partsError } = await partsQuery;
 
       if (partsError) throw partsError;
       const safeParts = Array.isArray(parts) ? parts : [];
@@ -176,10 +185,15 @@ class InventoryService {
 
       let maintenanceById = {};
       if (maintenanceIds.length > 0) {
-        const { data: maintenanceRows, error: maintenanceError } = await supabase
+        let maintenanceQuery = supabase
           .from('app_687f658e98_maintenance')
           .select('id, maintenance_type, status, scheduled_date, service_date, completed_date, vehicle_id')
           .in('id', maintenanceIds);
+        maintenanceQuery = await scopeTenantOwnedQuery(maintenanceQuery, 'app_687f658e98_maintenance', {
+          message: 'Workspace organization context is required to load maintenance usage.',
+        });
+
+        const { data: maintenanceRows, error: maintenanceError } = await maintenanceQuery;
 
         if (maintenanceError) throw maintenanceError;
         maintenanceById = (maintenanceRows || []).reduce((acc, row) => {
@@ -198,10 +212,15 @@ class InventoryService {
 
       let vehiclesById = {};
       if (vehicleIds.length > 0) {
-        const { data: vehicleRows, error: vehicleError } = await supabase
+        let vehiclesQuery = supabase
           .from(this.vehiclesTable)
           .select('id, plate_number, name, model')
           .in('id', vehicleIds);
+        vehiclesQuery = await scopeTenantOwnedQuery(vehiclesQuery, this.vehiclesTable, {
+          message: 'Workspace organization context is required to load inventory vehicles.',
+        });
+
+        const { data: vehicleRows, error: vehicleError } = await vehiclesQuery;
 
         if (vehicleError) throw vehicleError;
         vehiclesById = (vehicleRows || []).reduce((acc, row) => {
@@ -459,6 +478,10 @@ class InventoryService {
       if (filters.active !== undefined) query = query.eq('active', filters.active);
       if (filters.searchTerm) query = query.or(`name.ilike.%${filters.searchTerm}%,sku.ilike.%${filters.searchTerm}%`);
 
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to load inventory items.',
+      });
+
       const { data, error } = await query;
       if (error) throw error;
       return data || [];
@@ -470,11 +493,14 @@ class InventoryService {
 
   async getItemById(id) {
     try {
-      const { data: item, error } = await supabase
+      let query = supabase
         .from(this.itemsTable)
         .select('*')
-        .eq('id', id)
-        .single();
+        .eq('id', id);
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to load inventory items.',
+      });
+      const { data: item, error } = await query.single();
       if (error) throw error;
       return item;
     } catch (error) {
@@ -518,9 +544,9 @@ class InventoryService {
       const itemUnitCost = parseFloat(unit_cost ?? currentItem.cost_mad ?? 0) || 0;
       const totalCost = movementQuantity * itemUnitCost;
       
-      const { data: movement, error: movementError } = await supabase
+      let movementInsert = supabase
         .from(this.movementsTable)
-        .insert({
+        .insert(await matchTenantOwnedPayload({
           item_id: parseInt(item_id),
           quantity: movementQuantity,
           unit_cost_mad: itemUnitCost,
@@ -532,22 +558,32 @@ class InventoryService {
           notes: notes || '',
           created_by: created_by || 'System',
           created_at: new Date().toISOString()
-        })
-        .select()
-        .single();
+        }, this.movementsTable, {
+          message: 'Workspace organization context is required to create inventory movements.',
+        }))
+        .select();
+      movementInsert = await scopeTenantOwnedQuery(movementInsert, this.movementsTable, {
+        message: 'Workspace organization context is required to create inventory movements.',
+      });
+      const { data: movement, error: movementError } = await movementInsert.single();
 
       if (movementError) throw movementError;
       console.log('✅ Movement record created:', movement);
       
-      const { data: updatedItem, error: updateError } = await supabase
+      let itemUpdate = supabase
         .from(this.itemsTable)
-        .update({
+        .update(await matchTenantOwnedPayload({
           stock_on_hand: newStock,
           updated_at: new Date().toISOString()
-        })
+        }, this.itemsTable, {
+          message: 'Workspace organization context is required to update inventory items.',
+        }))
         .eq('id', item_id)
-        .select()
-        .single();
+        .select();
+      itemUpdate = await scopeTenantOwnedQuery(itemUpdate, this.itemsTable, {
+        message: 'Workspace organization context is required to update inventory items.',
+      });
+      const { data: updatedItem, error: updateError } = await itemUpdate.single();
       
       if (updateError) throw updateError;
       console.log(`✅ STOCK UPDATED: Item ${item_id} stock changed from ${currentStock} to ${newStock}`);
@@ -561,11 +597,15 @@ class InventoryService {
 
   async getMovementsByItem(itemId) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from(this.movementsTable)
         .select('*')
         .eq('item_id', itemId)
         .order('created_at', { ascending: false });
+      query = await scopeTenantOwnedQuery(query, this.movementsTable, {
+        message: 'Workspace organization context is required to load inventory movements.',
+      });
+      const { data, error } = await query;
       if (error) throw error;
       return data || [];
     } catch (error) {
@@ -585,6 +625,10 @@ class InventoryService {
       if (filters.movementType) query = query.eq('movement_type', filters.movementType);
       if (filters.dateFrom) query = query.gte('created_at', filters.dateFrom);
       if (filters.dateTo) query = query.lte('created_at', filters.dateTo);
+
+      query = await scopeTenantOwnedQuery(query, this.movementsTable, {
+        message: 'Workspace organization context is required to load inventory movements.',
+      });
 
       const { data, error } = await query;
       if (error) throw error;
@@ -618,17 +662,24 @@ class InventoryService {
         }
       }
 
-      const { data, error } = await supabase
+      const payload = await matchTenantOwnedPayload({ 
+        ...sanitizedData, 
+        image_url: imageUrl,
+        image_uploaded_at: imageUploadedAt,
+        created_at: new Date().toISOString(), 
+        updated_at: new Date().toISOString() 
+      }, this.itemsTable, {
+        message: 'Workspace organization context is required to create inventory items.',
+      });
+
+      let query = supabase
         .from(this.itemsTable)
-        .insert({ 
-          ...sanitizedData, 
-          image_url: imageUrl,
-          image_uploaded_at: imageUploadedAt,
-          created_at: new Date().toISOString(), 
-          updated_at: new Date().toISOString() 
-        })
-        .select()
-        .single();
+        .insert(payload)
+        .select();
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to create inventory items.',
+      });
+      const { data, error } = await query.single();
         
       if (error) throw error;
       return data;
@@ -666,17 +717,24 @@ class InventoryService {
         }
       }
 
-      const { data, error } = await supabase
+      const payload = await matchTenantOwnedPayload({ 
+        ...sanitizedData,
+        image_url: imageUrl,
+        image_uploaded_at: imageUploadedAt,
+        updated_at: new Date().toISOString() 
+      }, this.itemsTable, {
+        message: 'Workspace organization context is required to update inventory items.',
+      });
+
+      let query = supabase
         .from(this.itemsTable)
-        .update({ 
-          ...sanitizedData,
-          image_url: imageUrl,
-          image_uploaded_at: imageUploadedAt,
-          updated_at: new Date().toISOString() 
-        })
+        .update(payload)
         .eq('id', id)
-        .select()
-        .single();
+        .select();
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to update inventory items.',
+      });
+      const { data, error } = await query.single();
         
       if (error) throw error;
       return data;
@@ -696,7 +754,11 @@ class InventoryService {
       const item = await this.getItemById(id);
       
       // Delete the item from database
-      const { error } = await supabase.from(this.itemsTable).delete().eq('id', id);
+      let query = supabase.from(this.itemsTable).delete().eq('id', id);
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to delete inventory items.',
+      });
+      const { error } = await query;
       if (error) throw error;
 
       // Delete associated image if exists
@@ -713,7 +775,11 @@ class InventoryService {
 
   async getCategories() {
     try {
-      const { data, error } = await supabase.from(this.itemsTable).select('category').not('category', 'is', null);
+      let query = supabase.from(this.itemsTable).select('category').not('category', 'is', null);
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to load inventory categories.',
+      });
+      const { data, error } = await query;
       if (error) throw error;
       const categories = [...new Set(data.map(item => item.category))].filter(Boolean);
       if (!categories.includes('transmission')) {
@@ -746,11 +812,15 @@ class InventoryService {
 
   async getLowStockItems() {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from(this.itemsTable)
         .select('*')
         .eq('active', true)
         .order('name', { ascending: true });
+      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
+        message: 'Workspace organization context is required to load inventory items.',
+      });
+      const { data, error } = await query;
       if (error) throw error;
       return (data || []).filter(item => (item.stock_on_hand || 0) < (item.reorder_level || 0) && (item.reorder_level || 0) > 0);
     } catch (error) {
@@ -848,6 +918,10 @@ class InventoryService {
       if (filters.dateFrom || filters.date_from) query = query.gte('purchase_date', filters.dateFrom || filters.date_from);
       if (filters.dateTo || filters.date_to) query = query.lte('purchase_date', filters.dateTo || filters.date_to);
 
+      query = await scopeTenantOwnedQuery(query, this.purchasesTable, {
+        message: 'Workspace organization context is required to load inventory purchases.',
+      });
+
       const { data, error } = await query;
       if (error) throw error;
       return (data || []).map((purchase) => this.normalizePurchaseRecord(purchase));
@@ -858,11 +932,14 @@ class InventoryService {
   }
 
   async getPurchaseById(id) {
-    const { data, error } = await supabase
+    let query = supabase
       .from(this.purchasesTable)
       .select(`*, purchase_lines:${this.purchaseLinesTable}(*, item:${this.itemsTable}(id, name, sku))`)
-      .eq('id', id)
-      .single();
+      .eq('id', id);
+    query = await scopeTenantOwnedQuery(query, this.purchasesTable, {
+      message: 'Workspace organization context is required to load inventory purchases.',
+    });
+    const { data, error } = await query.single();
 
     if (error) {
       console.error('Error getting purchase by id:', error);
@@ -876,30 +953,37 @@ class InventoryService {
     try {
       const payload = this.normalizePurchasePayload(purchaseData);
 
-      const { data: purchase, error: purchaseError } = await supabase
+      const purchasePayload = await matchTenantOwnedPayload({
+        supplier: payload.supplier,
+        purchase_number: payload.purchase_number,
+        purchase_date: payload.purchase_date,
+        total_amount_mad: payload.total_amount_mad,
+        notes: payload.notes,
+        status: payload.status,
+        expected_delivery_date: payload.expected_delivery_date,
+        actual_delivery_date: payload.actual_delivery_date,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, this.purchasesTable, {
+        message: 'Workspace organization context is required to create inventory purchases.',
+      });
+
+      let purchaseInsert = supabase
         .from(this.purchasesTable)
-        .insert({
-          supplier: payload.supplier,
-          purchase_number: payload.purchase_number,
-          purchase_date: payload.purchase_date,
-          total_amount_mad: payload.total_amount_mad,
-          notes: payload.notes,
-          status: payload.status,
-          expected_delivery_date: payload.expected_delivery_date,
-          actual_delivery_date: payload.actual_delivery_date,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
+        .insert(purchasePayload)
+        .select();
+      purchaseInsert = await scopeTenantOwnedQuery(purchaseInsert, this.purchasesTable, {
+        message: 'Workspace organization context is required to create inventory purchases.',
+      });
+      const { data: purchase, error: purchaseError } = await purchaseInsert.single();
 
       if (purchaseError) throw purchaseError;
 
       const purchaseLines = [];
       for (const line of payload.lines) {
-        const { data: createdLine, error: lineError } = await supabase
+        let lineInsert = supabase
           .from(this.purchaseLinesTable)
-          .insert({
+          .insert(await matchTenantOwnedPayload({
             purchase_id: purchase.id,
             item_id: line.item_id,
             quantity: line.quantity,
@@ -907,9 +991,14 @@ class InventoryService {
             unit_cost_mad: line.unit_cost_mad,
             total_cost_mad: line.total_cost_mad,
             created_at: new Date().toISOString()
-          })
-          .select(`*, item:${this.itemsTable}(id, name, sku)`)
-          .single();
+          }, this.purchaseLinesTable, {
+            message: 'Workspace organization context is required to create inventory purchase lines.',
+          }))
+          .select(`*, item:${this.itemsTable}(id, name, sku)`);
+        lineInsert = await scopeTenantOwnedQuery(lineInsert, this.purchaseLinesTable, {
+          message: 'Workspace organization context is required to create inventory purchase lines.',
+        });
+        const { data: createdLine, error: lineError } = await lineInsert.single();
 
         if (lineError) throw lineError;
         purchaseLines.push(createdLine);
@@ -951,16 +1040,20 @@ class InventoryService {
 
       await this.assertStockCanSupportPurchaseDelta(itemDeltas, 'update this purchase');
 
-      const { error: deleteLinesError } = await supabase
+      let deleteLinesQuery = supabase
         .from(this.purchaseLinesTable)
         .delete()
         .eq('purchase_id', id);
+      deleteLinesQuery = await scopeTenantOwnedQuery(deleteLinesQuery, this.purchaseLinesTable, {
+        message: 'Workspace organization context is required to update inventory purchases.',
+      });
+      const { error: deleteLinesError } = await deleteLinesQuery;
 
       if (deleteLinesError) throw deleteLinesError;
 
-      const { data: updatedPurchase, error: updateError } = await supabase
+      let purchaseUpdate = supabase
         .from(this.purchasesTable)
-        .update({
+        .update(await matchTenantOwnedPayload({
           supplier: payload.supplier,
           purchase_number: payload.purchase_number,
           purchase_date: payload.purchase_date,
@@ -970,18 +1063,23 @@ class InventoryService {
           expected_delivery_date: payload.expected_delivery_date,
           actual_delivery_date: payload.actual_delivery_date,
           updated_at: new Date().toISOString()
-        })
+        }, this.purchasesTable, {
+          message: 'Workspace organization context is required to update inventory purchases.',
+        }))
         .eq('id', id)
-        .select()
-        .single();
+        .select();
+      purchaseUpdate = await scopeTenantOwnedQuery(purchaseUpdate, this.purchasesTable, {
+        message: 'Workspace organization context is required to update inventory purchases.',
+      });
+      const { data: updatedPurchase, error: updateError } = await purchaseUpdate.single();
 
       if (updateError) throw updateError;
 
       const purchaseLines = [];
       for (const line of payload.lines) {
-        const { data: createdLine, error: lineError } = await supabase
+        let lineInsert = supabase
           .from(this.purchaseLinesTable)
-          .insert({
+          .insert(await matchTenantOwnedPayload({
             purchase_id: id,
             item_id: line.item_id,
             quantity: line.quantity,
@@ -989,9 +1087,14 @@ class InventoryService {
             unit_cost_mad: line.unit_cost_mad,
             total_cost_mad: line.total_cost_mad,
             created_at: new Date().toISOString()
-          })
-          .select(`*, item:${this.itemsTable}(id, name, sku)`)
-          .single();
+          }, this.purchaseLinesTable, {
+            message: 'Workspace organization context is required to update inventory purchase lines.',
+          }))
+          .select(`*, item:${this.itemsTable}(id, name, sku)`);
+        lineInsert = await scopeTenantOwnedQuery(lineInsert, this.purchaseLinesTable, {
+          message: 'Workspace organization context is required to update inventory purchase lines.',
+        });
+        const { data: createdLine, error: lineError } = await lineInsert.single();
 
         if (lineError) throw lineError;
         purchaseLines.push(createdLine);

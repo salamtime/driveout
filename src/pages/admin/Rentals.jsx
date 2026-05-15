@@ -22,7 +22,7 @@ import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
-import { getScopedOrganizationId, applyOrganizationScope } from '../../services/OrganizationService';
+import { getScopedOrganizationId, applyOrganizationScope, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext';
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
@@ -244,6 +244,7 @@ const RENTALS_BASE_SELECT = `
   released_from_impound_at,
   vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
     id,
+    organization_id,
     name,
     model,
     plate_number,
@@ -252,6 +253,7 @@ const RENTALS_BASE_SELECT = `
   ),
   package:app_4c3a7a6153_rental_km_packages!package_id(
     id,
+    organization_id,
     name,
     duration_units,
     fixed_amount,
@@ -1646,6 +1648,19 @@ const Rentals = () => {
           throw error;
         }
 
+        await verifyTenantOwnedRows(data || [], 'app_4c3a7a6153_rentals', {
+          organizationId,
+          message: 'Rentals list returned rows outside the active workspace.',
+        });
+        await verifyTenantOwnedRows((data || []).map((rental) => rental.vehicle).filter(Boolean), 'saharax_0u4w4d_vehicles', {
+          organizationId,
+          message: 'Rentals list returned vehicle rows outside the active workspace.',
+        });
+        await verifyTenantOwnedRows((data || []).map((rental) => rental.package).filter(Boolean), 'app_4c3a7a6153_rental_km_packages', {
+          organizationId,
+          message: 'Rentals list returned package rows outside the active workspace.',
+        });
+
         let normalizedRentals = sortRentalsForDisplay(
           (data || []).map(normalizeRentalLifecycle),
           getEffectiveRentalStatus
@@ -1866,7 +1881,7 @@ const Rentals = () => {
     try {
       const cancelledAt = new Date().toISOString();
 
-      const { error: rentalError } = await supabase
+      let cancelRentalQuery = supabase
         .from('app_4c3a7a6153_rentals')
         .update({
           rental_status: 'cancelled',
@@ -1877,14 +1892,22 @@ const Rentals = () => {
           updated_at: cancelledAt,
         })
         .eq('id', rental.id);
+      if (shouldScopeSharedTenantData) {
+        cancelRentalQuery = applyOrganizationScope(cancelRentalQuery, organizationId);
+      }
+      const { error: rentalError } = await cancelRentalQuery;
 
       if (rentalError) throw rentalError;
 
       if (rental.vehicle_id) {
-        const { error: vehicleError } = await supabase
+        let cancelVehicleQuery = supabase
           .from('saharax_0u4w4d_vehicles')
           .update({ status: 'available', updated_at: cancelledAt })
           .eq('id', rental.vehicle_id);
+        if (shouldScopeSharedTenantData) {
+          cancelVehicleQuery = applyOrganizationScope(cancelVehicleQuery, organizationId);
+        }
+        const { error: vehicleError } = await cancelVehicleQuery;
 
         if (vehicleError) throw vehicleError;
       }
@@ -1934,7 +1957,7 @@ const Rentals = () => {
         user?.email ||
         null;
 
-      const { error } = await supabase
+      let arrivedQuery = supabase
         .from('app_4c3a7a6153_rentals')
         .update({
           rental_status: 'scheduled',
@@ -1945,6 +1968,10 @@ const Rentals = () => {
           updated_at: arrivedAt,
         })
         .eq('id', rental.id);
+      if (shouldScopeSharedTenantData) {
+        arrivedQuery = applyOrganizationScope(arrivedQuery, organizationId);
+      }
+      const { error } = await arrivedQuery;
 
       if (error) throw error;
 
@@ -1995,10 +2022,14 @@ const Rentals = () => {
 
   const fetchVehicles = async () => {
     try {
-      const { data, error } = await supabase
+      let vehiclesQuery = supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id,status')
+        .select('id,organization_id,status')
         .order('id', { ascending: true });
+      if (shouldScopeSharedTenantData) {
+        vehiclesQuery = applyOrganizationScope(vehiclesQuery, organizationId);
+      }
+      const { data, error } = await vehiclesQuery;
 
       if (error) {
         console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });

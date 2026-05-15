@@ -3,6 +3,13 @@ import { supabase } from '../lib/supabase';
 import { Save, Loader, AlertCircle, CheckCircle, Fuel, Search, Droplets } from 'lucide-react';
 import i18n from '../i18n';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  matchTenantOwnedPayload,
+  scopeTenantOwnedQuery,
+  verifyTenantOwnedRows,
+} from '../services/OrganizationService';
+
+const FUEL_PRICING_TABLE = 'fuel_pricing';
 
 const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
   const { hasFeature } = useAuth();
@@ -23,12 +30,22 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
 
   const fetchFuelPricing = async () => {
     try {
-      const { data, error } = await supabase
-        .from('fuel_pricing')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const query = await scopeTenantOwnedQuery(
+        supabase
+          .from(FUEL_PRICING_TABLE)
+          .select('*')
+          .order('created_at', { ascending: false }),
+        FUEL_PRICING_TABLE,
+        {
+          message: 'Workspace organization context is required to load fuel pricing.',
+        }
+      );
+      const { data, error } = await query;
 
       if (error) throw error;
+      await verifyTenantOwnedRows(data || [], FUEL_PRICING_TABLE, {
+        message: 'Fuel pricing returned rows outside the active workspace.',
+      });
       setFuelPricing(data || []);
 
       // Initialise local edit state from DB values
@@ -42,7 +59,9 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
       setEdits(initial);
     } catch (err) {
       console.error('Error fetching fuel pricing:', err);
-      setError(tr('Failed to load fuel pricing', 'Impossible de charger la tarification carburant'));
+      setFuelPricing([]);
+      setEdits({});
+      setError(tr('Failed to load tenant fuel pricing', 'Impossible de charger la tarification carburant du tenant'));
     } finally {
       setLoading(false);
     }
@@ -76,18 +95,26 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
     const daily  = parseFloat(edits[modelId]?.daily)  || 0;
 
     try {
+      const payload = await matchTenantOwnedPayload(
+        {
+          model_id: modelId,
+          // Keep legacy column in sync with daily for backwards compat
+          price_per_line:         daily,
+          hourly_price_per_line:  hourly,
+          daily_price_per_line:   daily,
+          updated_at: new Date().toISOString(),
+        },
+        FUEL_PRICING_TABLE,
+        {
+          message: 'Workspace organization context is required to save fuel pricing.',
+        }
+      );
+
       const { error } = await supabase
-        .from('fuel_pricing')
+        .from(FUEL_PRICING_TABLE)
         .upsert(
-          {
-            model_id: modelId,
-            // Keep legacy column in sync with daily for backwards compat
-            price_per_line:         daily,
-            hourly_price_per_line:  hourly,
-            daily_price_per_line:   daily,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'model_id' }
+          payload,
+          { onConflict: 'organization_id,model_id' }
         );
 
       if (error) throw error;
@@ -112,17 +139,25 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
 
     setSavingId(modelId);
     try {
+      const payload = await matchTenantOwnedPayload(
+        {
+          model_id: modelId,
+          price_per_line:        0,
+          hourly_price_per_line: 0,
+          daily_price_per_line:  0,
+          updated_at: new Date().toISOString(),
+        },
+        FUEL_PRICING_TABLE,
+        {
+          message: 'Workspace organization context is required to reset fuel pricing.',
+        }
+      );
+
       const { error } = await supabase
-        .from('fuel_pricing')
+        .from(FUEL_PRICING_TABLE)
         .upsert(
-          {
-            model_id: modelId,
-            price_per_line:        0,
-            hourly_price_per_line: 0,
-            daily_price_per_line:  0,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'model_id' }
+          payload,
+          { onConflict: 'organization_id,model_id' }
         );
 
       if (error) throw error;
