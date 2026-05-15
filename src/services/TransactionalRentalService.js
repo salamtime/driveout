@@ -1561,13 +1561,17 @@ class TransactionalRentalService {
     console.log('🗑️ DELETE RENTAL FIX: Deleting rental:', id);
     
     try {
+      const organizationId = await getCurrentOrganizationId();
       // STEP 1: Fetch the rental to get vehicle_id before deletion
       console.log('🔍 DELETE RENTAL FIX: Fetching rental details before deletion...');
-      const { data: rental, error: fetchError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, vehicle_id, rental_status')
-        .eq('id', id)
-        .single();
+      const fetchRentalQuery = applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('id, vehicle_id, rental_status, organization_id')
+          .eq('id', id),
+        organizationId
+      );
+      const { data: rental, error: fetchError } = await fetchRentalQuery.single();
       
       if (fetchError) {
         console.error('❌ DELETE RENTAL FIX: Error fetching rental:', fetchError);
@@ -1621,10 +1625,14 @@ class TransactionalRentalService {
       
       // STEP 3: Delete the rental
       console.log('🗑️ DELETE RENTAL FIX: Proceeding with rental deletion...');
-      const { error: deleteError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .delete()
-        .eq('id', id);
+      const deleteRentalQuery = applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_rentals')
+          .delete()
+          .eq('id', id),
+        organizationId
+      );
+      const { error: deleteError } = await deleteRentalQuery;
       
       if (deleteError) {
         console.error('❌ DELETE RENTAL FIX: Error deleting rental:', deleteError);

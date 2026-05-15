@@ -6,6 +6,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { apiManager } from '../../services/apiManager';
 import RentalService from '../../services/RentalService';
+import EnhancedTransactionalRentalService from '../../services/EnhancedTransactionalRentalService';
 import FuelPricingService from '../../services/FuelPricingService';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { generateThumbnailFromBlob, uploadThumbnail } from '../../utils/thumbnailGenerator';
@@ -28,7 +29,7 @@ import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/stat
 import { useAuth } from '../../contexts/AuthContext';
 import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract, hasPermission } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
-import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator, CarFront, Shield } from 'lucide-react';
+import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator, CarFront, Shield, Trash2 } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
 import InvoiceTemplate from '../../components/InvoiceTemplate';
 import ContractTemplate from '../../components/ContractTemplate';
@@ -2432,6 +2433,9 @@ export default function RentalDetails() {
   const [isReplacingVehicle, setIsReplacingVehicle] = useState(false);
   const [replacementPauseStartedAt, setReplacementPauseStartedAt] = useState(null);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
+  const [showPermanentDeleteRentalModal, setShowPermanentDeleteRentalModal] = useState(false);
+  const [permanentDeleteConfirmation, setPermanentDeleteConfirmation] = useState('');
+  const [isDeletingRentalContract, setIsDeletingRentalContract] = useState(false);
   const [showCustomerRiskDialog, setShowCustomerRiskDialog] = useState(false);
   const [customerRiskMode, setCustomerRiskMode] = useState('warning');
   const [customerRiskNote, setCustomerRiskNote] = useState('');
@@ -12965,6 +12969,54 @@ useEffect(() => {
     setShowCancelRentalModal(true);
   }, []);
 
+  const openPermanentDeleteRentalModal = useCallback(() => {
+    if (!['owner', 'admin'].includes(currentUserRole)) {
+      toast.error(tr('Only admins and owners can permanently delete rental contracts.', 'Seuls les administrateurs et propriétaires peuvent supprimer définitivement les contrats de location.'));
+      return;
+    }
+
+    setPermanentDeleteConfirmation('');
+    setShowPermanentDeleteRentalModal(true);
+  }, [currentUserRole]);
+
+  const handlePermanentDeleteRental = useCallback(async () => {
+    if (!rental?.id) return;
+
+    if (!['owner', 'admin'].includes(currentUserRole)) {
+      toast.error(tr('Only admins and owners can permanently delete rental contracts.', 'Seuls les administrateurs et propriétaires peuvent supprimer définitivement les contrats de location.'));
+      return;
+    }
+
+    if (String(permanentDeleteConfirmation || '').trim().toLowerCase() !== 'yes') {
+      toast.error(tr('Type yes to confirm permanent deletion.', 'Tapez yes pour confirmer la suppression définitive.'));
+      return;
+    }
+
+    setIsDeletingRentalContract(true);
+    try {
+      const result = await EnhancedTransactionalRentalService.deleteRental(rental.id);
+      if (!result?.success) {
+        throw new Error(result?.error || tr('Failed to permanently delete rental.', 'Échec de la suppression définitive de la location.'));
+      }
+
+      toast.success(tr('Rental contract permanently deleted.', 'Contrat de location supprimé définitivement.'));
+      setShowPermanentDeleteRentalModal(false);
+      setPermanentDeleteConfirmation('');
+      navigate('/admin/rentals', {
+        replace: true,
+        state: {
+          deletedRentalId: rental.id,
+          deletedRentalReference: rental.rental_id || null,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to permanently delete rental contract:', error);
+      toast.error(error?.message || tr('Failed to permanently delete rental.', 'Échec de la suppression définitive de la location.'));
+    } finally {
+      setIsDeletingRentalContract(false);
+    }
+  }, [currentUserRole, navigate, permanentDeleteConfirmation, rental?.id, rental?.rental_id]);
+
   const openVehicleIssueResolutionModal = useCallback(() => {
     initializeVehicleIssueResolutionForm();
     setShowVehicleIssueResolutionModal(true);
@@ -15876,7 +15928,7 @@ useEffect(() => {
     hasMonetaryDamageDeposit ||
     rental?.deposit_returned_at
   );
-  const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
+  const canPermanentlyDeleteRentalContract = ['owner', 'admin'].includes(currentUserRole);
   const canResendTelegramAlerts = ['admin', 'owner'].includes(currentUserRole);
   const availableTelegramResendActions = useMemo(() => {
     if (!rental?.id || !canResendTelegramAlerts) return [];
@@ -16382,7 +16434,7 @@ useEffect(() => {
     canAlwaysAccessMoreActionsMenu ||
     canManageScheduledRental ||
     canCancelPreStartRental ||
-    canDeleteScheduledRental ||
+    canPermanentlyDeleteRentalContract ||
     isImpounded ||
     isActive ||
     (shouldShowLateArrivalBanner && canHandleLateArrival)
@@ -21323,19 +21375,6 @@ useEffect(() => {
                         {tr('Cancel rental', 'Annuler la location')}
                       </button>
                     )}
-                    {canDeleteScheduledRental && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMoreActionsOpen(false);
-                          cancelRental();
-                        }}
-                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-                      >
-                        <XCircle className="mr-2 h-4 w-4" />
-                        {tr('Delete', 'Supprimer')}
-                      </button>
-                    )}
                     {isActive && !isImpounded && (
                       <button
                         type="button"
@@ -21390,6 +21429,22 @@ useEffect(() => {
                         <XCircle className="mr-2 h-4 w-4" />
                         {tr('Cancel as no-show', 'Annuler comme absence')}
                       </button>
+                    )}
+                    {canPermanentlyDeleteRentalContract && (
+                      <>
+                        <div className="my-2 border-t border-slate-100" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreActionsOpen(false);
+                            openPermanentDeleteRentalModal();
+                          }}
+                          className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-50"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          {tr('Delete permanently', 'Supprimer définitivement')}
+                        </button>
+                      </>
                     )}
                     </div>
                     )}
@@ -28895,6 +28950,100 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           )}
     </DialogContent>
   </Dialog>
+
+      <Dialog
+        open={showPermanentDeleteRentalModal}
+        onOpenChange={(open) => {
+          if (isDeletingRentalContract) return;
+          setShowPermanentDeleteRentalModal(open);
+          if (!open) {
+            setPermanentDeleteConfirmation('');
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg rounded-[28px] border border-rose-100 bg-white p-0 shadow-[0_24px_70px_rgba(127,29,29,0.16)]">
+          <DialogHeader className="border-b border-rose-100 bg-gradient-to-r from-rose-50 via-white to-amber-50 px-6 pb-5 pt-6 text-left">
+            <DialogTitle className="flex items-center gap-3 text-xl font-black text-slate-950">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-600 text-white shadow-[0_12px_24px_rgba(225,29,72,0.24)]">
+                <Trash2 className="h-5 w-5" />
+              </span>
+              {tr('Delete rental permanently?', 'Supprimer définitivement la location ?')}
+            </DialogTitle>
+            <DialogDescription className="mt-3 text-sm leading-6 text-slate-600">
+              {tr(
+                'This deletes the rental contract completely. It is not a cancellation and it cannot be restored.',
+                "Cette action supprime complètement le contrat de location. Ce n'est pas une annulation et il ne pourra pas être restauré."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 px-6 py-5">
+            <div className="rounded-2xl border border-rose-100 bg-rose-50/70 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-rose-700">
+                {tr('Contract to delete', 'Contrat à supprimer')}
+              </p>
+              <p className="mt-2 text-lg font-black text-slate-950">
+                {rental?.rental_id || rental?.id || tr('Current rental', 'Location actuelle')}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-600">
+                {rental?.customer_name || tr('No customer name', 'Aucun nom client')}
+              </p>
+            </div>
+
+            <div>
+              <label className="text-sm font-bold text-slate-800">
+                {tr('Type yes to permanently delete this rental.', 'Tapez yes pour supprimer définitivement cette location.')}
+              </label>
+              <input
+                type="text"
+                value={permanentDeleteConfirmation}
+                onChange={(event) => setPermanentDeleteConfirmation(event.target.value)}
+                placeholder="yes"
+                disabled={isDeletingRentalContract}
+                className="mt-2 w-full rounded-2xl border border-rose-200 bg-white px-4 py-3 text-base font-bold text-slate-950 outline-none transition focus:border-rose-500 focus:ring-4 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+              />
+            </div>
+
+            <Alert className="border-amber-200 bg-amber-50 text-amber-900">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="text-sm font-semibold leading-6">
+                {tr(
+                  'Permanent delete removes the contract record and linked rental cleanup data. Use cancel only when you want to keep a historical cancelled contract.',
+                  "La suppression définitive retire le contrat et les données de nettoyage liées. Utilisez l'annulation uniquement si vous voulez garder un historique du contrat annulé."
+                )}
+              </AlertDescription>
+            </Alert>
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-6 pb-6 pt-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowPermanentDeleteRentalModal(false);
+                setPermanentDeleteConfirmation('');
+              }}
+              disabled={isDeletingRentalContract}
+              className="rounded-2xl border-slate-200 bg-white px-5 py-3 font-bold text-slate-700 hover:bg-slate-50"
+            >
+              {tr('Keep rental', 'Garder la location')}
+            </Button>
+            <Button
+              type="button"
+              onClick={handlePermanentDeleteRental}
+              disabled={
+                isDeletingRentalContract ||
+                String(permanentDeleteConfirmation || '').trim().toLowerCase() !== 'yes'
+              }
+              className="rounded-2xl border border-rose-600 bg-rose-600 px-5 py-3 font-black text-white shadow-[0_14px_30px_rgba(225,29,72,0.24)] hover:bg-rose-700 disabled:cursor-not-allowed disabled:border-rose-200 disabled:bg-rose-200 disabled:shadow-none"
+            >
+              {isDeletingRentalContract
+                ? tr('Deleting...', 'Suppression...')
+                : tr('Delete permanently', 'Supprimer définitivement')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showSecurityHoldReminderModal} onOpenChange={setShowSecurityHoldReminderModal}>
         <DialogContent className={isLightRentalDetailsMode ? "mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]" : "sm:max-w-md rounded-[28px] border border-violet-100 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)]"}>
