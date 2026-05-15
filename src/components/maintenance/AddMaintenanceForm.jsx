@@ -92,6 +92,13 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   const getInventorySellPrice = (item, fallback = 0) => {
     return parseFloat(item?.price_mad || 0) || parseFloat(fallback || 0) || parseFloat(item?.cost_mad || 0) || 0;
   };
+  const normalizeWholeMadInput = (value) => {
+    const rawValue = String(value ?? '');
+    if (!rawValue) return '';
+
+    const wholePart = rawValue.split(/[.,]/)[0] || '';
+    return wholePart.replace(/\D/g, '');
+  };
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -169,8 +176,20 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   };
 
   const addSuggestedInventoryPart = (item, quantityOverride = 1) => {
-    if (!item?.id) return;
+    if (!item?.id) return false;
+    const availableStock = Number(item.available_stock ?? item.stock_on_hand ?? 0) || 0;
+    if (availableStock <= 0 && !editingRecord) {
+      setError(tr(
+        `${item.name} is out of stock. Restock this inventory item before using it on a maintenance record.`,
+        `${item.name} est en rupture de stock. Reapprovisionnez cet article avant de l utiliser sur une maintenance.`
+      ));
+      return false;
+    }
+
+    setError('');
     const nextQuantity = parseFloat(quantityOverride || 1) || 1;
+    const unitCost = parseFloat(item.cost_mad || 0) || 0;
+    const unitPrice = getInventorySellPrice(item);
 
     setFormData((prev) => {
       const existingIndex = prev.parts_used.findIndex((part) => (
@@ -179,10 +198,14 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
 
       if (existingIndex >= 0) {
         const nextParts = [...prev.parts_used];
-        const currentQty = parseFloat(nextParts[existingIndex].quantity || 0) || 0;
         nextParts[existingIndex] = {
           ...nextParts[existingIndex],
-          quantity: currentQty + nextQuantity,
+          item_name: item.name || nextParts[existingIndex].item_name || '',
+          part_name: item.name || nextParts[existingIndex].part_name || '',
+          part_number: item.sku || nextParts[existingIndex].part_number || '',
+          unit: item.unit || nextParts[existingIndex].unit || 'units',
+          unit_cost_mad: nextParts[existingIndex].unit_cost_mad || unitCost,
+          unit_price_mad: nextParts[existingIndex].unit_price_mad || unitPrice,
         };
         return { ...prev, parts_used: nextParts };
       }
@@ -194,12 +217,32 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
           {
             source_type: 'inventory',
             item_id: String(item.id),
+            item_name: item.name || '',
+            part_name: item.name || '',
+            part_number: item.sku || '',
             quantity: nextQuantity,
+            unit: item.unit || 'units',
+            unit_cost_mad: unitCost,
+            unit_price_mad: unitPrice,
+            total_cost_mad: nextQuantity * unitCost,
+            total_sell_mad: nextQuantity * unitPrice,
             notes: '',
           }
         ]
       };
     });
+
+    return true;
+  };
+
+  const selectInventorySearchItem = (item, quantityOverride = 1) => {
+    const didSelect = addSuggestedInventoryPart(item, quantityOverride);
+    if (!didSelect) return;
+
+    setPartsSourceTab('inventory');
+    setShowPartsEditor(true);
+    setItemSearchTerm('');
+    setSelectedInventoryLabel('');
   };
 
   const addSuggestedManualPart = (partName) => {
@@ -240,7 +283,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         notes: editingRecord.description || editingRecord.notes || editingRecord.details || '',
         technician_name: editingRecord.technician_name || editingRecord.technician || '',
         // 🚨🚨🚨 CRITICAL FIX: Enhanced cost mapping (removed external cost and auto-calculation)
-        labor_rate_mad: laborCost?.toString() || '',
+        labor_rate_mad: normalizeWholeMadInput(Math.round(parseFloat(laborCost || 0) || 0)),
         parts_cost_mad: partsCost?.toString() || '',
         tax_mad: taxCost?.toString() || '',
         parts_used: [] // Will be set after inventory loads
@@ -260,12 +303,22 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       const filtered = getFilteredItemsForDisplay();
       setFilteredItems(filtered);
     } else {
-      // Search within current scope (suggested or all items)
-      const baseItems = getFilteredItemsForDisplay();
-      const searchFiltered = baseItems.filter(item =>
-        item.name.toLowerCase().includes(itemSearchTerm.toLowerCase()) ||
-        (item.sku && item.sku.toLowerCase().includes(itemSearchTerm.toLowerCase()))
-      );
+      // Searching should always scan the full active inventory list. Suggestions are
+      // only a default view, not a hard filter that hides valid stocked parts.
+      const normalizedSearch = itemSearchTerm.trim().toLowerCase();
+      const searchFiltered = inventoryItems.filter(item => {
+        const haystack = [
+          item.name,
+          item.sku,
+          item.category,
+          ...(Array.isArray(item.labels) ? item.labels : []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+
+        return haystack.includes(normalizedSearch);
+      });
       setFilteredItems(searchFiltered);
     }
   }, [itemSearchTerm, inventoryItems, primaryMaintenanceType, selectedMaintenanceTypes, selectedInventoryLabel, showAllItems]);
@@ -277,7 +330,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       if (pricing && !editingRecord) {
         setFormData(prev => ({
           ...prev,
-          labor_rate_mad: pricing.default_labor_rate_mad?.toString() || '',
+          labor_rate_mad: normalizeWholeMadInput(Math.round(parseFloat(pricing.default_labor_rate_mad || 0) || 0)),
           parts_cost_mad: pricing.default_parts_cost_mad?.toString() || ''
         }));
       }
@@ -522,7 +575,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: value
+      [name]: name === 'labor_rate_mad' ? normalizeWholeMadInput(value) : value
     }));
   };
 
@@ -891,7 +944,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         scheduled_date: sourceFormData.scheduled_date,
         completed_date: statusToSave === 'completed' ? (sourceFormData.completed_date || sourceFormData.scheduled_date) : null,
         odometer_reading: sourceFormData.odometer_reading ? parseInt(sourceFormData.odometer_reading) : null,
-        labor_rate_mad: parseFloat(sourceFormData.labor_rate_mad) || 0, // Now fixed price
+        labor_rate_mad: parseInt(sourceFormData.labor_rate_mad, 10) || 0, // Fixed whole-MAD price
         parts_cost_mad: parseFloat(sourceFormData.parts_cost_mad) || 0,
         tax_mad: parseFloat(sourceFormData.tax_mad) || 0,
         notes: sourceFormData.notes.trim(),
@@ -949,6 +1002,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   };
   const smartInfo = getSmartSuggestionsInfo();
   const quickSuggestions = getQuickAddSuggestions();
+  const searchedInventoryItems = itemSearchTerm.trim() ? filteredItems : [];
   const inventoryPartCount = formData.parts_used.filter((part) => (part.source_type || 'inventory') !== 'manual').length;
   const manualPartCount = formData.parts_used.filter((part) => (part.source_type || 'inventory') === 'manual').length;
   const partQuantityByUnit = formData.parts_used.reduce((summary, part) => {
@@ -1509,7 +1563,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
             <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-5">
               <div className="rounded-xl border border-white/80 bg-white px-3 py-3 shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{tr('Labor', 'Main-d oeuvre')}</p>
-                <p className="mt-1 text-lg font-semibold text-gray-900">{laborCost.toFixed(2)} <span className="text-xs font-medium text-gray-500">MAD</span></p>
+                <p className="mt-1 text-lg font-semibold text-gray-900">{Math.round(laborCost)} <span className="text-xs font-medium text-gray-500">MAD</span></p>
               </div>
               <div className="rounded-xl border border-white/80 bg-white px-3 py-3 shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{tr('Inventory Parts', 'Pieces inventaire')}</p>
@@ -1560,11 +1614,13 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                   onChange={handleInputChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   min="0"
-                  step="0.01"
+                  step="1"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   disabled={loading}
-                  placeholder={tr('Fixed labor cost', 'Cout fixe main-d oeuvre')}
+                  placeholder={tr('Fixed labor cost, no decimals', 'Cout fixe sans decimales')}
                 />
-                <p className="text-xs text-gray-500 mt-1">{tr('Fixed price for labor work', 'Prix fixe pour le travail de main-d oeuvre')}</p>
+                <p className="text-xs text-gray-500 mt-1">{tr('Enter a whole MAD amount only.', 'Saisissez uniquement un montant MAD entier.')}</p>
               </div>
 
               <div className="rounded-xl border border-blue-100 bg-white p-4 shadow-sm">
@@ -1612,7 +1668,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
               <p className="text-sm font-semibold text-gray-900 mb-3">{tr('Billing Summary', 'Resume de facturation')}</p>
               <div className="flex items-center justify-between text-sm mb-2">
                 <span className="text-gray-600">{tr('Labor Cost:', 'Cout main-d oeuvre :')}</span>
-                <span className="font-medium">MAD {laborCost.toFixed(2)}</span>
+                <span className="font-medium">MAD {Math.round(laborCost)}</span>
               </div>
               <div className="flex items-center justify-between text-sm mb-2">
                 <span className="text-gray-600">{tr('Additional Parts Price:', 'Prix pieces supplementaires :')}</span>
@@ -1856,6 +1912,58 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                         className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                       />
                     </div>
+
+                    {itemSearchTerm.trim() && (
+                      <div className="mt-3 space-y-2">
+                        {searchedInventoryItems.length > 0 ? (
+                          searchedInventoryItems.slice(0, 8).map((item) => {
+                            const stock = Number(item.available_stock ?? item.stock_on_hand ?? 0) || 0;
+                            const unit = item.unit || tr('unit', 'unite');
+                            const canUseItem = stock > 0 || editingRecord;
+
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                              onClick={() => canUseItem && selectInventorySearchItem(item, 1)}
+                              disabled={!canUseItem}
+                              className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-3 py-3 text-left transition-colors ${
+                                  canUseItem
+                                    ? 'border-blue-200 bg-blue-50/60 hover:bg-blue-100'
+                                    : 'border-amber-200 bg-amber-50/70 opacity-90'
+                                }`}
+                              >
+                                <span className="flex min-w-0 items-center gap-3">
+                                  <span className="text-lg">{getInventoryCategoryVisual(item.category).emoji}</span>
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-sm font-semibold text-slate-900">{item.name}</span>
+                                    <span className="mt-0.5 block truncate text-xs text-slate-500">
+                                      {[item.sku ? `SKU ${item.sku}` : null, item.category || null].filter(Boolean).join(' • ')}
+                                    </span>
+                                  </span>
+                                </span>
+                                <span className="flex shrink-0 flex-col items-end gap-1">
+                                  <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                                    MAD {getInventorySellPrice(item).toFixed(2)}
+                                  </span>
+                                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                    canUseItem ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {stock > 0
+                                      ? `${formatQuantity(stock)} ${unit}`
+                                      : tr('Out of stock', 'Rupture de stock')}
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                            {tr('No inventory items match this search.', 'Aucun article inventaire ne correspond a cette recherche.')}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

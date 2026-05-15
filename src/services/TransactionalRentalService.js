@@ -1571,16 +1571,49 @@ class TransactionalRentalService {
           .eq('id', id),
         organizationId
       );
-      const { data: rental, error: fetchError } = await fetchRentalQuery.single();
+      let { data: rental, error: fetchError } = await fetchRentalQuery.maybeSingle();
       
       if (fetchError) {
         console.error('❌ DELETE RENTAL FIX: Error fetching rental:', fetchError);
         throw new Error(`Failed to fetch rental before deletion: ${fetchError.message}`);
       }
       
+      let deleteAsLegacyOrphan = false;
+      if (!rental && organizationId) {
+        const { data: legacyRental, error: legacyFetchError } = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('id, vehicle_id, rental_status, organization_id')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (legacyFetchError) {
+          console.error('❌ DELETE RENTAL FIX: Error checking legacy rental ownership:', legacyFetchError);
+          throw new Error(`Failed to verify rental ownership before deletion: ${legacyFetchError.message}`);
+        }
+
+        if (legacyRental && !legacyRental.organization_id) {
+          console.warn('⚠️ DELETE RENTAL FIX: Deleting legacy rental without organization_id:', {
+            id,
+            activeOrganizationId: organizationId,
+          });
+          rental = legacyRental;
+          deleteAsLegacyOrphan = true;
+        } else if (legacyRental?.organization_id && legacyRental.organization_id !== organizationId) {
+          console.error('❌ DELETE RENTAL FIX: Rental belongs to another workspace:', {
+            id,
+            activeOrganizationId: organizationId,
+            rentalOrganizationId: legacyRental.organization_id,
+          });
+          throw new Error('This rental contract belongs to another workspace and cannot be deleted from the active workspace.');
+        }
+      }
+
       if (!rental) {
-        console.error('❌ DELETE RENTAL FIX: Rental not found:', id);
-        throw new Error(`Rental with ID ${id} not found`);
+        console.error('❌ DELETE RENTAL FIX: Rental not found in active workspace:', {
+          id,
+          organizationId,
+        });
+        throw new Error('This rental contract was not found in the active workspace. Refresh the rentals list and try again from the correct workspace.');
       }
       
       console.log('✅ DELETE RENTAL FIX: Rental details retrieved:', {
@@ -1625,13 +1658,14 @@ class TransactionalRentalService {
       
       // STEP 3: Delete the rental
       console.log('🗑️ DELETE RENTAL FIX: Proceeding with rental deletion...');
-      const deleteRentalQuery = applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_rentals')
-          .delete()
-          .eq('id', id),
-        organizationId
-      );
+      const deleteRentalBaseQuery = supabase
+        .from('app_4c3a7a6153_rentals')
+        .delete()
+        .eq('id', id);
+
+      const deleteRentalQuery = deleteAsLegacyOrphan
+        ? deleteRentalBaseQuery.is('organization_id', null)
+        : applyOrganizationScope(deleteRentalBaseQuery, organizationId);
       const { error: deleteError } = await deleteRentalQuery;
       
       if (deleteError) {

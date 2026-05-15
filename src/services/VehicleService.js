@@ -1,9 +1,12 @@
 import { supabase } from '../lib/supabase';
 import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
 import {
+  applyOrganizationScope,
   getCurrentOrganizationId,
+  isTenantOwnedSharedTable,
   matchTenantOwnedPayload,
-  scopeTenantOwnedQuery,
+  requireCurrentOrganizationId,
+  shouldScopeSharedTenantData,
   verifyTenantOwnedRows,
 } from './OrganizationService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
@@ -40,7 +43,14 @@ class VehicleService {
   }
 
   async applyReadScope(query, tableName = VEHICLES_TABLE, message = null) {
-    return scopeTenantOwnedQuery(query, tableName, { message });
+    let scopedQuery = query;
+    if (shouldScopeSharedTenantData() && isTenantOwnedSharedTable(tableName)) {
+      const organizationId = await requireCurrentOrganizationId(
+        message || `Workspace organization context is required for ${tableName}.`
+      );
+      scopedQuery = applyOrganizationScope(scopedQuery, organizationId);
+    }
+    return scopedQuery;
   }
 
   async verifyScopedRows(rows, tableName = VEHICLES_TABLE, message = null) {
@@ -172,6 +182,7 @@ class VehicleService {
 
     const fleetSelectColumns = `
       id,
+      organization_id,
       name,
       model,
       vehicle_type,
@@ -213,6 +224,7 @@ class VehicleService {
     `;
     const fallbackFleetSelectColumns = `
       id,
+      organization_id,
       name,
       model,
       vehicle_type,

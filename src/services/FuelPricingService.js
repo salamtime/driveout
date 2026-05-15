@@ -1,9 +1,24 @@
 import { supabase } from '../lib/supabase';
-import { scopeTenantOwnedQuery, verifyTenantOwnedRows } from './OrganizationService';
+import {
+  applyOrganizationScope,
+  isTenantOwnedSharedTable,
+  requireCurrentOrganizationId,
+  shouldScopeSharedTenantData,
+  verifyTenantOwnedRows,
+} from './OrganizationService';
 
 const FUEL_PRICING_TABLE = 'fuel_pricing';
 
 class FuelPricingService {
+  static async scopedMaybeSingle(query, message) {
+    let scopedQuery = query;
+    if (shouldScopeSharedTenantData() && isTenantOwnedSharedTable(FUEL_PRICING_TABLE)) {
+      const organizationId = await requireCurrentOrganizationId(message);
+      scopedQuery = applyOrganizationScope(scopedQuery, organizationId);
+    }
+    return scopedQuery.maybeSingle();
+  }
+
   /**
    * Fetch fuel pricing for a specific vehicle model.
    * Returns { hourly, daily } prices per line.
@@ -24,11 +39,10 @@ class FuelPricingService {
         .select('organization_id, price_per_line, hourly_price_per_line, daily_price_per_line')
         .eq('model_id', vehicleModelId);
 
-      query = await scopeTenantOwnedQuery(query, FUEL_PRICING_TABLE, {
-        message: 'Workspace organization context is required to load fuel pricing.',
-      });
-
-      const { data, error } = await query.maybeSingle();
+      const { data, error } = await this.scopedMaybeSingle(
+        query,
+        'Workspace organization context is required to load fuel pricing.'
+      );
 
       if (error) {
         console.error('❌ Error fetching fuel pricing:', error);
@@ -67,11 +81,10 @@ class FuelPricingService {
         .select('organization_id, price_per_line, hourly_price_per_line, daily_price_per_line')
         .eq('model_id', vehicleModelId);
 
-      query = await scopeTenantOwnedQuery(query, FUEL_PRICING_TABLE, {
-        message: 'Workspace organization context is required to load fuel pricing.',
-      });
-
-      const { data, error } = await query.maybeSingle();
+      const { data, error } = await this.scopedMaybeSingle(
+        query,
+        'Workspace organization context is required to load fuel pricing.'
+      );
 
       if (error || !data) return { hourly: 0, daily: 0 };
 

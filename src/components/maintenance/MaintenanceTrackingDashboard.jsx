@@ -24,7 +24,9 @@ import {
   Car,
   Calendar,
   TrendingUp,
-  Trash2
+  Trash2,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 let maintenanceDashboardSnapshotPromise = null;
@@ -258,6 +260,7 @@ const MaintenanceTrackingDashboard = () => {
   const [initialEditRecordId, setInitialEditRecordId] = useState(null);
   const [initialViewRecordId, setInitialViewRecordId] = useState(null);
   const [dashboardSourceFilter, setDashboardSourceFilter] = useState('all');
+  const [expandedMaintenanceCards, setExpandedMaintenanceCards] = useState({});
   const [selectedRecordForDelete, setSelectedRecordForDelete] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   useAdminModalFocus(showDeleteModal, 'maintenance-delete');
@@ -481,6 +484,27 @@ const MaintenanceTrackingDashboard = () => {
     return typeLabelMap[report.report_type] || 'Linked Rental Report';
   };
 
+  const getRecordSortTime = (record) => {
+    const rawDate = record?.scheduled_date || record?.updated_at || record?.created_at || record?.date || record?.maintenance_date;
+    const parsed = rawDate ? new Date(rawDate).getTime() : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const sortMaintenanceRecordsNewestFirst = (records = []) =>
+    [...(Array.isArray(records) ? records : [])].sort((a, b) => getRecordSortTime(b) - getRecordSortTime(a));
+
+  const getVehicleLatestMaintenanceTime = (vehicleData) => {
+    const records = sortMaintenanceRecordsNewestFirst(vehicleData?.maintenance_records || []);
+    return getRecordSortTime(records[0]);
+  };
+
+  const toggleMaintenanceCard = (cardKey) => {
+    setExpandedMaintenanceCards((prev) => ({
+      ...prev,
+      [cardKey]: !prev[cardKey],
+    }));
+  };
+
   // CRITICAL: Safe array access for all data
   const safeVehiclesInMaintenance = Array.isArray(vehiclesInMaintenance) ? vehiclesInMaintenance : [];
   const safeUpcomingMaintenance = Array.isArray(upcomingMaintenance) ? upcomingMaintenance : [];
@@ -498,7 +522,8 @@ const MaintenanceTrackingDashboard = () => {
     return safeVehiclesInMaintenance;
   };
 
-  const filteredVehiclesInMaintenance = getFilteredVehiclesInMaintenance();
+  const filteredVehiclesInMaintenance = getFilteredVehiclesInMaintenance()
+    .sort((a, b) => getVehicleLatestMaintenanceTime(b) - getVehicleLatestMaintenanceTime(a));
 
   if (loading && !hasLoadedOnce && activeTab === 'dashboard') {
     return (
@@ -719,15 +744,18 @@ const MaintenanceTrackingDashboard = () => {
                 <div className="space-y-4">
                     {filteredVehiclesInMaintenance.slice(0, 5).map((vehicleData) => {
                       // CRITICAL: Safe access to nested arrays
-                      const safeMaintenanceRecords = Array.isArray(vehicleData.maintenance_records) ? vehicleData.maintenance_records : [];
+                      const safeMaintenanceRecords = sortMaintenanceRecordsNewestFirst(vehicleData.maintenance_records);
                       const safeVehicle = vehicleData.vehicle || {};
                       const latestRecord = safeMaintenanceRecords[0] || null;
                       const latestRecordTotals = getRecordFinancialSummary(latestRecord);
                       const combinedTotals = getVehicleFinancialSummary(safeMaintenanceRecords);
                       const latestLinkedReport = safeMaintenanceRecords.find((record) => record?.linked_rental_report)?.linked_rental_report || null;
+                      const cardKey = safeVehicle.id || safeVehicle.plate_number || latestRecord?.id || Math.random();
+                      const isExpanded = Boolean(expandedMaintenanceCards[cardKey]);
+                      const latestMaintenanceVisual = getMaintenanceTypeVisual(latestRecord?.maintenance_type);
                       
                       return (
-                        <div key={safeVehicle.id || Math.random()} className="rounded-[1.5rem] border border-slate-300 bg-white p-4 shadow-[0_12px_28px_rgba(15,23,42,0.06)] transition-all hover:border-violet-200 hover:shadow-[0_16px_34px_rgba(76,29,149,0.10)]">
+                        <div key={cardKey} className="rounded-[1.5rem] border border-slate-300 bg-white p-4 shadow-[0_12px_28px_rgba(15,23,42,0.06)] transition-all hover:border-violet-200 hover:shadow-[0_16px_34px_rgba(76,29,149,0.10)]">
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <h4 className="font-semibold text-slate-900">
@@ -750,12 +778,58 @@ const MaintenanceTrackingDashboard = () => {
                                 </div>
                               )}
                             </div>
-                            <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-medium text-orange-700 border border-orange-200">
-                              {safeMaintenanceRecords.length} {tr('open item', 'élément ouvert')}{safeMaintenanceRecords.length !== 1 ? 's' : ''}
-                            </span>
+                            <div className="flex flex-col items-end gap-2">
+                              <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-medium text-orange-700 border border-orange-200">
+                                {safeMaintenanceRecords.length} {tr('open item', 'élément ouvert')}{safeMaintenanceRecords.length !== 1 ? 's' : ''}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleMaintenanceCard(cardKey)}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                              >
+                                {isExpanded ? tr('Collapse', 'Réduire') : tr('Details', 'Détails')}
+                                {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
                           </div>
 
-                          {latestLinkedReport && (
+                          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${latestMaintenanceVisual.classes}`}>
+                                    <span>{latestMaintenanceVisual.emoji}</span>
+                                    <span>{latestMaintenanceVisual.label}</span>
+                                  </span>
+                                  <p className="font-semibold text-slate-900">{latestRecord?.maintenance_type || tr('No maintenance type', 'Aucun type de maintenance')}</p>
+                                  <span className={`rounded-full px-2 py-1 text-xs font-medium ${MaintenanceTrackingService.getStatusColor(latestRecord?.status)}`}>
+                                    {latestRecord?.status || 'unknown'}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {latestLinkedReport
+                                    ? `${tr('Linked rental', 'Location liée')} ${formatRentalReference(latestLinkedReport.rental_id)}`
+                                    : tr('Regular maintenance record', 'Dossier de maintenance standard')}
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-bold text-emerald-700">
+                                  {MaintenanceTrackingService.formatCurrency(safeMaintenanceRecords.length > 1 ? combinedTotals.total : latestRecordTotals.total)}
+                                </span>
+                                {safeMaintenanceRecords[0]?.id && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'view')}
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                  >
+                                    {tr('Open latest', 'Ouvrir le dernier')}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {isExpanded && latestLinkedReport && (
                             <div className="mt-4 rounded-lg border border-red-100 bg-red-50 p-3">
                               <p className="text-xs font-semibold uppercase tracking-wide text-red-700">{tr('Rental-linked repair', 'Réparation liée à une location')}</p>
                               <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-gray-700 sm:grid-cols-3">
@@ -777,6 +851,7 @@ const MaintenanceTrackingDashboard = () => {
                             </div>
                           )}
 
+                          {isExpanded && (
                           <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50/70 p-3">
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                               <div>
@@ -803,7 +878,9 @@ const MaintenanceTrackingDashboard = () => {
                               )}
                             </div>
                           </div>
+                          )}
 
+                          {isExpanded && (
                           <div className="mt-4 grid grid-cols-2 gap-3 2xl:grid-cols-4">
                             <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
                               <p className="text-[11px] font-medium uppercase tracking-wide text-blue-700">{tr('Labor', "Main-d'œuvre")}</p>
@@ -822,7 +899,9 @@ const MaintenanceTrackingDashboard = () => {
                               <p className="mt-1 text-sm font-semibold text-green-900">{MaintenanceTrackingService.formatCurrency(latestRecordTotals.total)}</p>
                             </div>
                           </div>
+                          )}
 
+                          {isExpanded && (
                           <div className="mt-4 space-y-2">
                             {safeMaintenanceRecords.slice(0, 2).map((record) => (
                               <button
@@ -864,6 +943,8 @@ const MaintenanceTrackingDashboard = () => {
                               </p>
                             )}
                           </div>
+                          )}
+                          {isExpanded && (
                           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                             {safeMaintenanceRecords[0]?.id && (
                               <Button
@@ -904,6 +985,7 @@ const MaintenanceTrackingDashboard = () => {
                               </span>
                             )}
                           </div>
+                          )}
                         </div>
                       );
                     })}

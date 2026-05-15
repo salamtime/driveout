@@ -1,8 +1,12 @@
 import { supabase } from '../utils/supabaseClient';
 import { normalizeInventoryLabels } from '../config/maintenanceInventoryMapping';
 import {
+  applyOrganizationScope,
   getCurrentOrganizationId,
+  isTenantOwnedSharedTable,
+  requireCurrentOrganizationId,
   scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
   matchTenantOwnedPayload,
 } from './OrganizationService';
 import { buildStoragePathCandidates, buildTenantScopedStoragePath } from '../utils/storageUpload';
@@ -15,6 +19,17 @@ class InventoryService {
     this.purchaseLinesTable = 'saharax_0u4w4d_inventory_purchase_lines';
     this.vehiclesTable = 'saharax_0u4w4d_vehicles';
     this.storageBucket = 'inventory-images';
+  }
+
+  async scopedSingle(query, tableName, message) {
+    let scopedQuery = query;
+    if (shouldScopeSharedTenantData() && isTenantOwnedSharedTable(tableName)) {
+      const organizationId = await requireCurrentOrganizationId(
+        message || `Workspace organization context is required for ${tableName}.`
+      );
+      scopedQuery = applyOrganizationScope(scopedQuery, organizationId);
+    }
+    return scopedQuery.single();
   }
 
   normalizePurchaseRecord(purchase) {
@@ -497,10 +512,11 @@ class InventoryService {
         .from(this.itemsTable)
         .select('*')
         .eq('id', id);
-      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
-        message: 'Workspace organization context is required to load inventory items.',
-      });
-      const { data: item, error } = await query.single();
+      const { data: item, error } = await this.scopedSingle(
+        query,
+        this.itemsTable,
+        'Workspace organization context is required to load inventory items.'
+      );
       if (error) throw error;
       return item;
     } catch (error) {
@@ -562,10 +578,11 @@ class InventoryService {
           message: 'Workspace organization context is required to create inventory movements.',
         }))
         .select();
-      movementInsert = await scopeTenantOwnedQuery(movementInsert, this.movementsTable, {
-        message: 'Workspace organization context is required to create inventory movements.',
-      });
-      const { data: movement, error: movementError } = await movementInsert.single();
+      const { data: movement, error: movementError } = await this.scopedSingle(
+        movementInsert,
+        this.movementsTable,
+        'Workspace organization context is required to create inventory movements.'
+      );
 
       if (movementError) throw movementError;
       console.log('✅ Movement record created:', movement);
@@ -580,10 +597,11 @@ class InventoryService {
         }))
         .eq('id', item_id)
         .select();
-      itemUpdate = await scopeTenantOwnedQuery(itemUpdate, this.itemsTable, {
-        message: 'Workspace organization context is required to update inventory items.',
-      });
-      const { data: updatedItem, error: updateError } = await itemUpdate.single();
+      const { data: updatedItem, error: updateError } = await this.scopedSingle(
+        itemUpdate,
+        this.itemsTable,
+        'Workspace organization context is required to update inventory items.'
+      );
       
       if (updateError) throw updateError;
       console.log(`✅ STOCK UPDATED: Item ${item_id} stock changed from ${currentStock} to ${newStock}`);
@@ -676,10 +694,11 @@ class InventoryService {
         .from(this.itemsTable)
         .insert(payload)
         .select();
-      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
-        message: 'Workspace organization context is required to create inventory items.',
-      });
-      const { data, error } = await query.single();
+      const { data, error } = await this.scopedSingle(
+        query,
+        this.itemsTable,
+        'Workspace organization context is required to create inventory items.'
+      );
         
       if (error) throw error;
       return data;
@@ -731,10 +750,11 @@ class InventoryService {
         .update(payload)
         .eq('id', id)
         .select();
-      query = await scopeTenantOwnedQuery(query, this.itemsTable, {
-        message: 'Workspace organization context is required to update inventory items.',
-      });
-      const { data, error } = await query.single();
+      const { data, error } = await this.scopedSingle(
+        query,
+        this.itemsTable,
+        'Workspace organization context is required to update inventory items.'
+      );
         
       if (error) throw error;
       return data;
@@ -936,10 +956,11 @@ class InventoryService {
       .from(this.purchasesTable)
       .select(`*, purchase_lines:${this.purchaseLinesTable}(*, item:${this.itemsTable}(id, name, sku))`)
       .eq('id', id);
-    query = await scopeTenantOwnedQuery(query, this.purchasesTable, {
-      message: 'Workspace organization context is required to load inventory purchases.',
-    });
-    const { data, error } = await query.single();
+    const { data, error } = await this.scopedSingle(
+      query,
+      this.purchasesTable,
+      'Workspace organization context is required to load inventory purchases.'
+    );
 
     if (error) {
       console.error('Error getting purchase by id:', error);
@@ -972,10 +993,11 @@ class InventoryService {
         .from(this.purchasesTable)
         .insert(purchasePayload)
         .select();
-      purchaseInsert = await scopeTenantOwnedQuery(purchaseInsert, this.purchasesTable, {
-        message: 'Workspace organization context is required to create inventory purchases.',
-      });
-      const { data: purchase, error: purchaseError } = await purchaseInsert.single();
+      const { data: purchase, error: purchaseError } = await this.scopedSingle(
+        purchaseInsert,
+        this.purchasesTable,
+        'Workspace organization context is required to create inventory purchases.'
+      );
 
       if (purchaseError) throw purchaseError;
 
@@ -995,10 +1017,11 @@ class InventoryService {
             message: 'Workspace organization context is required to create inventory purchase lines.',
           }))
           .select(`*, item:${this.itemsTable}(id, name, sku)`);
-        lineInsert = await scopeTenantOwnedQuery(lineInsert, this.purchaseLinesTable, {
-          message: 'Workspace organization context is required to create inventory purchase lines.',
-        });
-        const { data: createdLine, error: lineError } = await lineInsert.single();
+        const { data: createdLine, error: lineError } = await this.scopedSingle(
+          lineInsert,
+          this.purchaseLinesTable,
+          'Workspace organization context is required to create inventory purchase lines.'
+        );
 
         if (lineError) throw lineError;
         purchaseLines.push(createdLine);
@@ -1068,10 +1091,11 @@ class InventoryService {
         }))
         .eq('id', id)
         .select();
-      purchaseUpdate = await scopeTenantOwnedQuery(purchaseUpdate, this.purchasesTable, {
-        message: 'Workspace organization context is required to update inventory purchases.',
-      });
-      const { data: updatedPurchase, error: updateError } = await purchaseUpdate.single();
+      const { data: updatedPurchase, error: updateError } = await this.scopedSingle(
+        purchaseUpdate,
+        this.purchasesTable,
+        'Workspace organization context is required to update inventory purchases.'
+      );
 
       if (updateError) throw updateError;
 
@@ -1091,10 +1115,11 @@ class InventoryService {
             message: 'Workspace organization context is required to update inventory purchase lines.',
           }))
           .select(`*, item:${this.itemsTable}(id, name, sku)`);
-        lineInsert = await scopeTenantOwnedQuery(lineInsert, this.purchaseLinesTable, {
-          message: 'Workspace organization context is required to update inventory purchase lines.',
-        });
-        const { data: createdLine, error: lineError } = await lineInsert.single();
+        const { data: createdLine, error: lineError } = await this.scopedSingle(
+          lineInsert,
+          this.purchaseLinesTable,
+          'Workspace organization context is required to update inventory purchase lines.'
+        );
 
         if (lineError) throw lineError;
         purchaseLines.push(createdLine);
