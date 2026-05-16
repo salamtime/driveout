@@ -215,10 +215,10 @@ class VehicleReportService {
     }
   }
 
-  normalizeReport(row) {
+  normalizeReport(row, options = {}) {
     if (!row) return null;
 
-    const chargeConfig = this.getChargeConfig(row.id) || {};
+    const chargeConfig = options.ignoreLocalChargeConfig ? {} : (this.getChargeConfig(row.id) || {});
     const maintenanceDailyDays = Math.max(0, parseInt(
       chargeConfig.maintenance_daily_days ?? row.maintenance_daily_days ?? 0,
       10
@@ -534,9 +534,10 @@ class VehicleReportService {
     }
 
     try {
-      const normalizedReport = this.normalizeReport(report);
-      const rentalContext = options?.rental || await this.getRentalPricingContext(normalizedReport.rental_id);
+      const rentalContext = options?.rental || await this.getRentalPricingContext(report.rental_id);
       const pricingLocked = this.isRentalPricingLocked(rentalContext);
+      const normalizationOptions = pricingLocked ? { ignoreLocalChargeConfig: true } : {};
+      const normalizedReport = this.normalizeReport(report, normalizationOptions);
       const maintenance = await MaintenanceService.getMaintenanceById(report.maintenance_id, {
         pricingMode: pricingLocked ? 'snapshot' : 'live'
       });
@@ -547,7 +548,7 @@ class VehicleReportService {
         persist: !pricingLocked,
       });
       return {
-        ...this.normalizeReport(syncedReport),
+        ...this.normalizeReport(syncedReport, normalizationOptions),
         maintenance,
         maintenance_cost_total: Number(maintenance?.cost || normalizedReport?.maintenance_cost_total || 0),
       };
