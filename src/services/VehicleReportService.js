@@ -226,7 +226,9 @@ class VehicleReportService {
     const maintenanceDailyEnabled =
       chargeConfig.maintenance_daily_enabled !== undefined
         ? chargeConfig.maintenance_daily_enabled !== false
-        : maintenanceDailyDays > 0;
+        : row.maintenance_daily_enabled !== undefined && row.maintenance_daily_enabled !== null
+          ? row.maintenance_daily_enabled !== false
+          : maintenanceDailyDays > 0;
     const maintenanceDailyRate = Math.max(0, Number(
       chargeConfig.maintenance_daily_rate ?? row.maintenance_daily_rate ?? 0
     ));
