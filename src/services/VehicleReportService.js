@@ -537,7 +537,29 @@ class VehicleReportService {
       const rentalContext = options?.rental || await this.getRentalPricingContext(report.rental_id);
       const pricingLocked = this.isRentalPricingLocked(rentalContext);
       const normalizationOptions = pricingLocked ? { ignoreLocalChargeConfig: true } : {};
-      const normalizedReport = this.normalizeReport(report, normalizationOptions);
+      let reportSource = report;
+
+      if (pricingLocked && report?.id) {
+        try {
+          const { data, error } = await supabase
+            .from(this.table)
+            .select('*')
+            .eq('id', report.id)
+            .maybeSingle();
+
+          if (error) {
+            throw error;
+          }
+
+          if (data) {
+            reportSource = data;
+          }
+        } catch (rawReportError) {
+          console.warn('Unable to reload raw vehicle report for locked rental pricing:', rawReportError);
+        }
+      }
+
+      const normalizedReport = this.normalizeReport(reportSource, normalizationOptions);
       const maintenance = await MaintenanceService.getMaintenanceById(report.maintenance_id, {
         pricingMode: pricingLocked ? 'snapshot' : 'live'
       });
