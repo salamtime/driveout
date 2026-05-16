@@ -8961,6 +8961,7 @@ const FuelChargeToggle = ({
             end: rental.rental_end_date,
             total: rental.total_amount || 0,
             remaining: updateData.remaining_amount ?? rental.remaining_amount ?? 0,
+            damageDepositAmount: damageDeposit,
             depositReturnedAmount: depositReturn,
             depositDeductionAmount: deductionAmount,
           },
@@ -13248,6 +13249,7 @@ useEffect(() => {
           refundDestination,
           refundStatus,
           cancelledBy: actorName,
+          damageDepositAmount: Number(rental?.damage_deposit || 0) || 0,
           depositReturnedAmount: depositReturnUpdate?.deposit_return_amount || 0,
           depositDeductionAmount: depositReturnUpdate?.deposit_deduction_amount || 0,
           cancellationReason: `${tr('Vehicle issue', 'Problème véhicule')} — ${internalNote}`,
@@ -13267,6 +13269,7 @@ useEffect(() => {
             end: rental.rental_end_date,
             total: rental.total_amount || 0,
             remaining: updatePayload.remaining_amount ?? rental.remaining_amount ?? 0,
+            damageDepositAmount: Number(rental?.damage_deposit || 0) || 0,
             depositReturnedAmount: depositReturnUpdate.deposit_return_amount,
             depositDeductionAmount: depositReturnUpdate.deposit_deduction_amount,
           },
@@ -20215,6 +20218,12 @@ useEffect(() => {
                             <div className="w-full border-t border-gray-200 pt-3 text-center">
                               <div className="mb-2 text-sm text-gray-600">After deduction:</div>
                               <div className="mb-3 flex items-center justify-between text-base"><span>Amount to return:</span><span className="font-bold text-green-600">{formatCurrency(damageDeposit - balanceDue)} MAD</span></div>
+                              <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                                {tr(
+                                  `${formatCurrency(damageDeposit)} MAD deposit - ${formatCurrency(balanceDue)} MAD deducted = ${formatCurrency(damageDeposit - balanceDue)} MAD returned`,
+                                  `${formatCurrency(damageDeposit)} MAD de caution - ${formatCurrency(balanceDue)} MAD déduits = ${formatCurrency(damageDeposit - balanceDue)} MAD rendus`
+                                )}
+                              </div>
                               <Button onClick={() => setShowDepositSignatureModal(true)} className={`w-full ${PRIMARY_ACTION_BUTTON_CLASS}`} size="sm">
                                 <FileSignature className="mr-2 h-4 w-4" />
                                 {tr('Review Security Return', 'Vérifier la restitution')}
@@ -20237,6 +20246,12 @@ useEffect(() => {
                             <div className="w-full border-t border-gray-200 pt-3 text-center">
                               <div className="mb-2 text-sm text-gray-600">After applying deposit:</div>
                               <div className="mb-3 flex items-center justify-between text-base"><span>Remaining balance:</span><span className="font-bold text-red-600">{formatCurrency(balanceDue - damageDeposit)} MAD</span></div>
+                              <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                                {tr(
+                                  `${formatCurrency(damageDeposit)} MAD deposit applied to ${formatCurrency(balanceDue)} MAD due = ${formatCurrency(balanceDue - damageDeposit)} MAD still owed`,
+                                  `${formatCurrency(damageDeposit)} MAD de caution appliqués sur ${formatCurrency(balanceDue)} MAD dus = ${formatCurrency(balanceDue - damageDeposit)} MAD encore dus`
+                                )}
+                              </div>
                               <Button onClick={() => setShowDepositSignatureModal(true)} className={`w-full ${PRIMARY_ACTION_BUTTON_CLASS}`} size="sm">
                                 <FileSignature className="mr-2 h-4 w-4" />
                                 {tr('Review Security Return', 'Vérifier la restitution')}
@@ -26008,8 +26023,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                                 {formatCurrency(damageDeposit - balanceDue)} MAD
                               </span>
                             </div>
-                            <div className="text-xs text-gray-500 mb-3">
-                              {formatCurrency(damageDeposit)} MAD - {formatCurrency(balanceDue)} MAD = {formatCurrency(damageDeposit - balanceDue)} MAD
+                            <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                              {tr(
+                                `${formatCurrency(damageDeposit)} MAD deposit - ${formatCurrency(balanceDue)} MAD deducted = ${formatCurrency(damageDeposit - balanceDue)} MAD returned`,
+                                `${formatCurrency(damageDeposit)} MAD de caution - ${formatCurrency(balanceDue)} MAD déduits = ${formatCurrency(damageDeposit - balanceDue)} MAD rendus`
+                              )}
                             </div>
                             
                             <Button
@@ -26047,8 +26065,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                                 {formatCurrency(balanceDue - damageDeposit)} MAD
                               </span>
                             </div>
-                            <div className="text-xs text-gray-500 mb-3">
-                              {formatCurrency(balanceDue)} MAD - {formatCurrency(damageDeposit)} MAD = {formatCurrency(balanceDue - damageDeposit)} MAD still owed
+                            <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                              {tr(
+                                `${formatCurrency(damageDeposit)} MAD deposit applied to ${formatCurrency(balanceDue)} MAD due = ${formatCurrency(balanceDue - damageDeposit)} MAD still owed`,
+                                `${formatCurrency(damageDeposit)} MAD de caution appliqués sur ${formatCurrency(balanceDue)} MAD dus = ${formatCurrency(balanceDue - damageDeposit)} MAD encore dus`
+                              )}
                             </div>
                             
                             <Button

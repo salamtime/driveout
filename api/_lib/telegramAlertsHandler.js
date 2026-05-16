@@ -224,6 +224,17 @@ const formatMoney = (value) => {
   return amount.toFixed(0);
 };
 
+const buildDepositDeductionFormulaLine = (data = {}) => {
+  const heldDepositAmount = Number(data?.damageDepositAmount ?? data?.damage_deposit ?? 0);
+  const deductedAmount = Number(data?.depositDeductionAmount ?? 0);
+  const returnedAmount = Number(data?.depositReturnedAmount ?? 0);
+
+  if (!Number.isFinite(heldDepositAmount) || heldDepositAmount <= 0) return '';
+  if (!Number.isFinite(deductedAmount) || deductedAmount <= 0) return '';
+
+  return `${formatMoney(heldDepositAmount)} MAD deposit - ${formatMoney(deductedAmount)} MAD deducted = ${formatMoney(returnedAmount)} MAD returned`;
+};
+
 const formatDistanceKm = (value) => {
   const distance = Number(value);
   if (!Number.isFinite(distance) || distance <= 0) return '';
@@ -424,6 +435,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         linkLine,
       ].join('\n');
     case 'rental_cancelled':
+      const cancelledDepositFormula = buildDepositDeductionFormulaLine(data);
       return [
         '🛑 Rental Cancelled',
         '',
@@ -440,11 +452,13 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(safeText(formatMoney(data.depositReturnedAmount)) !== '0'
           ? [`Deposit returned: ${safeText(formatMoney(data.depositReturnedAmount))} MAD`]
           : []),
+        ...(cancelledDepositFormula ? [`Deposit calculation: ${cancelledDepositFormula}`] : []),
         ...(rentalIdentityLine ? [rentalIdentityLine] : []),
         '',
         linkLine,
       ].join('\n');
     case 'deposit_returned':
+      const depositFormula = buildDepositDeductionFormulaLine(data);
       return [
         '💳 Deposit Returned',
         '',
@@ -456,6 +470,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(safeText(formatMoney(data.depositDeductionAmount)) !== '0'
           ? [`Deducted: ${safeText(formatMoney(data.depositDeductionAmount))} MAD`]
           : []),
+        ...(depositFormula ? [`Calculation: ${depositFormula}`] : []),
         ...(safeText(formatMoney(data.remaining)) !== '0'
           ? [`Remaining due: ${remaining} MAD`]
           : []),
