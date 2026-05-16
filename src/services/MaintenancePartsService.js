@@ -62,6 +62,26 @@ class MaintenancePartsService {
     return `${noteText}\n[finance_snapshot]${serializedSnapshot}`;
   }
 
+  resolvePartUnitPrice(part, pricingMode = 'snapshot') {
+    const parsedNotes = this.parseNotesMetadata(part?.notes);
+    const snapshotUnitPrice =
+      parseFloat(
+        part?.unit_price_mad ||
+        part?.unit_sell_mad ||
+        part?.sell_price_mad ||
+        parsedNotes.financeSnapshot?.unit_price_mad ||
+        0
+      ) || 0;
+    const liveInventoryUnitPrice = parseFloat(part?.inventory_item?.price_mad || 0) || 0;
+    const fallbackUnitCost = parseFloat(part?.unit_cost_mad || 0) || 0;
+
+    if (pricingMode === 'live') {
+      return liveInventoryUnitPrice || snapshotUnitPrice || fallbackUnitCost;
+    }
+
+    return snapshotUnitPrice || liveInventoryUnitPrice || fallbackUnitCost;
+  }
+
   normalizePart(part, inventoryItem = null) {
     const quantity = parseFloat(part.quantity || 0) || 0;
     const parsedNotes = this.parseNotesMetadata(part.notes);
@@ -375,8 +395,9 @@ class MaintenancePartsService {
    * @param {string} maintenanceId - UUID of maintenance record
    * @returns {Array} Parts with inventory information
    */
-  async getMaintenanceParts(maintenanceId) {
+  async getMaintenanceParts(maintenanceId, options = {}) {
     try {
+      const pricingMode = options?.pricingMode === 'live' ? 'live' : 'snapshot';
       const organizationId = await requireCurrentOrganizationId();
       const { data: parts, error } = await applyOrganizationScope(
         supabase
@@ -399,11 +420,7 @@ class MaintenancePartsService {
 
       return (parts || []).map((part) => {
         const parsedNotes = this.parseNotesMetadata(part.notes);
-        const unitPrice =
-          parseFloat(parsedNotes.financeSnapshot?.unit_price_mad || 0) ||
-          parseFloat(part.inventory_item?.price_mad || 0) ||
-          parseFloat(part.unit_cost_mad || 0) ||
-          0;
+        const unitPrice = this.resolvePartUnitPrice(part, pricingMode);
         const quantity = parseFloat(part.quantity || 0) || 0;
 
         return {
@@ -429,8 +446,9 @@ class MaintenancePartsService {
    * @param {string} maintenanceId - UUID of maintenance record
    * @returns {number} Total parts cost
    */
-  async calculateMaintenancePartsCost(maintenanceId) {
+  async calculateMaintenancePartsCost(maintenanceId, options = {}) {
     try {
+      const pricingMode = options?.pricingMode === 'live' ? 'live' : 'snapshot';
       const organizationId = await requireCurrentOrganizationId();
       const { data, error } = await applyOrganizationScope(
         supabase
@@ -452,12 +470,7 @@ class MaintenancePartsService {
 
       const totalCost = (data || []).reduce((sum, part) => {
         const quantity = parseFloat(part.quantity || 0) || 0;
-        const parsedNotes = this.parseNotesMetadata(part.notes);
-        const unitPrice =
-          parseFloat(parsedNotes.financeSnapshot?.unit_price_mad || 0) ||
-          parseFloat(part.inventory_item?.price_mad || 0) ||
-          parseFloat(part.unit_cost_mad || 0) ||
-          0;
+        const unitPrice = this.resolvePartUnitPrice(part, pricingMode);
         return sum + (quantity * unitPrice);
       }, 0);
       return totalCost;

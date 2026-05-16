@@ -342,36 +342,36 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
       
       // Load the complete maintenance record with parts data
       const fullRecord = await MaintenanceTrackingService.getMaintenanceById(recordId);
+      if (!fullRecord?.id) {
+        throw new Error('Maintenance record not found or no longer available');
+      }
+
       const linkedReport = await VehicleReportService.getReportByMaintenanceId(recordId);
       
-      if (fullRecord) {
-        console.log('✅ Full maintenance record loaded with parts:', fullRecord);
-        console.log('🔍 Parts data:', fullRecord.parts_used);
-        
-        // Map the parts data to the format expected by AddMaintenanceForm
-        const mappedRecord = {
-          ...fullRecord,
-          linked_rental_report: linkedReport,
-          // Ensure parts_used is properly formatted
-          parts_used: (fullRecord.parts_used || []).map(part => ({
-            item_id: part.item_id?.toString() || '',
-            quantity: part.quantity || 0,
-            notes: part.notes || '',
-            // Include additional data for display
-            item_name: part.inventory_item?.name || part.part_name || 'Unknown Item',
-            unit_cost_mad: part.unit_cost_mad || 0
-          })),
-          // Map field names for compatibility
-          scheduled_date: fullRecord.service_date || fullRecord.scheduled_date,
-          notes: fullRecord.description || fullRecord.notes || ''
-        };
-        
-        console.log('🔄 Mapped record for editing:', mappedRecord);
-        setEditingRecordWithParts(mappedRecord);
-        setShowEditModal(true);
-      } else {
-        throw new Error('Failed to load maintenance record details');
-      }
+      console.log('✅ Full maintenance record loaded with parts:', fullRecord);
+      console.log('🔍 Parts data:', fullRecord.parts_used);
+
+      // Map the parts data to the format expected by AddMaintenanceForm
+      const mappedRecord = {
+        ...fullRecord,
+        linked_rental_report: linkedReport,
+        // Ensure parts_used is properly formatted
+        parts_used: (fullRecord.parts_used || []).map(part => ({
+          item_id: part.item_id?.toString() || '',
+          quantity: part.quantity || 0,
+          notes: part.notes || '',
+          // Include additional data for display
+          item_name: part.inventory_item?.name || part.part_name || 'Unknown Item',
+          unit_cost_mad: part.unit_cost_mad || 0
+        })),
+        // Map field names for compatibility
+        scheduled_date: fullRecord.service_date || fullRecord.scheduled_date,
+        notes: fullRecord.description || fullRecord.notes || ''
+      };
+
+      console.log('🔄 Mapped record for editing:', mappedRecord);
+      setEditingRecordWithParts(mappedRecord);
+      setShowEditModal(true);
     } catch (err) {
       console.error('❌ Error loading full maintenance record:', err);
       setError(`Failed to load maintenance details: ${err.message}`);

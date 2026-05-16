@@ -134,8 +134,9 @@ class MaintenanceService {
     }
   }
 
-  async getMaintenanceById(recordId) {
+  async getMaintenanceById(recordId, options = {}) {
     try {
+      const pricingMode = options?.pricingMode === 'live' ? 'live' : 'snapshot';
       const normalizedRecordId = String(recordId ?? '').trim();
       if (!normalizedRecordId || normalizedRecordId === 'undefined' || normalizedRecordId === 'null') {
         return null;
@@ -161,9 +162,21 @@ class MaintenanceService {
         throw error;
       }
 
-      const parts = await MaintenancePartsService.getMaintenanceParts(normalizedRecordId);
+      if (!data?.id) {
+        return null;
+      }
+
+      const parts = await MaintenancePartsService.getMaintenanceParts(normalizedRecordId, { pricingMode });
+      const partsCostMad = this.calculateInventoryPartsCost(parts);
+      const laborCost = parseFloat(data.labor_rate_mad || data.labor_cost_mad || 0) || 0;
+      const externalCost = parseFloat(data.external_cost_mad || 0) || 0;
+      const taxCost = parseFloat(data.tax_mad || 0) || 0;
+      const totalCost = laborCost + externalCost + taxCost + partsCostMad;
+
       return {
         ...data,
+        parts_cost_mad: partsCostMad,
+        cost: totalCost,
         parts,
         parts_used: parts
       };

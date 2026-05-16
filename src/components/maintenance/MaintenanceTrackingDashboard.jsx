@@ -434,20 +434,61 @@ const MaintenanceTrackingDashboard = () => {
     }
   };
 
-  const openMaintenanceRecord = (recordId, mode = 'view') => {
-    if (!isUsableRecordId(recordId)) {
-      console.warn('Skipping maintenance navigation because record id is missing:', recordId);
+  const refreshAfterUnavailableMaintenanceRecord = async () => {
+    clearInitialRecordSelection();
+    resetMaintenanceDashboardCaches();
+    appWarmupService.invalidateModule('maintenance');
+    await loadDashboardData();
+  };
+
+  const openMaintenanceRecord = async (recordOrRecords, mode = 'view') => {
+    const candidateRecords = Array.isArray(recordOrRecords)
+      ? sortMaintenanceRecordsNewestFirst(recordOrRecords)
+      : [recordOrRecords];
+
+    for (const candidate of candidateRecords) {
+      const recordId = typeof candidate === 'string'
+        ? candidate
+        : (candidate?.id || candidate?.maintenance_id || candidate?.record_id);
+
+      if (!isUsableRecordId(recordId)) {
+        continue;
+      }
+
+      try {
+        const liveRecord = await MaintenanceTrackingService.getMaintenanceById(recordId);
+        if (!liveRecord?.id) {
+          continue;
+        }
+
+        if (mode === 'view') {
+          navigate(`/admin/maintenance/${liveRecord.id}`);
+          return;
+        }
+
+        // edit mode opens the existing dashboard editor instead of leaving this workflow.
+        setActiveTab('maintenance');
+        setInitialViewRecordId(null);
+        setInitialEditRecordId(String(liveRecord.id));
+        return;
+      } catch (err) {
+        console.error('Error validating maintenance record before opening:', err);
+      }
+    }
+
+    console.warn('Skipping maintenance navigation because no live record was available:', recordOrRecords);
+    try {
+      await refreshAfterUnavailableMaintenanceRecord();
+    } catch (err) {
+      console.error('Error refreshing dashboard after unavailable maintenance record:', err);
+    }
+
+    if (!candidateRecords.some((candidate) => isUsableRecordId(typeof candidate === 'string' ? candidate : (candidate?.id || candidate?.maintenance_id || candidate?.record_id)))) {
       setError(tr('Cannot open this maintenance record because its ID is missing.', 'Impossible d’ouvrir ce dossier de maintenance car son ID est manquant.'));
       return;
     }
-    if (mode === 'view') {
-      navigate(`/admin/maintenance/${recordId}`);
-      return;
-    }
-    // edit mode opens the existing dashboard editor instead of leaving this workflow.
-    setActiveTab('maintenance');
-    setInitialViewRecordId(null);
-    setInitialEditRecordId(String(recordId));
+
+    setError(tr('This maintenance record no longer exists. The dashboard was refreshed.', 'Ce dossier de maintenance n’existe plus. Le tableau de bord a été actualisé.'));
   };
 
   const getOverdueCount = () => {
@@ -828,7 +869,7 @@ const MaintenanceTrackingDashboard = () => {
                                 {safeMaintenanceRecords[0]?.id && (
                                   <button
                                     type="button"
-                                    onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'view')}
+                                    onClick={() => openMaintenanceRecord(safeMaintenanceRecords, 'view')}
                                     className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                                   >
                                     {tr('Open latest', 'Ouvrir le dernier')}
@@ -959,7 +1000,7 @@ const MaintenanceTrackingDashboard = () => {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'view')}
+                                onClick={() => openMaintenanceRecord(safeMaintenanceRecords, 'view')}
                                 className={`w-full sm:w-auto sm:flex-1 xl:flex-none ${softActionButtonClass}`}
                               >
                                 {tr('Open Record', 'Ouvrir le dossier')}
@@ -968,7 +1009,7 @@ const MaintenanceTrackingDashboard = () => {
                             {safeMaintenanceRecords[0]?.id && (
                               <Button
                                 size="sm"
-                                onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'edit')}
+                                onClick={() => openMaintenanceRecord(safeMaintenanceRecords, 'edit')}
                                 className={`w-full sm:w-auto sm:flex-1 xl:flex-none ${primaryActionButtonClass}`}
                               >
                                 {tr('Edit Record', 'Modifier le dossier')}

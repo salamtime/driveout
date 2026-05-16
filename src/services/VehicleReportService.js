@@ -53,6 +53,36 @@ class VehicleReportService {
     return Math.max(0, (days * dailyRate) - discount);
   }
 
+  hasMeaningfulAmountChange(currentValue, nextValue) {
+    return Math.abs(Number(currentValue || 0) - Number(nextValue || 0)) > 0.009;
+  }
+
+  isRentalPricingLocked(rental = null) {
+    const normalizedStatus = String(rental?.rental_status || rental?.status || '').toLowerCase();
+    return ['completed', 'closed', 'returned'].includes(normalizedStatus) || Boolean(rental?.completed_at);
+  }
+
+  async getRentalPricingContext(rentalId) {
+    if (!rentalId) return null;
+
+    try {
+      const { data, error } = await supabase
+        .from(RENTALS_TABLE)
+        .select('id, rental_status, completed_at')
+        .eq('id', rentalId)
+        .maybeSingle();
+
+      if (error) {
+        throw error;
+      }
+
+      return data || null;
+    } catch (error) {
+      console.warn('Unable to load rental pricing context for vehicle report:', error);
+      return null;
+    }
+  }
+
   buildRentalMaintenanceSnapshot(report = {}) {
     const maintenanceDailyEnabled = report.maintenance_daily_enabled !== false;
     const maintenanceDailyDays = Math.max(0, parseInt(report.maintenance_daily_days || 0, 10) || 0);
@@ -426,21 +456,44 @@ class VehicleReportService {
     return this.normalizeReport(data);
   }
 
-  async syncReportFromMaintenance(report, maintenance) {
+  async syncReportFromMaintenance(report, maintenance, options = {}) {
     if (!report || !maintenance) {
       return this.normalizeReport(report);
     }
 
+    const persist = options?.persist !== false;
+    const normalizedReport = this.normalizeReport(report);
+    const nextMaintenanceCost = Number(maintenance.cost || 0);
+    const nextStatus = maintenance.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress';
+    const nextCustomerCharge = normalizedReport.customer_chargeable
+      ? nextMaintenanceCost
+      : Number(normalizedReport.customer_charge_amount || 0);
+
     const syncedPayload = {
-      maintenance_cost_total: Number(maintenance.cost || 0),
-      status: maintenance.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+      maintenance_cost_total: nextMaintenanceCost,
+      status: nextStatus,
     };
 
-    if (report.customer_chargeable) {
-      syncedPayload.customer_charge_amount = Number(maintenance.cost || 0);
+    if (normalizedReport.customer_chargeable) {
+      syncedPayload.customer_charge_amount = nextCustomerCharge;
     }
 
-    return this.updateReport(report.id, syncedPayload);
+    const hasStatusChange = String(normalizedReport.status || '') !== String(nextStatus || '');
+    const hasMaintenanceCostChange = this.hasMeaningfulAmountChange(normalizedReport.maintenance_cost_total, nextMaintenanceCost);
+    const hasCustomerChargeChange = normalizedReport.customer_chargeable
+      ? this.hasMeaningfulAmountChange(normalizedReport.customer_charge_amount, nextCustomerCharge)
+      : false;
+
+    if (!persist || (!hasStatusChange && !hasMaintenanceCostChange && !hasCustomerChargeChange)) {
+      return {
+        ...normalizedReport,
+        ...syncedPayload,
+      };
+    }
+
+    const updatedReport = await this.updateReport(report.id, syncedPayload);
+    await this.syncRentalMaintenanceSnapshot(updatedReport);
+    return updatedReport;
   }
 
   async createMaintenanceFromReport({ report, rental, actorName }) {
@@ -475,21 +528,28 @@ class VehicleReportService {
     return result?.maintenance || null;
   }
 
-  async hydrateReportWithMaintenance(report) {
+  async hydrateReportWithMaintenance(report, options = {}) {
     if (!report?.maintenance_id) {
       return this.normalizeReport(report);
     }
 
     try {
-      const maintenance = await MaintenanceService.getMaintenanceById(report.maintenance_id);
+      const normalizedReport = this.normalizeReport(report);
+      const rentalContext = options?.rental || await this.getRentalPricingContext(normalizedReport.rental_id);
+      const pricingLocked = this.isRentalPricingLocked(rentalContext);
+      const maintenance = await MaintenanceService.getMaintenanceById(report.maintenance_id, {
+        pricingMode: pricingLocked ? 'snapshot' : 'live'
+      });
       if (!maintenance) {
-        return this.normalizeReport(report);
+        return normalizedReport;
       }
-      const syncedReport = await this.syncReportFromMaintenance(this.normalizeReport(report), maintenance);
+      const syncedReport = await this.syncReportFromMaintenance(normalizedReport, maintenance, {
+        persist: !pricingLocked,
+      });
       return {
         ...this.normalizeReport(syncedReport),
         maintenance,
-        maintenance_cost_total: Number(maintenance?.cost || report?.maintenance_cost_total || 0),
+        maintenance_cost_total: Number(maintenance?.cost || normalizedReport?.maintenance_cost_total || 0),
       };
     } catch (error) {
       console.error('Failed to load linked maintenance for vehicle report:', error);

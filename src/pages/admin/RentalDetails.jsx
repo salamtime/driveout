@@ -5192,7 +5192,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
         try {
           const latestVehicleReport = await VehicleReportService.getLatestReportForRental(rentalData.id);
           if (latestVehicleReport) {
-            const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport);
+            const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport, { rental: rentalData });
             setVehicleReport(hydratedReport);
             setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
             setVehicleReportDraft({
@@ -9506,7 +9506,7 @@ const handleFuelChargeToggle = async (enabled) => {
         }
       }
 
-      const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(nextReport);
+      const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(nextReport, { rental });
       setRequiresClosingInspectionReview(false);
       setVehicleReport(hydratedReport);
       setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
