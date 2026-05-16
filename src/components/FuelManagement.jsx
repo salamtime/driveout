@@ -1118,11 +1118,30 @@ const FuelManagement = () => {
   const handleTransactionSuccess = (savedTransaction) => {
     appWarmupService.invalidateModule('fuel');
     appWarmupService.invalidateModule('finance');
+    const transactionType = String(savedTransaction?.transaction_type || '').toLowerCase();
+    const amountLiters = Number(savedTransaction?.amount || savedTransaction?.liters_added || savedTransaction?.liters || 0) || 0;
+    if (transactionType === 'tank_refill' && amountLiters > 0) {
+      setFuelData((prev) => {
+        const currentTank = prev?.tank || fuelData?.tank || {};
+        const capacity = Number(currentTank.capacity || currentTank.capacity_liters || 500);
+        const currentVolume = Number(currentTank.current_volume_liters || currentTank.initial_volume || 0);
+        const nextVolume = roundTo(Math.min(capacity, currentVolume + amountLiters), 2);
+        return {
+          ...prev,
+          tank: {
+            ...currentTank,
+            current_volume_liters: nextVolume,
+            capacity,
+          },
+          refills: [savedTransaction, ...(prev?.refills || [])].slice(0, 8),
+        };
+      });
+      toast.success(tr('Tank refill saved', 'Remplissage cuve enregistré'));
+    }
     repaintFuelWorkspace();
     if (activeTab === 'overview' && ['owner', 'admin'].includes(userProfile?.role)) {
       void loadFuelHealthReport();
     }
-    const transactionType = String(savedTransaction?.transaction_type || '').toLowerCase();
     if (transactionType === 'staff_fuel_use') {
       toast.success(
         tr(

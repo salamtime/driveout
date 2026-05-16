@@ -28,6 +28,11 @@ import {
   List
 } from 'lucide-react';
 
+const isUsableRecordId = (recordId) => {
+  const value = String(recordId ?? '').trim();
+  return Boolean(value) && value !== 'undefined' && value !== 'null';
+};
+
 /**
  * MaintenanceListView - List and manage all maintenance records
  * 
@@ -76,6 +81,8 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
   // CRITICAL FIX: Add state for full record with parts data
   const [editingRecordWithParts, setEditingRecordWithParts] = useState(null);
   const [loadingFullRecord, setLoadingFullRecord] = useState(false);
+  const [handledInitialEditRecordId, setHandledInitialEditRecordId] = useState(null);
+  const [handledInitialViewRecordId, setHandledInitialViewRecordId] = useState(null);
   
   // ENHANCEMENT: Add state for view modal with complete data
   const [selectedRecordWithParts, setSelectedRecordWithParts] = useState(null);
@@ -88,37 +95,38 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
 
   useEffect(() => {
     const openInitialEdit = async () => {
-      if (!initialEditRecordId) return;
+      if (!isUsableRecordId(initialEditRecordId) || handledInitialEditRecordId === String(initialEditRecordId)) return;
       try {
-        const record = await MaintenanceTrackingService.getMaintenanceById(initialEditRecordId);
-        if (record) {
-          handleEditRecord(record);
-          onClearInitialSelection?.();
-        }
+        setHandledInitialEditRecordId(String(initialEditRecordId));
+        await handleEditRecord(initialEditRecordId);
       } catch (error) {
         console.error('Failed to open initial maintenance record:', error);
+      } finally {
+        onClearInitialSelection?.();
       }
     };
 
     openInitialEdit();
-  }, [initialEditRecordId, onClearInitialSelection]);
+  }, [initialEditRecordId, handledInitialEditRecordId, onClearInitialSelection]);
 
   useEffect(() => {
     const openInitialView = async () => {
-      if (!initialViewRecordId) return;
+      if (!isUsableRecordId(initialViewRecordId) || handledInitialViewRecordId === String(initialViewRecordId)) return;
       try {
+        setHandledInitialViewRecordId(String(initialViewRecordId));
         const record = await MaintenanceTrackingService.getMaintenanceById(initialViewRecordId);
         if (record) {
-          handleViewRecord(record);
-          onClearInitialSelection?.();
+          await handleViewRecord(record);
         }
       } catch (error) {
         console.error('Failed to open initial maintenance record for viewing:', error);
+      } finally {
+        onClearInitialSelection?.();
       }
     };
 
     openInitialView();
-  }, [initialViewRecordId, onClearInitialSelection]);
+  }, [initialViewRecordId, handledInitialViewRecordId, onClearInitialSelection]);
 
   useEffect(() => {
     filterAndSortRecords();
@@ -312,15 +320,29 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
   };
 
   // CRITICAL FIX: Load full maintenance record with parts data for editing
-  const handleEditRecord = async (record) => {
+  const handleEditRecord = async (recordOrId) => {
+    const recordId = typeof recordOrId === 'string'
+      ? recordOrId
+      : (recordOrId?.id || recordOrId?.maintenance_id || recordOrId?.record_id);
+
+    if (!isUsableRecordId(recordId)) {
+      console.warn('⚠️ Skipping maintenance edit because the record id is missing:', recordOrId);
+      setError('Cannot edit this maintenance record because its ID is missing.');
+      return;
+    }
+
+    const basicRecord = typeof recordOrId === 'object' && recordOrId !== null
+      ? recordOrId
+      : { id: recordId };
+
     try {
-      console.log('🔧 Loading full maintenance record for editing:', record.id);
+      console.log('🔧 Loading full maintenance record for editing:', recordId);
       setLoadingFullRecord(true);
-      setSelectedRecord(record);
+      setSelectedRecord(basicRecord);
       
       // Load the complete maintenance record with parts data
-      const fullRecord = await MaintenanceTrackingService.getMaintenanceById(record.id);
-      const linkedReport = await VehicleReportService.getReportByMaintenanceId(record.id);
+      const fullRecord = await MaintenanceTrackingService.getMaintenanceById(recordId);
+      const linkedReport = await VehicleReportService.getReportByMaintenanceId(recordId);
       
       if (fullRecord) {
         console.log('✅ Full maintenance record loaded with parts:', fullRecord);

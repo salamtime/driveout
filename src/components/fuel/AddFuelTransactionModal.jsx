@@ -14,8 +14,12 @@ const TRANSACTION_TYPE_OPTIONS = [
   { value: 'staff_fuel_use', label: '👤 Staff Fuel Use' }
 ];
 
-const normalizeDecimalInput = (value = '') => value.replace(',', '.');
-const roundToHalfLiter = (value) => roundTo(Math.round((Number(value) || 0) * 2) / 2, 1);
+const normalizeDecimalInput = (value = '') => String(value ?? '').replace(',', '.');
+const parseDecimalInput = (value = '') => {
+  const parsed = Number(normalizeDecimalInput(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const roundToHalfLiter = (value) => roundTo(Math.round(parseDecimalInput(value) * 2) / 2, 1);
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 const getLowercaseFileName = (file = null) => String(file?.name || '').trim().toLowerCase();
 const FUEL_TRANSACTION_DRAFT_PREFIX = 'fuel:transaction-modal:draft';
@@ -347,8 +351,8 @@ const AddFuelTransactionModal = ({
     if (name === 'unit_price') {
       const normalizedValue = normalizeDecimalInput(value);
       setFormData(prev => {
-        const amount = parseFloat(prev.amount) || 0;
-        const unitPrice = parseFloat(normalizedValue) || 0;
+        const amount = parseDecimalInput(prev.amount);
+        const unitPrice = parseDecimalInput(normalizedValue);
         return {
           ...prev,
           unit_price: normalizedValue,
@@ -382,8 +386,8 @@ const AddFuelTransactionModal = ({
             cost: ''
           };
         }
-        const unitPrice = parseFloat(prev.unit_price) || 0;
-        const totalCost = parseFloat(normalizeDecimalInput(prev.cost)) || 0;
+        const unitPrice = parseDecimalInput(prev.unit_price);
+        const totalCost = parseDecimalInput(prev.cost);
         const derivedUnitPrice = safeAmount > 0 && totalCost > 0 ? (totalCost / safeAmount).toFixed(2) : '';
         return {
           ...prev,
@@ -424,11 +428,32 @@ const AddFuelTransactionModal = ({
       return;
     }
 
+    if (name === 'amount') {
+      const normalizedValue = normalizeDecimalInput(value);
+      setFormData(prev => {
+        const unitPrice = parseDecimalInput(prev.unit_price);
+        const amount = parseDecimalInput(normalizedValue);
+        return {
+          ...prev,
+          amount: normalizedValue,
+          cost: amount > 0 && unitPrice > 0 ? (amount * unitPrice).toFixed(2) : prev.cost
+        };
+      });
+
+      if (errors[name]) {
+        setErrors(prev => ({
+          ...prev,
+          [name]: ''
+        }));
+      }
+      return;
+    }
+
     if (name === 'cost') {
       const normalizedValue = normalizeDecimalInput(value);
       setFormData(prev => {
-        const amount = parseFloat(prev.amount) || 0;
-        const totalCost = parseFloat(normalizedValue) || 0;
+        const amount = parseDecimalInput(prev.amount);
+        const totalCost = parseDecimalInput(normalizedValue);
         return {
           ...prev,
           cost: normalizedValue,
@@ -456,10 +481,10 @@ const AddFuelTransactionModal = ({
 
     // Calculate total cost when amount or unit price changes
     if ((name === 'amount' || name === 'unit_price') && formData.transaction_type !== 'withdrawal') {
-      const amount = name === 'amount' ? parseFloat(value) || 0 : parseFloat(formData.amount) || 0;
+      const amount = name === 'amount' ? parseDecimalInput(value) : parseDecimalInput(formData.amount);
       const unitPrice = name === 'unit_price'
-        ? parseFloat(normalizeDecimalInput(value)) || 0
-        : parseFloat(normalizeDecimalInput(formData.unit_price)) || 0;
+        ? parseDecimalInput(value)
+        : parseDecimalInput(formData.unit_price);
       
       if (amount > 0 && unitPrice > 0) {
         setFormData(prev => ({
@@ -687,20 +712,24 @@ const AddFuelTransactionModal = ({
       }
     }
 
-    if (!formData.amount || parseFloat(formData.amount) <= 0) {
+    const amountValue = parseDecimalInput(formData.amount);
+    const unitPriceValue = parseDecimalInput(formData.unit_price);
+    const costValue = parseDecimalInput(formData.cost);
+
+    if (!formData.amount || amountValue <= 0) {
       newErrors.amount = 'La quantité doit être supérieure à 0';
     }
 
-    if (formData.transaction_type === 'tank_refill' && parseFloat(formData.amount || 0) > remainingTankLiters) {
+    if (formData.transaction_type === 'tank_refill' && amountValue > remainingTankLiters) {
       newErrors.amount = `Maximum ${remainingTankLiters}L restants`;
     }
 
-    if (formData.transaction_type === 'tank_out' && parseFloat(formData.amount || 0) > currentTankLiters) {
+    if (formData.transaction_type === 'tank_out' && amountValue > currentTankLiters) {
       newErrors.amount = `Maximum ${currentTankLiters}L disponibles`;
     }
 
     if (formData.transaction_type === 'withdrawal') {
-      const requestedAmount = roundToHalfLiter(Number(formData.amount || 0));
+      const requestedAmount = roundToHalfLiter(amountValue);
       if (requestedAmount > roundToHalfLiter(currentTankLiters)) {
         newErrors.amount = tr(
           `Only ${roundToHalfLiter(currentTankLiters).toFixed(1)}L is available in the main tank right now.`,
@@ -716,7 +745,7 @@ const AddFuelTransactionModal = ({
 
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
-      (!formData.unit_price || parseFloat(normalizeDecimalInput(formData.unit_price)) <= 0)
+      (!formData.unit_price || unitPriceValue <= 0)
     ) {
       newErrors.unit_price = 'Le prix par litre doit être supérieur à 0';
     }
@@ -724,7 +753,7 @@ const AddFuelTransactionModal = ({
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
       formData.cost &&
-      parseFloat(normalizeDecimalInput(formData.cost)) <= 0
+      costValue <= 0
     ) {
       newErrors.cost = 'Le coût doit être supérieur à 0';
     }
@@ -768,6 +797,16 @@ const AddFuelTransactionModal = ({
 
       const transactionData = {
         ...formData,
+        amount: normalizeDecimalInput(formData.amount),
+        cost: normalizeDecimalInput(formData.cost),
+        unit_price: normalizeDecimalInput(formData.unit_price),
+        tank_snapshot: tankSummary
+          ? {
+              ...tankSummary,
+              current_volume_liters: currentTankLiters,
+              capacity: tankCapacity,
+            }
+          : null,
         invoice_image: imageData,
         receipt_media: imageData,
         actor: userProfile
@@ -799,7 +838,7 @@ const AddFuelTransactionModal = ({
       }
     } catch (error) {
       console.error('Error saving transaction:', error);
-      setErrors({ submit: 'Une erreur inattendue est survenue' });
+      setErrors({ submit: error?.message || 'Une erreur inattendue est survenue' });
     } finally {
       setIsLoading(false);
     }
@@ -807,8 +846,11 @@ const AddFuelTransactionModal = ({
 
   if (!isOpen) return null;
 
-  const unitPrice = formData.amount && formData.cost ? 
-    (parseFloat(formData.cost) / parseFloat(formData.amount)).toFixed(2) : '0.00';
+  const enteredAmountLiters = parseDecimalInput(formData.amount);
+  const enteredCost = parseDecimalInput(formData.cost);
+  const unitPrice = enteredAmountLiters > 0 && enteredCost > 0
+    ? (enteredCost / enteredAmountLiters).toFixed(2)
+    : '0.00';
 
   const isEditMode = !!editTransaction;
   const modalTitle = isEditMode ? 'Edit' : 'Add';
@@ -826,19 +868,19 @@ const AddFuelTransactionModal = ({
   );
   const remainingTankLiters = Math.max(0, roundTo(tankCapacity - currentTankLiters, 2));
   const projectedTankAfterVehicleFuel = roundTo(
-    Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0)),
+    Math.max(0, currentTankLiters - enteredAmountLiters),
     2
   );
   const projectedTankAfterVehicleFuelPercent = tankCapacity > 0
     ? Math.max(0, Math.min(100, (projectedTankAfterVehicleFuel / tankCapacity) * 100))
     : 0;
-  const projectedTankLiters = roundTo(Math.min(tankCapacity, currentTankLiters + (Number(formData.amount || 0) || 0)), 2);
+  const projectedTankLiters = roundTo(Math.min(tankCapacity, currentTankLiters + enteredAmountLiters), 2);
   const projectedTankPercent = tankCapacity > 0 ? Math.min(100, (projectedTankLiters / tankCapacity) * 100) : 0;
 
   const projectedVehicleLines = (() => {
     if (!vehicleFuelState || !formData.amount) return null;
     const currentLiters = Number(vehicleFuelState.current_fuel_liters || 0);
-    const addedLiters = Number(formData.amount || 0);
+    const addedLiters = enteredAmountLiters;
     return litersToLines(roundTo(currentLiters + addedLiters, 3));
   })();
 
@@ -897,10 +939,10 @@ const AddFuelTransactionModal = ({
     ? `${maxReachableTransferLines}/8`
     : `${currentVehicleLines}/8`;
   const selectedTransferTargetLines = formData.amount
-    ? litersToLines(roundTo(currentVehicleLiters + Number(formData.amount || 0), 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
+    ? litersToLines(roundTo(currentVehicleLiters + enteredAmountLiters, 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
     : null;
   const selectedAddedLinesApprox = formData.amount && currentVehicleTankCapacity > 0
-    ? roundTo((Number(formData.amount || 0) / currentVehicleTankCapacity) * DEFAULT_FUEL_LINES, 1)
+    ? roundTo((enteredAmountLiters / currentVehicleTankCapacity) * DEFAULT_FUEL_LINES, 1)
     : 0;
   const applyTransferTargetLine = (targetLines) => {
     const safeTargetLines = Math.max(0, Math.min(DEFAULT_FUEL_LINES, Number(targetLines) || 0));
@@ -1073,11 +1115,11 @@ const AddFuelTransactionModal = ({
                   <p className="font-semibold text-slate-900">{remainingTankLiters}L</p>
                 </div>
               </div>
-              {Number(formData.amount || 0) > 0 && (
+              {enteredAmountLiters > 0 && (
                 <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                       {formData.transaction_type === 'tank_refill'
                     ? `${tr('After refill:', 'Après remplissage :')} ${projectedTankLiters}L (${projectedTankPercent.toFixed(0)}%)`
-                    : `${tr('After withdrawal:', 'Après retrait :')} ${roundTo(Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0)), 2)}L (${tankCapacity > 0 ? Math.max(0, ((Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0))) / tankCapacity) * 100).toFixed(0) : 0}%)`}
+                    : `${tr('After withdrawal:', 'Après retrait :')} ${projectedTankAfterVehicleFuel}L (${projectedTankAfterVehicleFuelPercent.toFixed(0)}%)`}
                 </div>
               )}
             </div>
@@ -1248,7 +1290,7 @@ const AddFuelTransactionModal = ({
                   <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
                 </div>
               </div>
-              {Number(formData.amount || 0) > 0 && (
+              {enteredAmountLiters > 0 && (
                 <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="font-semibold">{tr('After transfer', 'Après transfert')}</span>
@@ -1297,7 +1339,7 @@ const AddFuelTransactionModal = ({
                   <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
                 </div>
               </div>
-              {Number(formData.amount || 0) > 0 && (
+              {enteredAmountLiters > 0 && (
                 <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
                   <div className="mb-2 flex items-center justify-between">
                     <span className="font-semibold">{tr('After direct fill', 'Après remplissage direct')}</span>
@@ -1513,7 +1555,7 @@ const AddFuelTransactionModal = ({
                         {formData.amount ? `+${selectedAddedLinesApprox}/8` : tr('Not set', 'Non défini')}
                       </p>
                       <p className="mt-1 text-xs font-medium text-slate-500">
-                        {formData.amount ? `${roundToHalfLiter(Number(formData.amount || 0)).toFixed(1)}L` : '0.0L'}
+                        {formData.amount ? `${roundToHalfLiter(enteredAmountLiters).toFixed(1)}L` : '0.0L'}
                       </p>
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1601,7 +1643,7 @@ const AddFuelTransactionModal = ({
                         {formData.amount ? `+${selectedAddedLinesApprox}/8` : tr('Not set', 'Non défini')}
                       </p>
                       <p className="mt-1 text-xs font-medium text-slate-500">
-                        {formData.amount ? `${roundToHalfLiter(Number(formData.amount || 0)).toFixed(1)}L` : '0.0L'}
+                        {formData.amount ? `${roundToHalfLiter(enteredAmountLiters).toFixed(1)}L` : '0.0L'}
                       </p>
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1643,10 +1685,11 @@ const AddFuelTransactionModal = ({
               </>
             ) : (
               <input
-                type="number"
+                type="text"
                 name="amount"
                 value={formData.amount}
                 onChange={handleInputChange}
+                inputMode="decimal"
                 step="0.01"
                 min="0.01"
                 max={formData.transaction_type === 'tank_refill' ? remainingTankLiters || undefined : undefined}

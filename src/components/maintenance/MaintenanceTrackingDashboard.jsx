@@ -33,6 +33,11 @@ let maintenanceDashboardSnapshotPromise = null;
 let maintenanceDashboardSnapshotCache = null;
 let maintenanceDashboardSnapshotCacheAt = 0;
 let maintenancePrimarySnapshotPromise = null;
+
+const isUsableRecordId = (recordId) => {
+  const value = String(recordId ?? '').trim();
+  return Boolean(value) && value !== 'undefined' && value !== 'null';
+};
 let maintenancePrimarySnapshotCache = null;
 let maintenancePrimarySnapshotCacheAt = 0;
 let maintenanceHistorySnapshotPromise = null;
@@ -430,12 +435,16 @@ const MaintenanceTrackingDashboard = () => {
   };
 
   const openMaintenanceRecord = (recordId, mode = 'view') => {
-    if (!recordId) return;
+    if (!isUsableRecordId(recordId)) {
+      console.warn('Skipping maintenance navigation because record id is missing:', recordId);
+      setError(tr('Cannot open this maintenance record because its ID is missing.', 'Impossible d’ouvrir ce dossier de maintenance car son ID est manquant.'));
+      return;
+    }
     if (mode === 'view') {
       navigate(`/admin/maintenance/${recordId}`);
       return;
     }
-    // edit mode — open the edit form inside the dashboard
+    // edit mode opens the existing dashboard editor instead of leaving this workflow.
     setActiveTab('maintenance');
     setInitialViewRecordId(null);
     setInitialEditRecordId(String(recordId));

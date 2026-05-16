@@ -136,6 +136,11 @@ class MaintenanceService {
 
   async getMaintenanceById(recordId) {
     try {
+      const normalizedRecordId = String(recordId ?? '').trim();
+      if (!normalizedRecordId || normalizedRecordId === 'undefined' || normalizedRecordId === 'null') {
+        return null;
+      }
+
       const organizationId = await requireCurrentOrganizationId();
       const { data, error } = await applyOrganizationScope(
         supabase
@@ -144,8 +149,8 @@ class MaintenanceService {
             *,
             vehicle:${this.vehiclesTable}!app_687f658e98_maintenance_vehicle_id_fkey(*)
           `)
-          .eq('id', recordId)
-          .single(),
+          .eq('id', normalizedRecordId)
+          .maybeSingle(),
         organizationId
       );
 
@@ -156,7 +161,7 @@ class MaintenanceService {
         throw error;
       }
 
-      const parts = await MaintenancePartsService.getMaintenanceParts(recordId);
+      const parts = await MaintenancePartsService.getMaintenanceParts(normalizedRecordId);
       return {
         ...data,
         parts,

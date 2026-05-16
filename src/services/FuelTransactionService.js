@@ -10,7 +10,14 @@ import {
 } from '../utils/fuelMath';
 import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
 import sharedQueryCacheService from './SharedQueryCacheService';
-import { scopeTenantOwnedQuery, matchTenantOwnedPayload } from './OrganizationService';
+import {
+  applyOrganizationScope,
+  isTenantOwnedSharedTable,
+  matchTenantOwnedPayload,
+  requireCurrentOrganizationId,
+  scopeTenantOwnedQuery,
+  shouldScopeSharedTenantData,
+} from './OrganizationService';
 
 const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const FUEL_OVERVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -18,7 +25,13 @@ const VEHICLE_FUEL_STATES_CACHE_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_TRANSACTIONS_CACHE_TTL_MS = 2 * 60 * 1000;
 const FUEL_SOURCE_FAILURE_COOLDOWN_MS = 60 * 1000;
 const FUEL_HEALTH_REQUEST_TIMEOUT_MS = 8000;
-const roundToHalfLiter = (value) => roundTo(Math.round((Number(value) || 0) * 2) / 2, 1);
+const parseFuelNumber = (value) => {
+  if (value === null || value === undefined || value === '') return 0;
+  const normalized = typeof value === 'string' ? value.replace(',', '.') : value;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const roundToHalfLiter = (value) => roundTo(Math.round(parseFuelNumber(value) * 2) / 2, 1);
 const isSoldVehicleRecord = (vehicle = {}) => String(vehicle?.status || '').trim().toLowerCase() === 'sold';
 
 class FuelTransactionService {
@@ -163,6 +176,20 @@ class FuelTransactionService {
     return scopeTenantOwnedQuery(query, tableName, {
       message: message || `Workspace organization context is required for ${tableName}.`,
     });
+  }
+
+  async resolveFuelScopeOrganizationId(tableName, message = null) {
+    if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+      return null;
+    }
+
+    return requireCurrentOrganizationId(
+      message || `Workspace organization context is required for ${tableName}.`,
+    );
+  }
+
+  applyResolvedFuelScope(query, organizationId) {
+    return organizationId ? applyOrganizationScope(query, organizationId) : query;
   }
 
   async scopeFuelPayload(payload, tableName, message = null) {
@@ -538,11 +565,18 @@ class FuelTransactionService {
       .select('*')
       .order('created_at', { ascending: true })
       .limit(1);
-    tankQuery = await this.scopeFuelQuery(
+
+    // Supabase builders are thenable; do not pass this query through an async
+    // wrapper before maybeSingle(), or the query executes early and loses
+    // terminal methods like maybeSingle().
+    tankQuery = this.applyResolvedFuelScope(
       tankQuery,
-      this.fuelTankTable,
-      'Workspace organization context is required to load fuel tank data.',
+      await this.resolveFuelScopeOrganizationId(
+        this.fuelTankTable,
+        'Workspace organization context is required to load fuel tank data.',
+      ),
     );
+
     const { data, error } = await tankQuery.maybeSingle();
 
     if (error || !data) {
@@ -610,12 +644,12 @@ class FuelTransactionService {
     };
   }
 
-  async updateTankCurrentVolume(nextVolume, { rejectNegative = false } = {}) {
+  async updateTankCurrentVolume(nextVolume, { rejectNegative = false, tankSnapshot = null } = {}) {
     if (!(await this.tableExists(this.fuelTankTable))) {
       return { success: false, error: 'Fuel tank table not available' };
     }
 
-    const tank = await this.getFuelTankData();
+    const tank = tankSnapshot?.id ? tankSnapshot : await this.getFuelTankData();
     const tankRowId = tank?.id;
     if (!tankRowId) {
       return { success: false, error: 'Main tank row not found' };
@@ -652,9 +686,12 @@ class FuelTransactionService {
   }
 
   async adjustTankCurrentVolume(deltaLiters, options = {}) {
-    const tank = await this.getFuelTankData();
+    const tank = options.tankSnapshot?.id ? options.tankSnapshot : await this.getFuelTankData();
     const current = Number(tank?.current_volume_liters || 0);
-    return this.updateTankCurrentVolume(current + Number(deltaLiters || 0), options);
+    return this.updateTankCurrentVolume(current + Number(deltaLiters || 0), {
+      ...options,
+      tankSnapshot: tank,
+    });
   }
 
   async adjustTankLevel({
@@ -1363,10 +1400,10 @@ class FuelTransactionService {
     const { data, error } = await this.runSelectWithFallbacks(
       this.fuelRefillsTable,
       [
-        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
-        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
-        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
         'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
       ],
       configureQuery,
     );
@@ -1480,10 +1517,10 @@ class FuelTransactionService {
       const { data, error } = await this.runSelectWithFallbacks(
         this.fuelRefillsTable,
         [
-          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
-          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
-          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
           'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
         ],
         configureQuery,
       );
@@ -1602,16 +1639,23 @@ class FuelTransactionService {
       return [];
     }
 
-    let query = supabase
-      .from(this.fuelOperationLogsTable)
-      .select('id, transaction_type, source, tank_id, vehicle_id, rental_id, liters, fuel_lines_before, fuel_lines_after, liters_before, liters_after, unit_price, total_cost, fuel_type, fuel_station, location, odometer_reading, notes, receipt_media, performed_by_user_id, performed_by_name, is_financial_expense, created_at')
-      .order('created_at', { ascending: false });
+    const configureQuery = (baseQuery) => {
+      let query = baseQuery.order('created_at', { ascending: false });
+      if (limit) {
+        query = query.limit(limit);
+      }
+      return query;
+    };
 
-    if (limit) {
-      query = query.limit(limit);
-    }
-
-    const { data, error } = await query;
+    const { data, error } = await this.runSelectWithFallbacks(
+      this.fuelOperationLogsTable,
+      [
+        'id, transaction_type, source, vehicle_id, rental_id, liters, unit_price, total_cost, fuel_type, fuel_station, location, odometer_reading, notes, performed_by_name, is_financial_expense, created_at',
+        'id, transaction_type, source, tank_id, vehicle_id, rental_id, liters, fuel_lines_before, fuel_lines_after, liters_before, liters_after, unit_price, total_cost, fuel_type, fuel_station, location, odometer_reading, notes, performed_by_name, is_financial_expense, created_at',
+        'id, transaction_type, source, tank_id, vehicle_id, rental_id, liters, fuel_lines_before, fuel_lines_after, liters_before, liters_after, unit_price, total_cost, fuel_type, fuel_station, location, odometer_reading, notes, receipt_media, performed_by_user_id, performed_by_name, is_financial_expense, created_at',
+      ],
+      configureQuery,
+    );
 
     if (error) {
       if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
@@ -1701,10 +1745,12 @@ class FuelTransactionService {
       .from(this.fuelOperationLogsTable)
       .insert([payload])
       .select('*');
-    query = await this.scopeFuelQuery(
+    query = this.applyResolvedFuelScope(
       query,
-      this.fuelOperationLogsTable,
-      'Workspace organization context is required to save fuel logs.',
+      await this.resolveFuelScopeOrganizationId(
+        this.fuelOperationLogsTable,
+        'Workspace organization context is required to save fuel logs.',
+      ),
     );
     const { data, error } = await query.maybeSingle();
 
@@ -2137,7 +2183,13 @@ class FuelTransactionService {
       .from(this.vehicleFuelStateTable)
       .upsert(payload, { onConflict: 'vehicle_id' })
       .select('*');
-    query = await this.scopeFuelQuery(query, this.vehicleFuelStateTable, 'Workspace organization context is required to save vehicle fuel states.');
+    query = this.applyResolvedFuelScope(
+      query,
+      await this.resolveFuelScopeOrganizationId(
+        this.vehicleFuelStateTable,
+        'Workspace organization context is required to save vehicle fuel states.',
+      ),
+    );
     const { data, error } = await query.maybeSingle();
 
     if (error) {
@@ -2189,7 +2241,13 @@ class FuelTransactionService {
       .update({ current_odometer: normalizedValue })
       .eq('id', vehicleId)
       .select('id, current_odometer');
-    query = await this.scopeFuelQuery(query, this.vehiclesTable, 'Workspace organization context is required to update vehicle odometer.');
+    query = this.applyResolvedFuelScope(
+      query,
+      await this.resolveFuelScopeOrganizationId(
+        this.vehiclesTable,
+        'Workspace organization context is required to update vehicle odometer.',
+      ),
+    );
     const { data, error } = await query.maybeSingle();
 
     if (error) {
@@ -2220,7 +2278,13 @@ class FuelTransactionService {
       .from(RENTALS_TABLE)
       .select('id, start_fuel_level, end_fuel_level')
       .eq('id', rentalId);
-    rentalQuery = await this.scopeFuelQuery(rentalQuery, RENTALS_TABLE, 'Workspace organization context is required to load rental fuel snapshots.');
+    rentalQuery = this.applyResolvedFuelScope(
+      rentalQuery,
+      await this.resolveFuelScopeOrganizationId(
+        RENTALS_TABLE,
+        'Workspace organization context is required to load rental fuel snapshots.',
+      ),
+    );
     const { data: rental, error } = await rentalQuery.maybeSingle();
 
     if (error) {
@@ -3369,19 +3433,19 @@ class FuelTransactionService {
     const receiptMedia = this.normalizeReceiptMedia(transactionData.receipt_media || transactionData.invoice_image);
     const transactionType = transactionData.transaction_type;
     const actionTimestamp = this.buildActionTimestamp(transactionData.transaction_date);
-    let amount = Number(transactionData.amount || transactionData.liters) || 0;
+    let amount = parseFuelNumber(transactionData.amount || transactionData.liters);
     if (transactionType === 'vehicle_refill') {
       amount = roundToHalfLiter(amount);
     }
     const unitPrice =
       transactionData.unit_price !== undefined && transactionData.unit_price !== null && transactionData.unit_price !== ''
-        ? Number(transactionData.unit_price)
+        ? parseFuelNumber(transactionData.unit_price)
         : transactionData.cost && amount > 0
-          ? Number(transactionData.cost) / amount
+          ? parseFuelNumber(transactionData.cost) / amount
           : 0;
     const totalCost =
       transactionData.cost !== undefined && transactionData.cost !== null && transactionData.cost !== ''
-        ? Number(transactionData.cost)
+        ? parseFuelNumber(transactionData.cost)
         : unitPrice > 0 && amount > 0
           ? roundTo(unitPrice * amount, 2)
           : 0;
@@ -3389,7 +3453,7 @@ class FuelTransactionService {
       transactionData.fuel_lines_after !== undefined &&
       transactionData.fuel_lines_after !== null &&
       transactionData.fuel_lines_after !== ''
-        ? Number(transactionData.fuel_lines_after)
+        ? parseFuelNumber(transactionData.fuel_lines_after)
         : null;
 
     if (transactionType === 'staff_fuel_use') {
@@ -3512,7 +3576,17 @@ class FuelTransactionService {
         return { success: false, error: error.message };
       }
 
-      await this.logFuelOperation({
+      const providedTankSnapshot = transactionData.tank_snapshot || null;
+      const tankAdjustmentResult = await this.adjustTankCurrentVolume(amount, {
+        tankSnapshot: providedTankSnapshot,
+      });
+
+      if (!tankAdjustmentResult.success) {
+        return tankAdjustmentResult;
+      }
+
+      this.runBackgroundFuelTasks([
+        this.logFuelOperation({
         transaction_type: 'tank_refill',
         source: 'tank_refill',
         liters: amount,
@@ -3526,16 +3600,30 @@ class FuelTransactionService {
         notes: payload.notes,
         is_financial_expense: true,
         created_at: actionTimestamp,
-      });
+        }),
+      ], 'tank refill log');
 
-      await this.adjustTankCurrentVolume(amount);
       this.invalidateFuelCaches({
         entity: 'fuel_transaction',
         reason: 'tank_refill_created',
         transactionType,
       });
 
-      return { success: true, transaction: data };
+      return {
+        success: true,
+        transaction: this.mapTransactionRecord({
+          ...data,
+          transaction_type: 'tank_refill',
+          source: 'tank_refill',
+          amount,
+          cost: totalCost,
+          unit_price: unitPrice,
+          transaction_date: actionTimestamp,
+          created_at: data?.created_at || actionTimestamp,
+          performed_by_name: actor.performed_by_name,
+        }),
+        tank: tankAdjustmentResult.tank,
+      };
     }
 
     if (transactionType === 'vehicle_refill') {
@@ -3819,19 +3907,19 @@ class FuelTransactionService {
     const actor = this.buildActor(transactionData.actor || transactionData);
     const transactionType = transactionData.transaction_type;
     const actionTimestamp = this.buildActionTimestamp(transactionData.transaction_date);
-    let amount = Number(transactionData.amount || transactionData.liters) || 0;
+    let amount = parseFuelNumber(transactionData.amount || transactionData.liters);
     if (transactionType === 'vehicle_refill') {
       amount = roundToHalfLiter(amount);
     }
     const unitPrice =
       transactionData.unit_price !== undefined && transactionData.unit_price !== null && transactionData.unit_price !== ''
-        ? Number(transactionData.unit_price)
+        ? parseFuelNumber(transactionData.unit_price)
         : transactionData.cost && amount > 0
-          ? Number(transactionData.cost) / amount
+          ? parseFuelNumber(transactionData.cost) / amount
           : 0;
     const totalCost =
       transactionData.cost !== undefined && transactionData.cost !== null && transactionData.cost !== ''
-        ? Number(transactionData.cost)
+        ? parseFuelNumber(transactionData.cost)
         : unitPrice > 0 && amount > 0
           ? roundTo(unitPrice * amount, 2)
           : 0;
