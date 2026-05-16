@@ -7574,23 +7574,41 @@ Click the link above to review and approve the extension.`;
 
   const getLinkedMaintenanceChargeAmount = () => {
     const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
-    if (!linkedReport?.customer_chargeable) return 0;
+    const snapshotRepairAmount = parseFloat(rental?.linked_maintenance_cost_total || 0) || 0;
+    const snapshotStayAmount = parseFloat(rental?.linked_maintenance_daily_total || 0) || 0;
+    const snapshotCustomerChargeAmount = parseFloat(rental?.linked_maintenance_customer_charge_total || 0) || 0;
+    const hasSnapshotMaintenanceCharge =
+      snapshotCustomerChargeAmount > 0 ||
+      snapshotRepairAmount > 0 ||
+      snapshotStayAmount > 0;
+
+    if (!linkedReport?.customer_chargeable && !hasSnapshotMaintenanceCharge) return 0;
     return getLinkedMaintenanceRepairAmount() + getLinkedMaintenanceStayAmount();
   };
 
   const getLinkedMaintenanceRepairAmount = () => {
     const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
-    if (!linkedReport?.customer_chargeable) return 0;
-    return parseFloat(linkedReport?.maintenance_cost_total || linkedReport?.maintenance?.cost || 0) || 0;
+    const snapshotRepairAmount = parseFloat(rental?.linked_maintenance_cost_total || 0) || 0;
+    const snapshotCustomerChargeAmount = parseFloat(rental?.linked_maintenance_customer_charge_total || 0) || 0;
+    const hasSnapshotMaintenanceCharge =
+      snapshotCustomerChargeAmount > 0 || snapshotRepairAmount > 0;
+
+    if (!linkedReport?.customer_chargeable && !hasSnapshotMaintenanceCharge) return 0;
+    return parseFloat(linkedReport?.maintenance_cost_total || linkedReport?.maintenance?.cost || snapshotRepairAmount || 0) || 0;
   };
 
   const getLinkedMaintenanceStayAmount = () => {
     const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
-    if (!linkedReport?.customer_chargeable) return 0;
+    const snapshotStayAmount = parseFloat(rental?.linked_maintenance_daily_total || 0) || 0;
+    const snapshotCustomerChargeAmount = parseFloat(rental?.linked_maintenance_customer_charge_total || 0) || 0;
+    const hasSnapshotMaintenanceCharge =
+      snapshotCustomerChargeAmount > 0 || snapshotStayAmount > 0;
+
+    if (!linkedReport?.customer_chargeable && !hasSnapshotMaintenanceCharge) return 0;
     if (linkedReport?.maintenance) {
       return maintenanceChargeForm.enabled ? (parseFloat(maintenanceChargeForm.total || 0) || 0) : 0;
     }
-    return parseFloat(linkedReport?.maintenance_daily_total || 0) || 0;
+    return parseFloat(linkedReport?.maintenance_daily_total || snapshotStayAmount || 0) || 0;
   };
 
   const getMaintenanceStayRateSourceLabel = (source) => {
