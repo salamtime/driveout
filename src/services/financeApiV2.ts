@@ -64,7 +64,7 @@ const FINANCE_MAINTENANCE_PART_COLUMNS = 'maintenance_id,unit_cost_mad,quantity,
 const FINANCE_FUEL_REFILL_COLUMNS = '*';
 const FINANCE_FUEL_WITHDRAWAL_COLUMNS = 'id,vehicle_id,withdrawal_date,created_at,liters_taken,unit_price,total_cost';
 const FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS = 'rental_id,linked_fuel_consumed_liters,linked_fuel_average_unit_cost,linked_fuel_expense_total,linked_fuel_synced_at';
-const FINANCE_EXPENSE_COLUMNS = 'id,category,subcategory,description,amount,expense_date,status,created_by,created_by_display_name,created_by_name,invoice_url,reference_type,reference_id,notes,created_at,updated_at,organization_id,workspace_id,vehicle_id';
+const FINANCE_EXPENSE_COLUMNS = 'id,category,subcategory,description,amount,expense_date,status,created_by,invoice_url,reference_type,reference_id,notes,created_at,updated_at,organization_id,workspace_id,vehicle_id';
 
 export interface Vehicle {
   id: string;

@@ -1,16 +1,13 @@
 /**
  * Extension History Component
  * Displays all extensions for a rental with approval status
- * INCLUDES WhatsApp notification functionality
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Badge } from '../ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Clock, CheckCircle, XCircle, AlertCircle, AlertTriangle, Pencil } from 'lucide-react';
-import { FaWhatsapp } from 'react-icons/fa';
-import { supabase } from '../../lib/supabase';
 import i18n from '../../i18n';
 
 const ExtensionHistory = ({ 
@@ -18,13 +15,11 @@ const ExtensionHistory = ({
   onApprove, 
   onReject, 
   isAdmin,
-  onWhatsAppNotify,
-  isSharing,
-  rental,
   onEdit,
   canEdit,
+  highlightedExtensionId = '',
+  actionLoading = {},
 }) => {
-  const [localSharing, setLocalSharing] = useState(false);
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
 
@@ -64,6 +59,20 @@ const ExtensionHistory = ({
     );
   };
 
+  const getApproverDisplay = (extension) => {
+    return (
+      extension?.approver?.full_name ||
+      extension?.approver?.email ||
+      extension?.rejecter?.full_name ||
+      extension?.rejecter?.email ||
+      extension?.approved_by_name ||
+      extension?.rejected_by_name ||
+      (typeof extension?.approved_by === 'string' && !/^[0-9a-f-]{32,}$/i.test(extension.approved_by) ? extension.approved_by : null) ||
+      (typeof extension?.rejected_by === 'string' && !/^[0-9a-f-]{32,}$/i.test(extension.rejected_by) ? extension.rejected_by : null) ||
+      ''
+    );
+  };
+
   const getStatusBadge = (status) => {
     const statusConfig = {
       pending: { color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle, label: tr('Pending', 'En attente') },
@@ -84,115 +93,6 @@ const ExtensionHistory = ({
     );
   };
 
-  // DIRECT WhatsApp function
-  const handleWhatsAppNotification = async (extension) => {
-    try {
-      setLocalSharing(true);
-      
-      console.log('📱 Starting WhatsApp notification for extension:', extension.id);
-      
-      const { data: admins, error } = await supabase
-        .from('app_b30c02e74da644baad4668e3587d86b1_users')
-        .select('phone_number, full_name, whatsapp_notifications, role, permissions')
-        .eq('whatsapp_notifications', true)
-        .in('role', ['admin', 'owner']);
-      
-      if (error) throw error;
-      
-      if (!admins || admins.length === 0) {
-        alert("No admins have WhatsApp notifications enabled.");
-        return;
-      }
-      
-      const adminsWithPermission = admins.filter(admin => {
-        if (!admin.permissions) return false;
-        if (typeof admin.permissions === 'object' && admin.permissions !== null) {
-          return admin.permissions["WhatsApp Alerts"] === true;
-        }
-        if (Array.isArray(admin.permissions)) {
-          return admin.permissions.includes("WhatsApp Alerts");
-        }
-        return false;
-      });
-      
-      if (adminsWithPermission.length === 0) {
-        alert("No admins have WhatsApp alerts permission enabled.");
-        return;
-      }
-      
-      const rentalId = rental?.rental_id || 'RENTAL_ID';
-      const customerName = rental?.customer_name || 'Customer';
-      const vehicleName = rental?.vehicle?.name ? `${rental.vehicle.name} - ${rental.vehicle.model}` : 'Vehicle';
-      const rentalUrl = `${window.location.origin}/admin/rentals/${rental?.id || 'ID'}`;
-      
-      const message = `Extension Approval Request
-
-Rental ID: ${rentalId}
-Customer: ${customerName}
-Vehicle: ${vehicleName}
-
-Extension Details:
-• Hours: ${extension.extension_hours}h
-• Price: ${extension.extension_price} MAD
-• Status: ${extension.status}
-• Type: ${extension.is_custom_price ? 'Manual Pricing' : 'Auto Pricing'}
-• Source: ${extension.price_source}
-
-Review & Approve:
-${rentalUrl}
-
-Click the link above to review and approve the extension.`;
-      
-      const buildWhatsAppSendUrl = (phoneNumber, text) => {
-        const cleanPhone = String(phoneNumber || '').replace(/\D/g, '');
-        const params = new URLSearchParams();
-        if (cleanPhone) {
-          params.set('phone', cleanPhone);
-        }
-        params.set('text', text || '');
-        return `https://api.whatsapp.com/send?${params.toString()}`;
-      };
-
-      let sentCount = 0;
-      for (const admin of adminsWithPermission) {
-        if (admin.phone_number) {
-          const cleanPhone = admin.phone_number.replace(/[^0-9]/g, '');
-          
-          if (cleanPhone && cleanPhone.length >= 9) {
-            const whatsappUrl = buildWhatsAppSendUrl(cleanPhone, message);
-            window.open(whatsappUrl, '_blank');
-            sentCount++;
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        }
-      }
-      
-      if (sentCount > 0) {
-        alert(`✅ Extension approval request sent to ${sentCount} admin(s).`);
-        
-        try {
-          await supabase
-            .from('rental_extensions')
-            .update({ 
-              notification_sent: true,
-              notification_sent_at: new Date().toISOString()
-            })
-            .eq('id', extension.id);
-        } catch (updateError) {
-          console.warn('⚠️ Failed to update notification status:', updateError);
-        }
-      } else {
-        alert("❌ No valid phone numbers found for admins.");
-      }
-      
-    } catch (error) {
-      console.error('❌ Error sending WhatsApp notification:', error);
-      alert(`Failed to send notification: ${error.message}`);
-    } finally {
-      setLocalSharing(false);
-    }
-  };
-
   return (
     <Card>
       <CardHeader>
@@ -205,11 +105,17 @@ Click the link above to review and approve the extension.`;
         <div className="space-y-4">
           {extensions.map((extension, index) => {
             const isManualExtension = extension.is_custom_price || extension.price_source === 'manual';
+            const isHighlighted = String(highlightedExtensionId || '') === String(extension.id || '');
+            const approverName = getApproverDisplay(extension);
+            const isActionLoading = Boolean(actionLoading?.[extension.id]);
             
             return (
               <div
                 key={extension.id}
-                className={`p-4 border rounded-lg ${
+                data-extension-id={extension.id}
+                className={`p-4 border rounded-lg transition-all duration-300 ${
+                  isHighlighted ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.18)] ' : ''
+                }${
                   extension.status === 'pending' ? 'border-yellow-300 bg-yellow-50' : 'border-gray-200 bg-white'
                 }`}
               >
@@ -300,61 +206,56 @@ Click the link above to review and approve the extension.`;
                 {/* WhatsApp Notification Button - FOR MANUAL EXTENSIONS ONLY (NON-ADMIN) */}
                 {extension.status === 'pending' && !isAdmin && isManualExtension && (
                   <div className="mt-3 pt-3 border-t border-yellow-200">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="flex-1">
-                        <h4 className="font-semibold text-blue-900 flex items-center gap-2 text-sm">
-                          <AlertTriangle className="w-4 h-4" />
-                          🔔 WhatsApp Notification Required
-                        </h4>
-                        <p className="text-xs text-blue-700 mt-1">
-                          Manual pricing requires admin approval via WhatsApp.
-                        </p>
-                      </div>
-                      <Button 
-                        onClick={() => {
-                          if (onWhatsAppNotify && typeof onWhatsAppNotify === 'function') {
-                            onWhatsAppNotify(extension.id);
-                          } else {
-                            handleWhatsAppNotification(extension);
-                          }
-                        }}
-                        disabled={localSharing || isSharing}
-                        className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2 text-xs sm:text-sm whitespace-nowrap"
-                        size="sm"
-                      >
-                        {localSharing || isSharing ? (
-                          <>
-                            <Clock className="w-3 h-3 sm:w-4 sm:h-4 animate-spin" />
-                            Sending...
-                          </>
-                        ) : (
-                          <>
-                            <FaWhatsapp className="w-3 h-3 sm:w-4 sm:h-4" />
-                            Notify Admins via WhatsApp
-                          </>
-                        )}
-                      </Button>
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <h4 className="flex items-center gap-2 text-sm font-semibold text-amber-950">
+                        <AlertTriangle className="h-4 w-4" />
+                        {tr('Request sent', 'Demande envoyée')}
+                      </h4>
+                      <p className="mt-1 text-xs font-medium text-amber-800">
+                        {tr('Admins were notified on Telegram. Waiting for approval.', 'Les admins ont été notifiés sur Telegram. En attente d’approbation.')}
+                      </p>
                     </div>
                   </div>
                 )}
 
                 {/* Admin Actions for Pending Extensions - ONLY FOR ADMINS */}
                 {extension.status === 'pending' && isAdmin && onApprove && onReject && (
-                  <div className="mt-3 pt-3 border-t flex gap-2">
-                    <Button
-                      onClick={() => onApprove(extension.id)}
-                      className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded transition-colors flex items-center justify-center gap-1"
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                      Approve
-                    </Button>
-                    <Button
-                      onClick={() => onReject(extension.id)}
-                      className="flex-1 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-colors flex items-center justify-center gap-1"
-                    >
-                      <XCircle className="w-4 h-4" />
-                      Reject
-                    </Button>
+                  <div className="mt-3 border-t border-yellow-200 pt-3">
+                    <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
+                      <h4 className="text-sm font-semibold text-blue-950">
+                        {tr('Review extension request', 'Examiner la demande de prolongation')}
+                      </h4>
+                      <p className="mt-1 text-xs text-blue-800">
+                        {tr('Requested by', 'Demandée par')} <strong>{getRequesterDisplay(extension)}</strong>
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => onApprove(extension.id)}
+                        disabled={isActionLoading}
+                        className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded transition-colors flex items-center justify-center gap-1"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        {isActionLoading ? tr('Approving...', 'Approbation...') : tr('Approve', 'Approuver')}
+                      </Button>
+                      <Button
+                        onClick={() => onReject(extension.id)}
+                        disabled={isActionLoading}
+                        className="flex-1 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-colors flex items-center justify-center gap-1"
+                      >
+                        <XCircle className="w-4 h-4" />
+                        {tr('Reject', 'Refuser')}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {extension.status !== 'pending' && approverName && (
+                  <div className="mt-3 border-t border-gray-100 pt-3 text-xs font-medium text-gray-500">
+                    {extension.status === 'approved'
+                      ? tr('Approved by', 'Approuvée par')
+                      : tr('Reviewed by', 'Examinée par')}{' '}
+                    <strong className="text-gray-700">{approverName}</strong>
                   </div>
                 )}
               </div>

@@ -426,7 +426,7 @@ export const requireOwner = async (req) => {
     return auth;
   }
 
-  const { user, adminClient } = auth;
+  const { user, adminClient, tenantRuntime, masterAdminClient, userClient } = auth;
 
   try {
     const { data: profile } = await adminClient
@@ -444,7 +444,7 @@ export const requireOwner = async (req) => {
       };
     }
 
-    return { user, adminClient, platformAccess };
+    return { user, adminClient, platformAccess, tenantRuntime, masterAdminClient, userClient };
   } catch (error) {
     return {
       error: { status: 500, body: { error: error.message } },
@@ -459,7 +459,7 @@ export const requireOwnerOrAdmin = async (req) => {
     return auth;
   }
 
-  const { user, adminClient } = auth;
+  const { user, adminClient, tenantRuntime, masterAdminClient, userClient } = auth;
 
   try {
     const { data: profile } = await adminClient
@@ -486,7 +486,7 @@ export const requireOwnerOrAdmin = async (req) => {
       };
     }
 
-    return { user, adminClient, platformAccess };
+    return { user, adminClient, platformAccess, tenantRuntime, masterAdminClient, userClient };
   } catch (error) {
     return {
       error: { status: 500, body: { error: error.message } },

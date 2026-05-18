@@ -24,7 +24,9 @@ export class PaginatedVehicleService {
       
       let query = supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('*', { count: 'exact' });
+        .select('*', { count: 'exact' })
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null);
 
       // Apply filters
       if (status !== 'all') {
@@ -94,6 +96,8 @@ export class PaginatedVehicleService {
         .from('saharax_0u4w4d_vehicles')
         .select('*')
         .eq('id', id)
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         .single();
 
       if (error) {
@@ -186,7 +190,9 @@ export class PaginatedVehicleService {
     try {
       const { data: vehicles, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('status, vehicle_type');
+        .select('status, vehicle_type, organization_id, owner_user_id')
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null);
 
       if (error) {
         console.error('❌ Error fetching vehicle stats:', error);
@@ -197,13 +203,15 @@ export class PaginatedVehicleService {
         };
       }
 
+      const visibleVehicles = (vehicles || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle));
+
       const stats = {
-        total: vehicles?.length || 0,
+        total: visibleVehicles.length,
         byStatus: {},
         byType: {}
       };
 
-      vehicles?.forEach(vehicle => {
+      visibleVehicles.forEach(vehicle => {
         // Count by status
         const status = vehicle.status || 'unknown';
         stats.byStatus[status] = (stats.byStatus[status] || 0) + 1;
@@ -232,8 +240,10 @@ export class PaginatedVehicleService {
 
       const { data: vehicles, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id, name, model, vehicle_type, plate_number, status, registration_number, organization_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, current_odometer, engine_hours, vehicle_model_id')
+        .select('id, name, model, vehicle_type, plate_number, status, registration_number, organization_id, owner_user_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, current_odometer, engine_hours, vehicle_model_id')
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,vehicle_type.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         .limit(limit);
 
       if (error) {
@@ -254,7 +264,9 @@ export class PaginatedVehicleService {
       const { data: allVehicles, error: vehicleError } = await supabase
         .from('saharax_0u4w4d_vehicles')
         .select('*')
-        .eq('status', 'available');
+        .eq('status', 'available')
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null);
 
       if (vehicleError) {
         console.error('❌ Error fetching vehicles:', vehicleError);

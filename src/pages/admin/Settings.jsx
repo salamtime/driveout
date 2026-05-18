@@ -144,6 +144,7 @@ const buildTenantTelegramDraft = (tenantSession = null) => {
       rental_created: eventTypes.rental_created !== false,
       website_reservation_created: eventTypes.website_reservation_created !== false,
       rental_started: eventTypes.rental_started !== false,
+      rental_vehicle_assigned: eventTypes.rental_vehicle_assigned !== false,
       rental_vehicle_replaced: eventTypes.rental_vehicle_replaced !== false,
       rental_completed: eventTypes.rental_completed !== false,
       payment_received: eventTypes.payment_received !== false,
@@ -2530,6 +2531,16 @@ const SettingsPage = () => {
                 onChange={(value) => setTenantTelegramForm((current) => ({
                   ...current,
                   telegram_event_types: { ...current.telegram_event_types, rental_vehicle_replaced: value },
+                }))}
+              />
+              <ToggleCard
+                title={isFrench ? 'Véhicule assigné' : 'Vehicle assigned'}
+                description={isFrench ? "Alerte envoyée lorsqu'un véhicule est assigné à une réservation web." : 'Send an alert when a vehicle is assigned to a website reservation.'}
+                checked={tenantTelegramForm.telegram_event_types.rental_vehicle_assigned}
+                disabled={!canEdit}
+                onChange={(value) => setTenantTelegramForm((current) => ({
+                  ...current,
+                  telegram_event_types: { ...current.telegram_event_types, rental_vehicle_assigned: value },
                 }))}
               />
               <ToggleCard

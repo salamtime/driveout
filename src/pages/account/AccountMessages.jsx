@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { AlertCircle, ArrowLeft, CheckCircle2, MessageSquareText } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 import SharedInboxWorkspace from '../../components/messages/SharedInboxWorkspace';
@@ -10,6 +10,7 @@ import CustomerExperienceService from '../../services/CustomerExperienceService'
 import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
 import VerificationService from '../../services/VerificationService';
 import { resolveReturnPath } from '../../utils/navigationReturn';
+import { buildMessageSectionSummary } from '../../utils/messageCenter';
 import { getOtherParty, getThreadRoleContext } from '../../components/messages/threadHelpers';
 
 const getSenderRole = (userProfile, user) => {
@@ -167,7 +168,7 @@ const AccountMessages = () => {
       setThreads(nextThreads);
       return nextThreads;
     } catch (loadError) {
-      setError(loadError?.message || tr('Unable to load your messages right now.', 'Impossible de charger vos messages pour le moment.'));
+      setError(loadError?.message || tr('Unable to load your Inbox right now.', 'Impossible de charger votre Inbox pour le moment.'));
       setThreads([]);
       return [];
     } finally {
@@ -210,10 +211,6 @@ const AccountMessages = () => {
   }, [loadThreads]);
 
   useEffect(() => {
-    setOwnerAccessDetected(profileSenderRole === 'owner');
-  }, [profileSenderRole]);
-
-  useEffect(() => {
     if (!user?.id) return undefined;
 
     const queueRealtimeReload = () => {
@@ -254,6 +251,138 @@ const AccountMessages = () => {
     user?.user_metadata?.avatar_url ||
     ''
   ).trim();
+  useEffect(() => {
+    if (profileSenderRole === 'owner') {
+      setOwnerAccessDetected(true);
+      return;
+    }
+
+    const inferredOwnerAccess = threads.some((thread) => threadIndicatesOwnerAccess(thread, user?.id));
+    setOwnerAccessDetected(inferredOwnerAccess);
+  }, [profileSenderRole, threads, user?.id]);
+
+  const transactionHubThreads = useMemo(
+    () =>
+      threads.filter((thread) => String(thread?.family || '').trim().toLowerCase() !== 'support'),
+    [threads]
+  );
+  const inboxSectionSummary = useMemo(
+    () => buildMessageSectionSummary(transactionHubThreads),
+    [transactionHubThreads]
+  );
+  const inboxOverviewCards = useMemo(
+    () => [
+      {
+        key: 'actions',
+        label: tr('Actions required', 'Actions requises'),
+        value: inboxSectionSummary.actions,
+        helper: tr(
+          'Requests waiting, listing fixes, or verification follow-ups.',
+          'Demandes en attente, corrections d’annonce ou suivis de vérification.'
+        ),
+        icon: AlertCircle,
+        toneClassName: 'bg-amber-50 text-amber-700 ring-amber-100',
+      },
+      {
+        key: 'conversations',
+        label: tr('Live conversations', 'Conversations en direct'),
+        value: inboxSectionSummary.conversations,
+        helper: tr(
+          'Active renter conversations, approvals, and trip coordination.',
+          'Conversations actives avec les locataires, approbations et coordination des trajets.'
+        ),
+        icon: MessageSquareText,
+        toneClassName: 'bg-violet-50 text-violet-700 ring-violet-100',
+      },
+      {
+        key: 'updates',
+        label: tr('Updates', 'Mises à jour'),
+        value: inboxSectionSummary.updates,
+        helper: tr(
+          `${inboxSectionSummary.unreadCount} unread threads to review.`,
+          `${inboxSectionSummary.unreadCount} fils non lus à consulter.`
+        ),
+        icon: CheckCircle2,
+        toneClassName: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+      },
+    ],
+    [inboxSectionSummary.actions, inboxSectionSummary.conversations, inboxSectionSummary.unreadCount, inboxSectionSummary.updates, tr]
+  );
+  const inboxHero = useMemo(() => {
+    if (effectiveSenderRole === 'owner') {
+      return {
+        eyebrow: tr('Inbox', 'Boîte de réception'),
+        title: tr('Run your vehicle business from here', 'Pilotez votre activité véhicule depuis ici'),
+        description: tr(
+          'Handle booking requests, renter conversations, verification follow-ups, and listing decisions in one place. Pricing, availability, and unlisting still live in Listings.',
+          'Gérez les demandes de réservation, les conversations locataires, les suivis de vérification et les décisions d’annonce au même endroit. Les prix, disponibilités et dépublications restent dans Annonces.'
+        ),
+      };
+    }
+
+    return {
+      eyebrow: tr('Inbox', 'Boîte de réception'),
+      title: tr('Keep every trip conversation in one place', 'Gardez chaque conversation de trajet au même endroit'),
+      description: tr(
+        'Booking updates, support replies, and verification follow-ups all land here so you always know what to answer next.',
+        'Les mises à jour de réservation, réponses support et suivis de vérification arrivent ici pour que vous sachiez toujours quoi traiter ensuite.'
+      ),
+    };
+  }, [effectiveSenderRole, tr]);
+  const inboxActionLinks = useMemo(() => {
+    if (effectiveSenderRole === 'owner') {
+      return [
+        {
+          key: 'listings',
+          label: tr('Manage listings', 'Gérer les annonces'),
+          to: '/account/vehicles',
+        },
+        {
+          key: 'verification',
+          label: verificationCount > 0
+            ? tr('Open trust center', 'Ouvrir le centre de confiance')
+            : tr('Open account', 'Ouvrir le compte'),
+          to: verificationCount > 0 ? '/account/verification' : '/account/settings',
+        },
+      ];
+    }
+
+    return [
+      {
+        key: 'browse',
+        label: tr('Browse vehicles', 'Explorer les véhicules'),
+        to: '/marketplace',
+      },
+      {
+        key: 'rentals',
+        label: tr('Trips', 'Parcours'),
+        to: '/account/rentals',
+      },
+    ];
+  }, [effectiveSenderRole, tr, verificationCount]);
+  const emptyStateConfig = useMemo(() => {
+    if (effectiveSenderRole === 'owner') {
+      return {
+        title: tr('No inbox activity yet', 'Aucune activité dans la boîte de réception'),
+        description: tr(
+          'When a renter requests one of your vehicles, needs approval, or verification needs your attention, it will show up here.',
+          'Lorsqu’un locataire demandera un de vos véhicules, aura besoin d’une approbation ou qu’une vérification nécessitera votre attention, cela apparaîtra ici.'
+        ),
+        actionLabel: tr('Open listings', 'Ouvrir les annonces'),
+        actionTo: '/account/vehicles',
+      };
+    }
+
+    return {
+      title: tr('No inbox activity yet', 'Aucune activité dans la boîte de réception'),
+      description: tr(
+        'When you request a vehicle, receive trip updates, or need help, every conversation will appear here.',
+        'Lorsque vous demandez un véhicule, recevez des mises à jour de trajet ou avez besoin d’aide, chaque conversation apparaîtra ici.'
+      ),
+      actionLabel: tr('Browse vehicles', 'Explorer les véhicules'),
+      actionTo: '/marketplace',
+    };
+  }, [effectiveSenderRole, tr]);
   const seedOwnerApprovedThreadForRequest = useCallback(async (request) => {
     const requestId = String(request?.id || '').trim();
     const customerUserId = String(request?.customerId || '').trim();
@@ -477,7 +606,7 @@ const AccountMessages = () => {
     <div className="min-h-full bg-[linear-gradient(180deg,#f5f3ff_0%,#eef2ff_45%,#ffffff_100%)]">
       <main className={`mx-auto max-w-7xl px-3 py-6 sm:px-6 lg:px-8 ${mobileConversationOpen ? 'space-y-3' : 'space-y-6'}`}>
         <section className={mobileConversationOpen ? 'space-y-3' : 'space-y-6'}>
-          <header className="px-1">
+          <header className="space-y-5 px-1">
             {location.state?.from ? (
               <button
                 type="button"
@@ -488,9 +617,69 @@ const AccountMessages = () => {
                 {tr('Back', 'Retour')}
               </button>
             ) : null}
-            <h1 className="text-2xl font-black tracking-[-0.02em] text-slate-950 sm:text-[2rem]">
-              {tr('Messages', 'Messages')}
-            </h1>
+            <div className="rounded-[32px] border border-violet-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(245,243,255,0.96))] px-5 py-6 shadow-[0_18px_40px_rgba(76,29,149,0.08)] sm:px-7">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                <div className="max-w-3xl">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-violet-600">
+                      {inboxHero.eyebrow}
+                    </p>
+                    <span className="inline-flex items-center rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                      {tr(
+                        `${inboxSectionSummary.unreadCount} unread`,
+                        `${inboxSectionSummary.unreadCount} non lus`
+                      )}
+                    </span>
+                  </div>
+                  <h1 className="mt-3 text-2xl font-black tracking-[-0.03em] text-slate-950 sm:text-[2.2rem]">
+                    {inboxHero.title}
+                  </h1>
+                  <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-[15px]">
+                    {inboxHero.description}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {inboxActionLinks.map((action) => (
+                    <Link
+                      key={action.key}
+                      to={action.to}
+                      className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      {action.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-3">
+                {inboxOverviewCards.map((card) => {
+                  const Icon = card.icon;
+                  return (
+                    <div
+                      key={card.key}
+                      className="rounded-[24px] border border-white/80 bg-white/90 px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.05)]"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+                            {card.label}
+                          </p>
+                          <p className="mt-2 text-3xl font-black tracking-[-0.03em] text-slate-950">
+                            {card.value}
+                          </p>
+                        </div>
+                        <span className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ring-1 ${card.toneClassName}`}>
+                          <Icon className="h-5 w-5" />
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-500">
+                        {card.helper}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </header>
 
           <div>
@@ -511,10 +700,11 @@ const AccountMessages = () => {
               isFrench={isFrench}
               tr={tr}
               showContextTabs={false}
-              showSearch={false}
-              showListFilters={false}
-              groupThreads={false}
-              workspaceContext="customer"
+              showSearch
+              showListFilters
+              groupThreads
+              threadGroupingMode="transaction_hub"
+              workspaceContext={effectiveSenderRole === 'owner' ? 'owner' : 'customer'}
               onMobileConversationStateChange={setMobileConversationOpen}
               onRefresh={() => loadThreads()}
               onOpenContext={(thread) => {
@@ -587,13 +777,10 @@ const AccountMessages = () => {
                 return response;
               }}
               onPerformMarketplaceAction={handlePerformMarketplaceAction}
-              emptyTitle={tr('No messages yet', 'Aucun message pour le moment')}
-              emptyDescription={tr(
-                'When you request a vehicle or need help, your conversations will appear here.',
-                'Lorsque vous demandez un véhicule ou avez besoin d’aide, vos conversations apparaîtront ici.'
-              )}
-              emptyActionLabel={tr('Browse vehicles', 'Explorer les véhicules')}
-              emptyActionTo="/marketplace"
+              emptyTitle={emptyStateConfig.title}
+              emptyDescription={emptyStateConfig.description}
+              emptyActionLabel={emptyStateConfig.actionLabel}
+              emptyActionTo={emptyStateConfig.actionTo}
               emptyActionState={{ from: location.pathname + location.search + location.hash }}
             />
           </div>

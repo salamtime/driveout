@@ -81,12 +81,15 @@ const sanitizeTenantSettings = (settings = {}) => {
       'rental_created',
       'website_reservation_created',
       'rental_started',
+      'rental_vehicle_assigned',
       'rental_vehicle_replaced',
       'rental_completed',
       'payment_received',
       'rental_overdue',
       'rental_cancelled',
       'deposit_returned',
+      'rental_extension_requested',
+      'rental_price_change_requested',
     ];
 
     normalized.telegram_event_types = allowedTelegramEvents.reduce((acc, key) => {

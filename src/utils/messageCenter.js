@@ -91,20 +91,31 @@ export const normalizeSenderRole = (value) => {
 export const getMessageFamilyMeta = (family) =>
   FAMILY_META[normalizeMessageFamily(family)] || FAMILY_META[MESSAGE_FAMILIES.support];
 
+const getThreadTypeValue = (thread = {}) =>
+  String(thread?.threadType || thread?.thread_type || '').trim();
+
+const getStatusLabelValue = (thread = {}) =>
+  String(thread?.statusLabel || thread?.status_label || '').trim();
+
+const getStatusToneValue = (thread = {}) =>
+  String(thread?.statusTone || thread?.status_tone || '').trim();
+
 export const createMessageThread = (thread = {}) => ({
   id: String(thread.id || `${thread.family || 'support'}-${Date.now()}`),
   family: normalizeMessageFamily(thread.family),
-  threadType: String(thread.threadType || MESSAGE_THREAD_TYPES.supportCase),
-  senderRole: normalizeSenderRole(thread.senderRole),
-  title: String(thread.title || '').trim() || 'Message thread',
+  threadType: getThreadTypeValue(thread) || MESSAGE_THREAD_TYPES.supportCase,
+  senderRole: normalizeSenderRole(thread.senderRole || thread.sender_role),
+  title: String(thread.title || thread.subject || '').trim() || 'Message thread',
   subtitle: String(thread.subtitle || '').trim(),
   summary: String(thread.summary || '').trim(),
-  latestMessage: String(thread.latestMessage || '').trim(),
-  statusLabel: String(thread.statusLabel || '').trim(),
-  statusTone: String(thread.statusTone || '').trim(),
-  href: String(thread.href || '').trim(),
-  at: thread.at ? new Date(thread.at) : null,
-  unread: Boolean(thread.unread),
+  latestMessage: String(thread.latestMessage || thread.latest_message || '').trim(),
+  statusLabel: getStatusLabelValue(thread),
+  statusTone: getStatusToneValue(thread),
+  href: String(thread.href || thread?.metadata?.href || '').trim(),
+  at: thread.at || thread.latest_message_at || thread.updated_at
+    ? new Date(thread.at || thread.latest_message_at || thread.updated_at)
+    : null,
+  unread: Boolean(thread.unread || Number(thread.unread_count || 0) > 0),
   status: String(thread.status || '').trim(),
   thread_key: String(thread.thread_key || '').trim(),
   context_type: String(thread.context_type || '').trim(),
@@ -176,37 +187,42 @@ const labelIncludes = (value, tokens = []) => {
 
 const getMarketplaceRequestStatus = (thread) => {
   const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
-  return normalizeStatusLabel(thread?.statusLabel || metadata.requestStatus || metadata.status || '');
+  return normalizeStatusLabel(
+    getStatusLabelValue(thread) ||
+    metadata.requestStatus ||
+    metadata.status ||
+    ''
+  );
 };
 
 const isVerificationNeedsAction = (thread) => {
   if (normalizeMessageFamily(thread?.family) !== MESSAGE_FAMILIES.verification) return false;
-  if (thread?.statusTone === 'warning') return true;
-  return labelIncludes(thread?.statusLabel, ['needs', 'replac', 'reject', 'suspend', 'expire']);
+  if (getStatusToneValue(thread) === 'warning') return true;
+  return labelIncludes(getStatusLabelValue(thread), ['needs', 'replac', 'reject', 'suspend', 'expire']);
 };
 
 const isMarketplaceModerationNeedsAction = (thread) => {
-  if (String(thread?.threadType || '') !== MESSAGE_THREAD_TYPES.marketplaceModeration) return false;
-  if (thread?.statusTone === 'warning') return true;
-  return labelIncludes(thread?.statusLabel, ['needs', 'change', 'replac']);
+  if (getThreadTypeValue(thread) !== MESSAGE_THREAD_TYPES.marketplaceModeration) return false;
+  if (getStatusToneValue(thread) === 'warning') return true;
+  return labelIncludes(getStatusLabelValue(thread), ['needs', 'change', 'replac']);
 };
 
 const isMarketplaceRequestNeedsAction = (thread) => {
-  const type = String(thread?.threadType || '');
+  const type = getThreadTypeValue(thread);
   if (![MESSAGE_THREAD_TYPES.marketplaceCustomerRequest, MESSAGE_THREAD_TYPES.marketplaceOwnerRequest].includes(type)) {
     return false;
   }
   const status = getMarketplaceRequestStatus(thread);
-  return ['pending', 'countered', 'negotiated'].includes(status) || labelIncludes(thread?.statusLabel, ['pending']);
+  return ['pending', 'countered', 'negotiated'].includes(status) || labelIncludes(getStatusLabelValue(thread), ['pending']);
 };
 
 const isAccountTrustNeedsAction = (thread) => {
   if (normalizeMessageFamily(thread?.family) !== MESSAGE_FAMILIES.accountTrust) return false;
-  return labelIncludes(thread?.statusLabel, ['needs action', 'pending', 'not started']);
+  return labelIncludes(getStatusLabelValue(thread), ['needs action', 'pending', 'not started']);
 };
 
 const isConversationThread = (thread) => {
-  const type = String(thread?.threadType || '');
+  const type = getThreadTypeValue(thread);
   const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
   if (metadata.replyEnabled || metadata.conversationEnabled || metadata.postPaymentChat) return true;
   return [
@@ -240,4 +256,35 @@ export const getThreadActionLabel = (thread = {}) => {
   if (isMarketplaceRequestNeedsAction(thread)) return 'Respond';
   if (isAccountTrustNeedsAction(thread)) return 'Review';
   return '';
+};
+
+export const buildMessageSectionSummary = (threads = []) => {
+  const normalizedThreads = threads.map((thread) => createMessageThread(thread));
+
+  return normalizedThreads.reduce(
+    (summary, thread) => {
+      const section = classifyThreadSection(thread);
+      summary.totalThreads += 1;
+      if (thread.unread) {
+        summary.unreadCount += 1;
+      }
+
+      if (section === MESSAGE_THREAD_SECTIONS.actions) {
+        summary.actions += 1;
+      } else if (section === MESSAGE_THREAD_SECTIONS.conversations) {
+        summary.conversations += 1;
+      } else {
+        summary.updates += 1;
+      }
+
+      return summary;
+    },
+    {
+      totalThreads: 0,
+      unreadCount: 0,
+      actions: 0,
+      conversations: 0,
+      updates: 0,
+    }
+  );
 };

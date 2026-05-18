@@ -7,6 +7,7 @@ import {
   mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
   pickBestExistingCustomerMatch,
+  pickExactIdentityCustomerMatch,
   pickMostCompleteCustomerProfile,
 } from '../utils/customerIdentity.js';
 import {
@@ -99,6 +100,32 @@ const stripOrganizationField = (payload = {}) => {
   if (!payload || typeof payload !== 'object') return payload;
   const { organization_id: _organizationId, ...rest } = payload;
   return rest;
+};
+
+const buildCustomerLookupCandidate = (source = {}) => {
+  const normalizedIdentity = normalizeCustomerIdentityFields({
+    licenceNumber:
+      source.licence_number ||
+      source.customer_licence_number ||
+      source.license_number ||
+      '',
+    idNumber:
+      source.id_number ||
+      source.customer_id_number ||
+      source.idNumber ||
+      source.document_number ||
+      '',
+  });
+
+  return {
+    full_name: String(source.full_name || source.customer_name || source.fullName || source.name || source.raw_name || '').trim(),
+    phone: String(source.phone || source.customer_phone || '').trim(),
+    email: String(source.email || source.customer_email || '').trim(),
+    licence_number: normalizedIdentity.licenceNumber || '',
+    id_number: normalizedIdentity.idNumber || '',
+    date_of_birth: String(source.date_of_birth || source.customer_dob || source.dateOfBirth || '').trim() || null,
+    nationality: String(source.nationality || source.customer_nationality || '').trim() || '',
+  };
 };
 
 /**
@@ -658,85 +685,28 @@ class EnhancedUnifiedCustomerService {
 
       // Step 7: DUPLICATE PREVENTION & CUSTOMER LOOKUP
       if (scopedFinalCustomerData.full_name) {
+        const duplicateLookupCandidate = buildCustomerLookupCandidate(scopedFinalCustomerData);
         console.log('🔍 DUPLICATE CHECK: Checking for customer with identity:', {
-          name: scopedFinalCustomerData.full_name,
-          licence: scopedFinalCustomerData.licence_number,
-          idNumber: scopedFinalCustomerData.id_number,
-          phone: scopedFinalCustomerData.phone,
-          email: scopedFinalCustomerData.email,
+          name: duplicateLookupCandidate.full_name,
+          licence: duplicateLookupCandidate.licence_number,
+          idNumber: duplicateLookupCandidate.id_number,
+          phone: duplicateLookupCandidate.phone,
+          email: duplicateLookupCandidate.email,
+          dateOfBirth: duplicateLookupCandidate.date_of_birth,
+          nationality: duplicateLookupCandidate.nationality,
         });
 
-        let duplicateCustomer = null;
-
-        const runLookup = async (builder) => {
-          const { data, error } = await builder;
-          if (error) {
-            console.error('❌ DUPLICATE CHECK: Error looking up customer:', error);
-            throw new Error(`Customer lookup failed: ${error.message}`);
-          }
-          return data || [];
-        };
-
-        const exactMatchGroups = await Promise.all([
-          scopedFinalCustomerData.id_number
-            ? runLookup(
-                applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('id_number', scopedFinalCustomerData.id_number)
-                  .limit(10), organizationId)
-              )
-            : Promise.resolve([]),
-          scopedFinalCustomerData.licence_number
-            ? runLookup(
-                applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('licence_number', scopedFinalCustomerData.licence_number)
-                  .limit(10), organizationId)
-              )
-            : Promise.resolve([]),
-          scopedFinalCustomerData.phone
-            ? runLookup(
-                applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('phone', scopedFinalCustomerData.phone)
-                  .limit(10), organizationId)
-              )
-            : Promise.resolve([]),
-          scopedFinalCustomerData.email
-            ? runLookup(
-                applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('email', scopedFinalCustomerData.email)
-                  .limit(10), organizationId)
-              )
-            : Promise.resolve([]),
-        ]);
-
-        duplicateCustomer = pickMostCompleteCustomerProfile(
-          mergeUniqueCustomersById(...exactMatchGroups)
-        );
-
-        if (!duplicateCustomer) {
-          const { data: duplicateCustomers, error: lookupError } = await applyOrganizationScope(supabase
-            .from('app_4c3a7a6153_customers')
-            .select('*')
-            .ilike('full_name', scopedFinalCustomerData.full_name)
-            .limit(5), organizationId);
-
-          if (lookupError) {
-            console.error('❌ DUPLICATE CHECK: Error looking up customer:', lookupError);
-            throw new Error(`Customer lookup failed: ${lookupError.message}`);
-          }
-
-          duplicateCustomer = pickBestExistingCustomerMatch({
-            incomingCustomer: scopedFinalCustomerData,
-            candidates: duplicateCustomers || [],
-          });
-        }
+        const duplicateCandidates = await this.findMatchingCustomers(duplicateLookupCandidate);
+        const duplicateCustomer =
+          pickExactIdentityCustomerMatch({
+            incomingCustomer: duplicateLookupCandidate,
+            candidates: duplicateCandidates,
+          }) ||
+          pickBestExistingCustomerMatch({
+            incomingCustomer: duplicateLookupCandidate,
+            candidates: duplicateCandidates,
+          }) ||
+          pickMostCompleteCustomerProfile(duplicateCandidates);
 
         if (duplicateCustomer && duplicateCustomer.id !== customerData.id) {
           console.log('✅ DUPLICATE CHECK: Customer already exists. Updating existing profile:', duplicateCustomer.id);
@@ -799,58 +769,19 @@ class EnhancedUnifiedCustomerService {
           // Recover: find the conflicting row and update it instead.
           console.warn('⚠️ Upsert hit unique constraint — attempting conflict recovery.', upsertError);
 
-          let conflictingRecord = null;
-
-          const exactConflictGroups = await Promise.all([
-            customerToUpsert.licence_number
-              ? applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('licence_number', customerToUpsert.licence_number)
-                  .limit(10), organizationId)
-                  .then(({ data }) => data || [])
-              : Promise.resolve([]),
-            customerToUpsert.id_number
-              ? applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('id_number', customerToUpsert.id_number)
-                  .limit(10), organizationId)
-                  .then(({ data }) => data || [])
-              : Promise.resolve([]),
-            customerToUpsert.phone
-              ? applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('phone', customerToUpsert.phone)
-                  .limit(10), organizationId)
-                  .then(({ data }) => data || [])
-              : Promise.resolve([]),
-            customerToUpsert.email
-              ? applyOrganizationScope(supabase
-                  .from('app_4c3a7a6153_customers')
-                  .select('*')
-                  .eq('email', customerToUpsert.email)
-                  .limit(10), organizationId)
-                  .then(({ data }) => data || [])
-              : Promise.resolve([]),
-          ]);
-
-          conflictingRecord = pickMostCompleteCustomerProfile(
-            mergeUniqueCustomersById(...exactConflictGroups)
-          ) ?? null;
-
-          if (!conflictingRecord && customerToUpsert.full_name) {
-            const { data } = await applyOrganizationScope(supabase
-              .from('app_4c3a7a6153_customers')
-              .select('*')
-              .ilike('full_name', customerToUpsert.full_name)
-              .limit(5), organizationId);
-            conflictingRecord = pickBestExistingCustomerMatch({
-              incomingCustomer: customerToUpsert,
-              candidates: data || [],
-            }) ?? null;
-          }
+          const conflictLookupCandidate = buildCustomerLookupCandidate(customerToUpsert);
+          const conflictingCandidates = await this.findMatchingCustomers(conflictLookupCandidate);
+          const conflictingRecord =
+            pickExactIdentityCustomerMatch({
+              incomingCustomer: conflictLookupCandidate,
+              candidates: conflictingCandidates,
+            }) ||
+            pickBestExistingCustomerMatch({
+              incomingCustomer: conflictLookupCandidate,
+              candidates: conflictingCandidates,
+            }) ||
+            pickMostCompleteCustomerProfile(conflictingCandidates) ||
+            null;
 
           if (conflictingRecord) {
             console.log('🔁 Conflict recovery: updating existing record', conflictingRecord.id);
@@ -1764,19 +1695,28 @@ class EnhancedUnifiedCustomerService {
     });
 
     const customerTable = CUSTOMER_TABLE;
+    const identityCandidates = Array.from(
+      new Set(
+        [
+          normalizedIdentity.idNumber,
+          normalizedIdentity.licenceNumber,
+        ].map((value) => String(value || '').trim()).filter(Boolean)
+      )
+    );
+
     const exactMatchGroups = await Promise.all([
-      normalizedIdentity.idNumber
-        ? runCustomerLookupQuery(
-          () => supabase.from(customerTable).select('*').eq('id_number', normalizedIdentity.idNumber).limit(10),
+      ...identityCandidates.map((identityValue) =>
+        runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('id_number', identityValue).limit(10),
           organizationId
         )
-        : Promise.resolve([]),
-      normalizedIdentity.licenceNumber
-        ? runCustomerLookupQuery(
-          () => supabase.from(customerTable).select('*').eq('licence_number', normalizedIdentity.licenceNumber).limit(10),
+      ),
+      ...identityCandidates.map((identityValue) =>
+        runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('licence_number', identityValue).limit(10),
           organizationId
         )
-        : Promise.resolve([]),
+      ),
       phone
         ? runCustomerLookupQuery(
           () => supabase.from(customerTable).select('*').eq('phone', phone).limit(10),

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CarFront, FileCheck, GanttChartSquare, MessageSquareText, ShieldCheck, UploadCloud } from 'lucide-react';
+import { ArrowLeft, CarFront, FileCheck, GanttChartSquare, MessageSquareText, ShieldCheck, Star, UploadCloud } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import i18n from '../../i18n';
 import { toast } from 'sonner';
@@ -52,6 +52,53 @@ const formatDateTime = (value, locale) => {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+};
+
+const buildOwnerVehicleWorkspaceHref = (vehicleId, tab = 'overview') =>
+  `/account/vehicles/${encodeURIComponent(String(vehicleId || ''))}/profile?tab=${encodeURIComponent(String(tab || 'overview'))}`;
+
+const getOwnerVehicleSetupTarget = (vehicle, returnPath = '/account/vehicles') => {
+  const vehicleId = String(vehicle?.id || '').trim();
+  const buildTarget = (tab, section) => ({
+    to: buildOwnerVehicleWorkspaceHref(vehicleId, tab),
+    state: {
+      from: returnPath,
+      resumeEditing: true,
+      focusSectionId: section,
+    },
+  });
+
+  const listingStatus = String(vehicle?.listingStatus || '').trim().toLowerCase();
+  const reviewStatus = String(vehicle?.reviewStatus || '').trim().toLowerCase();
+  const moderationStatus = String(vehicle?.moderationStatus || '').trim().toLowerCase();
+  const vehicleVerificationStatus = String(vehicle?.vehicleVerificationStatus || '').trim().toLowerCase();
+  const vehicleBasicsComplete = Boolean(
+    String(vehicle?.brandName || '').trim() &&
+    String(vehicle?.modelName || '').trim() &&
+    String(vehicle?.plateNumber || vehicle?.rawProfile?.plate_number || '').trim() &&
+    String(vehicle?.cityName || '').trim()
+  );
+  const mediaItems = Array.isArray(vehicle?.media) ? vehicle.media : [];
+  const vehiclePhotosComplete = Boolean(String(vehicle?.coverImageUrl || '').trim()) || mediaItems.some((item) => String(item?.url || '').trim());
+  const vehicleDocumentsComplete = Boolean(vehicle?.vehicleVerificationComplete) && vehicleVerificationStatus === 'approved';
+  const vehicleDocumentsPending = ['pending', 'in_review'].includes(vehicleVerificationStatus);
+  const listingDetailsComplete = Boolean(String(vehicle?.listingTitle || vehicle?.title || '').trim());
+  const listingPricingComplete = [vehicle?.dailyPrice, vehicle?.halfDayPrice, vehicle?.hourlyPrice, vehicle?.weeklyPrice].some((value) => Number(value || 0) > 0) &&
+    !(vehicle?.depositAmount === '' || vehicle?.depositAmount === null || vehicle?.depositAmount === undefined);
+  const pickupSetupComplete = Boolean(String(vehicle?.pickupLocationName || vehicle?.pickupAddress || vehicle?.rawProfile?.pickup_location_name || '').trim());
+
+  if (['pending_review', 'approved', 'live'].includes(listingStatus) || ['pending_review', 'approved'].includes(reviewStatus)) {
+    return buildTarget('listing', 'listing-journey');
+  }
+  if (['changes_requested', 'rejected'].includes(moderationStatus) || reviewStatus === 'rejected' || listingStatus === 'rejected') {
+    return buildTarget('listing', 'listing-journey');
+  }
+  if (!vehicleBasicsComplete) return buildTarget('overview', 'vehicle-basics');
+  if (!vehiclePhotosComplete) return buildTarget('overview', 'primary-photo');
+  if (!vehicleDocumentsComplete && !vehicleDocumentsPending) return buildTarget('legal', 'legal-documents');
+  if (!listingDetailsComplete || !listingPricingComplete) return buildTarget('listing', 'listing-details');
+  if (!pickupSetupComplete) return buildTarget('listing', 'listing-rules');
+  return buildTarget('listing', 'listing-journey');
 };
 
 const readStoredOwnerVehicleIds = (userId = '') => {
@@ -273,11 +320,23 @@ const OwnerPickupWindowBanner = ({ active = false, countdownLabel = '0m', expire
   );
 };
 
-const OwnerVehicleCard = ({ vehicle, tr, locale, onOpenProfile, onPrefetchProfile }) => {
+const OwnerVehicleCard = ({
+  vehicle,
+  tr,
+  locale,
+  onOpenProfile,
+  onOpenListingTab,
+  onOpenBookingsTab,
+  onOpenLegalTab,
+  onOpenReviews,
+  onPrefetchProfile,
+}) => {
   const reviewStatus = getEffectiveVehicleReviewStatus(vehicle);
   const moderationStatus = String(vehicle?.moderationStatus || '').toLowerCase();
   const listingStatus = String(vehicle?.listingStatus || '').toLowerCase();
   const verificationMeta = getVehicleVerificationStatusMeta(vehicle, tr);
+  const listingJourneyLabel = getOwnerListingJourneyLabel(vehicle, tr);
+  const reviewJourneyLabel = getOwnerReviewStatusLabel(vehicle, tr);
   const primaryPrice = vehicle?.dailyPrice || vehicle?.halfDayPrice || vehicle?.hourlyPrice || vehicle?.weeklyPrice || 0;
   const pricingLabel = vehicle?.dailyPrice
     ? tr('/ day', '/ jour')
@@ -329,66 +388,142 @@ const OwnerVehicleCard = ({ vehicle, tr, locale, onOpenProfile, onPrefetchProfil
   })();
 
   return (
-  <article
-    role="button"
-    tabIndex={0}
-    onClick={onOpenProfile}
-    onMouseEnter={onPrefetchProfile}
-    onTouchStart={onPrefetchProfile}
-    onFocus={onPrefetchProfile}
-    onKeyDown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        onOpenProfile();
-      }
-    }}
-    className="w-full rounded-[1.85rem] border border-violet-300 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_28px_58px_rgba(79,70,229,0.10),0_18px_42px_rgba(15,23,42,0.08),0_0_0_1px_rgba(167,139,250,0.28)]"
-  >
-    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-      <div className="flex min-w-0 flex-1 gap-4">
-        {vehicle?.coverImageUrl ? (
-          <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 shadow-sm">
-            <img
-              src={vehicle.coverImageUrl}
-              alt={vehicle?.title || 'Marketplace vehicle'}
-              className="h-28 w-36 object-cover"
-            />
-          </div>
-        ) : null}
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={onOpenProfile}
+      onMouseEnter={onPrefetchProfile}
+      onTouchStart={onPrefetchProfile}
+      onFocus={onPrefetchProfile}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenProfile();
+        }
+      }}
+      className="w-full rounded-[1.85rem] border border-violet-300 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_28px_58px_rgba(79,70,229,0.10),0_18px_42px_rgba(15,23,42,0.08),0_0_0_1px_rgba(167,139,250,0.28)]"
+    >
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 flex-1 gap-4">
+          {vehicle?.coverImageUrl ? (
+            <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 shadow-sm">
+              <img
+                src={vehicle.coverImageUrl}
+                alt={vehicle?.title || 'Marketplace vehicle'}
+                className="h-28 w-36 object-cover"
+              />
+            </div>
+          ) : null}
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusMeta.tone}`}>
-              {statusMeta.label}
-            </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusMeta.tone}`}>
+                {statusMeta.label}
+              </span>
+              <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${verificationMeta.tone}`}>
+                {verificationMeta.label}
+              </span>
+            </div>
+            <h2 className="mt-3 text-xl font-bold text-slate-950">
+              {vehicle?.title || tr('Marketplace vehicle', 'Véhicule marketplace')}
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {[vehicle?.cityName, vehicle?.areaName].filter(Boolean).join(' • ') || tr('Owner listing', 'Annonce propriétaire')}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+                {primaryPrice > 0
+                  ? `${formatMoney(primaryPrice, vehicle?.currencyCode || 'MAD', locale)} ${pricingLabel}`
+                  : tr('Pricing pending', 'Tarification en attente')}
+              </span>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('Listing', 'Annonce')}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950">{listingJourneyLabel}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('Review', 'Revue')}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950">{reviewJourneyLabel}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('Verification', 'Vérification')}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950">{verificationMeta.hint}</p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm text-slate-500">
+              {tr(
+                'Pricing, availability, documents, and go-live actions all stay connected inside this listing workspace.',
+                "Tarification, disponibilité, documents et publication restent connectés dans cet espace annonce."
+              )}
+            </p>
           </div>
-          <h2 className="mt-3 text-xl font-bold text-slate-950">{vehicle?.title || tr('Marketplace vehicle', 'Véhicule marketplace')}</h2>
-          <p className="mt-1 text-sm text-slate-500">{[vehicle?.cityName, vehicle?.areaName].filter(Boolean).join(' • ') || tr('Owner listing', 'Annonce propriétaire')}</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
-              {primaryPrice > 0
-                ? `${formatMoney(primaryPrice, vehicle?.currencyCode || 'MAD', locale)} ${pricingLabel}`
-                : tr('Pricing pending', 'Tarification en attente')}
-            </span>
+        </div>
+
+        <div className="flex w-full flex-col gap-3 lg:w-[260px]">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenProfile();
+            }}
+            className="inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_14px_30px_rgba(79,70,229,0.18)] transition hover:-translate-y-0.5"
+          >
+            {statusMeta.action}
+          </button>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenListingTab();
+              }}
+              className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+            >
+              {tr('Pricing & live', 'Prix et mise en ligne')}
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenBookingsTab();
+              }}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              {tr('Bookings', 'Réservations')}
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenLegalTab();
+              }}
+              className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              {tr('Legal & docs', 'Légal et docs')}
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenReviews();
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              <Star className="h-4 w-4" />
+              {tr('Reviews & rep', 'Avis et réputation')}
+            </button>
           </div>
         </div>
       </div>
-
-      <div className="lg:min-w-[220px]">
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenProfile();
-          }}
-          className="inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_14px_30px_rgba(79,70,229,0.18)] transition hover:-translate-y-0.5"
-        >
-          {statusMeta.action}
-        </button>
-      </div>
-    </div>
-  </article>
-);
+    </article>
+  );
 };
 
 const OwnerRequestRow = ({
@@ -493,10 +628,10 @@ const OwnerRequestRow = ({
         className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
       >
         <MessageSquareText className="h-4 w-4" />
-        {tr('Open in messages', 'Ouvrir dans messages')}
+        {tr('Open in Inbox', 'Ouvrir dans Inbox')}
       </button>
       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-        {tr('Approve, decline, and counter-offer now happen inside Messenger so the booking timeline stays in one place.', 'Les approbations, refus et contre-offres se font maintenant dans Messenger pour garder toute la chronologie au même endroit.')}
+        {tr('Approve, decline, and counter-offer now happen inside Inbox so the booking timeline stays in one place.', 'Les approbations, refus et contre-offres se font maintenant dans Inbox pour garder toute la chronologie au même endroit.')}
       </div>
     </div>
   </article>
@@ -508,15 +643,15 @@ const EmptyVehicleWorkspace = ({ tr, onCreate }) => (
     <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
       <div className="max-w-xl">
         <p className="text-xs font-bold uppercase tracking-[0.28em] text-violet-500">
-          {tr('My Vehicles', 'Mes véhicules')}
+          {tr('Listings', 'Annonces')}
         </p>
         <h2 className="mt-3 text-3xl font-black text-slate-950">
-          {tr('Add your first vehicle', 'Ajoutez votre premier véhicule')}
+          {tr('Start your first listing', 'Commencez votre première annonce')}
         </h2>
         <p className="mt-4 text-base text-slate-600">
           {tr(
-            'Create a vehicle workspace to manage maintenance, documents, and listings. You can keep it private or list it for rent later.',
-            'Créez votre espace véhicule pour gérer maintenance, documents et annonces. Vous pouvez rester privé ou le publier plus tard.'
+            'Create the vehicle workspace first, then manage pricing, documents, booking readiness, and go-live status from one listings hub.',
+            "Créez d'abord l'espace véhicule, puis gérez prix, documents, préparation des réservations et statut de publication depuis un seul hub annonces."
           )}
         </p>
         <button
@@ -525,7 +660,7 @@ const EmptyVehicleWorkspace = ({ tr, onCreate }) => (
           className="mt-6 inline-flex items-center gap-2 rounded-full bg-violet-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-violet-200/70 transition hover:bg-violet-700"
         >
           <UploadCloud className="h-4 w-4" />
-          {tr('Add my vehicle', 'Ajouter mon véhicule')}
+          {tr('Start listing', "Démarrer l'annonce")}
         </button>
       </div>
 
@@ -750,9 +885,10 @@ const AccountMarketplace = () => {
     if (selectedRequestId) return;
     if (vehicles.length !== 1) return;
 
-    navigate(`/account/vehicles/${encodeURIComponent(String(vehicles[0].id))}/profile?tab=overview`, {
+    const target = getOwnerVehicleSetupTarget(vehicles[0], returnPath);
+    navigate(target.to, {
       replace: true,
-      state: { from: returnPath },
+      state: target.state,
     });
   }, [loading, location.pathname, navigate, returnPath, selectedRequestId, vehicles]);
 
@@ -829,9 +965,17 @@ const AccountMarketplace = () => {
     const liveVehicles = vehicles.filter((vehicle) => String(vehicle?.listingStatus || '').toLowerCase() === 'live').length;
     const pendingReview = vehicles.filter((vehicle) => String(vehicle?.listingStatus || '').toLowerCase() === 'pending_review').length;
     const changesRequested = vehicles.filter((vehicle) => String(vehicle?.moderationStatus || '').toLowerCase() === 'changes_requested').length;
+    const needsSetup = vehicles.filter((vehicle) => {
+      const listingStatus = String(vehicle?.listingStatus || '').toLowerCase();
+      const reviewStatus = String(vehicle?.reviewStatus || '').toLowerCase();
+      const moderationStatus = String(vehicle?.moderationStatus || '').toLowerCase();
+      return !['live', 'approved'].includes(listingStatus) &&
+        !['approved'].includes(reviewStatus) &&
+        moderationStatus !== 'pending_review';
+    }).length;
     const openRequests = requests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)).length;
     const deposits = vehicles.reduce((sum, vehicle) => sum + Number(vehicle?.depositAmount || 0), 0);
-    return { liveVehicles, pendingReview, changesRequested, openRequests, deposits };
+    return { liveVehicles, pendingReview, changesRequested, needsSetup, openRequests, deposits };
   }, [vehicles, requests]);
   const primaryVehicle = useMemo(() => {
     if (!vehicles.length) return null;
@@ -890,11 +1034,50 @@ const AccountMarketplace = () => {
     void preloadOwnerVehicleProfileRoute();
   }, []);
 
-  const handleOpenVehicleProfile = useCallback(
+  const handleContinueVehicleSetup = useCallback(
     async (vehicleId) => {
       await preloadOwnerVehicleProfileRoute();
-      navigate(`/account/vehicles/${encodeURIComponent(String(vehicleId))}/profile`, {
-        state: { from: returnPath },
+      const vehicle = vehicles.find((item) => String(item?.id) === String(vehicleId));
+      const target = getOwnerVehicleSetupTarget(vehicle, returnPath);
+      navigate(target.to, {
+        state: target.state,
+      });
+    },
+    [navigate, returnPath, vehicles]
+  );
+
+  const handleOpenVehicleTab = useCallback(
+    async (vehicleId, tab = 'overview', section = '') => {
+      await preloadOwnerVehicleProfileRoute();
+      navigate(buildOwnerVehicleWorkspaceHref(vehicleId, tab), {
+        state: {
+          from: returnPath,
+          resumeEditing: true,
+          focusSectionId: section,
+        },
+      });
+    },
+    [navigate, returnPath]
+  );
+
+  const handleOpenVehicleReviews = useCallback(
+    (vehicle) => {
+      const vehicleId = String(vehicle?.id || '').trim();
+      if (!vehicleId) return;
+
+      const params = new URLSearchParams({
+        panel: 'vehicle',
+        vehicleId,
+      });
+
+      navigate(`/account/reviews?${params.toString()}`, {
+        state: {
+          from: returnPath,
+          vehicleId,
+          listingId: vehicle?.listingId || '',
+          vehicleTitle: vehicle?.title || [vehicle?.brandName, vehicle?.modelName].filter(Boolean).join(' ') || '',
+          source: 'listings',
+        },
       });
     },
     [navigate, returnPath]
@@ -1148,9 +1331,12 @@ const AccountMarketplace = () => {
     <div className="space-y-6">
       <div className="sticky top-0 z-20">
         <AccountWorkspaceHero
-          eyebrow={tr('My Vehicles', 'Mes véhicules')}
-          title={tr('My Vehicles', 'Mes véhicules')}
-          description={tr('See which vehicles need attention and what to do next.', 'Voyez quels véhicules demandent votre attention et quoi faire ensuite.')}
+          eyebrow={tr('Listings', 'Annonces')}
+          title={tr('Listings control center', 'Centre de contrôle des annonces')}
+          description={tr(
+            'Manage vehicle setup, pricing, legal documents, booking readiness, and live listing requests from one workspace.',
+            'Gérez préparation véhicule, tarifs, documents légaux, préparation des réservations et demandes en direct depuis un seul espace.'
+          )}
           className="bg-white/95 backdrop-blur"
           aside={
             <div className="flex flex-wrap gap-2">
@@ -1170,11 +1356,11 @@ const AccountMarketplace = () => {
                 className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-[0_14px_30px_rgba(79,70,229,0.18)] transition hover:-translate-y-0.5"
               >
                 <UploadCloud className="h-4 w-4" />
-                {tr('Add vehicle', 'Ajouter un véhicule')}
+                {tr('Add listing', 'Ajouter une annonce')}
               </button>
               <Link to="/account/messages" className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700">
                 <MessageSquareText className="h-4 w-4" />
-                {tr('Messages', 'Messages')}
+                {tr('Open Inbox', 'Ouvrir Inbox')}
               </Link>
             </div>
           }
@@ -1190,41 +1376,58 @@ const AccountMarketplace = () => {
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-            {tr('Summary', 'Résumé')}
+            {tr('Listings snapshot', "Vue des annonces")}
           </p>
         </div>
         <div className="-mx-1 overflow-x-auto px-1 pb-2">
           <div className="flex snap-x snap-mandatory gap-3">
             <AccountStatCard
               compact
-              eyebrow={tr('Total', 'Total')}
+              eyebrow={tr('Listings', 'Annonces')}
               value={vehicles.length}
-              label={tr('Vehicles', 'Véhicules')}
+              label={tr('Total listings', 'Total des annonces')}
               tone="violet"
             />
             <AccountStatCard
               compact
-              eyebrow={tr('Live', 'Live')}
+              eyebrow={tr('Setup', 'Configuration')}
+              value={stats.needsSetup}
+              label={tr('Still in setup', 'Encore en configuration')}
+              tone="amber"
+            />
+            <AccountStatCard
+              compact
+              eyebrow={tr('Live', 'En ligne')}
               value={stats.liveVehicles}
               label={tr('Live listings', 'Annonces en ligne')}
               tone="emerald"
             />
             <AccountStatCard
               compact
-              eyebrow={tr('In review', 'En revue')}
+              eyebrow={tr('Review', 'Revue')}
               value={stats.pendingReview + stats.changesRequested}
-              label={tr('Listings needing review', 'Annonces à suivre')}
-              tone="amber"
+              label={tr('Needs review follow-up', 'Demandent un suivi de revue')}
+              tone="sky"
             />
             <AccountStatCard
               compact
-              eyebrow={tr('Requests', 'Demandes')}
+              eyebrow={tr('Inbox', 'Inbox')}
               value={stats.openRequests}
-              label={tr('Open requests', 'Demandes ouvertes')}
+              label={tr('Open renter requests', 'Demandes locataires ouvertes')}
               tone="slate"
             />
           </div>
         </div>
+      </section>
+
+      <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+        <AccountWorkspaceSectionHeader
+          title={tr('How Listings works', 'Comment fonctionnent les annonces')}
+          description={tr(
+            'Build the vehicle profile first, then move through pricing, legal documents, booking setup, and go-live review. Once a renter requests a vehicle, the live conversation continues in Inbox.',
+            "Créez d'abord le profil véhicule, puis avancez via tarification, documents légaux, préparation de réservation et revue avant publication. Lorsqu'un locataire envoie une demande, la conversation en direct continue dans Inbox."
+          )}
+        />
       </section>
 
       {loading ? (
@@ -1242,25 +1445,29 @@ const AccountMarketplace = () => {
               tr={tr}
               locale={locale}
               onPrefetchProfile={handlePrefetchVehicleProfile}
-              onOpenProfile={() => handleOpenVehicleProfile(vehicle.id)}
+              onOpenProfile={() => handleContinueVehicleSetup(vehicle.id)}
+              onOpenListingTab={() => handleOpenVehicleTab(vehicle.id, 'listing', 'listing-details')}
+              onOpenBookingsTab={() => handleOpenVehicleTab(vehicle.id, 'bookings')}
+              onOpenLegalTab={() => handleOpenVehicleTab(vehicle.id, 'legal', 'legal-documents')}
+              onOpenReviews={() => handleOpenVehicleReviews(vehicle)}
             />
           ))}
         </section>
       ) : (
         <section className="rounded-[1.85rem] border border-dashed border-slate-200 bg-white/80 p-6">
-          <p className="text-sm font-bold text-slate-900">{tr('No owner vehicles yet', 'Aucun véhicule propriétaire pour le moment')}</p>
+          <p className="text-sm font-bold text-slate-900">{tr('No listings yet', 'Aucune annonce pour le moment')}</p>
           <p className="mt-2 text-sm leading-6 text-slate-500">
             {tr(
-              'Create your first vehicle to start setup and go live.',
-              'Créez votre premier véhicule pour commencer la configuration et le mettre en ligne.'
+              'Create your first listing workspace to begin setup, then publish when everything is ready.',
+              "Créez votre premier espace annonce pour démarrer la configuration, puis publiez quand tout est prêt."
             )}
           </p>
           <button
             type="button"
-            onClick={handleStartVehicleSetup}
+            onClick={handleCreateVehicle}
             className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
           >
-            <span>{tr('Add vehicle', 'Ajouter un véhicule')}</span>
+            <span>{tr('Start listing', "Démarrer l'annonce")}</span>
             <CarFront className="h-4 w-4" />
           </button>
         </section>
@@ -1268,8 +1475,12 @@ const AccountMarketplace = () => {
 
       <section className="space-y-4">
         <AccountWorkspaceSectionHeader
-          eyebrow={tr('Requests', 'Demandes')}
-          title={tr('Incoming renter requests', 'Demandes locataires entrantes')}
+          eyebrow={tr('Inbox', 'Inbox')}
+          title={tr('Listing conversations', "Conversations d'annonce")}
+          description={tr(
+            'Approvals, declines, counter-offers, and pickup coordination now stay inside Inbox so each booking keeps one timeline.',
+            "Approvals, refus, contre-offres et coordination de remise restent maintenant dans Inbox pour que chaque réservation garde une seule chronologie."
+          )}
         />
 
         {loading ? (
@@ -1294,11 +1505,11 @@ const AccountMarketplace = () => {
           </div>
         ) : (
           <div className="rounded-[1.6rem] border border-dashed border-slate-200 bg-white/80 p-6">
-            <p className="text-sm font-bold text-slate-900">{tr('No incoming requests yet', 'Aucune demande entrante pour le moment')}</p>
+            <p className="text-sm font-bold text-slate-900">{tr('No listing conversations yet', "Aucune conversation d'annonce pour le moment")}</p>
             <p className="mt-2 text-sm leading-6 text-slate-500">
               {tr(
-                'Requests will appear here once one of your vehicles is live and bookable.',
-                'Les demandes apparaîtront ici dès qu’un de vos véhicules sera en ligne et réservable.'
+                'Once one of your listings is live and bookable, renter requests will appear here and continue in Inbox.',
+                "Dès qu'une de vos annonces est en ligne et réservable, les demandes locataires apparaîtront ici et continueront dans Inbox."
               )}
             </p>
             <Link
@@ -1306,7 +1517,7 @@ const AccountMarketplace = () => {
               state={{ from: returnPath }}
               className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
             >
-              <span>{vehicles.length ? tr('View vehicles', 'Voir les véhicules') : tr('Complete setup', 'Compléter la configuration')}</span>
+              <span>{vehicles.length ? tr('Open listings', 'Ouvrir les annonces') : tr('Start listing', "Démarrer l'annonce")}</span>
               <CarFront className="h-4 w-4" />
             </Link>
           </div>
@@ -1329,7 +1540,7 @@ const AccountMarketplace = () => {
             threadId={selectedRequestConversationThreadKey}
             contextType="marketplace_request"
             contextId={String(selectedRequestConversation.id)}
-            contextLabel={tr('Request messages', 'Messages de la demande')}
+            contextLabel={tr('Request Inbox thread', "Fil Inbox de la demande")}
             contextTitle={selectedRequestConversation.listingTitle || tr('Marketplace request', 'Demande marketplace')}
             contextSubtitle={selectedRequestConversation.customerName || tr('Customer conversation', 'Conversation client')}
             contextStatus={getMarketplaceStatusLabel(selectedRequestConversation.requestStatus)}

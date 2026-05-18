@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase';
 import MaintenanceService from './MaintenanceService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
-import { scopeTenantOwnedQuery } from './OrganizationService';
+import { scopeTenantOwnedQuery, getCurrentOrganizationId } from './OrganizationService';
 
 class MaintenanceTrackingService {
   // Table references
@@ -111,6 +111,25 @@ class MaintenanceTrackingService {
     }
   }
 
+  static async filterScopedMaintenanceRecords(records = []) {
+    const safeRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+    if (safeRecords.length === 0) {
+      return [];
+    }
+
+    try {
+      const organizationId = String(await getCurrentOrganizationId() || '').trim();
+      if (!organizationId) {
+        return safeRecords;
+      }
+
+      return safeRecords.filter((record) => String(record?.organization_id || '').trim() === organizationId);
+    } catch (error) {
+      console.warn('Unable to verify maintenance organization scope, keeping fetched records as-is:', error);
+      return safeRecords;
+    }
+  }
+
   static async createMaintenanceRecord(recordData) {
     try {
       console.log('💾 Creating maintenance record via enhanced service:', recordData);
@@ -196,7 +215,7 @@ class MaintenanceTrackingService {
     try {
       let maintenanceQuery = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
-        .select('id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
+        .select('id, organization_id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
         .in('status', ['scheduled', 'in_progress']);
       maintenanceQuery = await scopeTenantOwnedQuery(maintenanceQuery, this.MAINTENANCE_RECORDS_TABLE, {
         message: 'Workspace organization context is required to load maintenance records.',
@@ -214,7 +233,7 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      const safeMaintenanceRecords = maintenanceRecords || [];
+      const safeMaintenanceRecords = await this.filterScopedMaintenanceRecords(maintenanceRecords || []);
       const vehicleIds = Array.from(
         new Set(
           safeMaintenanceRecords
@@ -323,7 +342,7 @@ class MaintenanceTrackingService {
 
       const { data: vehicles } = await vehiclesQuery;
 
-      const safeMaintenanceRecords = maintenanceRecords || [];
+      const safeMaintenanceRecords = await this.filterScopedMaintenanceRecords(maintenanceRecords || []);
       const safeVehicles = vehicles || [];
       const vehicleMap = new Map(safeVehicles.map(v => [v.id, v]));
 
@@ -424,7 +443,7 @@ class MaintenanceTrackingService {
 
       const { data: vehicles } = await vehiclesQuery;
 
-      const safeMaintenanceRecords = maintenanceRecords || [];
+      const safeMaintenanceRecords = await this.filterScopedMaintenanceRecords(maintenanceRecords || []);
       const safeVehicles = vehicles || [];
       const vehicleMap = new Map(safeVehicles.map(v => [v.id, v]));
 
@@ -532,7 +551,7 @@ class MaintenanceTrackingService {
 
       let recordsQuery = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
-        .select('id, vehicle_id, status, service_date, cost, maintenance_type');
+        .select('id, organization_id, vehicle_id, status, service_date, cost, maintenance_type');
       recordsQuery = await scopeTenantOwnedQuery(recordsQuery, this.MAINTENANCE_RECORDS_TABLE, {
         message: 'Workspace organization context is required to load maintenance statistics.',
       });
@@ -549,7 +568,7 @@ class MaintenanceTrackingService {
         throw allRecordsError;
       }
 
-      const safeAllRecords = allRecords || [];
+      const safeAllRecords = await this.filterScopedMaintenanceRecords(allRecords || []);
       const includeScheduled = this.SYSTEM_SETTINGS.include_scheduled_in_monthly_cost;
       const validStatusesForCost = includeScheduled 
         ? ['scheduled', 'in_progress', 'completed']

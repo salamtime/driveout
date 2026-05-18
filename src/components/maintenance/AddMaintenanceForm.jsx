@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
@@ -6,9 +6,9 @@ import InventoryService from '../../services/InventoryService';
 import VehicleReportService from '../../services/VehicleReportService';
 import VehicleService from '../../services/VehicleService';
 import { formatRentalReference } from '../../utils/rentalReference';
-import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import { getInventoryCategoryVisual } from '../../utils/inventoryVisuals';
+import MaintenanceReferenceChip from './MaintenanceReferenceChip';
 import { 
   X, 
   Save, 
@@ -109,7 +109,6 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   const [filteredItems, setFilteredItems] = useState([]);
   const [itemSearchTerm, setItemSearchTerm] = useState('');
   const [vehicleSearchTerm, setVehicleSearchTerm] = useState('');
-  const [stockWarnings, setStockWarnings] = useState([]);
   const [loadingItems, setLoadingItems] = useState(false);
   
   // NEW: Smart filtering states
@@ -123,6 +122,9 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   const [showCostInputs, setShowCostInputs] = useState(false);
   const [showPartsEditor, setShowPartsEditor] = useState(false);
   const [partsSourceTab, setPartsSourceTab] = useState('inventory');
+  const [pendingPartFocusIndex, setPendingPartFocusIndex] = useState(null);
+  const partRowRefs = useRef({});
+  const partPrimaryFieldRefs = useRef({});
   
   const [formData, setFormData] = useState({
     vehicle_id: '',
@@ -144,9 +146,27 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     : parseMaintenanceTypes(formData.maintenance_type);
   const primaryMaintenanceType = selectedMaintenanceTypes[0] || 'Oil Change';
 
+  const findIncompletePartIndex = (sourceType) => formData.parts_used.findIndex((part = {}) => {
+    const isManualPart = (part.source_type || 'inventory') === 'manual';
+    if (sourceType === 'manual') {
+      return isManualPart && !String(part.part_name || '').trim();
+    }
+
+    return !isManualPart && !String(part.item_id || '').trim();
+  });
+
   const addInventoryPart = () => {
     setPartsSourceTab('inventory');
     setShowPartsEditor(true);
+
+    const existingDraftIndex = findIncompletePartIndex('inventory');
+    if (existingDraftIndex >= 0) {
+      setPendingPartFocusIndex(existingDraftIndex);
+      return;
+    }
+
+    const nextIndex = formData.parts_used.length;
+    setPendingPartFocusIndex(nextIndex);
     setFormData(prev => ({
       ...prev,
       parts_used: [...prev.parts_used, {
@@ -161,6 +181,15 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   const addManualPart = () => {
     setPartsSourceTab('manual');
     setShowPartsEditor(true);
+
+    const existingDraftIndex = findIncompletePartIndex('manual');
+    if (existingDraftIndex >= 0) {
+      setPendingPartFocusIndex(existingDraftIndex);
+      return;
+    }
+
+    const nextIndex = formData.parts_used.length;
+    setPendingPartFocusIndex(nextIndex);
     setFormData(prev => ({
       ...prev,
       parts_used: [...prev.parts_used, {
@@ -191,12 +220,14 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     const unitCost = parseFloat(item.cost_mad || 0) || 0;
     const unitPrice = getInventorySellPrice(item);
 
+    let targetIndex = -1;
     setFormData((prev) => {
       const existingIndex = prev.parts_used.findIndex((part) => (
         (part.source_type || 'inventory') === 'inventory' && String(part.item_id) === String(item.id)
       ));
 
       if (existingIndex >= 0) {
+        targetIndex = existingIndex;
         const nextParts = [...prev.parts_used];
         nextParts[existingIndex] = {
           ...nextParts[existingIndex],
@@ -210,6 +241,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         return { ...prev, parts_used: nextParts };
       }
 
+      targetIndex = prev.parts_used.length;
       return {
         ...prev,
         parts_used: [
@@ -232,17 +264,18 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       };
     });
 
-    return true;
+    return targetIndex;
   };
 
   const selectInventorySearchItem = (item, quantityOverride = 1) => {
-    const didSelect = addSuggestedInventoryPart(item, quantityOverride);
-    if (!didSelect) return;
+    const targetIndex = addSuggestedInventoryPart(item, quantityOverride);
+    if (targetIndex === false) return;
 
     setPartsSourceTab('inventory');
     setShowPartsEditor(true);
     setItemSearchTerm('');
     setSelectedInventoryLabel('');
+    setPendingPartFocusIndex(targetIndex);
   };
 
   const addSuggestedManualPart = (partName) => {
@@ -418,6 +451,28 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       }
     }
   }, [editingRecord, inventoryItems]);
+
+  useEffect(() => {
+    if (pendingPartFocusIndex === null) return undefined;
+
+    const rowNode = partRowRefs.current[pendingPartFocusIndex];
+    const fieldNode = partPrimaryFieldRefs.current[pendingPartFocusIndex];
+
+    const focusTarget = window.requestAnimationFrame(() => {
+      rowNode?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      fieldNode?.focus?.();
+      fieldNode?.select?.();
+    });
+
+    const clearFocusHint = window.setTimeout(() => {
+      setPendingPartFocusIndex(null);
+    }, 1200);
+
+    return () => {
+      window.cancelAnimationFrame(focusTarget);
+      window.clearTimeout(clearFocusHint);
+    };
+  }, [pendingPartFocusIndex, formData.parts_used.length]);
 
   useEffect(() => {
     if (editingRecord || reportContextApplied || !initialContext?.vehicleId) return;
@@ -721,33 +776,132 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     return item ? (item.available_stock ?? item.stock_on_hand ?? 0) : 0;
   };
 
-  // NEW: Check parts availability
-  const checkPartsAvailability = async (partsUsed) => {
-    const checks = [];
-    
-    for (const part of partsUsed) {
-      try {
-        const item = getItemDetails(part.item_id) || await InventoryService.getItemById(part.item_id);
-        if (item) {
-          const required = parseFloat(part.quantity || 0) || 0;
-          const available = item.available_stock ?? item.stock_on_hand ?? 0;
-          const sufficient = available >= required;
-          
-          checks.push({
-            item_id: part.item_id,
-            item_name: item.name,
-            required,
-            available,
-            sufficient,
-            shortage: sufficient ? 0 : required - available
-          });
-        }
-      } catch (error) {
-        console.error(`Error checking availability for item ${part.item_id}:`, error);
-      }
+  const normalizePartForComparison = (part = {}) => {
+    const sourceType = part.source_type || (part.item_id ? 'inventory' : 'manual');
+    const normalizeString = (value) => String(value || '').trim();
+    const normalizeNumber = (value) => {
+      const parsed = parseFloat(value || 0) || 0;
+      return Number(parsed.toFixed(4));
+    };
+
+    if (sourceType === 'manual') {
+      return {
+        source_type: 'manual',
+        part_name: normalizeString(part.part_name || part.item_name),
+        part_number: normalizeString(part.part_number),
+        quantity: normalizeNumber(part.quantity),
+        unit_cost_mad: normalizeNumber(part.unit_cost_mad),
+        unit_price_mad: normalizeNumber(part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad),
+        notes: normalizeString(part.notes)
+      };
     }
-    
-    return checks;
+
+    return {
+      source_type: 'inventory',
+      item_id: normalizeString(part.item_id),
+      quantity: normalizeNumber(part.quantity),
+      notes: normalizeString(part.notes)
+    };
+  };
+
+  const normalizePartsForComparison = (partsUsed = []) => {
+    return (Array.isArray(partsUsed) ? partsUsed : [])
+      .map((part) => normalizePartForComparison(part))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  };
+
+  const originalEditingParts = Array.isArray(editingRecord?.parts_used)
+    ? editingRecord.parts_used
+    : (Array.isArray(editingRecord?.parts) ? editingRecord.parts : []);
+
+  const havePartsChangedFromOriginalRecord = (partsUsed = formData.parts_used) => {
+    if (!editingRecord) {
+      return (Array.isArray(partsUsed) ? partsUsed : []).length > 0;
+    }
+
+    return JSON.stringify(normalizePartsForComparison(partsUsed)) !== JSON.stringify(normalizePartsForComparison(originalEditingParts));
+  };
+
+  const getBlockingStockWarnings = (partsUsed = formData.parts_used, statusToCheck = formData.status) => {
+    if (statusToCheck !== 'completed') {
+      return [];
+    }
+
+    const shouldRevalidateStock = !editingRecord
+      || editingRecord.status !== 'completed'
+      || havePartsChangedFromOriginalRecord(partsUsed);
+
+    if (!shouldRevalidateStock) {
+      return [];
+    }
+
+    const requestedByItem = new Map();
+    (Array.isArray(partsUsed) ? partsUsed : []).forEach((part = {}) => {
+      if ((part.source_type || 'inventory') === 'manual' || !part.item_id) {
+        return;
+      }
+
+      const quantity = parseFloat(part.quantity || 0) || 0;
+      if (quantity <= 0) {
+        return;
+      }
+
+      const itemId = String(part.item_id);
+      requestedByItem.set(itemId, (requestedByItem.get(itemId) || 0) + quantity);
+    });
+
+    const reusableByItem = new Map();
+    if (editingRecord?.status === 'completed') {
+      originalEditingParts.forEach((part = {}) => {
+        if ((part.source_type || 'inventory') === 'manual' || !part.item_id) {
+          return;
+        }
+
+        const quantity = parseFloat(part.quantity || 0) || 0;
+        if (quantity <= 0) {
+          return;
+        }
+
+        const itemId = String(part.item_id);
+        reusableByItem.set(itemId, (reusableByItem.get(itemId) || 0) + quantity);
+      });
+    }
+
+    return Array.from(requestedByItem.entries()).flatMap(([itemId, requested]) => {
+      const item = getItemDetails(itemId);
+      if (!item) {
+        return [{
+          item_id: itemId,
+          item_name: `Item ${itemId}`,
+          required: requested,
+          available: 0,
+          effectiveAvailable: 0,
+          shortage: requested,
+          message: tr('Item not found in inventory catalog', 'Article introuvable dans le catalogue')
+        }];
+      }
+
+      const available = parseFloat(item.available_stock ?? item.stock_on_hand ?? 0) || 0;
+      const reusable = reusableByItem.get(itemId) || 0;
+      const effectiveAvailable = available + reusable;
+
+      if (requested <= effectiveAvailable) {
+        return [];
+      }
+
+      return [{
+        item_id: itemId,
+        item_name: item.name,
+        required: requested,
+        available,
+        effectiveAvailable,
+        shortage: requested - effectiveAvailable,
+        message: tr(
+          `Insufficient stock. Requested: ${requested}, Available after restore: ${effectiveAvailable}`,
+          `Stock insuffisant. Demande: ${requested}, disponible apres restauration: ${effectiveAvailable}`
+        )
+      }];
+    });
   };
 
   const calculateTotalCost = () => {
@@ -810,9 +964,8 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         throw new Error(tr('Please enter a scheduled date', 'Veuillez saisir une date planifiée'));
       }
 
-      // ENHANCED: Validate parts used with stock validation
+      // ENHANCED: Validate parts used
       const partsErrors = [];
-      const stockValidationErrors = [];
       
       sourceFormData.parts_used.forEach((part, index) => {
         if ((part.source_type || 'inventory') === 'manual') {
@@ -828,40 +981,18 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         if (!part.quantity || part.quantity <= 0) {
           partsErrors.push(`Part ${index + 1}: Valid quantity is required`);
         }
-        
-        // ENHANCED: Stock validation for each part
-        if ((part.source_type || 'inventory') !== 'manual' && part.item_id && part.quantity > 0) {
-          const stockValidation = validateStockForPart(part.item_id, part.quantity);
-          if (!stockValidation.valid) {
-            const item = getItemDetails(part.item_id);
-            const itemName = item ? item.name : `Item ${part.item_id}`;
-            stockValidationErrors.push(`${itemName}: ${stockValidation.error}`);
-          }
-        }
       });
       
       if (partsErrors.length > 0) {
         throw new Error(`${tr('Parts validation errors:', 'Erreurs de validation des pièces :')} ${partsErrors.join(', ')}`);
       }
-      
-      if (stockValidationErrors.length > 0) {
-        throw new Error(`${tr('Stock validation errors:', 'Erreurs de validation du stock :')} ${stockValidationErrors.join('; ')}`);
-      }
 
-      // Check stock availability for parts (only for new records or increased quantities)
-      if (sourceFormData.parts_used.length > 0 && !editingRecord) {
-        const stockChecks = await checkPartsAvailability(
-          sourceFormData.parts_used.filter((part) => (part.source_type || 'inventory') !== 'manual')
-        );
-        const warnings = stockChecks.filter(check => !check.sufficient);
-        setStockWarnings(warnings);
-        
-        if (warnings.length > 0) {
-          const shortageDetails = warnings.map(warning => 
-            `${warning.item_name}: need ${warning.required}, have ${warning.available}`
-          ).join('; ');
-          throw new Error(`${tr('Insufficient inventory:', 'Inventaire insuffisant :')} ${shortageDetails}`);
-        }
+      const blockingStockWarnings = getBlockingStockWarnings(sourceFormData.parts_used, statusToSave);
+      if (blockingStockWarnings.length > 0) {
+        const shortageDetails = blockingStockWarnings
+          .map((warning) => `${warning.item_name}: ${warning.message}`)
+          .join('; ');
+        throw new Error(`${tr('Stock validation errors:', 'Erreurs de validation du stock :')} ${shortageDetails}`);
       }
 
       // CRITICAL FIX: Convert vehicle_id to integer BEFORE sending to service
@@ -1018,13 +1149,14 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     .join(' • ') || tr('No quantity yet', 'Aucune quantite');
   const inventoryInlineFocus = showPartsEditor && partsSourceTab === 'inventory';
   const manualInlineFocus = showPartsEditor && partsSourceTab === 'manual';
-  const saveDisabled = loading || stockWarnings.length > 0;
+  const blockingStockWarnings = getBlockingStockWarnings(formData.parts_used, formData.status);
+  const saveDisabled = loading || blockingStockWarnings.length > 0;
   const missingFields = [
     !formData.vehicle_id ? tr('Vehicle', 'Vehicule') : null,
     selectedMaintenanceTypes.length === 0 ? tr('Maintenance type', 'Type de maintenance') : null,
     !formData.scheduled_date ? tr('Scheduled date', 'Date prevue') : null,
   ].filter(Boolean);
-  const isReadyToSave = missingFields.length === 0 && stockWarnings.length === 0;
+  const isReadyToSave = missingFields.length === 0 && blockingStockWarnings.length === 0;
   const isQuickCompleteType = selectedMaintenanceTypes.some((type) => QUICK_COMPLETE_TYPES.has(type));
   const hasManualCost = laborCost > 0 || additionalPartsCost > 0 || (parseFloat(formData.tax_mad || 0) || 0) > 0;
   // CRITICAL: Safe array access
@@ -1173,9 +1305,11 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
               ? tr('Edit Maintenance Record', 'Modifier la fiche de maintenance')
               : tr('Add Maintenance Record', 'Ajouter une fiche de maintenance')}
             {editingRecord && (
-              <span className="text-sm text-blue-600 bg-blue-100 px-2 py-1 rounded-full">
-                Ref: {formatMaintenanceReference(editingRecord.id)}
-              </span>
+              <MaintenanceReferenceChip
+                maintenanceId={editingRecord.id}
+                showPrefix
+                size="xs"
+              />
             )}
           </CardTitle>
           <Button
@@ -1231,17 +1365,17 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         )}
 
         {/* Stock Warnings */}
-        {stockWarnings.length > 0 && (
+        {blockingStockWarnings.length > 0 && (
           <div className="mb-4 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
             <div className="flex items-start">
               <AlertTriangleIcon className="h-5 w-5 text-yellow-600 mr-2 mt-0.5" />
               <div>
                 <p className="text-yellow-800 font-medium">{tr('Insufficient Inventory', 'Stock insuffisant')}</p>
                 <ul className="text-yellow-700 text-sm mt-1">
-                  {stockWarnings.map((warning, index) => (
+                  {blockingStockWarnings.map((warning, index) => (
                     <li key={index}>
-                      {warning.item_name}: {tr('need', 'besoin de')} {warning.required}, {tr('have', 'disponible')} {warning.available} 
-                      ({tr('short', 'manque')} {warning.shortage})
+                      {warning.item_name}: {tr('need', 'besoin de')} {warning.required}, {tr('available after restore', 'disponible apres restauration')} {warning.effectiveAvailable}
+                      {warning.shortage > 0 ? ` (${tr('short', 'manque')} ${warning.shortage})` : ''}
                     </li>
                   ))}
                 </ul>
@@ -1992,11 +2126,20 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                   const lineCostPreview = quantity * unitCostPreview;
                   
                   return (
-                    <div key={index} className={`rounded-2xl p-4 shadow-sm ring-1 ${
+                    <div
+                      key={index}
+                      ref={(node) => {
+                        if (node) {
+                          partRowRefs.current[index] = node;
+                        } else {
+                          delete partRowRefs.current[index];
+                        }
+                      }}
+                      className={`rounded-2xl p-4 shadow-sm ring-1 transition-all ${
                       isManualPart
                         ? 'border border-amber-200 bg-amber-50/80 ring-amber-100'
                         : 'border border-blue-100 bg-white ring-slate-200'
-                    }`}>
+                    } ${pendingPartFocusIndex === index ? 'ring-2 ring-blue-400 shadow-md shadow-blue-100' : ''}`}>
                       <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">
@@ -2030,6 +2173,13 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                                   {tr('Part', 'Piece')}
                                 </label>
                                 <input
+                                  ref={(node) => {
+                                    if (node) {
+                                      partPrimaryFieldRefs.current[index] = node;
+                                    } else {
+                                      delete partPrimaryFieldRefs.current[index];
+                                    }
+                                  }}
                                   type="text"
                                   value={part.part_name || ''}
                                   onChange={(e) => updatePartsUsed(index, 'part_name', e.target.value)}
@@ -2045,6 +2195,13 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                                   {tr('Item', 'Article')}
                                 </label>
                                 <select
+                                  ref={(node) => {
+                                    if (node) {
+                                      partPrimaryFieldRefs.current[index] = node;
+                                    } else {
+                                      delete partPrimaryFieldRefs.current[index];
+                                    }
+                                  }}
                                   value={part.item_id}
                                   onChange={(e) => updatePartsUsed(index, 'item_id', e.target.value)}
                                   className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
@@ -2286,10 +2443,10 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                         <p className="mt-2 text-base font-black text-slate-900">{partsQuantitySummary}</p>
                       </div>
                     </div>
-                    {stockWarnings.length > 0 && (
+                    {blockingStockWarnings.length > 0 && (
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">{tr('Needs attention', 'Attention requise')}</p>
-                        <p className="mt-2 text-sm font-medium text-amber-900">{stockWarnings.length} {tr(stockWarnings.length === 1 ? 'stock warning to resolve before saving' : 'stock warnings to resolve before saving', stockWarnings.length === 1 ? 'alerte stock a resoudre avant enregistrement' : 'alertes stock a resoudre avant enregistrement')}</p>
+                        <p className="mt-2 text-sm font-medium text-amber-900">{blockingStockWarnings.length} {tr(blockingStockWarnings.length === 1 ? 'stock warning to resolve before saving' : 'stock warnings to resolve before saving', blockingStockWarnings.length === 1 ? 'alerte stock a resoudre avant enregistrement' : 'alertes stock a resoudre avant enregistrement')}</p>
                       </div>
                     )}
                   </div>

@@ -527,6 +527,7 @@ export const getMarketplaceStatusTone = (status) => {
 };
 
 const normalizeOwnerVehicle = (profile, listing) => {
+  const media = toArrayMedia(profile?.media);
   const title = [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
     listing?.title ||
     'Marketplace vehicle';
@@ -537,11 +538,15 @@ const normalizeOwnerVehicle = (profile, listing) => {
     title,
     brandName: profile?.brand_name || '',
     modelName: profile?.model_name || '',
+    plateNumber: profile?.plate_number || '',
     categoryCode: profile?.category_code || 'atv',
     cityName: profile?.city_name || 'Tangier',
     areaName: profile?.area_name || '',
-    coverImageUrl: profile?.cover_image_url || null,
+    coverImageUrl: profile?.cover_image_url || media.find((item) => item.is_cover)?.url || media[0]?.url || null,
+    media,
     shortDescription: profile?.short_description || '',
+    pickupLocationName: profile?.pickup_location_name || '',
+    pickupAddress: profile?.pickup_address || '',
     marketplaceVisible: Boolean(profile?.marketplace_visible),
     isActive: profile?.is_active !== false,
     listingStatus: normalizeStatus(listing?.listing_status || listing?.status || 'draft'),
@@ -805,7 +810,7 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     vehicle_condition: String(formData.vehicleCondition || '').trim() || null,
     color: String(formData.color || '').trim() || null,
     extras: toStringArray(formData.extras),
-    fuel_policy: String(formData.fuelPolicy || '').trim() || null,
+    fuel_policy: String(formData.fuelPolicy || '').trim() || 'return_same_level',
     deposit_amount: optionalNumber(formData.depositAmount),
     mileage_limit_km: optionalInteger(formData.mileageLimitKm),
     extra_km_rate: optionalNumber(formData.extraKmRate),

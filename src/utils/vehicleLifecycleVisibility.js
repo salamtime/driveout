@@ -54,5 +54,8 @@ export const isVehiclePlaceholderRecord = (vehicle) => {
   return isPlateFreeDraft || isBrokenUnknownRecord;
 };
 
+export const isOwnerDraftVehicleRecord = (vehicle) =>
+  hasValue(vehicle?.owner_user_id) || !hasValue(vehicle?.organization_id);
+
 export const shouldHideVehicleFromOperationalViews = (vehicle) =>
-  isVehiclePlaceholderRecord(vehicle) || isVehicleLifecycleArchived(vehicle);
+  isOwnerDraftVehicleRecord(vehicle) || isVehiclePlaceholderRecord(vehicle) || isVehicleLifecycleArchived(vehicle);

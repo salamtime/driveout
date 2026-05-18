@@ -349,19 +349,36 @@ const saveSystemSettingsFallback = async (settingsPatch) => {
 };
 
 export const fetchSystemSettings = async () => {
-  const response = await fetch('/api/system-settings', {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-    },
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error || 'Failed to load system settings');
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return await fetchSystemSettingsFallback();
+    }
+  } catch {
+    // Fall through to the API/public route below.
   }
 
-  return normalizeSettings(payload?.settings || {});
+  try {
+    const response = await fetch('/api/system-settings', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Failed to load system settings');
+    }
+
+    return normalizeSettings(payload?.settings || {});
+  } catch (apiError) {
+    try {
+      return await fetchSystemSettingsFallback();
+    } catch (fallbackError) {
+      throw apiError || fallbackError;
+    }
+  }
 };
 
 export const saveSystemSettings = async (settingsPatch) => {

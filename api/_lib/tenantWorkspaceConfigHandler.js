@@ -6,16 +6,20 @@ import {
   createSupabaseClients,
   getSharedSupabaseTenantConfig,
 } from './supabase.js';
+import { requireOwnerOrAdmin } from './auth.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
 import { normalizeTenantSchemaVersion } from './tenantSchemaRelease.js';
 import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../../src/config/tenantPlans.js';
-import { resolveTenantTenancyMode } from './tenantRegistry.js';
+import { resolveTenantTenancyMode, runPlatformTenantUpdateWithModeFallback } from './tenantRegistry.js';
 import { buildLegacyDedicatedInfrastructure } from './legacyDedicatedTenant.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
 const FIRST_PARTY_TENANT_HOSTS = new Set(['saharax.driveout.io']);
 const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
+const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5174': 'offroad',
+});
 
 const normalizeHostname = (value = '') => {
   const trimmed = String(value || '').trim().toLowerCase();
@@ -35,7 +39,13 @@ const normalizeUrl = (value = '') => {
 };
 
 const getTenantSlugFromHostname = (hostname = '') => {
+  const rawHostname = String(hostname || '').trim().toLowerCase();
   const normalizedHostname = normalizeHostname(hostname);
+  const localPort = rawHostname.split(':')[1] || '';
+  if ((normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[localPort]) {
+    return LOCAL_TENANT_PORT_MAP[localPort];
+  }
+
   if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
 
   const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
@@ -91,6 +101,49 @@ const extractTenantPublicFeatures = (featureAccess = {}) => ({
 const getTenantMetadata = (tenant = {}) => (
   tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
 );
+
+const sanitizeWorkspaceDepositSettings = (settings = {}) => {
+  const source = settings && typeof settings === 'object' ? settings : {};
+  const normalized = {};
+
+  if (typeof source.allow_custom_deposit === 'boolean') {
+    normalized.allow_custom_deposit = source.allow_custom_deposit;
+  }
+
+  if (source.damage_deposit_presets && typeof source.damage_deposit_presets === 'object' && !Array.isArray(source.damage_deposit_presets)) {
+    normalized.damage_deposit_presets = Object.entries(source.damage_deposit_presets).reduce((acc, [vehicleModelId, rawPresets]) => {
+      if (!String(vehicleModelId || '').trim()) {
+        return acc;
+      }
+
+      const normalizedPresets = Array.isArray(rawPresets)
+        ? rawPresets
+            .map((preset) => {
+              if (!preset || typeof preset !== 'object') return null;
+
+              const label = String(preset.label || '').trim();
+              if (!label) return null;
+
+              const amount = Number(preset.amount || 0);
+              return {
+                label,
+                amount: Number.isFinite(amount) && amount >= 0 ? amount : 0,
+                enabled: Boolean(preset.enabled),
+                isDefault: Boolean(preset.isDefault ?? preset.is_default),
+              };
+            })
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+
+      acc[String(vehicleModelId)] = normalizedPresets;
+
+      return acc;
+    }, {});
+  }
+
+  return normalized;
+};
 
 const getTenantConnectionConfig = (tenant = {}) => {
   const tenancyMode = resolveTenantTenancyMode(tenant);
@@ -246,18 +299,118 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
-
-  const requestedHostname = normalizeHostname(
+  const requestedHostInput = String(
     req.query?.hostname ||
     req.headers['x-forwarded-host'] ||
     req.headers.host ||
     ''
-  );
-  const tenantSlug = getTenantSlugFromHostname(requestedHostname);
+  ).trim();
+  const requestedHostname = normalizeHostname(requestedHostInput);
+  const tenantSlug = getTenantSlugFromHostname(requestedHostInput);
+
+  if (req.method === 'PATCH') {
+    if (String(req.query?.action || '').trim().toLowerCase() !== 'deposit-presets') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
+
+    if (!requestedHostname || !tenantSlug) {
+      res.status(400).json({ error: 'A tenant workspace hostname is required' });
+      return;
+    }
+
+    const auth = await requireOwnerOrAdmin(req);
+    if (auth.error) {
+      res.status(auth.error.status).json(auth.error.body);
+      return;
+    }
+
+    try {
+      const { adminClient, tenantRuntime } = auth;
+      const tenant = await findTenantByHostname({ adminClient, hostname: requestedHostname, tenantSlug });
+
+      if (!tenant) {
+        res.status(404).json({
+          error: 'Workspace unavailable',
+          code: 'unknown_tenant',
+          tenant_slug: tenantSlug,
+        });
+        return;
+      }
+
+      if (resolveTenantTenancyMode(tenant) !== 'shared' || tenant.first_party) {
+        res.status(409).json({
+          error: 'This workspace does not use shared-tenant deposit preset storage.',
+        });
+        return;
+      }
+
+      const runtimeTenantId = String(tenantRuntime?.id || '').trim();
+      const runtimeTenantSlug = String(tenantRuntime?.tenant_slug || tenantRuntime?.slug || '').trim().toLowerCase();
+      const matchedTenantId = String(tenant.id || '').trim();
+      const matchedTenantSlug = String(tenant.tenant_slug || '').trim().toLowerCase();
+      const matchesRuntimeTenant =
+        (runtimeTenantId && matchedTenantId && runtimeTenantId === matchedTenantId) ||
+        (runtimeTenantSlug && matchedTenantSlug && runtimeTenantSlug === matchedTenantSlug);
+
+      if (!matchesRuntimeTenant) {
+        res.status(403).json({ error: 'Tenant workspace context mismatch' });
+        return;
+      }
+
+      const settingsPatch = sanitizeWorkspaceDepositSettings(req.body?.settings);
+      if (Object.keys(settingsPatch).length === 0) {
+        res.status(400).json({ error: 'No valid deposit settings were provided.' });
+        return;
+      }
+
+      const existingMetadata = getTenantMetadata(tenant);
+      const existingTenantSettings =
+        existingMetadata?.tenant_settings && typeof existingMetadata.tenant_settings === 'object'
+          ? existingMetadata.tenant_settings
+          : {};
+
+      const nextMetadata = {
+        ...existingMetadata,
+        tenant_settings: {
+          ...existingTenantSettings,
+          ...settingsPatch,
+        },
+      };
+
+      const { data: updatedTenant, error: updateError } = await runPlatformTenantUpdateWithModeFallback(
+        (payload) => adminClient
+          .from(PLATFORM_TENANTS_TABLE)
+          .update(payload)
+          .eq('id', tenant.id)
+          .select('id, metadata')
+          .maybeSingle(),
+        { metadata: nextMetadata }
+      );
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      const updatedMetadata = getTenantMetadata(updatedTenant);
+      res.status(200).json({
+        success: true,
+        settings:
+          updatedMetadata?.tenant_settings && typeof updatedMetadata.tenant_settings === 'object'
+            ? updatedMetadata.tenant_settings
+            : {},
+      });
+      return;
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to update workspace deposit presets' });
+      return;
+    }
+  }
+
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
 
   if (!requestedHostname || !tenantSlug) {
     res.status(400).json({ error: 'A tenant workspace hostname is required' });

@@ -10,12 +10,15 @@ const TELEGRAM_EVENT_KEYS = [
   'rental_created',
   'website_reservation_created',
   'rental_started',
+  'rental_vehicle_assigned',
   'rental_vehicle_replaced',
   'rental_completed',
   'payment_received',
   'rental_overdue',
   'rental_cancelled',
   'deposit_returned',
+  'rental_extension_requested',
+  'rental_price_change_requested',
 ];
 const TELEGRAM_RUNTIME_EVENT_KEYS = [...TELEGRAM_EVENT_KEYS, 'telegram_test'];
 
@@ -324,6 +327,46 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
   const isStaffLayout = recipientLayout === 'staff';
 
   switch (String(eventType || '').trim().toLowerCase()) {
+    case 'rental_extension_requested': {
+      const requestedBy = safeText(data.requestedBy || data.requested_by_name || data.actorName || '');
+      const extensionHours = safeText(data.extensionHours || data.extension_hours || '');
+      const extensionPrice = safeText(formatMoney(data.extensionPrice || data.extension_price));
+      const reason = safeText(data.reason || data.notes || '');
+
+      return [
+        '🕒 Extension Approval Request',
+        '',
+        vehicle,
+        ...(customerLine ? [customerLine] : []),
+        ...(extensionHours ? [`Extension: ${extensionHours}h`] : []),
+        `Price: ${extensionPrice} MAD`,
+        ...(requestedBy ? [`Requested by: ${requestedBy}`] : []),
+        ...(reason ? [`Note: ${reason}`] : []),
+        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        '',
+        linkLine,
+      ].join('\n');
+    }
+    case 'rental_price_change_requested': {
+      const requestedBy = safeText(data.requestedBy || data.requested_by_name || data.actorName || '');
+      const currentPrice = safeText(formatMoney(data.currentPrice || data.current_price || data.total));
+      const requestedPrice = safeText(formatMoney(data.requestedPrice || data.requested_price || data.pending_total_request));
+      const reason = safeText(data.reason || data.price_override_reason || '');
+
+      return [
+        '💰 Price Approval Request',
+        '',
+        vehicle,
+        ...(customerLine ? [customerLine] : []),
+        `Current: ${currentPrice} MAD`,
+        `Requested: ${requestedPrice} MAD`,
+        ...(requestedBy ? [`Requested by: ${requestedBy}`] : []),
+        ...(reason ? [`Reason: ${reason}`] : []),
+        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        '',
+        linkLine,
+      ].join('\n');
+    }
     case 'rental_completed':
       return [
         '✅ Rental Completed',
@@ -364,6 +407,23 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         '',
         linkLine,
       ].join('\n');
+    case 'rental_vehicle_assigned': {
+      const newVehicle = safeText(data.newVehicle || data.new_vehicle_name || vehicle);
+      const changedBy = safeText(data.changedBy || data.changed_by || data.changed_by_name || '');
+      const note = safeText(data.replacementNote || data.replacement_note || data.note || '');
+
+      return [
+        '🚙 Rental Vehicle Assigned',
+        '',
+        ...(customerLine ? [customerLine] : []),
+        `Vehicle: ${newVehicle}`,
+        ...(changedBy ? [`Assigned by: ${changedBy}`] : []),
+        ...(note ? [`Note: ${note}`] : []),
+        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        '',
+        linkLine,
+      ].join('\n');
+    }
     case 'rental_vehicle_replaced': {
       const oldVehicle = safeText(data.oldVehicle || data.old_vehicle_name || 'Unknown vehicle');
       const newVehicle = safeText(data.newVehicle || data.new_vehicle_name || vehicle);
@@ -901,12 +961,15 @@ const TELEGRAM_EVENT_DEDUPLICATION_WINDOWS_MS = {
   rental_created: 2 * 60 * 1000,
   website_reservation_created: 2 * 60 * 1000,
   rental_started: 2 * 60 * 1000,
+  rental_vehicle_assigned: 2 * 60 * 1000,
   rental_vehicle_replaced: 2 * 60 * 1000,
   rental_completed: 2 * 60 * 1000,
   rental_cancelled: 2 * 60 * 1000,
   rental_overdue: 30 * 1000,
   payment_received: 30 * 1000,
   deposit_returned: 30 * 1000,
+  rental_extension_requested: 30 * 1000,
+  rental_price_change_requested: 30 * 1000,
 };
 
 const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
@@ -921,6 +984,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
     case 'rental_created':
     case 'website_reservation_created':
     case 'rental_started':
+    case 'rental_vehicle_assigned':
     case 'rental_vehicle_replaced':
     case 'rental_completed':
     case 'rental_overdue':
@@ -1049,6 +1113,29 @@ async function sendTelegramRentalAlert({ config, data }) {
   }
   const rentalId = encodeURIComponent(String(data.id || ''));
 
+  const buildApprovalQuery = () => {
+    const normalizedEventType = safeText(data.eventType).toLowerCase();
+    const inferredApprovalType =
+      normalizedEventType === 'rental_extension_requested'
+        ? 'extension'
+        : normalizedEventType === 'rental_price_change_requested'
+          ? 'price'
+          : '';
+    const approvalType = safeText(data.approvalType || data.requestType || data.type || inferredApprovalType);
+    const section = safeText(data.approvalSection || data.section || (approvalType ? 'approvals' : ''));
+    const requestId = safeText(data.approvalRequestId || data.requestId || data.request_id || '');
+    const approvalView = safeText(data.approvalView || data.view || (approvalType === 'extension' ? 'light' : ''));
+    const params = new URLSearchParams();
+
+    if (approvalView) params.set('view', approvalView);
+    if (section) params.set('section', section);
+    if (requestId) params.set('request', requestId);
+    if (approvalType) params.set('type', approvalType);
+
+    const query = params.toString();
+    return query ? `?${query}` : '';
+  };
+
   const buildRentalUrlForRecipient = (recipient) => {
     const normalizedRole = String(recipient?.role || '').trim().toLowerCase();
     const shouldUseAdminRoute =
@@ -1057,7 +1144,7 @@ async function sendTelegramRentalAlert({ config, data }) {
       recipient?.layout === 'staff';
 
     const pathPrefix = shouldUseAdminRoute ? '/admin/rentals/' : '/account/rentals/';
-    return `${baseUrl}${pathPrefix}${rentalId}`;
+    return `${baseUrl}${pathPrefix}${rentalId}${buildApprovalQuery()}`;
   };
 
   const sendToChatWithRetry = async (recipient) => {

@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, Gift, Loader2, Upload, Wallet } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, Copy, Gift, Loader2, MessageCircle, Share2, Upload, Wallet } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import CustomerRewardsService from '../../services/CustomerRewardsService';
+import GrowthLoopApiService from '../../services/GrowthLoopApiService';
 import { uploadFile } from '../../utils/storageUpload';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { getMarketplaceRequestDisplay } from '../../utils/marketplaceRequestState';
@@ -23,6 +25,11 @@ const formatMoney = (amount, currencyCode = 'MAD', locale = 'en') =>
     maximumFractionDigits: 0,
   }).format(Number(amount || 0)) + ` ${currencyCode}`;
 
+const formatCount = (value, locale = 'en') =>
+  new Intl.NumberFormat(locale === 'fr' ? 'fr-MA' : 'en-MA', {
+    maximumFractionDigits: 0,
+  }).format(Number(value || 0));
+
 const formatDateTime = (value, locale) => {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
   return new Intl.DateTimeFormat(locale === 'fr' ? 'fr-MA' : 'en-MA', {
@@ -34,7 +41,44 @@ const formatDateTime = (value, locale) => {
   }).format(value);
 };
 
+const safeNumber = (value) => {
+  const next = Number(value || 0);
+  return Number.isFinite(next) ? next : 0;
+};
+
 const getCustomerRewardsStorageKey = (userId, suffix) => `${CUSTOMER_REWARDS_STORAGE_PREFIX}:${userId}:${suffix}`;
+
+const copyText = async (value) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return copied;
+  } catch {
+    return false;
+  }
+};
 
 const getActivityTone = (status) => {
   const key = String(status || '').toLowerCase();
@@ -340,6 +384,7 @@ const AccountRevenue = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState(null);
+  const [rewardsSnapshot, setRewardsSnapshot] = useState(null);
   const [rentals, setRentals] = useState([]);
   const [marketplaceRequests, setMarketplaceRequests] = useState([]);
   const [rewardsLedger, setRewardsLedger] = useState([]);
@@ -351,8 +396,14 @@ const AccountRevenue = () => {
   const [topupReceiptFile, setTopupReceiptFile] = useState(null);
   const [topupSubmitting, setTopupSubmitting] = useState(false);
   const [topupFeedback, setTopupFeedback] = useState(null);
+  const [creatingShareLink, setCreatingShareLink] = useState(false);
   const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const creditsSectionRef = useRef(null);
+  const creditsPanelRequested = useMemo(
+    () => new URLSearchParams(location.search).get('panel') === 'credits',
+    [location.search]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -401,6 +452,52 @@ const AccountRevenue = () => {
   }, [user?.id, isFrench]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadRewardsSnapshot = async () => {
+      if (!user) {
+        if (!cancelled) {
+          setRewardsSnapshot(null);
+        }
+        return;
+      }
+
+      try {
+        const nextSnapshot = await GrowthLoopApiService.getSnapshot('rewards');
+        if (!cancelled) {
+          setRewardsSnapshot(nextSnapshot);
+        }
+      } catch {
+        if (!cancelled) {
+          setRewardsSnapshot(null);
+        }
+      }
+    };
+
+    void loadRewardsSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    const hasShareLink = Boolean(rewardsSnapshot?.shareLink?.shortUrl);
+    if (!hasShareLink) return undefined;
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const nextSnapshot = await GrowthLoopApiService.getSnapshot('rewards');
+        setRewardsSnapshot(nextSnapshot);
+      } catch {
+        // Keep the wallet quiet if the rewards refresh misses once.
+      }
+    }, 12000);
+
+    return () => window.clearInterval(intervalId);
+  }, [rewardsSnapshot?.shareLink?.shortUrl]);
+
+  useEffect(() => {
     if (!user?.id || typeof window === 'undefined') {
       setRewardsLedger([]);
       setActiveRewardIds([]);
@@ -418,9 +515,14 @@ const AccountRevenue = () => {
     }
   }, [user?.id]);
 
+  useEffect(() => {
+    if (!creditsPanelRequested) return;
+    creditsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [creditsPanelRequested, rewardsSnapshot?.shareLink?.shortUrl]);
+
   const wallet = snapshot?.wallet || CustomerExperienceService.getEmptyWallet();
   const walletTransactions = Array.isArray(snapshot?.walletTransactions) ? snapshot.walletTransactions : [];
-  const rewardsSnapshot = useMemo(
+  const rideCreditsSnapshot = useMemo(
     () =>
       CustomerRewardsService.buildWalletSnapshot({
         ledger: rewardsLedger,
@@ -431,7 +533,12 @@ const AccountRevenue = () => {
     [rewardsLedger, activeRewardIds, rentals.length, tr]
   );
 
-  const creditsBalance = Number(rewardsSnapshot?.wallet?.balance || 0);
+  const creditsBalance = Number(rideCreditsSnapshot?.wallet?.balance || 0);
+  const referralBalance = safeNumber(rewardsSnapshot?.wallet?.balance);
+  const referralMadValue = safeNumber(rewardsSnapshot?.wallet?.madValue);
+  const rewardPerReferral = safeNumber(rewardsSnapshot?.rewardPerReferral || rewardsSnapshot?.program?.rewardPerReferral);
+  const referralLink = String(rewardsSnapshot?.shareLink?.shortUrl || '').trim();
+  const recentReferralRewards = Array.isArray(rewardsSnapshot?.recentRewards) ? rewardsSnapshot.recentRewards : [];
   const outstandingTotal = useMemo(
     () => rentals.reduce((sum, rental) => sum + Number(rental?.outstanding || 0), 0),
     [rentals]
@@ -635,6 +742,43 @@ const AccountRevenue = () => {
     }
   };
 
+  const handleCreateShareLink = async () => {
+    setCreatingShareLink(true);
+    try {
+      const nextSnapshot = await GrowthLoopApiService.createShareLink({
+        type: 'rewards',
+        destinationUrl: `${window.location.origin}/register`,
+      });
+      setRewardsSnapshot(nextSnapshot);
+      toast.success(tr('Your referral link is ready.', 'Votre lien de parrainage est prêt.'));
+    } catch (createError) {
+      toast.error(
+        createError?.message ||
+          tr(
+            'Unable to create your referral link right now.',
+            'Impossible de créer votre lien de parrainage pour le moment.'
+          )
+      );
+    } finally {
+      setCreatingShareLink(false);
+    }
+  };
+
+  const handleCopyShareLink = async () => {
+    if (!referralLink) return;
+    try {
+      const copied = await copyText(referralLink);
+      if (!copied) throw new Error('copy_failed');
+      toast.success(tr('Referral link copied.', 'Lien de parrainage copié.'));
+    } catch {
+      toast.error(tr('Unable to copy right now.', 'Impossible de copier pour le moment.'));
+    }
+  };
+
+  const jumpToCreditsSection = () => {
+    creditsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const heroStats = useMemo(() => {
     const stats = [
       {
@@ -642,13 +786,17 @@ const AccountRevenue = () => {
         value: formatMoney(wallet.balance || 0, wallet.currencyCode || 'MAD', locale),
       },
       {
-        label: tr('Credits', 'Crédits'),
-        value: `${creditsBalance}`,
+        label: tr('Ride credits', 'Crédits Ride'),
+        value: formatCount(creditsBalance, locale),
+      },
+      {
+        label: tr('Referral value', 'Valeur parrainage'),
+        value: formatMoney(referralMadValue, 'MAD', locale),
       },
     ];
 
     return stats;
-  }, [wallet.balance, wallet.currencyCode, creditsBalance, locale, tr]);
+  }, [wallet.balance, wallet.currencyCode, creditsBalance, referralMadValue, locale, tr]);
 
   const actionItems = useMemo(() => {
     const items = [];
@@ -856,6 +1004,9 @@ const AccountRevenue = () => {
   const hasAnyWalletSignal =
     Number(wallet.balance || 0) > 0 ||
     creditsBalance > 0 ||
+    referralBalance > 0 ||
+    recentReferralRewards.length > 0 ||
+    Boolean(referralLink) ||
     actionItems.length > 0 ||
     rentingActivity.length > 0 ||
     hostingActivity.length > 0;
@@ -911,6 +1062,148 @@ const AccountRevenue = () => {
           </div>
         </section>
       ) : null}
+
+      <section
+        ref={creditsSectionRef}
+        className={`rounded-[2rem] border p-5 shadow-[0_20px_52px_rgba(91,33,182,0.08)] sm:p-6 ${
+          creditsPanelRequested
+            ? 'border-violet-300 bg-[linear-gradient(180deg,#faf5ff_0%,#ffffff_100%)]'
+            : 'border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf5ff_100%)]'
+        }`}
+      >
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-2xl">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              {tr('Credits & referrals', 'Crédits & parrainage')}
+            </p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-950">
+              {tr('Keep rewards inside the wallet', 'Gardez les récompenses dans le portefeuille')}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              {tr(
+                'Ride credits, referral earnings, and share links now live here so your money picture stays in one place.',
+                "Les crédits Ride, gains de parrainage et liens de partage vivent maintenant ici pour garder votre vision d'argent au même endroit."
+              )}
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[360px] lg:max-w-[420px]">
+            <div className="rounded-[1.45rem] border border-white/80 bg-white/95 px-4 py-4 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Referral balance', 'Solde parrainage')}
+              </p>
+              <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">
+                {formatCount(referralBalance, locale)}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-500">
+                {formatMoney(referralMadValue, 'MAD', locale)}
+              </p>
+            </div>
+            <div className="rounded-[1.45rem] border border-white/80 bg-white/95 px-4 py-4 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Referral flow', 'Flux parrainage')}
+              </p>
+              <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">
+                {referralLink ? tr('Live', 'Actif') : tr('Ready', 'Prêt')}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-500">
+                {rewardPerReferral > 0
+                  ? tr(
+                      `Earn ${formatMoney(rewardPerReferral, 'MAD', locale)} per referral milestone.`,
+                      `Gagnez ${formatMoney(rewardPerReferral, 'MAD', locale)} par palier de parrainage.`
+                    )
+                  : tr('Share -> friend joins -> you earn', 'Partage -> un ami rejoint -> vous gagnez')}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          {!referralLink ? (
+            <button
+              type="button"
+              onClick={handleCreateShareLink}
+              disabled={creatingShareLink}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(91,33,182,0.26)] transition hover:translate-y-[-1px] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <Share2 className="h-4 w-4" />
+              <span>
+                {creatingShareLink
+                  ? tr('Preparing link...', 'Préparation du lien...')
+                  : tr('Create referral link', 'Créer un lien de parrainage')}
+              </span>
+            </button>
+          ) : (
+            <>
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(referralLink)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(91,33,182,0.26)] transition hover:translate-y-[-1px]"
+              >
+                <MessageCircle className="h-4 w-4" />
+                <span>{tr('Share on WhatsApp', 'Partager sur WhatsApp')}</span>
+              </a>
+              <button
+                type="button"
+                onClick={handleCopyShareLink}
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+              >
+                <Copy className="h-4 w-4" />
+                <span>{tr('Copy link', 'Copier le lien')}</span>
+              </button>
+            </>
+          )}
+        </div>
+
+        {referralLink ? (
+          <div className="mt-4 rounded-[1.35rem] border border-slate-200 bg-white/95 px-4 py-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              {tr('Active referral link', 'Lien de parrainage actif')}
+            </p>
+            <p className="mt-2 break-all text-sm font-semibold text-slate-900">{referralLink}</p>
+          </div>
+        ) : null}
+
+        <div className="mt-5 rounded-[1.35rem] border border-dashed border-slate-200 bg-white/70 px-4 py-4">
+          <p className="text-sm font-semibold text-slate-700">
+            {tr('Recent referral rewards', 'Récompenses récentes')}
+          </p>
+          {recentReferralRewards.length ? (
+            <div className="mt-3 space-y-3">
+              {recentReferralRewards.map((entry) => (
+                <article
+                  key={entry.id}
+                  className="rounded-[1.2rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.05)]"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-950">
+                        {entry.note || tr('Referral reward earned', 'Récompense de parrainage gagnée')}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {entry.createdAt ? formatDateTime(new Date(entry.createdAt), locale) : '—'}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-700">
+                        +{formatCount(entry.amount, locale)}
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              {tr(
+                'Referral rewards will appear here after friends sign up or book through your link.',
+                'Les récompenses de parrainage apparaîtront ici après les inscriptions ou réservations faites via votre lien.'
+              )}
+            </p>
+          )}
+        </div>
+      </section>
 
       {actionItems.length ? (
         <section className="space-y-3">
@@ -1005,7 +1298,7 @@ const AccountRevenue = () => {
             }
             actionLabel={
               activeTab === MONEY_TABS.hosting
-                ? tr('View vehicles', 'Voir les véhicules')
+                ? tr('Open listings', 'Ouvrir les annonces')
                 : tr('Browse vehicles', 'Explorer les véhicules')
             }
             actionTo={activeTab === MONEY_TABS.hosting ? '/account/vehicles' : '/marketplace'}
@@ -1141,22 +1434,21 @@ const AccountRevenue = () => {
             'Once you start moving money through rentals, credits, or marketplace requests, everything important will appear here.',
             'Dès que vous commencerez à faire circuler de l’argent via locations, crédits ou demandes marketplace, tout l’essentiel apparaîtra ici.'
           )}
-          actionLabel={tr('Open credits', 'Ouvrir les crédits')}
-          actionTo="/account/rewards"
-          actionState={{ from: currentPath }}
         />
       ) : null}
 
       <section className="grid gap-4 lg:grid-cols-2">
-        <Link
-          to="/account/rewards"
-          state={{ from: currentPath }}
-          className="group rounded-[1.75rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_55%,#eef2ff_100%)] p-5 shadow-[0_18px_46px_rgba(91,33,182,0.08)] transition hover:translate-y-[-1px] hover:shadow-[0_22px_52px_rgba(91,33,182,0.11)]"
+        <button
+          type="button"
+          onClick={jumpToCreditsSection}
+          className="group rounded-[1.75rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_55%,#eef2ff_100%)] p-5 text-left shadow-[0_18px_46px_rgba(91,33,182,0.08)] transition hover:translate-y-[-1px] hover:shadow-[0_22px_52px_rgba(91,33,182,0.11)]"
         >
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Credits', 'Crédits')}</p>
-              <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Open credits', 'Ouvrir les crédits')}</h2>
+              <h2 className="mt-2 text-xl font-bold text-slate-950">
+                {tr('Credits now live here', 'Les crédits vivent maintenant ici')}
+              </h2>
             </div>
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
               <Gift className="h-5 w-5" />
@@ -1164,11 +1456,11 @@ const AccountRevenue = () => {
           </div>
           <p className="mt-3 text-sm leading-6 text-slate-600">
             {tr(
-              'Keep task rewards and redeemable value close, without mixing them with cash.',
-              'Gardez les récompenses et la valeur utilisable à portée, sans les mélanger au cash.'
+              'Referral links, reward value, and recent credits are part of Wallet now.',
+              'Les liens de parrainage, la valeur gagnée et les crédits récents font maintenant partie du Portefeuille.'
             )}
           </p>
-        </Link>
+        </button>
 
         <Link
           to="/account/settings"

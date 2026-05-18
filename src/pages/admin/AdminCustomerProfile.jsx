@@ -36,7 +36,7 @@ import { getCustomerRentalHistory } from '../../services/EnhancedUnifiedCustomer
 import MessageService from '../../services/MessageService';
 import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
 import { useAuth } from '../../contexts/AuthContext';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { buildAdminMarketplaceListingPath } from '../../utils/marketplaceAdminLinks';
 import MessageWidget from '../../components/messages/MessageWidget';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
@@ -116,6 +116,21 @@ const buildCustomerAccountThreadKey = ({ entityId, email }) => {
   const resolvedEntityId = String(entityId || '').trim();
   const resolvedEmail = String(email || '').trim().toLowerCase();
   return ['account_trust', 'account_status', 'user', resolvedEntityId || resolvedEmail || 'customer'].join(':');
+};
+
+const isCustomerAccountStatusThread = (thread = {}, authUserId = '') => {
+  const normalizedAuthUserId = String(authUserId || '').trim();
+  const normalizedFamily = String(thread?.family || '').trim().toLowerCase();
+  const normalizedThreadType = String(thread?.thread_type || '').trim().toLowerCase();
+  const normalizedEntityType = String(thread?.entity_type || thread?.context_type || '').trim().toLowerCase();
+  const normalizedEntityId = String(thread?.entity_id || thread?.context_id || '').trim();
+
+  return (
+    normalizedFamily === MESSAGE_FAMILIES.accountTrust &&
+    normalizedThreadType === MESSAGE_THREAD_TYPES.accountStatus &&
+    normalizedEntityType === 'user' &&
+    (!normalizedAuthUserId || normalizedEntityId === normalizedAuthUserId)
+  );
 };
 
 const filterCustomerThreads = ({ threads, authUserId, email }) => {
@@ -1621,7 +1636,11 @@ const AdminCustomerProfile = () => {
     entityId: resolvedAuthUserId,
     email: displayEmail,
   });
-  const primaryCustomerThread = relatedThreads.find((thread) => String(thread?.thread_key || '').trim() === messageThreadKey) || relatedThreads[0] || null;
+  const primaryCustomerThread =
+    relatedThreads.find((thread) => isCustomerAccountStatusThread(thread, resolvedAuthUserId)) ||
+    relatedThreads.find((thread) => String(thread?.thread_key || '').trim() === messageThreadKey) ||
+    relatedThreads[0] ||
+    null;
   const primaryCustomerThreadHref = `/admin/messages?threadKey=${encodeURIComponent(String(primaryCustomerThread?.thread_key || messageThreadKey))}`;
   const canMessageCustomer = Boolean(resolvedAuthUserId);
   const adminDisplayName = String(
@@ -2683,10 +2702,30 @@ const AdminCustomerProfile = () => {
 
     try {
       setSendingMessage(true);
+      let resolvedThreadKey = String(primaryCustomerThread?.thread_key || '').trim();
+
+      if (!resolvedThreadKey) {
+        try {
+          const ensuredThreadResponse = await MessageService.ensureThreadByContext({
+            contextType: 'user',
+            contextId: resolvedAuthUserId,
+            family: MESSAGE_FAMILIES.accountTrust,
+            threadType: MESSAGE_THREAD_TYPES.accountStatus,
+            senderRole: 'admin',
+            waitingOn: 'customer',
+            priority: 'normal',
+          });
+
+          resolvedThreadKey = String(ensuredThreadResponse?.threadState?.thread_key || '').trim();
+        } catch {
+          resolvedThreadKey = '';
+        }
+      }
+
       await MessageService.sendSharedMessage({
         family: MESSAGE_FAMILIES.accountTrust,
         threadType: MESSAGE_THREAD_TYPES.accountStatus,
-        threadKey: messageThreadKey,
+        ...(resolvedThreadKey ? { threadKey: resolvedThreadKey } : {}),
         entityType: 'user',
         entityId: resolvedAuthUserId,
         recipientUserId: resolvedAuthUserId,
@@ -3512,6 +3551,9 @@ const AdminCustomerProfile = () => {
               <DialogTitle className="text-xl font-semibold text-slate-900">
                 {getVerificationDocumentLabel(previewDocument)}
               </DialogTitle>
+              <DialogDescription className="sr-only">
+                Preview the selected customer verification document.
+              </DialogDescription>
             </DialogHeader>
             <div className="p-6">
               {String(previewDocument?.file_url || '').trim() ? (
@@ -3542,9 +3584,9 @@ const AdminCustomerProfile = () => {
           <DialogContent className="max-w-xl rounded-[28px] border border-slate-200 bg-white p-0 shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
           <DialogHeader className="border-b border-slate-100 px-6 py-5">
             <DialogTitle className="text-xl font-semibold text-slate-900">Message customer</DialogTitle>
-            <p className="mt-2 text-sm leading-6 text-slate-500">
+            <DialogDescription className="mt-2 text-sm leading-6 text-slate-500">
               Send a direct admin note to {displayName}. This stays connected to the shared Message Center thread.
-            </p>
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-5 px-6 py-5">

@@ -46,6 +46,10 @@ export const isWebsiteCustomerBooking = (rental = {}) => {
 };
 
 export const shouldAutoExpireScheduledRental = (rental = {}) => {
+  if (isWebsiteCustomerBooking(rental) && !rental?.vehicle_id) {
+    return false;
+  }
+
   const scheduledStartRaw = rental?.rental_start_date;
   const createdAtRaw = rental?.created_at;
 

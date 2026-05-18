@@ -24,6 +24,7 @@ import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifec
 import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
 import { getScopedOrganizationId, applyOrganizationScope, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext';
+import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
   getRentalCustomerPaidAmount as getRentalCustomerPaidAmountShared,
@@ -97,6 +98,26 @@ const buildRentalExtensionsMap = (extensions = []) =>
     acc[rentalId].push(extension);
     return acc;
   }, {});
+
+const preserveRentalExtensions = (nextRentals = [], previousRentals = []) => {
+  const previousExtensionsByRentalId = new Map(
+    (previousRentals || [])
+      .filter((rental) => rental?.id && Array.isArray(rental.extensions))
+      .map((rental) => [rental.id, rental.extensions])
+  );
+
+  return (nextRentals || []).map((rental) => {
+    if (!rental?.id || Array.isArray(rental.extensions)) {
+      return rental;
+    }
+
+    const previousExtensions = previousExtensionsByRentalId.get(rental.id);
+    return previousExtensions
+      ? { ...rental, extensions: previousExtensions }
+      : rental;
+  });
+};
+
 const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'default') => () => {
   setWizardUiVariant(variant);
   setShowStepperForm(true);
@@ -159,6 +180,18 @@ const buildVehicleHistorySnapshot = (vehicle) => ({
   vehicle_model_snapshot: vehicle?.model || vehicle?.vehicle_model?.model || null,
 });
 
+const normalizeRentalMaintenanceLifecycleStatus = (status) => {
+  const normalizedStatus = String(status || '').trim().toLowerCase();
+  if (!normalizedStatus) return '';
+  if (normalizedStatus === 'completed' || normalizedStatus === 'maintenance_completed') {
+    return 'maintenance_completed';
+  }
+  if (['scheduled', 'in_progress', 'maintenance_created', 'maintenance_in_progress'].includes(normalizedStatus)) {
+    return 'maintenance_in_progress';
+  }
+  return normalizedStatus;
+};
+
 const resolveRentalVehicleDisplay = (rental) => {
   const vehicle = rental?.vehicle || null;
 
@@ -194,6 +227,7 @@ const resolveRentalVehicleDisplay = (rental) => {
 const RENTALS_BASE_SELECT = `
   id,
   rental_id,
+  organization_id,
   customer_id,
   customer_name,
   customer_email,
@@ -239,6 +273,8 @@ const RENTALS_BASE_SELECT = `
   start_fuel_level,
   damage_deposit,
   deposit_returned_at,
+  linked_maintenance_id,
+  linked_maintenance_status,
   is_impounded,
   impounded_at,
   released_from_impound_at,
@@ -259,6 +295,11 @@ const RENTALS_BASE_SELECT = `
     fixed_amount,
     included_kilometers,
     extra_km_rate
+  ),
+  linked_maintenance:app_687f658e98_maintenance!app_4c3a7a6153_rentals_linked_maintenance_id_fkey(
+    id,
+    organization_id,
+    status
   )
 `;
 
@@ -535,7 +576,7 @@ const getStoredRentalsWorkspace = () => {
   const stored = window.localStorage.getItem(RENTALS_WORKSPACE_PREF_KEY);
   return ['today', 'upcoming', 'past'].includes(stored) ? stored : null;
 };
-const STATUS_TAB_KEYS = ['all', 'active', 'scheduled', 'completed', 'no_show_review', 'cancelled', 'maintenance', 'impounded'];
+const STATUS_TAB_KEYS = ['all', 'active', 'scheduled', 'completed', 'no_show_review', 'cancelled', 'maintenance', 'maintenance_completed', 'impounded'];
 
 const toDateInputValue = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
@@ -1211,6 +1252,7 @@ const Rentals = () => {
   const quickDayBounceTimeoutRef = useRef(null);
   const dateFocusLauncherBounceTimeoutRef = useRef(null);
   const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
+  const deletingRentalIdsRef = useRef(new Set());
 
   const dateFocusAnchorDate = useMemo(() => fromDateInputValue(dateFocusAnchor), [dateFocusAnchor]);
   const weekStart = useMemo(() => startOfWeek(dateFocusAnchorDate), [dateFocusAnchorDate]);
@@ -1232,25 +1274,35 @@ const Rentals = () => {
 
   const getRentalMaintenanceState = useCallback((rental) => {
     const report = rentalReportMap[rental?.id];
-    const reportStatus = String(report?.status || '').toLowerCase();
-    const rentalStatus = String(rental?.rental_status || '').toLowerCase();
-    const vehicleStatus = String(rental?.vehicle?.status || '').toLowerCase();
+    const linkedMaintenance = Array.isArray(rental?.linked_maintenance)
+      ? rental.linked_maintenance.find(Boolean) || null
+      : (rental?.linked_maintenance || null);
+    const reportStatus = normalizeRentalMaintenanceLifecycleStatus(report?.status);
+    const snapshotStatus = normalizeRentalMaintenanceLifecycleStatus(rental?.linked_maintenance_status);
+    const linkedMaintenanceStatus = normalizeRentalMaintenanceLifecycleStatus(linkedMaintenance?.status);
+    const rentalStatus = getEffectiveRentalStatus(rental);
+    const hasCompletedMaintenanceSnapshot =
+      snapshotStatus === 'maintenance_completed' || linkedMaintenanceStatus === 'maintenance_completed';
+    const isClosed = rentalStatus === 'completed' && (
+      reportStatus === 'maintenance_completed' ||
+      hasCompletedMaintenanceSnapshot
+    );
+    const effectiveMaintenanceStatus = isClosed
+      ? 'maintenance_completed'
+      : (linkedMaintenanceStatus || reportStatus || snapshotStatus);
 
     const hasMaintenanceLink =
-      Boolean(report?.maintenance_id) ||
-      vehicleStatus === 'maintenance' ||
-      ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(reportStatus);
-
-    const isClosed = rentalStatus === 'completed' && reportStatus === 'maintenance_completed';
+      Boolean(report?.maintenance_id || rental?.linked_maintenance_id || linkedMaintenance?.id) ||
+      ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(effectiveMaintenanceStatus);
 
     return {
       report,
-      reportStatus,
+      reportStatus: effectiveMaintenanceStatus,
       hasMaintenanceLink,
       isClosed,
       isActive: hasMaintenanceLink && !isClosed,
     };
-  }, [rentalReportMap]);
+  }, [getEffectiveRentalStatus, rentalReportMap]);
 
   const matchesRentalStatusFilter = useCallback((rental, status = statusFilter) => {
     const normalizedStatus = String(status || 'all').toLowerCase();
@@ -1260,6 +1312,10 @@ const Rentals = () => {
 
     if (normalizedStatus === 'maintenance') {
       return getRentalMaintenanceState(rental).isActive;
+    }
+
+    if (normalizedStatus === 'maintenance_completed') {
+      return getRentalMaintenanceState(rental).isClosed;
     }
 
     return getEffectiveRentalStatus(rental) === normalizedStatus;
@@ -1542,7 +1598,8 @@ const Rentals = () => {
 
   const applyRentalSummarySnapshot = useCallback((snapshot) => {
     if (!snapshot) return;
-    setRentals((snapshot.rentals || []).map(normalizeRentalLifecycle));
+    const normalizedSnapshotRentals = (snapshot.rentals || []).map(normalizeRentalLifecycle);
+    setRentals((prev) => preserveRentalExtensions(normalizedSnapshotRentals, prev));
     setRentalReportMap(snapshot.rentalReportMap || {});
     setTotalCount(snapshot.totalCount || 0);
     setTotalPages(snapshot.totalPages || 0);
@@ -1582,6 +1639,9 @@ const Rentals = () => {
       setRentals((prev) => applyExtensions(prev));
       setRentalUniverse((prev) => applyExtensions(prev));
     } catch (extensionError) {
+      if (isAbortLikeError(extensionError)) {
+        return;
+      }
       console.error('❌ Error hydrating rental extensions:', extensionError);
     }
   }, []);
@@ -1644,6 +1704,9 @@ const Rentals = () => {
         }
 
         if (error) {
+          if (isAbortLikeError(error)) {
+            throw error;
+          }
           console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
           throw error;
         }
@@ -1660,12 +1723,16 @@ const Rentals = () => {
           organizationId,
           message: 'Rentals list returned package rows outside the active workspace.',
         });
+        await verifyTenantOwnedRows((data || []).map((rental) => rental.linked_maintenance).filter(Boolean), 'app_687f658e98_maintenance', {
+          organizationId,
+          message: 'Rentals list returned linked maintenance rows outside the active workspace.',
+        });
 
         let normalizedRentals = sortRentalsForDisplay(
           (data || []).map(normalizeRentalLifecycle),
           getEffectiveRentalStatus
         );
-        setRentalUniverse(normalizedRentals);
+        setRentalUniverse((prev) => preserveRentalExtensions(normalizedRentals, prev));
 
         let nextRentals = normalizedRentals;
         const workspaceFilteredRentals = nextRentals.filter((rental) => matchesWorkspaceTab(rental));
@@ -1681,7 +1748,7 @@ const Rentals = () => {
 
         setTotalCount(nextTotalCount);
         setTotalPages(Math.ceil(nextTotalCount / limit));
-        setRentals(nextRentals);
+        setRentals((prev) => preserveRentalExtensions(nextRentals, prev));
         const rentalIds = nextRentals.map((rental) => rental.id).filter(Boolean);
         scheduleBackgroundTask(() => {
           void hydrateRentalExtensions(rentalIds);
@@ -1691,12 +1758,14 @@ const Rentals = () => {
             setRentalReportMap(latestReports);
           })
           .catch((reportError) => {
+            if (isAbortLikeError(reportError)) {
+              return;
+            }
             console.error('❌ Error fetching rental reports:', reportError);
           });
 
       } catch (err) {
         if (isAbortLikeError(err)) {
-          console.warn('Ignoring aborted rental fetch:', err);
           return;
         }
         console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
@@ -2024,7 +2093,9 @@ const Rentals = () => {
     try {
       let vehiclesQuery = supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id,organization_id,status')
+        .select('id,organization_id,owner_user_id,status')
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         .order('id', { ascending: true });
       if (shouldScopeSharedTenantData) {
         vehiclesQuery = applyOrganizationScope(vehiclesQuery, organizationId);
@@ -2032,13 +2103,15 @@ const Rentals = () => {
       const { data, error } = await vehiclesQuery;
 
       if (error) {
+        if (isAbortLikeError(error)) {
+          throw error;
+        }
         console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
         throw error;
       }
-      setVehicles(data || []);
+      setVehicles((data || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)));
     } catch (err) {
       if (isAbortLikeError(err)) {
-        console.warn('Ignoring aborted vehicle fetch:', err);
         return;
       }
       console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
@@ -2058,6 +2131,9 @@ const Rentals = () => {
       });
       setVehicleFuelStateMap(nextMap);
     } catch (err) {
+      if (isAbortLikeError(err)) {
+        return;
+      }
       console.error('❌ Error fetching vehicle fuel states:', err);
     }
   };
@@ -2096,6 +2172,9 @@ const Rentals = () => {
         scheduledVehicleIds: [...scheduledVehicleIds].filter((vehicleId) => !activeVehicleIds.has(vehicleId)),
       });
     } catch (err) {
+      if (isAbortLikeError(err)) {
+        return;
+      }
       console.error('❌ Error fetching rental overview snapshot:', err);
     }
   };
@@ -2158,6 +2237,9 @@ const Rentals = () => {
         week: resolvedWeekCount,
       });
     } catch (err) {
+      if (isAbortLikeError(err)) {
+        return;
+      }
       console.error('❌ Error fetching day/week rental counts:', err);
     }
   }, [matchesRentalStatusFilter, paymentStatusFilter, statusFilter]);
@@ -2167,6 +2249,47 @@ const Rentals = () => {
     void fetchVehicleFuelStates();
     void fetchRentalOverviewSnapshot();
   };
+
+  const applyVehicleStatusChangeToRentalRows = useCallback((vehicleUpdate = {}) => {
+    const vehicleId = String(vehicleUpdate?.id || vehicleUpdate?.vehicle_id || '');
+    if (!vehicleId) return;
+
+    const patchVehicle = (vehicle) => {
+      if (!vehicle || String(vehicle.id) !== vehicleId) return vehicle;
+      return {
+        ...vehicle,
+        ...vehicleUpdate,
+      };
+    };
+
+    const patchRentalRows = (rows = []) => {
+      let didPatch = false;
+      const nextRows = rows.map((rental) => {
+        const rentalVehicleId = String(rental?.vehicle_id || rental?.vehicle?.id || '');
+        if (rentalVehicleId !== vehicleId) return rental;
+
+        didPatch = true;
+        return normalizeRentalLifecycle({
+          ...rental,
+          vehicle: patchVehicle(rental.vehicle || { id: vehicleId }),
+        });
+      });
+
+      return didPatch
+        ? sortRentalsForDisplay(nextRows, getEffectiveRentalStatus)
+        : rows;
+    };
+
+    setVehicles((prev) =>
+      (prev || []).map((vehicle) =>
+        String(vehicle?.id || '') === vehicleId
+          ? { ...vehicle, ...vehicleUpdate }
+          : vehicle
+      )
+    );
+    setRentals((prev) => patchRentalRows(prev));
+    setRentalUniverse((prev) => patchRentalRows(prev));
+  }, [getEffectiveRentalStatus]);
 
   const doesRentalMatchFilters = useCallback((rental, status = statusFilter, payment = paymentStatusFilter, targetTab = workspaceTab) => {
     if (!rental) return false;
@@ -2186,6 +2309,34 @@ const Rentals = () => {
     return matchesWorkspace && matchesStatus && matchesPayment;
   }, [getEffectiveRentalStatus, matchesRentalStatusFilter, matchesWorkspaceTab, paymentStatusFilter, statusFilter, workspaceTab]);
 
+  const applyRentalUpdateToRows = useCallback((rentalUpdate = {}) => {
+    const rentalId = String(rentalUpdate?.id || '');
+    if (!rentalId) return;
+
+    const patchRentalRows = (rows = []) => {
+      const existingIndex = rows.findIndex((item) => String(item?.id || '') === rentalId);
+      if (existingIndex === -1) return rows;
+
+      const mergedRental = normalizeRentalLifecycle({
+        ...rows[existingIndex],
+        ...rentalUpdate,
+        vehicle: rentalUpdate?.vehicle || rows[existingIndex]?.vehicle,
+        package: rows[existingIndex]?.package,
+      });
+
+      if (!doesRentalMatchFilters(mergedRental)) {
+        return rows.filter((item) => String(item?.id || '') !== rentalId);
+      }
+
+      const nextRows = [...rows];
+      nextRows[existingIndex] = mergedRental;
+      return sortRentalsForDisplay(nextRows, getEffectiveRentalStatus);
+    };
+
+    setRentals((prev) => patchRentalRows(prev));
+    setRentalUniverse((prev) => patchRentalRows(prev));
+  }, [doesRentalMatchFilters, getEffectiveRentalStatus]);
+
   const scheduleRentalRefresh = useCallback(() => {
     if (rentalRefreshTimeoutRef.current) {
       window.clearTimeout(rentalRefreshTimeoutRef.current);
@@ -2196,6 +2347,38 @@ const Rentals = () => {
       rentalRefreshTimeoutRef.current = null;
     }, 180);
   }, [statusFilter, paymentStatusFilter, currentPage, itemsPerPage]);
+
+  useEffect(() => {
+    const handleVehicleStatusUpdated = (event) => {
+      applyVehicleStatusChangeToRentalRows(event.detail || {});
+      appWarmupService.invalidateModule('rentals');
+      scheduleRentalRefresh();
+      scheduleBackgroundTask(() => {
+        refreshSecondaryRentalData();
+      });
+    };
+
+    window.addEventListener('driveout:vehicle-status-updated', handleVehicleStatusUpdated);
+    return () => {
+      window.removeEventListener('driveout:vehicle-status-updated', handleVehicleStatusUpdated);
+    };
+  }, [applyVehicleStatusChangeToRentalRows, scheduleRentalRefresh]);
+
+  useEffect(() => {
+    const handleRentalUpdated = (event) => {
+      applyRentalUpdateToRows(event.detail || {});
+      appWarmupService.invalidateModule('rentals');
+      scheduleRentalRefresh();
+      scheduleBackgroundTask(() => {
+        refreshSecondaryRentalData();
+      });
+    };
+
+    window.addEventListener('driveout:rental-updated', handleRentalUpdated);
+    return () => {
+      window.removeEventListener('driveout:rental-updated', handleRentalUpdated);
+    };
+  }, [applyRentalUpdateToRows, scheduleRentalRefresh]);
 
   const checkClosingVideo = async (rentalId) => {
     try {
@@ -2309,6 +2492,9 @@ const Rentals = () => {
           });
           applyRentalSummarySnapshot(summarySnapshot);
         } catch (summaryError) {
+          if (isAbortLikeError(summaryError)) {
+            return;
+          }
           console.error('❌ Error fetching rental summary:', summaryError);
           await fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
         }
@@ -2535,7 +2721,15 @@ const Rentals = () => {
           schema: 'public', 
           table: 'saharax_0u4w4d_vehicles' 
         }, 
-        () => {
+        (payload) => {
+          const changedVehicle =
+            payload.eventType === 'DELETE'
+              ? payload.old
+              : payload.new;
+
+          applyVehicleStatusChangeToRentalRows(changedVehicle);
+          appWarmupService.invalidateModule('rentals');
+          scheduleRentalRefresh();
           scheduleBackgroundTask(() => {
             refreshSecondaryRentalData();
           });
@@ -2552,7 +2746,7 @@ const Rentals = () => {
       supabase.removeChannel(rentalSubscription);
       supabase.removeChannel(vehicleSubscription);
     };
-  }, [doesRentalMatchFilters, fetchDateFocusCounts, statusFilter, paymentStatusFilter, scheduleRentalRefresh, workspaceTab]);
+  }, [applyVehicleStatusChangeToRentalRows, doesRentalMatchFilters, fetchDateFocusCounts, statusFilter, paymentStatusFilter, scheduleRentalRefresh, workspaceTab]);
 
   useEffect(() => {
     return () => {
@@ -2624,13 +2818,20 @@ const Rentals = () => {
   };
 
   const handleDeleteRental = async (rentalId) => {
+    if (deletingRentalIdsRef.current.has(rentalId)) {
+      return;
+    }
+
     // Check owner permission first
     if (user?.role !== 'owner') {
       alert('⚠️ Only owners can delete rentals.');
       return;
     }
 
+    deletingRentalIdsRef.current.add(rentalId);
+
     if (!window.confirm('Are you sure you want to delete this rental?')) {
+      deletingRentalIdsRef.current.delete(rentalId);
       return;
     }
 
@@ -2644,7 +2845,10 @@ const Rentals = () => {
       appWarmupService.invalidateModule('rentals');
       appWarmupService.invalidateModule('finance');
       appWarmupService.invalidateModule('maintenance');
-      fetchRentals(statusFilter, paymentStatusFilter);
+      setRentals((prev) => prev.filter((rental) => rental.id !== rentalId));
+      setRentalUniverse((prev) => prev.filter((rental) => rental.id !== rentalId));
+      setTotalCount((prev) => Math.max(0, Number(prev || 0) - 1));
+      void fetchRentals(statusFilter, paymentStatusFilter);
       void fetchRentalOverviewSnapshot();
       if (result?.warning) {
         setError(result.warning);
@@ -2652,6 +2856,8 @@ const Rentals = () => {
     } catch (err) {
       console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
       setError(err.message);
+    } finally {
+      deletingRentalIdsRef.current.delete(rentalId);
     }
   };
 
@@ -2904,7 +3110,7 @@ const Rentals = () => {
   };
 
   const getRentalAttentionState = (rental) => {
-    const { report, reportStatus, hasMaintenanceLink, isClosed, isActive } = getRentalMaintenanceState(rental);
+    const { report, isClosed, isActive } = getRentalMaintenanceState(rental);
 
     if (isClosed) {
       return {
@@ -2915,7 +3121,7 @@ const Rentals = () => {
       };
     }
 
-    if (isActive || hasMaintenanceLink) {
+    if (isActive) {
       return {
         status: 'under_maintenance',
         text: tr('Under Maintenance', 'En maintenance'),
@@ -2984,6 +3190,22 @@ const Rentals = () => {
     [isDateFocusScoped, rentalUniverse, rentals]
   );
 
+  const topFilterSourceRentals = useMemo(() => {
+    const fullSource = rentalUniverse.length > 0 ? rentalUniverse : rentals;
+
+    return fullSource.filter((rental) => {
+      if (!hasDateFocusOverride && !matchesWorkspaceTab(rental)) {
+        return false;
+      }
+
+      if (!matchesDateFocusFilter(rental)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [hasDateFocusOverride, matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse, rentals]);
+
   const baseVisibleRentals = useMemo(() => {
     const normalizedSearch = normalizeRentalSearchText(deferredSearchTerm);
     const isBroadSearch = normalizedSearch.length >= 3;
@@ -3046,17 +3268,8 @@ const Rentals = () => {
     const normalizedStatus = String(statusFilter || 'all').toLowerCase();
 
     const matchingRentals = baseVisibleRentals.filter((rental) => {
-      if (normalizedStatus !== 'all') {
-        const effectiveStatus = getEffectiveRentalStatus(rental);
-        const attentionState = getRentalAttentionState(rental);
-
-        if (normalizedStatus === 'maintenance') {
-          if (attentionState?.status !== 'under_maintenance') {
-            return false;
-          }
-        } else if (effectiveStatus !== normalizedStatus) {
-          return false;
-        }
+      if (!matchesRentalStatusFilter(rental, normalizedStatus)) {
+        return false;
       }
 
       if (paymentStatusFilter && paymentStatusFilter !== 'all') {
@@ -3073,12 +3286,28 @@ const Rentals = () => {
     });
 
     return sortRentalsForDisplay(matchingRentals, getEffectiveRentalStatus);
-  }, [baseVisibleRentals, getEffectiveRentalStatus, getRentalAttentionState, paymentStatusFilter, statusFilter]);
+  }, [baseVisibleRentals, getEffectiveRentalStatus, matchesRentalStatusFilter, paymentStatusFilter, statusFilter]);
+
+  const statusCounterSourceRentals = useMemo(() => {
+    return baseVisibleRentals.filter((rental) => {
+      if (paymentStatusFilter && paymentStatusFilter !== 'all') {
+        const rentalPaymentStatus = normalizePaymentStatus(
+          rental?.payment_status,
+          rental?.remaining_amount
+        );
+        if (rentalPaymentStatus !== String(paymentStatusFilter).toLowerCase()) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [baseVisibleRentals, paymentStatusFilter]);
 
   const statusTabCounts = useMemo(() => {
     const counts = STATUS_TAB_KEYS.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
 
-    baseVisibleRentals.forEach((rental) => {
+    statusCounterSourceRentals.forEach((rental) => {
       const effectiveStatus = getEffectiveRentalStatus(rental);
       const attentionState = getRentalAttentionState(rental);
 
@@ -3089,10 +3318,13 @@ const Rentals = () => {
       if (attentionState?.status === 'under_maintenance') {
         counts.maintenance += 1;
       }
+      if (attentionState?.status === 'maintenance_closed') {
+        counts.maintenance_completed += 1;
+      }
     });
 
     return counts;
-  }, [baseVisibleRentals, getEffectiveRentalStatus, getRentalAttentionState]);
+  }, [getEffectiveRentalStatus, getRentalAttentionState, statusCounterSourceRentals]);
 
   const workspaceTabCounts = useMemo(() => {
     return rentalUniverse.reduce((acc, rental) => {
@@ -3381,14 +3613,10 @@ const Rentals = () => {
   }, [dateFocusFilter, paymentStatusFilter, searchTerm, statusFilter, workspaceTab]);
 
   const summaryPeriodRentals = useMemo(() => {
-    return dateFocusRentalSource.filter((rental) => {
-      if (!matchesDateFocusFilter(rental)) {
-        return false;
-      }
-
+    return topFilterSourceRentals.filter((rental) => {
       return doesRentalMatchFilters(rental, statusFilter, paymentStatusFilter, 'all');
     });
-  }, [dateFocusRentalSource, doesRentalMatchFilters, matchesDateFocusFilter, paymentStatusFilter, statusFilter]);
+  }, [doesRentalMatchFilters, paymentStatusFilter, statusFilter, topFilterSourceRentals]);
 
   const footerSummaryRentals = summaryPeriodRentals;
   const footerSummaryRentalCount = footerSummaryRentals.length;
@@ -3921,6 +4149,9 @@ const Rentals = () => {
             <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
               {tr('Maintenance Rentals', 'Locations maintenance')}: {statusTabCounts.maintenance}
             </span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+              {tr('Maintenance Completed', 'Maintenance terminée')}: {statusTabCounts.maintenance_completed}
+            </span>
             <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
               {tr('Collected', 'Encaissé')}: {footerSummaryCollected.toFixed(0)} MAD
             </span>
@@ -4041,6 +4272,7 @@ const Rentals = () => {
                 ['no_show_review', isFrench ? 'Absence' : 'No-show'],
                 ['cancelled', isFrench ? 'Annulées' : 'Cancelled'],
                 ['maintenance', isFrench ? 'Maintenance' : 'Maintenance'],
+                ['maintenance_completed', isFrench ? 'Maintenance terminée' : 'Maintenance Completed'],
                 ['impounded', isFrench ? 'Fourrière' : 'Impounded'],
               ].map(([key, label]) => (
                 <button
@@ -4090,6 +4322,7 @@ const Rentals = () => {
                   <option value="no_show_review">{isFrench ? 'Contrôle absence' : 'No-show review'}</option>
                   <option value="cancelled">{isFrench ? 'Annulé' : 'Cancelled'}</option>
                   <option value="maintenance">{isFrench ? 'Maintenance' : 'Maintenance'}</option>
+                  <option value="maintenance_completed">{isFrench ? 'Maintenance terminée' : 'Maintenance Completed'}</option>
                   <option value="impounded">{isFrench ? 'Mis en fourrière' : 'Impounded'}</option>
                 </select>
               </div>

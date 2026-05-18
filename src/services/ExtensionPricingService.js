@@ -1162,11 +1162,38 @@ export class ExtensionPricingService {
       .select(`
         *,
         requester:requested_by(full_name, email),
-        approver:approved_by(full_name, email)
+        approver:approved_by(full_name, email),
+        rejecter:rejected_by(full_name, email)
       `)
       .eq('rental_id', rentalId)
       .order('requested_at', { ascending: false });
     
+    if (error) {
+      const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+      if (
+        Number(error?.status) === 400 ||
+        error?.code === 'PGRST200' ||
+        error?.code === 'PGRST201' ||
+        message.includes('rejected_by') ||
+        message.includes('rejecter') ||
+        message.includes('relationship') ||
+        message.includes('schema cache')
+      ) {
+        const fallback = await supabase
+          .from('rental_extensions')
+          .select(`
+            *,
+            requester:requested_by(full_name, email),
+            approver:approved_by(full_name, email)
+          `)
+          .eq('rental_id', rentalId)
+          .order('requested_at', { ascending: false });
+
+        if (fallback.error) throw fallback.error;
+        return fallback.data || [];
+      }
+    }
+
     if (error) throw error;
     return data || [];
   }

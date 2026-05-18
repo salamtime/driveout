@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowRight, CarFront, ChevronDown, MessageSquare } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowRight, CarFront, ChevronDown, MapPinned, MessageSquare, Users } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
@@ -48,6 +48,26 @@ const REQUEST_STATUS_LABELS = {
   expired: { en: 'Expired', fr: 'Expirée' },
 };
 
+const TOUR_STATUS_TONE_MAP = {
+  scheduled: 'bg-sky-50 text-sky-700',
+  active: 'bg-emerald-50 text-emerald-700',
+  completed: 'bg-slate-100 text-slate-700',
+  cancelled: 'bg-rose-50 text-rose-700',
+  canceled: 'bg-rose-50 text-rose-700',
+  no_show: 'bg-amber-50 text-amber-700',
+  expired: 'bg-slate-100 text-slate-700',
+};
+
+const TOUR_STATUS_LABELS = {
+  scheduled: { en: 'Upcoming', fr: 'À venir' },
+  active: { en: 'Active', fr: 'Actif' },
+  completed: { en: 'Completed', fr: 'Terminé' },
+  cancelled: { en: 'Cancelled', fr: 'Annulé' },
+  canceled: { en: 'Cancelled', fr: 'Annulé' },
+  no_show: { en: 'No-show', fr: 'Absent' },
+  expired: { en: 'Expired', fr: 'Expiré' },
+};
+
 const formatDateTime = (value, locale) => {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
   return new Intl.DateTimeFormat(locale, {
@@ -63,6 +83,18 @@ const formatMoney = (amount, currencyCode = 'MAD', locale = 'en') =>
   new Intl.NumberFormat(locale === 'fr' ? 'fr-MA' : 'en-MA', {
     maximumFractionDigits: 0,
   }).format(Number(amount || 0)) + ` ${currencyCode}`;
+
+const normalizeTourBucket = (tour, now) => {
+  const status = String(tour?.status || '').toLowerCase();
+  const startTime = tour?.scheduledFor instanceof Date ? tour.scheduledFor.getTime() : null;
+
+  if (['cancelled', 'canceled', 'no_show', 'expired'].includes(status)) return 'canceled';
+  if (status === 'completed') return 'past';
+  if (status === 'active') return 'active';
+  if (startTime && startTime >= now.getTime()) return 'upcoming';
+  if (status === 'scheduled') return 'upcoming';
+  return 'past';
+};
 
 
 const getRentalPackageLabel = (rental, tr) =>
@@ -390,6 +422,138 @@ const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOp
     </section>
   );
 };
+
+const TourTripRow = ({ tour, tr, isFrench, onOpenDetails, historyMode = false }) => {
+  const locale = isFrench ? 'fr' : 'en';
+  const statusKey = String(tour?.status || '').toLowerCase();
+  const statusTone = TOUR_STATUS_TONE_MAP[statusKey] || 'bg-slate-100 text-slate-700';
+  const statusLabel = TOUR_STATUS_LABELS[statusKey]?.[locale] || tour?.status || tr('Scheduled', 'Planifié');
+  const startLabel = formatDateTime(tour?.scheduledFor, locale);
+  const endLabel = formatDateTime(tour?.scheduledEndAt, locale);
+
+  return (
+    <article
+      className={
+        historyMode
+          ? 'rounded-[1.4rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]'
+          : 'rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05)]'
+      }
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+            <span className="text-xs font-semibold text-slate-500">
+              {tour?.groupId || tour?.id || tr('Tour reference pending', 'Référence tour en attente')}
+            </span>
+          </div>
+          <h3 className="mt-3 text-xl font-bold text-slate-950">
+            {tour?.packageName || tr('Tour booking', 'Réservation de tour')}
+          </h3>
+          <p className="mt-1 text-sm text-slate-500">
+            {[tour?.operatorName, tour?.routeType, tour?.location].filter(Boolean).join(' • ')}
+          </p>
+          <p className="mt-2 text-sm text-slate-500">
+            {[startLabel, endLabel].filter(Boolean).join(' → ') || tr('Schedule pending', 'Planning en attente')}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
+              <Users className="h-3.5 w-3.5" />
+              {tr(`${tour?.ridersCount || 1} rider(s)`, `${tour?.ridersCount || 1} participant(s)`)}
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
+              <MapPinned className="h-3.5 w-3.5" />
+              {tour?.location || tr('Meeting point later', 'Point de rendez-vous plus tard')}
+            </span>
+          </div>
+        </div>
+
+        <div className="text-left sm:min-w-[150px] sm:text-right">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Tour total', 'Total tour')}</p>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-slate-950">{formatMoney(tour?.totalAmount, 'MAD', locale)}</p>
+          <p className="mt-2 text-sm text-slate-600">
+            {tour?.remainingAmount > 0
+              ? `${tr('Remaining', 'Restant')} • ${formatMoney(tour?.remainingAmount, 'MAD', locale)}`
+              : `${tr('Paid', 'Payé')} • ${formatMoney(tour?.paidAmount, 'MAD', locale)}`}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => onOpenDetails(tour)}
+          className={
+            historyMode
+              ? 'inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700'
+              : 'inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(91,33,182,0.28)] transition hover:translate-y-[-1px] hover:shadow-[0_18px_32px_rgba(91,33,182,0.32)]'
+          }
+        >
+          {tr('View tour', 'Voir le tour')}
+          <ArrowRight className="h-4 w-4" />
+        </button>
+      </div>
+    </article>
+  );
+};
+
+const TourTripSection = ({
+  title,
+  description,
+  tours,
+  emptyTitle,
+  emptyBody,
+  emptyActionLabel,
+  emptyActionTo,
+  tr,
+  isFrench,
+  onOpenDetails,
+  compact = false,
+}) => (
+  <section className={compact ? 'space-y-3' : 'space-y-4'}>
+    <AccountWorkspaceSectionHeader
+      title={title}
+      description={description || undefined}
+      titleClassName={compact ? 'mt-1 text-base font-bold text-slate-900' : undefined}
+      descriptionClassName={compact ? 'mt-1 text-sm text-slate-500' : undefined}
+    />
+
+    {tours.length ? (
+      <div className={compact ? 'space-y-3' : 'space-y-4'}>
+        {tours.map((tour) => (
+          <TourTripRow
+            key={tour.id || tour.groupId}
+            tour={tour}
+            tr={tr}
+            isFrench={isFrench}
+            onOpenDetails={onOpenDetails}
+            historyMode={compact}
+          />
+        ))}
+      </div>
+    ) : (
+      <div
+        className={
+          compact
+            ? 'rounded-[1.4rem] border border-slate-200 bg-slate-50/80 p-4'
+            : 'rounded-[1.75rem] border border-dashed border-slate-200 bg-white p-6'
+        }
+      >
+        <p className="text-sm font-bold text-slate-900">{emptyTitle}</p>
+        <p className="mt-1 text-sm text-slate-500">{emptyBody}</p>
+        {emptyActionLabel && emptyActionTo ? (
+          <Link
+            to={emptyActionTo}
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+          >
+            <span>{emptyActionLabel}</span>
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        ) : null}
+      </div>
+    )}
+  </section>
+);
 
 const MarketplaceRequestRow = ({
   request,
@@ -947,26 +1111,38 @@ const MarketplaceRequestSection = ({
   );
 };
 
-const EmptyRentalState = ({ tr, browseState }) => (
+const EmptyTripsState = ({ tr, browseState }) => (
   <section className="rounded-[1.9rem] border border-dashed border-slate-200 bg-white/95 p-6 shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
     <div className="max-w-2xl">
       <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-        {tr('No active rentals', 'Aucune location active')}
+        {tr('No trips yet', 'Aucun trajet pour le moment')}
       </p>
       <h2 className="mt-3 text-2xl font-bold tracking-[-0.03em] text-slate-950">
-        {tr('No active rentals', 'Aucune location active')}
+        {tr('No trips yet', 'Aucun trajet pour le moment')}
       </h2>
       <p className="mt-2 text-sm text-slate-500">
-        {tr('Browse vehicles and start your next ride.', 'Explorez les véhicules et lancez votre prochaine sortie.')}
+        {tr(
+          'Browse vehicles or tours and start your next trip from here.',
+          'Explorez les véhicules ou les tours et lancez votre prochain trajet depuis ici.'
+        )}
       </p>
-      <Link
-        to="/marketplace"
-        state={browseState}
-        className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
-      >
-        <span>{tr('Browse vehicles', 'Explorer les véhicules')}</span>
-        <ArrowRight className="h-4 w-4" />
-      </Link>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Link
+          to="/marketplace"
+          state={browseState}
+          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+        >
+          <span>{tr('Browse vehicles', 'Explorer les véhicules')}</span>
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+        <Link
+          to="/tours"
+          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+        >
+          <span>{tr('Browse tours', 'Explorer les tours')}</span>
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
     </div>
   </section>
 );
@@ -981,10 +1157,16 @@ const AccountRentals = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [rentals, setRentals] = useState([]);
+  const [tours, setTours] = useState([]);
   const [marketplaceRequests, setMarketplaceRequests] = useState([]);
   const [snapshot, setSnapshot] = useState(null);
   const [confirmingRequestId, setConfirmingRequestId] = useState('');
   const [remindingRequestId, setRemindingRequestId] = useState('');
+  const toursSectionRef = useRef(null);
+  const toursPanelRequested = useMemo(
+    () => new URLSearchParams(location.search).get('panel') === 'tours',
+    [location.search]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -998,18 +1180,20 @@ const AccountRentals = () => {
       try {
         setLoading(true);
         setError('');
-        const [accountSnapshot, history, requests] = await Promise.all([
+        const [accountSnapshot, history, toursHistory, requests] = await Promise.all([
           CustomerExperienceService.getCustomerAccountSnapshot(user),
           CustomerExperienceService.getCustomerRentalHistory(user),
+          CustomerExperienceService.getCustomerTourHistory(user),
           CustomerExperienceService.getCustomerMarketplaceRequests(user),
         ]);
         if (cancelled) return;
         setSnapshot(accountSnapshot);
         setRentals(Array.isArray(history) ? history : []);
+        setTours(Array.isArray(toursHistory) ? toursHistory : []);
         setMarketplaceRequests(Array.isArray(requests) ? requests : []);
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError?.message || tr('Unable to load your rentals right now.', 'Impossible de charger vos locations pour le moment.'));
+          setError(loadError?.message || tr('Unable to load your trips right now.', 'Impossible de charger vos trajets pour le moment.'));
         }
       } finally {
         if (!cancelled) {
@@ -1039,10 +1223,38 @@ const AccountRentals = () => {
     );
   }, [rentals]);
 
+  const tourBuckets = useMemo(() => {
+    const now = new Date();
+    return tours.reduce(
+      (accumulator, tour) => {
+        const bucket = normalizeTourBucket(tour, now);
+        accumulator[bucket].push(tour);
+        return accumulator;
+      },
+      { upcoming: [], active: [], past: [], canceled: [] }
+    );
+  }, [tours]);
+
   const featuredUpcomingRental = rentalBuckets.upcoming[0] || rentalBuckets.active[0] || null;
+  const currentTourTrips = useMemo(
+    () =>
+      [...tourBuckets.active, ...tourBuckets.upcoming].sort(
+        (left, right) => new Date(left?.scheduledFor || 0).getTime() - new Date(right?.scheduledFor || 0).getTime()
+      ),
+    [tourBuckets.active, tourBuckets.upcoming]
+  );
+  const pastTourTrips = useMemo(
+    () =>
+      [...tourBuckets.past, ...tourBuckets.canceled].sort(
+        (left, right) => new Date(right?.scheduledFor || right?.updatedAt || 0).getTime() - new Date(left?.scheduledFor || left?.updatedAt || 0).getTime()
+      ),
+    [tourBuckets.canceled, tourBuckets.past]
+  );
 
   const primaryMarketplaceRequest = marketplaceRequests.find((request) => isMarketplaceRequestOpen(request?.requestStatus)) || marketplaceRequests[0] || null;
   const hasCurrentOrUpcomingRental = rentalBuckets.upcoming.length > 0 || rentalBuckets.active.length > 0;
+  const hasCurrentOrUpcomingTour = tourBuckets.upcoming.length > 0 || tourBuckets.active.length > 0;
+  const hasAnyTourHistory = tours.length > 0;
   const shouldUseMarketplaceFocus = Boolean(primaryMarketplaceRequest && !hasCurrentOrUpcomingRental);
   const additionalMarketplaceRequests = primaryMarketplaceRequest
     ? marketplaceRequests.filter((request) => String(request?.id || '') !== String(primaryMarketplaceRequest?.id || ''))
@@ -1053,6 +1265,12 @@ const AccountRentals = () => {
     }),
     [location]
   );
+
+  useEffect(() => {
+    if (!toursPanelRequested) return;
+    toursSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [toursPanelRequested, tours.length]);
+
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading,
@@ -1072,6 +1290,16 @@ const AccountRentals = () => {
     navigate(`/account/rentals/requests/${encodeURIComponent(String(request.id))}`, {
       state: {
         from: getCurrentLocationPath(location),
+      },
+    });
+  };
+
+  const handleOpenTourDetails = (tour) => {
+    const tourReference = String(tour?.groupId || tour?.id || '').trim();
+    if (!tourReference) return;
+    navigate(`/account/tours/${encodeURIComponent(tourReference)}`, {
+      state: {
+        from: `${getCurrentLocationPath(location)}?panel=tours`,
       },
     });
   };
@@ -1137,9 +1365,12 @@ const AccountRentals = () => {
     <div className="space-y-6">
       <div className="sticky top-0 z-20">
         <AccountWorkspaceHero
-          eyebrow={tr('My Rentals', 'Mes locations')}
-          title={tr('My Rentals', 'Mes locations')}
-          description={tr('Track active rentals and jump into the next step fast.', 'Suivez vos locations actives et passez vite à l’étape suivante.')}
+          eyebrow={tr('Trips', 'Parcours')}
+          title={tr('Trips', 'Parcours')}
+          description={tr(
+            'Keep rentals, tours, and booking requests in one trip workspace.',
+            'Gardez locations, tours et demandes de réservation dans un seul espace trajets.'
+          )}
           className="bg-white/95 backdrop-blur"
         />
       </div>
@@ -1222,9 +1453,38 @@ const AccountRentals = () => {
             />
           ) : null}
         </>
-      ) : !shouldUseMarketplaceFocus ? (
-        <EmptyRentalState tr={tr} browseState={browseMarketplaceState} />
+      ) : !shouldUseMarketplaceFocus && !hasCurrentOrUpcomingTour && !hasAnyTourHistory ? (
+        <EmptyTripsState tr={tr} browseState={browseMarketplaceState} />
       ) : null}
+
+      <section ref={toursSectionRef} id="trips-tours" className="space-y-4">
+        <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+          <AccountWorkspaceSectionHeader
+            title={tr('Tours', 'Tours')}
+            description={tr(
+              'Keep guided rides and tour bookings inside the same trip workspace.',
+              'Gardez les sorties guidées et réservations de tours dans le même espace trajets.'
+            )}
+            titleClassName="mt-1 text-lg font-bold text-slate-950"
+          />
+        </div>
+
+        <TourTripSection
+          title={tr('Current and upcoming tours', 'Tours actuels et à venir')}
+          description=""
+          tours={currentTourTrips}
+          emptyTitle={tr('No upcoming tours yet', 'Aucun tour à venir pour le moment')}
+          emptyBody={tr(
+            'Your guided experiences will show up here once you book them.',
+            'Vos expériences guidées apparaîtront ici une fois réservées.'
+          )}
+          emptyActionLabel={tr('Browse tours', 'Explorer les tours')}
+          emptyActionTo="/tours"
+          tr={tr}
+          isFrench={isFrench}
+          onOpenDetails={handleOpenTourDetails}
+        />
+      </section>
 
       {shouldUseMarketplaceFocus ? (
         additionalMarketplaceRequests.length > 0 ? (
@@ -1278,6 +1538,18 @@ const AccountRentals = () => {
         isFrench={isFrench}
         onOpenDetails={handleOpenDetails}
         browseState={browseMarketplaceState}
+      />
+
+      <TourTripSection
+        title={tr('Past tours', 'Tours passés')}
+        description={tr('Finished tours stay here for reference.', 'Les tours terminés restent ici pour référence.')}
+        tours={pastTourTrips}
+        emptyTitle={tr('No past tours yet', 'Aucun tour passé pour le moment')}
+        emptyBody={tr('Your completed tours will appear here.', 'Vos tours terminés apparaîtront ici.')}
+        tr={tr}
+        isFrench={isFrench}
+        onOpenDetails={handleOpenTourDetails}
+        compact
       />
     </div>
   );

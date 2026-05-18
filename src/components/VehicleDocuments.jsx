@@ -15,6 +15,7 @@ const VehicleDocuments = ({
   className = '', 
   vehicleId, 
   loadFromStorage = true,
+  syncStorageToParent = true,
   documentStatusMap = {},
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
@@ -24,37 +25,31 @@ const VehicleDocuments = ({
   const [deletingDocumentId, setDeletingDocumentId] = useState(null);
   const [lastSyncedSignature, setLastSyncedSignature] = useState('');
   const [viewerIndex, setViewerIndex] = useState(null);
+  const [storageLoadError, setStorageLoadError] = useState('');
   
   // FIXED: Use existing vehicle-documents bucket instead of vehicle-media
   const BUCKET_NAME = 'vehicle-documents';
   
-  // Debug logging
-  console.log('🔍 VehicleDocuments Debug:', {
-    vehicleId,
-    documentsLength: documents.length,
-    loadFromStorage,
-    vehicleMediaLength: vehicleMedia.length
-  });
-  
-  // FIXED: Load media only for specific vehicle_id from storage
+  // FIXED: Load documents only for specific vehicle_id from storage
   useEffect(() => {
     if (loadFromStorage && vehicleId) {
-      console.log('📥 Loading media from storage for vehicle:', vehicleId);
+      console.log('📥 Loading documents from storage for vehicle:', vehicleId);
       loadVehicleMedia();
     } else {
-      // Clear vehicle media when not loading from storage or no vehicleId
-      console.log('🚫 Clearing vehicle media state');
+      // Clear storage documents when not loading from storage or no vehicleId
+      console.log('🚫 Clearing storage document state');
       setVehicleMedia([]);
+      setStorageLoadError('');
     }
     
     // FIXED: Cleanup on unmount to prevent bleed-over between vehicles
     return () => {
-      console.log('🧹 Cleaning up vehicle media state on unmount');
+      console.log('🧹 Cleaning up storage document state on unmount');
       setVehicleMedia([]);
     };
   }, [vehicleId, loadFromStorage]);
 
-  // FIXED: Load media from storage with proper vehicle_id scoping
+  // FIXED: Load documents from storage with proper vehicle_id scoping
   const loadVehicleMedia = async () => {
     if (!vehicleId) {
       console.warn('⚠️ No vehicleId provided, skipping media load');
@@ -62,7 +57,8 @@ const VehicleDocuments = ({
     }
 
     setLoading(true);
-    console.log('🔄 Loading vehicle media from storage for vehicle:', vehicleId);
+    setStorageLoadError('');
+    console.log('🔄 Loading vehicle documents from storage for vehicle:', vehicleId);
     
     try {
       // FIXED: List files in vehicle-specific folder using existing bucket
@@ -75,7 +71,7 @@ const VehicleDocuments = ({
           }),
         new Promise((_, reject) => {
           window.setTimeout(() => {
-            reject(new Error('Loading vehicle media timed out.'));
+            reject(new Error('Loading vehicle documents timed out.'));
           }, LOAD_TIMEOUT_MS);
         }),
       ]);
@@ -129,9 +125,9 @@ const VehicleDocuments = ({
           };
         });
 
-        console.log('✅ Processed vehicle media:', documents.length);
+        console.log('✅ Processed vehicle documents:', documents.length);
         setVehicleMedia(documents);
-        if (onDocumentsChange) {
+        if (syncStorageToParent && onDocumentsChange) {
           const signature = JSON.stringify(
             documents.map((doc) => ({
               id: doc.id,
@@ -147,18 +143,31 @@ const VehicleDocuments = ({
           }
         }
       } else {
-        console.log('📭 No media found for vehicle:', vehicleId);
+        console.log('📭 No documents found for vehicle:', vehicleId);
         setVehicleMedia([]);
-        if (onDocumentsChange && lastSyncedSignature !== '[]') {
+        if (syncStorageToParent && onDocumentsChange && lastSyncedSignature !== '[]') {
           setLastSyncedSignature('[]');
           onDocumentsChange([]);
         }
       }
       
     } catch (error) {
-      console.error('❌ Error loading vehicle media:', error);
-      setVehicleMedia([]);
-      if (onDocumentsChange && lastSyncedSignature !== '[]') {
+      const timedOut = String(error?.message || '').toLowerCase().includes('timed out');
+      const message = timedOut
+        ? tr('Document storage took too long to respond. Existing documents are still shown.', 'Le stockage des documents met trop de temps à répondre. Les documents existants restent affichés.')
+        : (error?.message || tr('Unable to load stored vehicle documents.', 'Impossible de charger les documents véhicule stockés.'));
+
+      if (timedOut) {
+        console.warn('⚠️ Vehicle document storage load timed out:', error);
+      } else {
+        console.error('❌ Error loading vehicle documents:', error);
+      }
+
+      setStorageLoadError(message);
+      if (!timedOut) {
+        setVehicleMedia([]);
+      }
+      if (!timedOut && syncStorageToParent && onDocumentsChange && lastSyncedSignature !== '[]') {
         setLastSyncedSignature('[]');
         onDocumentsChange([]);
       }
@@ -506,7 +515,7 @@ const VehicleDocuments = ({
       <div className={`space-y-4 ${className}`}>
         <div className="flex items-center justify-center p-8">
           <RefreshCw className="w-6 h-6 text-blue-600 animate-spin mr-2" />
-          <span className="text-sm text-gray-600">Loading vehicle media...</span>
+          <span className="text-sm text-gray-600">{tr('Loading vehicle documents...', 'Chargement des documents véhicule...')}</span>
         </div>
       </div>
     );
@@ -518,10 +527,10 @@ const VehicleDocuments = ({
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start gap-2">
           <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
           <div className="text-sm">
-            <p className="text-amber-800 font-medium">{tr('No Media Found', 'Aucun média trouvé')}</p>
+            <p className="text-amber-800 font-medium">{tr('No documents found', 'Aucun document trouvé')}</p>
             <p className="text-amber-700">
               {loadFromStorage 
-                ? tr('No documents or media have been uploaded for this vehicle yet.', "Aucun document ou média n'a encore été téléversé pour ce véhicule.")
+                ? tr('No legal documents have been uploaded for this vehicle yet.', "Aucun document légal n'a encore été téléversé pour ce véhicule.")
                 : tr('No documents uploaded yet for this new vehicle.', "Aucun document n'a encore été téléversé pour ce nouveau véhicule.")
               }
             </p>
@@ -530,7 +539,7 @@ const VehicleDocuments = ({
         
         <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center">
           <File className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-400">{tr('No media available', 'Aucun média disponible')}</p>
+          <p className="text-sm text-gray-400">{tr('No documents available', 'Aucun document disponible')}</p>
           {loadFromStorage && vehicleId && (
             <button
               type="button"
@@ -547,12 +556,17 @@ const VehicleDocuments = ({
 
   return (
     <div className={`space-y-4 ${className}`}>
+      {storageLoadError ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+          {storageLoadError}
+        </div>
+      ) : null}
       {/* Documents Grid */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-medium text-gray-700 flex items-center gap-2">
             <File className="w-4 h-4" />
-            {tr('Vehicle Media', 'Médias du véhicule')} ({allDocuments.length})
+            {tr('Vehicle documents', 'Documents du véhicule')} ({allDocuments.length})
             {vehicleId && <span className="text-xs text-gray-500">• {tr('Vehicle ID', 'ID véhicule')}: {vehicleId}</span>}
           </h4>
           {loadFromStorage && vehicleId && (

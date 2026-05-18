@@ -75,6 +75,35 @@ const buildTemporaryDocument = ({ fileId, file, category, categoryKey, vehicleId
   };
 };
 
+const mergeDocumentList = (currentDocuments = [], nextDocuments = []) => {
+  const merged = [];
+  const seen = new Set();
+
+  [...(Array.isArray(nextDocuments) ? nextDocuments : []), ...(Array.isArray(currentDocuments) ? currentDocuments : [])]
+    .filter(Boolean)
+    .forEach((document) => {
+      const source = String(document?.source || '').trim().toLowerCase();
+      const categoryKey = String(document?.categoryKey || '').trim().toLowerCase();
+      const key =
+        source === 'verification' && categoryKey
+          ? `verification:${categoryKey}`
+          : document?.storagePath || document?.url || document?.id || `${categoryKey}:${document?.name || ''}`;
+
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      merged.push(document);
+    });
+
+  return merged;
+};
+
+const replaceDocumentInList = (currentDocuments = [], temporaryId, finalDocument) => {
+  const withoutTemporary = (Array.isArray(currentDocuments) ? currentDocuments : []).filter(
+    (document) => document?.id !== temporaryId
+  );
+  return mergeDocumentList(withoutTemporary, finalDocument ? [finalDocument] : []);
+};
+
 const DocumentUpload = ({
   vehicleId,
   verificationEntityId = null,
@@ -168,6 +197,7 @@ const DocumentUpload = ({
       for (const file of files) {
         const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
         const selectedCategory = documentCategory;
+        const categoryLabel = DOCUMENT_CATEGORIES.find((category) => category.value === selectedCategory)?.label || file.type || 'Document';
         const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const storedFileName = `${selectedCategory}__${fileId}_${safeFileName}`;
         const pathPrefix = `${vehicleId}`;
@@ -177,7 +207,13 @@ const DocumentUpload = ({
         try {
           setUploadProgress((prev) => ({
             ...prev,
-            [fileId]: { progress: 0, status: 'uploading', updatedAt: Date.now() },
+            [fileId]: {
+              category: selectedCategory,
+              categoryLabel,
+              progress: 0,
+              status: 'uploading',
+              updatedAt: Date.now(),
+            },
           }));
  
           progressTimer = window.setInterval(() => {
@@ -205,7 +241,6 @@ const DocumentUpload = ({
             verificationEntityId &&
             !String(vehicleId).startsWith('owner-draft-');
           const shouldRunVehicleOcr = ['registration', 'insurance'].includes(selectedCategory);
-          const categoryLabel = DOCUMENT_CATEGORIES.find((category) => category.value === selectedCategory)?.label || file.type || 'Document';
 
           let documentObj = null;
 
@@ -221,11 +256,17 @@ const DocumentUpload = ({
             });
 
             setTemporaryDocuments((current) => [...current, temporaryDocument]);
+            onDocumentsChange?.(mergeDocumentList(documents, [temporaryDocument]));
 
             setUploadProgress((prev) => {
               return {
                 ...prev,
-                [fileId]: { progress: 100, status: shouldRunVehicleOcr ? 'scanning' : 'uploading', updatedAt: Date.now() },
+                [fileId]: {
+                  ...(prev[fileId] || {}),
+                  progress: 100,
+                  status: shouldRunVehicleOcr ? 'scanning' : 'uploading',
+                  updatedAt: Date.now(),
+                },
               };
             });
 
@@ -256,6 +297,7 @@ const DocumentUpload = ({
                 return {
                   ...prev,
                   [fileId]: {
+                    ...(prev[fileId] || {}),
                     progress: 100,
                     status: 'saving',
                     updatedAt: Date.now(),
@@ -264,13 +306,17 @@ const DocumentUpload = ({
               });
             }
 
-            const verificationResult = await VerificationService.uploadVerificationDocument({
-              entityType: 'vehicle',
-              entityId: String(verificationEntityId),
-              ownerUserId,
-              verificationType,
-              file,
-            });
+            const verificationResult = await runWithTimeout(
+              VerificationService.uploadVerificationDocument({
+                entityType: 'vehicle',
+                entityId: String(verificationEntityId),
+                ownerUserId,
+                verificationType,
+                file,
+              }),
+              45000,
+              tr('Document review save timed out. The scanned fields are still kept below.', 'L’enregistrement de revue a expiré. Les champs scannés restent conservés ci-dessous.')
+            );
 
             const request = verificationResult?.request || {};
             documentObj = {
@@ -286,6 +332,7 @@ const DocumentUpload = ({
               categoryKey: selectedCategory,
               vehicleId,
               status: request.status || 'pending',
+              replacesDocumentId: temporaryDocument.id,
             };
 
             setTemporaryDocuments((current) => {
@@ -294,6 +341,7 @@ const DocumentUpload = ({
                 .forEach((item) => URL.revokeObjectURL(item.objectUrl));
               return current.filter((item) => item?.id !== temporaryDocument.id);
             });
+            onDocumentsChange?.(replaceDocumentInList(documents, temporaryDocument.id, documentObj));
 
             if (typeof onOcrExtracted === 'function') {
               await onOcrExtracted({
@@ -338,7 +386,12 @@ const DocumentUpload = ({
           setUploadProgress((prev) => {
             return {
               ...prev,
-              [fileId]: { progress: 100, status: 'completed', updatedAt: Date.now() },
+              [fileId]: {
+                ...(prev[fileId] || {}),
+                progress: 100,
+                status: 'completed',
+                updatedAt: Date.now(),
+              },
             };
           });
           if (!shouldQueueVerification && shouldRunVehicleOcr && typeof onOcrExtracted === 'function') {
@@ -347,6 +400,7 @@ const DocumentUpload = ({
                 return {
                   ...prev,
                   [fileId]: {
+                    ...(prev[fileId] || {}),
                     progress: 100,
                     status: shouldRunVehicleOcr ? 'scanning' : 'completed',
                     updatedAt: Date.now(),
@@ -375,6 +429,7 @@ const DocumentUpload = ({
                   return {
                     ...prev,
                     [fileId]: {
+                      ...(prev[fileId] || {}),
                       progress: 100,
                       status: ocrResult?.success ? 'completed' : 'error',
                       error: ocrResult?.success ? undefined : (ocrResult?.error || 'Scan failed'),
@@ -388,7 +443,12 @@ const DocumentUpload = ({
               setUploadProgress((prev) => {
                 return {
                   ...prev,
-                  [fileId]: { progress: 100, status: 'completed', updatedAt: Date.now() },
+                  [fileId]: {
+                    ...(prev[fileId] || {}),
+                    progress: 100,
+                    status: 'completed',
+                    updatedAt: Date.now(),
+                  },
                 };
               });
             })().catch(async (backgroundError) => {
@@ -412,6 +472,7 @@ const DocumentUpload = ({
                 return {
                   ...prev,
                   [fileId]: {
+                    ...(prev[fileId] || {}),
                     progress: 100,
                     status: 'error',
                     error: backgroundError?.message || 'Processing failed',
@@ -450,6 +511,7 @@ const DocumentUpload = ({
             return {
               ...prev,
               [fileId]: {
+                ...(prev[fileId] || {}),
                 progress: 0,
                 status: 'error',
                 error: fileError.message,
@@ -461,7 +523,7 @@ const DocumentUpload = ({
       }
 
       if (newDocuments.length > 0) {
-        const updatedDocuments = [...documents, ...newDocuments];
+        const updatedDocuments = mergeDocumentList(documents, newDocuments);
         onDocumentsChange(updatedDocuments);
         onUploadComplete?.(updatedDocuments);
       }
@@ -505,7 +567,9 @@ const DocumentUpload = ({
   const activeProgress = [...progressEntries]
     .sort(([, left], [, right]) => (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0))[0]?.[1] || null;
   const activeCategoryLabel =
-    DOCUMENT_CATEGORIES.find((category) => category.value === documentCategory)?.label || tr('Document', 'Document');
+    activeProgress?.categoryLabel ||
+    DOCUMENT_CATEGORIES.find((category) => category.value === documentCategory)?.label ||
+    tr('Document', 'Document');
   const uploadStateMeta = activeProgress
     ? activeProgress.status === 'uploading'
       ? {
@@ -543,6 +607,37 @@ const DocumentUpload = ({
       <div className="rounded-[1.4rem] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
         {tr('Final verification may take up to 24 hours.', 'La vérification finale peut prendre jusqu’à 24 heures.')}
       </div>
+
+      {DOCUMENT_CATEGORIES.length > 1 ? (
+        <div className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {tr('Choose document type', 'Choisir le type de document')}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {DOCUMENT_CATEGORIES.map((category) => {
+              const active = documentCategory === category.value;
+              return (
+                <button
+                  key={category.value}
+                  type="button"
+                  disabled={disabled || uploading || Boolean(lockedCategory)}
+                  onClick={() => setDocumentCategory(category.value)}
+                  className={`rounded-2xl border px-4 py-2 text-sm font-bold transition ${
+                    active
+                      ? 'border-violet-300 bg-violet-600 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
+                >
+                  {category.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-xs font-medium text-slate-500">
+            {tr('Pick the type first, then upload the matching photo.', 'Choisissez le type, puis téléversez la photo correspondante.')}
+          </p>
+        </div>
+      ) : null}
 
       <div
         className={`rounded-[1.6rem] border-2 border-dashed p-6 text-center transition-colors ${

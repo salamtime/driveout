@@ -29,6 +29,33 @@ const sendJson = (res, status, body) => {
   res.status(status).json(body);
 };
 
+const runOptionalVerificationTask = async (taskPromise, {
+  timeoutMs = 3000,
+  fallback = null,
+  label = 'verification optional task',
+} = {}) => {
+  let timeoutId = null;
+
+  try {
+    return await Promise.race([
+      taskPromise,
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => {
+          console.warn(`${label} timed out after ${timeoutMs}ms`);
+          resolve(fallback);
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    console.warn(`${label} skipped:`, error?.message || error);
+    return fallback;
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
 const getAction = (req) => String(req.query?.action || '').trim();
 
 const withSignedFileUrls = async (adminClient, rows = []) => Promise.all(rows.map(async (row) => {
@@ -1020,12 +1047,23 @@ const handlePost = async (req, res) => {
 
   if (error) return sendJson(res, 500, { error: error.message });
 
-  const canonicalThread = await ensureVerificationCaseThread(adminClient, {
-    entityType,
-    entityId,
-    ownerUserId,
-    tenantScope,
-  });
+  const signedRequest = decorateVerificationRows([data])[0];
+  sendJson(res, 201, { request: signedRequest, summary: null });
+
+  void (async () => {
+  const canonicalThread = await runOptionalVerificationTask(
+    ensureVerificationCaseThread(adminClient, {
+      entityType,
+      entityId,
+      ownerUserId,
+      tenantScope,
+    }),
+    {
+      timeoutMs: 3000,
+      fallback: null,
+      label: 'Verification thread setup',
+    }
+  );
 
   if (canonicalThread?.threadKey || canonicalThread?.threadId || canonicalThread?.caseId) {
     const workflowMetadata = {
@@ -1036,91 +1074,119 @@ const handlePost = async (req, res) => {
       normalizedSource: 'api_verifications_create',
     };
 
-    const { data: updatedVerification } = await applyTenantQueryScope(
-      adminClient
-      .from(VERIFICATION_REQUESTS_TABLE)
-      .update({
-        verification_case_id: canonicalThread?.caseId || null,
-        thread_id: canonicalThread?.threadId || null,
-        thread_key: canonicalThread?.threadKey || null,
-        workflow_metadata: workflowMetadata,
-      })
-      .eq('id', data.id)
-      .select('*')
-      .single(),
-      tenantScope
+    const updatedVerificationResult = await runOptionalVerificationTask(
+      applyTenantQueryScope(
+        adminClient
+        .from(VERIFICATION_REQUESTS_TABLE)
+        .update({
+          verification_case_id: canonicalThread?.caseId || null,
+          thread_id: canonicalThread?.threadId || null,
+          thread_key: canonicalThread?.threadKey || null,
+          workflow_metadata: workflowMetadata,
+        })
+        .eq('id', data.id)
+        .select('*')
+        .single(),
+        tenantScope
+      ),
+      {
+        timeoutMs: 3000,
+        fallback: null,
+        label: 'Verification workflow metadata update',
+      }
     );
+    const updatedVerification = updatedVerificationResult?.data || null;
 
     if (updatedVerification?.id) {
       Object.assign(data, updatedVerification);
     }
   }
 
-  await addVerificationEvent(adminClient, {
-    verificationRequestId: data.id,
-    action: 'submitted',
-    toStatus: 'pending',
-    actorUserId: user.id,
-    note: body.notes || null,
-  });
+  await runOptionalVerificationTask(
+    addVerificationEvent(adminClient, {
+      verificationRequestId: data.id,
+      action: 'submitted',
+      toStatus: 'pending',
+      actorUserId: user.id,
+      note: body.notes || null,
+    }),
+    {
+      timeoutMs: 2500,
+      fallback: null,
+      label: 'Verification submitted event',
+    }
+  );
 
-  const summary = await refreshEntityVerificationSummary(adminClient, entityType, entityId);
-  const [signedRequest] = decorateVerificationRows(await withSignedFileUrls(adminClient, [data]));
+  await runOptionalVerificationTask(
+    refreshEntityVerificationSummary(adminClient, entityType, entityId),
+    {
+      timeoutMs: 5000,
+      fallback: null,
+      label: 'Verification summary refresh',
+    }
+  );
 
   const verificationThreadKey = String(data.thread_key || '').trim() || buildVerificationThreadKey({
     entityType,
     entityId,
   });
 
-  await adminClient
-    .from(SHARED_MESSAGES_TABLE)
-    .insert(stampTenantPayload({
-      ...(data.thread_id ? { thread_id: data.thread_id } : {}),
-      thread_key: verificationThreadKey,
-      family: 'verification',
-      thread_type: 'verification',
-      entity_type: entityType,
-      entity_id: entityId,
-      message_type: 'submission_event',
-      subject: 'Verification review',
-      body: `${getVerificationDocumentLabel(verificationType)} submitted for review.`,
-      sender_user_id: user.id,
-      sender_role: entityType === 'vehicle' ? 'owner' : 'customer',
-      recipient_user_id: ownerUserId,
-      recipient_role: entityType === 'vehicle' ? 'owner' : 'customer',
-      metadata: {
-        type: 'verification_card',
-        reviewTitle: 'Verification review',
-        verificationRequestId: signedRequest.id,
-        verificationType,
-        documentType: verificationType,
-        verificationStatus: 'pending',
-        status: 'pending',
-        imageUrl: signedRequest.file_url || null,
-        fileUrl: signedRequest.file_url || null,
-        fileName: signedRequest.file_name || null,
-        entityId,
-        entityType,
-        href: buildVerificationReviewPath({
-          role: 'customer',
-          entityType,
-          entityId,
-          requestId: signedRequest.id,
+  await runOptionalVerificationTask(
+    adminClient
+      .from(SHARED_MESSAGES_TABLE)
+      .insert(stampTenantPayload({
+        ...(data.thread_id ? { thread_id: data.thread_id } : {}),
+        thread_key: verificationThreadKey,
+        family: 'verification',
+        thread_type: 'verification',
+        entity_type: entityType,
+        entity_id: entityId,
+        message_type: 'submission_event',
+        subject: 'Verification review',
+        body: `${getVerificationDocumentLabel(verificationType)} submitted for review.`,
+        sender_user_id: user.id,
+        sender_role: entityType === 'vehicle' ? 'owner' : 'customer',
+        recipient_user_id: ownerUserId,
+        recipient_role: entityType === 'vehicle' ? 'owner' : 'customer',
+        metadata: {
+          type: 'verification_card',
+          reviewTitle: 'Verification review',
+          verificationRequestId: signedRequest.id,
+          verificationType,
           documentType: verificationType,
-        }),
-        adminHref: buildVerificationReviewPath({
-          role: 'admin',
-          entityType,
+          verificationStatus: 'pending',
+          status: 'pending',
+          imageUrl: signedRequest.file_url || null,
+          fileUrl: signedRequest.file_url || null,
+          fileName: signedRequest.file_name || null,
           entityId,
-          requestId: signedRequest.id,
-          documentType: verificationType,
-        }),
-        source: 'verification_submission',
-      },
-      status: 'sent',
-    }, tenantScope));
-
-  return sendJson(res, 201, { request: signedRequest, summary });
+          entityType,
+          href: buildVerificationReviewPath({
+            role: 'customer',
+            entityType,
+            entityId,
+            requestId: signedRequest.id,
+            documentType: verificationType,
+          }),
+          adminHref: buildVerificationReviewPath({
+            role: 'admin',
+            entityType,
+            entityId,
+            requestId: signedRequest.id,
+            documentType: verificationType,
+          }),
+          source: 'verification_submission',
+        },
+        status: 'sent',
+      }, tenantScope)),
+    {
+      timeoutMs: 2500,
+      fallback: null,
+      label: 'Verification inbox message creation',
+    }
+  );
+  })();
+  return undefined;
 };
 
 const handlePatch = async (req, res) => {

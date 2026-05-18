@@ -173,13 +173,17 @@ export const canEditRentalPrice = (user) => {
     hasPermission('Edit Rental Price', userProfile) ||
     hasPermission('Change Rental Price', userProfile) ||
     hasPermission('Edit Rental Price Without Approval', userProfile) ||
-    hasPermission('Pricing Management', userProfile) ||
-    hasPermission('Rental Management', userProfile)
+    hasPermission('Pricing Management', userProfile)
   );
 };
 
 export const canEditRentalPriceWithoutApproval = (user) => {
   return canEditRentalPrice(user);
+};
+
+export const canRequestRentalPriceChange = (user) => {
+  const userProfile = user || getCurrentUser();
+  return canEditRentalPrice(userProfile) || hasPermission('Rental Management', userProfile);
 };
 
 export const canEditRentalContract = (user) => {
@@ -217,23 +221,16 @@ export const canApproveRentalExtensions = (user) => {
   const userProfile = user || getCurrentUser();
   const role = String(userProfile?.role || '').toLowerCase();
 
-  return role === 'owner' || role === 'admin';
+  return (
+    role === 'owner' ||
+    role === 'admin' ||
+    hasPermission('Approve Rental Extensions', userProfile)
+  );
 };
 
 export const requiresExtensionApproval = (user) => {
   const userProfile = user || getCurrentUser();
-  const role = String(userProfile?.role || '').toLowerCase();
-
-  if (role === 'owner' || role === 'admin') {
-    return false;
-  }
-
-  const permissionMap = normalizePermissionMap(userProfile);
-  if (!Object.prototype.hasOwnProperty.call(permissionMap, 'Require Extension Approval')) {
-    return true;
-  }
-
-  return hasPermission('Require Extension Approval', userProfile);
+  return !canApproveRentalExtensions(userProfile);
 };
 
 export const canChooseTourGuide = (user) => {

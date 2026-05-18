@@ -13,6 +13,19 @@ const buildHeaders = async (extraHeaders = {}) => {
   };
 };
 
+const buildRequestOptions = (options, headers) => ({
+  ...options,
+  cache: options.cache || 'no-store',
+  headers,
+});
+
+const createAdminApiError = (message, response, payload) => {
+  const error = new Error(message || 'Request failed');
+  error.status = response?.status;
+  error.payload = payload;
+  return error;
+};
+
 const parseResponse = async (response) => {
   const contentType = response.headers.get('content-type') || '';
   const data = contentType.includes('application/json')
@@ -30,22 +43,35 @@ const parseResponse = async (response) => {
     const message = typeof data === 'string'
       ? data
       : data?.error || data?.message || response.statusText;
-    throw new Error(message || 'Request failed');
+    throw createAdminApiError(message || 'Request failed', response, data);
   }
 
   return data;
 };
 
 export const adminApiRequest = async (path, options = {}) => {
-  const headers = await buildHeaders(options.body
+  const extraHeaders = options.body
     ? { 'Content-Type': 'application/json', ...(options.headers || {}) }
-    : options.headers || {});
+    : options.headers || {};
+  let headers = await buildHeaders(extraHeaders);
 
-  const response = await fetch(path, {
-    ...options,
-    cache: options.cache || 'no-store',
-    headers,
-  });
+  let response = await fetch(path, buildRequestOptions(options, headers));
+
+  if (response.status === 401) {
+    try {
+      const refreshResult = await supabase.auth.refreshSession();
+      const refreshedToken = refreshResult?.data?.session?.access_token;
+      if (refreshedToken) {
+        headers = {
+          Authorization: `Bearer ${refreshedToken}`,
+          ...extraHeaders,
+        };
+        response = await fetch(path, buildRequestOptions(options, headers));
+      }
+    } catch (refreshError) {
+      // Fall through to the original 401 parse below.
+    }
+  }
 
   return parseResponse(response);
 };

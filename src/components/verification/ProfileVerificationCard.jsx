@@ -22,11 +22,11 @@ const ProfileVerificationCard = ({ profile }) => {
   const profileId = profile?.id;
   const summary = useMemo(() => buildEntityVerificationSummary(requests, 'user'), [requests]);
 
-  const loadRequests = useCallback(async () => {
+  const loadRequests = useCallback(async ({ forceRefresh = false } = {}) => {
     if (!profileId) return;
     try {
       setLoading(true);
-      const result = await VerificationService.getEntityVerificationSummary('user', profileId);
+      const result = await VerificationService.getEntityVerificationSummary('user', profileId, { forceRefresh });
       setRequests(result.requests || []);
     } catch (error) {
       console.warn('Unable to load profile verification summary:', error.message);

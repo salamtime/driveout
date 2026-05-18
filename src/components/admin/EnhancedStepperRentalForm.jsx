@@ -18,8 +18,9 @@ import RentalService from '../../services/RentalService';
 import VehicleService from '../../services/VehicleService';
 import VehicleModelService from '../../services/VehicleModelService';
 import AppSettingsService from '../../services/AppSettingsService';
+import { getDepositPresetSettings } from '../../services/DepositPresetSettingsService';
 import enhancedUnifiedCustomerService, { updateCustomerById } from '../../services/EnhancedUnifiedCustomerService';
-import { applyOrganizationMatch, getCurrentOrganizationId } from '../../services/OrganizationService';
+import { applyOrganizationMatch, getCurrentOrganizationId, scopeTenantOwnedQuery } from '../../services/OrganizationService';
 import { useAuth } from '../../contexts/AuthContext';
 import { canEditRentalPrice } from '../../utils/permissionHelpers';
 import { 
@@ -50,6 +51,16 @@ import { PHONE_COUNTRY_CODES } from '../../constants/phoneCountryCodes';
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
 const MAX_BOOKING_GRACE_MINUTES = 120;
+const VEHICLE_MODELS_TABLE = 'saharax_0u4w4d_vehicle_models';
+const BASE_PRICES_TABLE = 'app_4c3a7a6153_base_prices';
+const CUSTOMERS_TABLE = 'app_4c3a7a6153_customers';
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
+const RENTAL_SECOND_DRIVERS_TABLE = 'app_4c3a7a6153_rental_second_drivers';
+const RENTAL_KM_PACKAGES_TABLE = 'app_4c3a7a6153_rental_km_packages';
+const PRICING_TIERS_TABLE = 'pricing_tiers';
+
+const scopeRentalFormTenantQuery = async (query, tableName, message = null) =>
+  scopeTenantOwnedQuery(query, tableName, { message });
 const normalizeBookingGraceMinutes = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_BOOKING_GRACE_MINUTES;
@@ -166,6 +177,38 @@ const formatDynamicMad = (value) => {
   const amount = Number(value || 0);
   if (!Number.isFinite(amount)) return '0';
   return String(Math.trunc(amount));
+};
+
+const getVehicleDisplayNumber = (vehicle, fallback = '') => {
+  const plateNumber = String(vehicle?.plate_number || '').trim();
+  if (plateNumber) return plateNumber;
+
+  const registrationNumber = String(vehicle?.registration_number || '').trim();
+  if (registrationNumber) return registrationNumber;
+
+  return fallback;
+};
+
+const getVehicleModelIdValue = (vehicle) => (
+  vehicle?.vehicle_model_id
+  ?? vehicle?.model_id
+  ?? vehicle?.vehicle_model?.id
+  ?? vehicle?.vehicleModelId
+  ?? null
+);
+
+const isAbortLikeRequestError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  const name = String(error?.name || '').toLowerCase();
+
+  return (
+    name === 'aborterror' ||
+    message.includes('aborterror') ||
+    message.includes('signal is aborted') ||
+    message.includes('signal has been aborted') ||
+    message.includes('the operation was aborted') ||
+    message.includes('body stream already read')
+  );
 };
 
 const getFixedPackageAmount = (data = {}) => {
@@ -686,27 +729,13 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   const loadDamageDepositConfig = async () => {
     try {
       console.log('📡 Loading damage deposit configuration...');
-      
-      const { data, error } = await supabase
-        .from('app_settings')
-        .select('damage_deposit_presets, allow_custom_deposit')
-        .eq('id', 1)
-        .limit(1);
-
-      if (error) throw error;
-
-      const row = Array.isArray(data) ? data[0] : null;
-
-      if (row) {
-        const config = {
-          vehicleModelPresets: row.damage_deposit_presets || {},
-          allowCustomDeposit: row.allow_custom_deposit ?? true
-        };
-        
-        setDamageDepositConfig(config);
-        console.log('✅ Loaded damage deposit config:', config);
-      }
+      const config = await getDepositPresetSettings();
+      setDamageDepositConfig(config);
+      console.log('✅ Loaded damage deposit config:', config);
     } catch (error) {
+      if (isAbortLikeRequestError(error)) {
+        return;
+      }
       console.error('❌ Error loading damage deposit config:', error);
       setDamageDepositConfig({
         vehicleModelPresets: {},
@@ -718,7 +747,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   // ==================== LOAD FUEL CHARGE SETTINGS ====================
 const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, usePackagePricing = null) => {
   try {
-    const modelId = vehicleModelId || formData.vehicle?.vehicle_model_id;
+    const modelId = vehicleModelId || resolveVehicleModelId(formData.vehicle_id);
     const type = rentalType || formData.rental_type || 'daily';
     const packagePricing = usePackagePricing ?? formData.use_package_pricing;
 
@@ -754,20 +783,59 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
     setFuelChargeEnabled(!packagePricing && (rentalType || formData.rental_type) === 'daily' && pricePerLine > 0);
 
   } catch (error) {
+    if (isAbortLikeRequestError(error)) {
+      return;
+    }
     console.error('Error loading fuel charge settings:', error);
     setFuelChargeAmount(0);
     setFuelChargeEnabled(false);
   }
 };
 
+  const findVehicleRecord = useCallback((vehicleId) => {
+    if (!vehicleId) return null;
+
+    return (
+      availableVehicles.find((vehicle) => String(vehicle.id) === String(vehicleId)) ||
+      allVehiclesBeforeFilter.find((vehicle) => String(vehicle.id) === String(vehicleId)) ||
+      null
+    );
+  }, [availableVehicles, allVehiclesBeforeFilter]);
+
+  const resolveVehicleModelId = useCallback((vehicleOrId) => {
+    const vehicle =
+      vehicleOrId && typeof vehicleOrId === 'object'
+        ? vehicleOrId
+        : findVehicleRecord(vehicleOrId);
+
+    const directModelId = String(getVehicleModelIdValue(vehicle) || '').trim();
+    if (directModelId) {
+      return directModelId;
+    }
+
+    const vehicleName = String(vehicle?.name || '').trim().toLowerCase();
+    const vehicleModel = String(vehicle?.model || '').trim().toLowerCase();
+
+    const matchedModel = (vehicleModels || []).find((model) => {
+      const modelName = String(model?.name || '').trim().toLowerCase();
+      const modelCode = String(model?.model || '').trim().toLowerCase();
+      return Boolean(model?.id) && (
+        (vehicleName && (vehicleName === modelName || vehicleName === modelCode)) ||
+        (vehicleModel && (vehicleModel === modelName || vehicleModel === modelCode))
+      );
+    });
+
+    return matchedModel?.id ? String(matchedModel.id) : '';
+  }, [findVehicleRecord, vehicleModels]);
+  
   // ==================== NEW: GET ENABLED PRESETS FOR VEHICLE ====================
   const getEnabledPresetsForVehicle = (vehicleId) => {
     if (!vehicleId) return [];
-    
-    const vehicle = availableVehicles.find(v => v.id == vehicleId);
-    if (!vehicle || !vehicle.vehicle_model_id) return [];
-    
-    const presets = damageDepositConfig.vehicleModelPresets[vehicle.vehicle_model_id] || [];
+
+    const vehicleModelId = resolveVehicleModelId(vehicleId);
+    if (!vehicleModelId) return [];
+
+    const presets = damageDepositConfig.vehicleModelPresets[vehicleModelId] || [];
     return Array.isArray(presets) ? presets.filter(p => p.enabled) : [];
   };
 
@@ -984,8 +1052,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       setVehicleModels(models || []);
       
       const vehicles = await VehicleService.getAllVehicles();
-      
+
       if (!Array.isArray(vehicles)) {
+        setAllVehiclesBeforeFilter([]);
         setAvailableVehicles([]);
       } else {
         const eligibleVehicles = (vehicles || []).filter(vehicle => {
@@ -1004,6 +1073,8 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
           count: eligibleVehicles.length,
           vehicles: eligibleVehicles.map(v => ({ id: v.id, name: v.name, status: v.status }))
         });
+
+        setAllVehiclesBeforeFilter(eligibleVehicles);
 
         if (formData.rental_start_date && formData.rental_end_date) {
           const filteredVehicles = await filterAvailableVehiclesByDates(
@@ -1165,12 +1236,26 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       ).trim();
       const phone = String(incomingData.customer_phone || incomingData.phone || '').trim();
       const email = String(incomingData.customer_email || incomingData.email || '').trim();
+      const dateOfBirth = String(
+        incomingData.customer_dob ||
+          incomingData.date_of_birth ||
+          incomingData.dateOfBirth ||
+          incomingData.dob ||
+          ''
+      ).trim();
+      const nationality = String(
+        incomingData.customer_nationality ||
+          incomingData.nationality ||
+          ''
+      ).trim();
       const lookupCandidate = {
         full_name: fullName,
         phone,
         email,
         licence_number: normalizedIdentity.licenceNumber || '',
         id_number: normalizedIdentity.idNumber || '',
+        date_of_birth: dateOfBirth || null,
+        nationality: nationality || '',
       };
       const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers(lookupCandidate);
       const exactMatch =
@@ -1239,24 +1324,20 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         return existingCustomer;
       }
       
-      const { data: savedCustomer, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .insert([customerData])
-        .select()
-        .single();
-      
-      if (error) {
-        if (error.code === '23505') {
-          const existingCustomer = await resolveExistingCustomerFromScan(customerData);
-          
-          if (existingCustomer) {
-            return existingCustomer;
-          }
-        }
-        throw error;
+      const savedCustomerResult = await enhancedUnifiedCustomerService.saveCustomer(customerData);
+
+      if (!savedCustomerResult?.success || !savedCustomerResult?.data) {
+        throw new Error(savedCustomerResult?.error || tr('Failed to save customer data.', 'Impossible d’enregistrer les données client.'));
       }
-      
-      setCustomers(prev => [...prev, savedCustomer]);
+
+      const savedCustomer = savedCustomerResult.data;
+      setCustomers(prev => {
+        const existingIds = new Set(prev.map((customer) => customer?.id).filter(Boolean));
+        if (existingIds.has(savedCustomer.id)) {
+          return prev.map((customer) => (customer?.id === savedCustomer.id ? savedCustomer : customer));
+        }
+        return [...prev, savedCustomer];
+      });
       return savedCustomer;
       
     } catch (error) {
@@ -1392,7 +1473,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
     const resolvedVehicleModelId =
       data.vehicle?.vehicle_model_id ||
       data.vehicle_model_id ||
-      availableVehicles.find((vehicle) => String(vehicle.id) === String(data.vehicle_id))?.vehicle_model_id ||
+      resolveVehicleModelId(data.vehicle_id) ||
       null;
     const inferredPresetLabel =
       resolvedVehicleModelId
@@ -1441,22 +1522,26 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
 
   // ==================== UPDATED: GET DIRECT PRICING FROM DATABASE WITH TIER CHECK ====================
   const getDirectPricing = async (vehicleId, rentalType, quantity = 1) => {
-    const vehicle = availableVehicles.find(v => v.id == vehicleId);
+    const vehicle = findVehicleRecord(vehicleId);
     if (!vehicle) {
       return rentalType === 'hourly' ? 400 : 1500;
     }
-    
-    const modelId = vehicle.vehicle_model_id;
+
+    const modelId = resolveVehicleModelId(vehicle);
     const normalizedQuantity = Number(quantity) || 1;
     let activeBasePrice = 0;
     
     if (modelId && (rentalType === 'hourly' || rentalType === 'daily')) {
-      const { data: basePriceData, error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
-        .eq('vehicle_model_id', modelId)
-        .eq('is_active', true)
-        .single();
+      const basePriceQuery = await scopeRentalFormTenantQuery(
+        supabase
+          .from(BASE_PRICES_TABLE)
+          .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
+          .eq('vehicle_model_id', modelId)
+          .eq('is_active', true),
+        BASE_PRICES_TABLE,
+        'Workspace organization context is required to load base prices.'
+      );
+      const { data: basePriceData, error } = await basePriceQuery.single();
       
       if (!error && basePriceData) {
         const priceField = rentalType === 'hourly' ? 'hourly_price' : 'daily_price';
@@ -1475,11 +1560,16 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
     }
     
     try {
-      const { data: pricingTiers, error: tiersError } = await supabase
-        .from('pricing_tiers')
-        .select('*')
-        .eq('vehicle_model_id', modelId)
-        .eq('is_active', true);
+      const pricingTierQuery = await scopeRentalFormTenantQuery(
+        supabase
+          .from(PRICING_TIERS_TABLE)
+          .select('*')
+          .eq('vehicle_model_id', modelId)
+          .eq('is_active', true),
+        PRICING_TIERS_TABLE,
+        'Workspace organization context is required to load pricing tiers.'
+      );
+      const { data: pricingTiers, error: tiersError } = await pricingTierQuery;
       
       if (tiersError) {
         throw tiersError;
@@ -1545,11 +1635,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
           return activeBasePrice;
         }
 
-        const { data: modelData, error: modelError } = await supabase
-          .from('saharax_0u4w4d_vehicle_models')
-          .select('hourly_price, daily_price')
-          .eq('id', modelId)
-          .single();
+        const modelQuery = await scopeRentalFormTenantQuery(
+          supabase
+            .from(VEHICLE_MODELS_TABLE)
+            .select('hourly_price, daily_price')
+            .eq('id', modelId),
+          VEHICLE_MODELS_TABLE,
+          'Workspace organization context is required to load vehicle model pricing.'
+        );
+        const { data: modelData, error: modelError } = await modelQuery.single();
         
         if (!modelError && modelData) {
           if (rentalType === 'hourly') {
@@ -1561,11 +1655,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
           }
         }
         
-        const { data: basePrices, error: baseError } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .select('hourly_price, daily_price')
-          .eq('vehicle_model_id', modelId)
-          .single();
+        const fallbackBasePriceQuery = await scopeRentalFormTenantQuery(
+          supabase
+            .from(BASE_PRICES_TABLE)
+            .select('hourly_price, daily_price')
+            .eq('vehicle_model_id', modelId),
+          BASE_PRICES_TABLE,
+          'Workspace organization context is required to load fallback base prices.'
+        );
+        const { data: basePrices, error: baseError } = await fallbackBasePriceQuery.single();
         
         if (!baseError && basePrices) {
           if (rentalType === 'hourly') {
@@ -1580,11 +1678,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       } catch (dbError) {
       }
       
-      const { data: modelInfo } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('model')
-        .eq('id', modelId)
-        .single();
+      const modelInfoQuery = await scopeRentalFormTenantQuery(
+        supabase
+          .from(VEHICLE_MODELS_TABLE)
+          .select('model')
+          .eq('id', modelId),
+        VEHICLE_MODELS_TABLE,
+        'Workspace organization context is required to load vehicle model metadata.'
+      );
+      const { data: modelInfo } = await modelInfoQuery.single();
       
       const modelType = modelInfo?.model || '';
       
@@ -1618,21 +1720,26 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       return defaultMeta;
     }
 
-    const vehicle = availableVehicles.find(v => v.id == vehicleId);
-    const modelId = vehicle?.vehicle_model_id;
+    const vehicle = findVehicleRecord(vehicleId);
+    const modelId = resolveVehicleModelId(vehicle);
 
     if (!modelId) {
       return defaultMeta;
     }
 
     try {
-      const { data: pricingTiers, error } = await supabase
-        .from('pricing_tiers')
-        .select('min_hours, max_hours, price_amount, calculation_method, is_active')
-        .eq('vehicle_model_id', modelId)
-        .eq('duration_type', 'hours')
-        .eq('is_active', true)
-        .order('min_hours', { ascending: true });
+      const pricingTierQuery = await scopeRentalFormTenantQuery(
+        supabase
+          .from(PRICING_TIERS_TABLE)
+          .select('min_hours, max_hours, price_amount, calculation_method, is_active')
+          .eq('vehicle_model_id', modelId)
+          .eq('duration_type', 'hours')
+          .eq('is_active', true)
+          .order('min_hours', { ascending: true }),
+        PRICING_TIERS_TABLE,
+        'Workspace organization context is required to load pricing metadata.'
+      );
+      const { data: pricingTiers, error } = await pricingTierQuery;
 
       if (error || !pricingTiers?.length) {
         return defaultMeta;
@@ -1691,14 +1798,19 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       let unitPrice = 0;
 
       if (isSingleUnit) {
-        const vehicle = availableVehicles.find(v => v.id == formData.vehicle_id);
-        if (vehicle?.vehicle_model_id) {
-          const { data: basePriceData, error } = await supabase
-            .from('app_4c3a7a6153_base_prices')
-            .select('hourly_price, daily_price')
-            .eq('vehicle_model_id', vehicle.vehicle_model_id)
-            .eq('is_active', true)
-            .single();
+          const vehicle = findVehicleRecord(formData.vehicle_id);
+          const vehicleModelId = resolveVehicleModelId(vehicle);
+          if (vehicleModelId) {
+            const basePriceQuery = await scopeRentalFormTenantQuery(
+              supabase
+                .from(BASE_PRICES_TABLE)
+                .select('hourly_price, daily_price')
+                .eq('vehicle_model_id', vehicleModelId)
+                .eq('is_active', true),
+              BASE_PRICES_TABLE,
+              'Workspace organization context is required to load unit pricing.'
+            );
+            const { data: basePriceData, error } = await basePriceQuery.single();
           
           if (!error && basePriceData) {
             if (formData.rental_type === 'hourly') {
@@ -2269,10 +2381,15 @@ const calculateFinancials = () => {
   // ==================== EVENT HANDLERS ====================
   const loadBasePrices = async () => {
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select('*')
-        .eq('is_active', true);
+      const basePriceQuery = await scopeRentalFormTenantQuery(
+        supabase
+          .from(BASE_PRICES_TABLE)
+          .select('*')
+          .eq('is_active', true),
+        BASE_PRICES_TABLE,
+        'Workspace organization context is required to load active base prices.'
+      );
+      const { data, error } = await basePriceQuery;
       
       if (error) {
       }
@@ -3519,9 +3636,7 @@ const calculateFinancials = () => {
         return { result: verifiedRental, rentalId: verifiedRental.id };
       }
       
-      const snapshotVehicle =
-        availableVehicles.find((vehicle) => String(vehicle.id) === String(submissionReadyFormData.vehicle_id)) ||
-        null;
+      const snapshotVehicle = findVehicleRecord(submissionReadyFormData.vehicle_id);
 
       const submissionData = {
         customer_name: submissionReadyFormData.customer_name,
@@ -3540,16 +3655,16 @@ const calculateFinancials = () => {
         vehicle_id: submissionReadyFormData.vehicle_id || null,
         vehicle_plate_number:
           mode === 'edit'
-            ? (initialData?.vehicle_plate_number ?? snapshotVehicle?.plate_number ?? null)
-            : (snapshotVehicle?.plate_number || null),
+            ? ((initialData?.vehicle_plate_number ?? getVehicleDisplayNumber(snapshotVehicle, '')) || null)
+            : (getVehicleDisplayNumber(snapshotVehicle, '') || null),
         selected_vehicle_id_snapshot:
           mode === 'edit'
             ? (initialData?.selected_vehicle_id_snapshot ?? initialData?.vehicle_id ?? null)
             : (snapshotVehicle?.id ?? submissionReadyFormData.vehicle_id ?? null),
         selected_vehicle_plate_snapshot:
           mode === 'edit'
-            ? (initialData?.selected_vehicle_plate_snapshot ?? initialData?.vehicle_plate_number ?? null)
-            : (snapshotVehicle?.plate_number || null),
+            ? ((initialData?.selected_vehicle_plate_snapshot ?? initialData?.vehicle_plate_number ?? getVehicleDisplayNumber(snapshotVehicle, '')) || null)
+            : (getVehicleDisplayNumber(snapshotVehicle, '') || null),
         selected_vehicle_model_snapshot:
           mode === 'edit'
             ? (initialData?.selected_vehicle_model_snapshot ?? null)
@@ -4091,18 +4206,16 @@ const calculateFinancials = () => {
     vehicleLoadTimeout.current = setTimeout(async () => {
       try {
         console.log('🔄 Debounced vehicle availability update triggered');
-        const { data: vehicles, error } = await supabase
-          .from('saharax_0u4w4d_vehicles')
-          .select('*')
-          .order('id');
-        
-        if (error) {
-          console.error('❌ Error fetching vehicles:', error);
+        const vehicles = await VehicleService.getAllVehicles();
+
+        if (!Array.isArray(vehicles)) {
+          setAllVehiclesBeforeFilter([]);
+          setAvailableVehicles([]);
           return;
         }
         
         const eligibleVehicles = (vehicles || []).filter(vehicle => {
-          if (vehicle.status === 'available') {
+          if (vehicle.status === 'available' || vehicle.status === 'scheduled') {
             return true;
           }
 
@@ -4120,7 +4233,8 @@ const calculateFinancials = () => {
           formData.rental_start_time || '00:00',
           formData.rental_end_time || '23:59'
         );
-        
+
+        setAllVehiclesBeforeFilter(eligibleVehicles);
         setAvailableVehicles(filteredVehicles);
         
         if (formData.vehicle_id) {
@@ -4331,7 +4445,7 @@ useEffect(() => {
       console.log(`📦 Fetching packages for model ID: ${vehicleModelId}, rental type: ${rentalType}`);
       
       let query = supabase
-        .from('app_4c3a7a6153_rental_km_packages')
+        .from(RENTAL_KM_PACKAGES_TABLE)
         .select('*, rate_types(name)')
         .eq('vehicle_model_id', vehicleModelId)
         .eq('is_active', true);
@@ -4343,7 +4457,12 @@ useEffect(() => {
         query = query.or('rate_type_id.eq.2,rate_type_id.is.null');
       }
       
-      const { data, error } = await query.order('fixed_amount', { ascending: true });
+      const scopedQuery = await scopeRentalFormTenantQuery(
+        query.order('fixed_amount', { ascending: true }),
+        RENTAL_KM_PACKAGES_TABLE,
+        'Workspace organization context is required to load vehicle packages.'
+      );
+      const { data, error } = await scopedQuery;
       
       if (error) {
         console.error('❌ Error fetching packages:', error);
@@ -4367,21 +4486,20 @@ useEffect(() => {
       setIsLoadingPackages(true);
 
       if (formData.vehicle_id && formData.rental_type) {
-        const vehicle =
-          availableVehicles.find(v => v.id == formData.vehicle_id) ||
-          allVehiclesBeforeFilter.find(v => v.id == formData.vehicle_id);
-        if (vehicle?.vehicle_model_id) {
-          console.log(`🔍 Vehicle selected: ${vehicle.id}, model ID: ${vehicle.vehicle_model_id}`);
+        const vehicle = findVehicleRecord(formData.vehicle_id);
+        const vehicleModelId = resolveVehicleModelId(vehicle);
+        if (vehicleModelId) {
+          console.log(`🔍 Vehicle selected: ${vehicle?.id}, model ID: ${vehicleModelId}`);
           
           // Fetch packages for this specific model
-          const packages = await fetchKMPackages(vehicle.vehicle_model_id, formData.rental_type);
+          const packages = await fetchKMPackages(vehicleModelId, formData.rental_type);
           // Reload fuel pricing for new vehicle model
-          await loadFuelChargeSettings(vehicle.vehicle_model_id, formData.rental_type, formData.use_package_pricing);
+          await loadFuelChargeSettings(vehicleModelId, formData.rental_type, formData.use_package_pricing);
           
           // Set packages for this specific vehicle model only
           setAvailablePackages(packages);
           
-          console.log(`📦 Setting available packages for model ${vehicle.vehicle_model_id}:`, 
+          console.log(`📦 Setting available packages for model ${vehicleModelId}:`, 
             packages.map(p => ({ id: p.id, name: p.name }))
           );
           
@@ -4406,7 +4524,7 @@ useEffect(() => {
                 use_package_pricing: false,
                 package_overrides_tier: false
               }));
-              loadFuelChargeSettings(vehicle.vehicle_model_id, formData.rental_type, false);
+              loadFuelChargeSettings(vehicleModelId, formData.rental_type, false);
             }
           }
         } else {
@@ -4469,6 +4587,7 @@ useEffect(() => {
     customers,
     rentals,
     suggestions,
+    allVehiclesBeforeFilter,
     customerAlert,
     isBannedCustomerBlocked,
     showCustomerAlertModal,
@@ -4505,6 +4624,8 @@ useEffect(() => {
     handleSubmit,
     handleReset,
     getEnabledPresetsForVehicle,
+    findVehicleRecord,
+    resolveVehicleModelId,
     calculateQuantityAndPricing,
     calculateFinancials,
     getDirectPricing,
@@ -4566,7 +4687,9 @@ const ModelFilterTabs = ({
 }) => {
   const getVehicleCountByModel = (modelId) => {
     if (!availableVehicles || availableVehicles.length === 0) return 0;
-    return availableVehicles.filter(vehicle => vehicle.vehicle_model_id === modelId).length;
+    return availableVehicles.filter(
+      (vehicle) => String(getVehicleModelIdValue(vehicle) || '') === String(modelId || '')
+    ).length;
   };
 
   if (!models || models.length === 0) {
@@ -5096,14 +5219,14 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
     if (aValid && !bValid) return -1;
     if (!aValid && bValid) return 1;
 
-    return String(a?.plate_number || a?.name || '').localeCompare(String(b?.plate_number || b?.name || ''));
+    return String(getVehicleDisplayNumber(a, a?.name || '')).localeCompare(String(getVehicleDisplayNumber(b, b?.name || '')));
   });
 
   const filteredVehicles = normalizedVehicles.filter(vehicle => {
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase();
     return (
-      (vehicle.plate_number && vehicle.plate_number.toLowerCase().includes(query)) ||
+      getVehicleDisplayNumber(vehicle, '').toLowerCase().includes(query) ||
       (vehicle.name && vehicle.name.toLowerCase().includes(query)) ||
       (vehicle.model && vehicle.model.toLowerCase().includes(query))
     );
@@ -5218,7 +5341,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                   <div>
                     <div className="text-xs text-gray-500">{tr('Plate', 'Plaque')}</div>
                     <div className="text-lg font-bold text-gray-900">
-                      {vehicle.plate_number || 'N/A'}
+                      {getVehicleDisplayNumber(vehicle, 'N/A')}
                     </div>
                   </div>
                 </div>
@@ -5243,16 +5366,20 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                 </div>
               </div>
 
-              {/* Model Info */}
+              {/* Secondary vehicle info */}
               <div className="mb-3">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-                    {tr('MODEL', 'MODÈLE')}
+                  <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                    {tr('Vehicle info', 'Info véhicule')}
                   </span>
                   <span className="text-xs text-gray-500">{duration} {duration > 1 ? (rentalType === 'hourly' ? tr('hrs', 'h') : tr('days', 'jours')) : (rentalType === 'hourly' ? tr('hr', 'h') : tr('day', 'jour'))}</span>
                 </div>
-                <h4 className="font-semibold text-gray-900">{vehicle.name}</h4>
-                <p className="text-sm text-gray-600">{vehicle.model}</p>
+                <h4 className="font-semibold text-gray-900">
+                  {vehicle.model || vehicle.vehicle_model_name || vehicle.name || tr('Vehicle', 'Véhicule')}
+                </h4>
+                {vehicle.name && vehicle.name !== vehicle.model && vehicle.name !== vehicle.vehicle_model_name && (
+                  <p className="text-sm text-gray-600">{vehicle.name}</p>
+                )}
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   <p className="text-[11px] font-medium text-gray-500">
                     {vehicle.current_odometer !== null && vehicle.current_odometer !== undefined && vehicle.current_odometer !== ''
@@ -6567,12 +6694,16 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           return;
         }
 
-        const { data: basePriceData } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .select('hourly_price, daily_price')
-          .eq('vehicle_model_id', modelId)
-          .eq('is_active', true)
-          .single();
+        const basePriceQuery = await scopeRentalFormTenantQuery(
+          supabase
+            .from(BASE_PRICES_TABLE)
+            .select('hourly_price, daily_price')
+            .eq('vehicle_model_id', modelId)
+            .eq('is_active', true),
+          BASE_PRICES_TABLE,
+          'Workspace organization context is required to load displayed base pricing.'
+        );
+        const { data: basePriceData } = await basePriceQuery.single();
 
         let basePrice = 0;
         let modelType = vehicle.model || '';
@@ -6584,11 +6715,15 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
             basePrice = basePriceData.daily_price || 0;
           }
         } else {
-          const { data: modelData } = await supabase
-            .from('saharax_0u4w4d_vehicle_models')
-            .select('daily_price, hourly_price, model')
-            .eq('id', modelId)
-            .single();
+          const modelQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(VEHICLE_MODELS_TABLE)
+              .select('daily_price, hourly_price, model')
+              .eq('id', modelId),
+            VEHICLE_MODELS_TABLE,
+            'Workspace organization context is required to load displayed vehicle model pricing.'
+          );
+          const { data: modelData } = await modelQuery.single();
 
           if (modelData) {
             if (rentalType === 'hourly') {
@@ -6663,12 +6798,17 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         let isFlatTierTotal = false;
         
         if (rentalType === 'daily' && duration > 1) {
-          const { data: pricingTiers, error } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', modelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'days');
+          const dailyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', modelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'days'),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load displayed daily pricing tiers.'
+          );
+          const { data: pricingTiers, error } = await dailyTierQuery;
           
           if (!error && pricingTiers && pricingTiers.length > 0) {
             let matchingTier = null;
@@ -6703,12 +6843,17 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         }
 
         if (rentalType === 'hourly' && duration > 1) {
-          const { data: pricingTiers, error } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', modelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'hours');
+          const hourlyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', modelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'hours'),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load displayed hourly pricing tiers.'
+          );
+          const { data: pricingTiers, error } = await hourlyTierQuery;
           
           if (!error && pricingTiers && pricingTiers.length > 0) {
             let matchingTier = null;
@@ -7003,13 +7148,18 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
         }
 
         if (rentalType === 'hourly' && normalizedDuration === 0.5) {
-          const { data: packageRows, error: packageError } = await supabase
-            .from('app_4c3a7a6153_rental_km_packages')
-            .select('*, rate_types(name)')
-            .eq('vehicle_model_id', modelId)
-            .eq('is_active', true)
-            .or('rate_type_id.eq.1,rate_type_id.is.null')
-            .order('fixed_amount', { ascending: true });
+          const packageQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(RENTAL_KM_PACKAGES_TABLE)
+              .select('*, rate_types(name)')
+              .eq('vehicle_model_id', modelId)
+              .eq('is_active', true)
+              .or('rate_type_id.eq.1,rate_type_id.is.null')
+              .order('fixed_amount', { ascending: true }),
+            RENTAL_KM_PACKAGES_TABLE,
+            'Workspace organization context is required to load rental packages.'
+          );
+          const { data: packageRows, error: packageError } = await packageQuery;
 
           if (!packageError) {
             const matchingPackage = findMatchingDurationPackage(packageRows || [], 'hourly', 0.5);
@@ -7030,12 +7180,16 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
 
         let basePrice = 0;
 
-        const { data: basePriceData } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .select('hourly_price, daily_price')
-          .eq('vehicle_model_id', modelId)
-          .eq('is_active', true)
-          .single();
+        const basePriceQuery = await scopeRentalFormTenantQuery(
+          supabase
+            .from(BASE_PRICES_TABLE)
+            .select('hourly_price, daily_price')
+            .eq('vehicle_model_id', modelId)
+            .eq('is_active', true),
+          BASE_PRICES_TABLE,
+          'Workspace organization context is required to load vehicle base prices.'
+        );
+        const { data: basePriceData } = await basePriceQuery.single();
 
         if (basePriceData) {
           basePrice = rentalType === 'hourly'
@@ -7046,12 +7200,17 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
         let resolvedPrice = basePrice;
 
         if (rentalType === 'hourly' && normalizedDuration > 1) {
-          const { data: pricingTiers } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', modelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'hours');
+          const hourlyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', modelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'hours'),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load hourly pricing tiers.'
+          );
+          const { data: pricingTiers } = await hourlyTierQuery;
 
           const matchingTier = (pricingTiers || []).find((tier) => {
             const minHours = Number(tier.min_hours ?? 0);
@@ -7071,12 +7230,17 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
         }
 
         if (rentalType === 'daily' && normalizedDuration > 1) {
-          const { data: pricingTiers } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', modelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'days');
+          const dailyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', modelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'days'),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load daily pricing tiers.'
+          );
+          const { data: pricingTiers } = await dailyTierQuery;
 
           const matchingTier = (pricingTiers || []).find((tier) => {
             const minDays = Number(tier.min_days ?? 1);
@@ -7176,25 +7340,34 @@ const TierPricingBreakdown = ({
         let hasTierMatch = false;
 
         if (rentalType === 'hourly') {
-          const { data: basePrices, error: baseError } = await supabase
-            .from('app_4c3a7a6153_base_prices')
-            .select('hourly_price')
-            .eq('vehicle_model_id', vehicleModelId)
-            .eq('is_active', true)
-            .single();
+          const hourlyBasePriceQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(BASE_PRICES_TABLE)
+              .select('hourly_price')
+              .eq('vehicle_model_id', vehicleModelId)
+              .eq('is_active', true),
+            BASE_PRICES_TABLE,
+            'Workspace organization context is required to load hourly base pricing.'
+          );
+          const { data: basePrices, error: baseError } = await hourlyBasePriceQuery.single();
 
           if (!baseError && basePrices?.hourly_price) {
             baseRate = parseFloat(basePrices.hourly_price);
             priceSource = 'base_prices';
           }
 
-          const { data: pricingTiers } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', vehicleModelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'hours')
-            .order('min_hours', { ascending: true });
+          const hourlyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', vehicleModelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'hours')
+              .order('min_hours', { ascending: true }),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load hourly tier pricing.'
+          );
+          const { data: pricingTiers } = await hourlyTierQuery;
 
           const matchingTier = (pricingTiers || []).find((tier) => {
             if (tier.min_hours === null || tier.max_hours === null || !tier.price_amount) return false;
@@ -7219,25 +7392,34 @@ const TierPricingBreakdown = ({
             }
           }
         } else if (rentalType === 'daily') {
-          const { data: basePrices, error: baseError } = await supabase
-            .from('app_4c3a7a6153_base_prices')
-            .select('daily_price')
-            .eq('vehicle_model_id', vehicleModelId)
-            .eq('is_active', true)
-            .single();
+          const dailyBasePriceQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(BASE_PRICES_TABLE)
+              .select('daily_price')
+              .eq('vehicle_model_id', vehicleModelId)
+              .eq('is_active', true),
+            BASE_PRICES_TABLE,
+            'Workspace organization context is required to load daily base pricing.'
+          );
+          const { data: basePrices, error: baseError } = await dailyBasePriceQuery.single();
 
           if (!baseError && basePrices?.daily_price) {
             baseRate = parseFloat(basePrices.daily_price);
             priceSource = 'base_prices';
           }
 
-          const { data: pricingTiers } = await supabase
-            .from('pricing_tiers')
-            .select('*')
-            .eq('vehicle_model_id', vehicleModelId)
-            .eq('is_active', true)
-            .eq('duration_type', 'days')
-            .order('min_days', { ascending: true });
+          const dailyTierQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(PRICING_TIERS_TABLE)
+              .select('*')
+              .eq('vehicle_model_id', vehicleModelId)
+              .eq('is_active', true)
+              .eq('duration_type', 'days')
+              .order('min_days', { ascending: true }),
+            PRICING_TIERS_TABLE,
+            'Workspace organization context is required to load daily tier pricing.'
+          );
+          const { data: pricingTiers } = await dailyTierQuery;
 
           const matchingTier = (pricingTiers || []).find((tier) => {
             if (!tier.daily_price_amount) return false;
@@ -7262,11 +7444,15 @@ const TierPricingBreakdown = ({
         }
 
         if (!baseRate || baseRate <= 0) {
-          const { data: modelData, error: modelError } = await supabase
-            .from('saharax_0u4w4d_vehicle_models')
-            .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
-            .eq('id', vehicleModelId)
-            .single();
+          const modelRateQuery = await scopeRentalFormTenantQuery(
+            supabase
+              .from(VEHICLE_MODELS_TABLE)
+              .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
+              .eq('id', vehicleModelId),
+            VEHICLE_MODELS_TABLE,
+            'Workspace organization context is required to load vehicle model rate fallbacks.'
+          );
+          const { data: modelData, error: modelError } = await modelRateQuery.single();
 
           if (!modelError && modelData) {
             baseRate = parseFloat(rentalType === 'hourly' ? modelData.hourly_price : modelData.daily_price) || 0;
@@ -8337,6 +8523,7 @@ const SimplifiedRentalWizard = ({
     dateError,
     vehicleModels,
     availableVehicles,
+    allVehiclesBeforeFilter,
     transportFees,
     availabilityStatus,
     autoCalculatedPrice,
@@ -8379,6 +8566,8 @@ const SimplifiedRentalWizard = ({
     handleReset,
     handleResetAutoPrice,
     getEnabledPresetsForVehicle,
+    findVehicleRecord,
+    resolveVehicleModelId,
     getDirectPricing,
     customerSearchRef,
     availablePackages,
@@ -8575,15 +8764,17 @@ const SimplifiedRentalWizard = ({
     
     const filtered = activeModelFilter 
       ? availableVehicles.filter(vehicle => 
-          vehicle.vehicle_model_id && 
-          String(vehicle.vehicle_model_id) === String(activeModelFilter)
+          getVehicleModelIdValue(vehicle) !== null &&
+          getVehicleModelIdValue(vehicle) !== undefined &&
+          getVehicleModelIdValue(vehicle) !== '' &&
+          String(getVehicleModelIdValue(vehicle)) === String(activeModelFilter)
         )
       : availableVehicles;
     
     setFilteredVehicles(filtered);
     
     const modelIds = [...new Set(availableVehicles
-      .map(v => v.vehicle_model_id)
+      .map(v => getVehicleModelIdValue(v))
       .filter(id => id !== null && id !== undefined && id !== ''))];
     
     if (vehicleModels && vehicleModels.length > 0) {
@@ -8600,7 +8791,7 @@ const SimplifiedRentalWizard = ({
   useEffect(() => {
     if (activeModelFilter && formData.vehicle_id && availableVehicles) {
       const selectedVehicle = availableVehicles.find(v => v.id == formData.vehicle_id);
-      if (selectedVehicle && String(selectedVehicle.vehicle_model_id) !== String(activeModelFilter)) {
+      if (selectedVehicle && String(getVehicleModelIdValue(selectedVehicle)) !== String(activeModelFilter)) {
         handleInputChange('vehicle_id', '');
       }
     }
@@ -8657,8 +8848,7 @@ const SimplifiedRentalWizard = ({
     : steps;
 
   const getSelectedVehicle = () => {
-    return availableVehicles.find(v => v.id == formData.vehicle_id) || 
-           vehicleModels.find(v => v.id == formData.vehicle_id);
+    return findVehicleRecord(formData.vehicle_id);
   };
 
   const formatPeriodDisplay = () => {
@@ -8765,7 +8955,7 @@ const SimplifiedRentalWizard = ({
 
   const selectedVehicleLabel = selectedVehicle
     ? [
-        selectedVehicle.plate_number || null,
+        getVehicleDisplayNumber(selectedVehicle, '') || null,
         selectedVehicle.model || selectedVehicle.vehicle_model_name || selectedVehicle.name || tr('Vehicle', 'Véhicule')
       ].filter(Boolean).join(' · ')
     : tr('Not selected', 'Non sélectionné');
@@ -8833,7 +9023,7 @@ const SimplifiedRentalWizard = ({
 
   const visibleVehicles = filteredVehicles.length > 0
     ? filteredVehicles
-    : (availableVehicles.length > 0 ? availableVehicles : vehicleModels);
+    : (availableVehicles.length > 0 ? availableVehicles : allVehiclesBeforeFilter);
   const resolveLightVehicleModelId = useCallback((vehicle) => {
     const directModelId =
       vehicle?.vehicle_model_id
@@ -8919,12 +9109,12 @@ const SimplifiedRentalWizard = ({
       ? tr('Choose package', 'Choisir le forfait')
       : tr('Standard pricing', 'Tarification standard');
     const nextVehicleSummaryLabel = [
-      vehicle?.plate_number || null,
+      getVehicleDisplayNumber(vehicle, '') || null,
       nextVehicleName,
       nextVehiclePriceLabel,
     ].filter(Boolean).join(' • ');
     const nextStickySummaryLabel = [
-      vehicle?.plate_number || null,
+      getVehicleDisplayNumber(vehicle, '') || null,
       nextVehicleName,
       snapshotDurationLabel,
       nextVehiclePriceLabel,
@@ -9106,14 +9296,14 @@ const SimplifiedRentalWizard = ({
           ?? selectedLightPackage?.vehicleModelId
           ?? ''
         );
-        const vehicleModelId = String(vehicle?.vehicle_model_id ?? '');
+        const vehicleModelId = String(getVehicleModelIdValue(vehicle) ?? '');
         if (!selectedPackageModelId || !vehicleModelId || selectedPackageModelId === vehicleModelId) {
           return selectedPackagePrice;
         }
       }
     }
 
-    const kmPackagePrice = getLightKmPackagePriceForVehicleModel(vehicle?.vehicle_model_id);
+    const kmPackagePrice = getLightKmPackagePriceForVehicleModel(getVehicleModelIdValue(vehicle));
     if (kmPackagePrice > 0) {
       return kmPackagePrice;
     }
@@ -9176,7 +9366,7 @@ const SimplifiedRentalWizard = ({
     return null;
   })();
   const stickySummaryLabel = [
-    selectedVehicle?.plate_number || null,
+    getVehicleDisplayNumber(selectedVehicle, '') || null,
     selectedVehicle?.model || selectedVehicle?.name || null,
     lightHasDurationSelection ? selectedDurationLabel : null,
     lightIncludedKmSummary,
@@ -9189,7 +9379,7 @@ const SimplifiedRentalWizard = ({
     : tr('Rental setup', 'Configuration');
   const vehicleSummaryLabel = selectedVehicle
     ? [
-        selectedVehicle.plate_number || null,
+        getVehicleDisplayNumber(selectedVehicle, '') || null,
         selectedVehicle.model || selectedVehicle.name || tr('Vehicle', 'Véhicule'),
         liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : null,
       ].filter(Boolean).join(' • ')
@@ -10297,10 +10487,10 @@ const SimplifiedRentalWizard = ({
             className="sticky top-3 z-10 hidden w-full items-center justify-between rounded-2xl border border-violet-500 bg-violet-50/95 px-4 py-3 text-left shadow-[0_16px_30px_rgba(79,70,229,0.18)] backdrop-blur sm:flex"
           >
             <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                 {tr('Current selection', 'Sélection actuelle')}
-              </p>
-              <p className="mt-1 truncate text-sm font-bold text-slate-900">{displayStickySummaryLabel}</p>
+              </div>
+              <div className="mt-1 truncate text-sm font-bold text-slate-900">{displayStickySummaryLabel}</div>
             </div>
             <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
               {liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : tr('In progress', 'En cours')}
@@ -10318,9 +10508,9 @@ const SimplifiedRentalWizard = ({
           {!effectiveLightRentalType ? (
             <div className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left">
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                   {tr('Rental setup', 'Configuration')}
-                </p>
+                </div>
                 <div className="mt-1 flex items-center gap-3">
                   <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 shadow-sm">
                     <Clock className="h-5 w-5" />
@@ -10343,9 +10533,9 @@ const SimplifiedRentalWizard = ({
                 className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                     {tr('Rental setup', 'Configuration')}
-                  </p>
+                  </div>
                   <div className="mt-1 flex items-center justify-between gap-3">
                     <div className="min-w-0 flex items-center gap-3">
                       <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 shadow-sm">
@@ -10400,9 +10590,9 @@ const SimplifiedRentalWizard = ({
                       ))}
                     </div>
                     <div className="mb-4">
-                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                         {tr('Quick duration', 'Durée rapide')}
-                      </p>
+                      </div>
                       <div className={`grid gap-2 ${effectiveLightRentalType === 'hourly' ? 'grid-cols-3' : 'grid-cols-4'}`}>
                         {(effectiveLightRentalType === 'hourly' ? lightQuickHourOptions : lightQuickDayOptions).map((value) => {
                           const isSelected = selectedQuickDuration === value;
@@ -10430,10 +10620,10 @@ const SimplifiedRentalWizard = ({
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                           {tr('Schedule', 'Planning')}
-                        </p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{formatPeriodDisplay()}</p>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-slate-900">{formatPeriodDisplay()}</div>
                       </div>
                       <button
                         type="button"
@@ -10480,9 +10670,9 @@ const SimplifiedRentalWizard = ({
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-500">
                 {tr('Vehicle', 'Véhicule')}
-              </p>
+              </div>
               <div className="mt-1 flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-3">
                   <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-sm transition-colors ${
@@ -10672,12 +10862,15 @@ const SimplifiedRentalWizard = ({
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                {tr('Plate number', 'Numéro de plaque')}
+                              </div>
+                              <div className="mt-1 text-2xl font-bold text-slate-900">
+                                {getVehicleDisplayNumber(vehicle, tr('No plate', 'Sans plaque'))}
+                              </div>
+                              <div className="mt-1 text-sm font-semibold text-slate-500">
                                 {vehicle.model || vehicle.vehicle_model_name || vehicle.name || tr('Vehicle', 'Véhicule')}
-                              </p>
-                              <p className="mt-1 text-2xl font-bold text-slate-900">
-                                {vehicle.plate_number || tr('N/A', 'N/D')}
-                              </p>
+                              </div>
                             </div>
                             <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-violet-100 text-violet-700' : isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
                               {isSelected && <CheckCircle className="h-3 w-3" />}
@@ -10695,7 +10888,7 @@ const SimplifiedRentalWizard = ({
                               />
                             )}
                           </div>
-                          <p className="mt-1 text-xs font-medium text-slate-500">{selectedDurationLabel}</p>
+                          <div className="mt-1 text-xs font-medium text-slate-500">{selectedDurationLabel}</div>
                         </button>
                       );
                     })}
@@ -10724,9 +10917,9 @@ const SimplifiedRentalWizard = ({
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-500">
                 {tr('Package', 'Forfait')}
-              </p>
+              </div>
               <div className="mt-1 flex items-center justify-between gap-3">
                 <div className="min-w-0 flex flex-wrap items-center gap-3">
                   <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-sm transition-colors ${
@@ -10796,11 +10989,11 @@ const SimplifiedRentalWizard = ({
                               : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
                           }`}
                         >
-                          <p className="text-lg font-bold text-slate-900">{standardFallbackLabel}</p>
-                          <p className="mt-2 text-sm text-slate-500">{selectedDurationLabel}</p>
-                          <p className="mt-3 text-2xl font-bold text-slate-900">
+                          <div className="text-lg font-bold text-slate-900">{standardFallbackLabel}</div>
+                          <div className="mt-2 text-sm text-slate-500">{selectedDurationLabel}</div>
+                          <div className="mt-3 text-2xl font-bold text-slate-900">
                             {formatDynamicMad(standardFallbackPreviewTotal)} MAD
-                          </p>
+                          </div>
                         </button>
                       )}
 
@@ -10838,20 +11031,20 @@ const SimplifiedRentalWizard = ({
                                 {pkgIncludedKm} km
                               </span>
                             </div>
-                            <p className="mt-4 text-[15px] font-semibold text-slate-500">{pkgDurationLabel}</p>
-                            <p className="mt-3 text-2xl font-bold text-slate-900">{formatDynamicMad(pkgPreviewTotal)} MAD</p>
+                            <div className="mt-4 text-[15px] font-semibold text-slate-500">{pkgDurationLabel}</div>
+                            <div className="mt-3 text-2xl font-bold text-slate-900">{formatDynamicMad(pkgPreviewTotal)} MAD</div>
                             {currentLightDurationUnits > 1 && (
-                              <p className="mt-1 text-xs font-medium text-slate-500">
+                              <div className="mt-1 text-xs font-medium text-slate-500">
                                 {formData.rental_type === 'daily'
                                   ? tr('Daily base rate', 'Tarif journalier')
                                   : tr('Base rate', 'Tarif de base')}: {formatDynamicMad(pkgRate)} MAD
-                              </p>
+                              </div>
                             )}
                             {isSelected && (
                               <div className="mt-3 rounded-xl border border-violet-200 bg-white/80 px-3 py-2 text-xs text-slate-600">
-                                <p>{tr('Extra km', 'Km extra')}: {formatDynamicMad(Number(pkg.extra_km_rate || 0))} MAD/km</p>
+                                <div>{tr('Extra km', 'Km extra')}: {formatDynamicMad(Number(pkg.extra_km_rate || 0))} MAD/km</div>
                                 {Boolean(pkg.fuel_charge_enabled) ? (
-                                  <p className="mt-1">{tr('Fuel charged separately', 'Carburant facturé séparément')}</p>
+                                  <div className="mt-1">{tr('Fuel charged separately', 'Carburant facturé séparément')}</div>
                                 ) : null}
                               </div>
                             )}
@@ -10870,9 +11063,9 @@ const SimplifiedRentalWizard = ({
       <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:w-full sm:max-w-full sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
         <div className="mb-3 flex items-center justify-between gap-3">
           {displayStickySummaryLabel ? (
-            <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
-              <p className="truncate">{displayStickySummaryLabel}</p>
-            </div>
+              <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
+                <div className="truncate">{displayStickySummaryLabel}</div>
+              </div>
           ) : (
             <div />
           )}
@@ -11402,20 +11595,20 @@ const SimplifiedRentalWizard = ({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 {tr('Customer', 'Client')}
-              </p>
-              <p className="mt-2 text-sm font-bold text-slate-900">
+              </div>
+              <div className="mt-2 text-sm font-bold text-slate-900">
                 {formData.customer_name || initialData?.customer_name || tr('Not set', 'Non défini')}
-              </p>
+              </div>
             </div>
             <div className={`rounded-xl border px-4 py-3 ${formData.customer_licence_number?.trim() ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 {tr('License Number', 'Numéro de permis')}
-              </p>
-              <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
+              </div>
+              <div className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
                 {formData.customer_licence_number || tr('Missing', 'Manquant')}
-              </p>
+              </div>
             </div>
           </div>
 
@@ -11438,18 +11631,18 @@ const SimplifiedRentalWizard = ({
         <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                 {tr('Customer Verification', 'Vérification client')}
-              </p>
+              </div>
               <h2 className="mt-1 text-2xl font-bold text-slate-900">
                 {tr('Customer Driver License', 'Permis de conduire du client')}
               </h2>
-              <p className="mt-2 text-sm font-medium text-slate-600">
+              <div className="mt-2 text-sm font-medium text-slate-600">
                 {tr(
                   'Scan or import the ID only to complete step 1.',
                   "Scannez ou importez uniquement l'identité pour terminer l'étape 1."
                 )}
-              </p>
+              </div>
             </div>
             <button
               type="button"
@@ -11501,20 +11694,20 @@ const SimplifiedRentalWizard = ({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                   {tr('Customer', 'Client')}
-                </p>
-                <p className="mt-2 text-sm font-bold text-slate-900">
+                </div>
+                <div className="mt-2 text-sm font-bold text-slate-900">
                   {formData.customer_name || initialData?.customer_name || tr('Not set', 'Non défini')}
-                </p>
+                </div>
               </div>
               <div className={`rounded-2xl border px-4 py-4 ${formData.customer_licence_number?.trim() ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                   {tr('License Number', 'Numéro de permis')}
-                </p>
-                <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
+                </div>
+                <div className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
                   {formData.customer_licence_number || tr('Missing', 'Manquant')}
-                </p>
+                </div>
               </div>
             </div>
 
@@ -11575,13 +11768,13 @@ const SimplifiedRentalWizard = ({
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                 {tr('Current selection', 'Sélection actuelle')}
-              </p>
-              <p className="mt-1 truncate text-sm font-bold text-slate-900">{lightPaymentSummaryLabel}</p>
-              <p className="mt-2 text-xl font-bold text-slate-900">
+              </div>
+              <div className="mt-1 truncate text-sm font-bold text-slate-900">{lightPaymentSummaryLabel}</div>
+              <div className="mt-2 text-xl font-bold text-slate-900">
                 {tr('Total', 'Total')}: {(Number(formData.total_amount) || getFixedPackageAmount(formData) || Number(formData.unit_price) || 0).toFixed(0)} MAD
-              </p>
+              </div>
             </div>
             <div className="rounded-full bg-slate-100 p-2 text-slate-500">
               {lightPaymentSummaryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -11616,9 +11809,9 @@ const SimplifiedRentalWizard = ({
         </div>
 
         <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
             {tr('Payment method', 'Mode de paiement')}
-          </p>
+          </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
             {[
               ['paid', tr('Paid', 'Payé')],
@@ -11643,9 +11836,9 @@ const SimplifiedRentalWizard = ({
         </div>
 
         <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
             {tr('Amount', 'Montant')}
-          </p>
+          </div>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
             <input
               type="text"
@@ -11662,21 +11855,21 @@ const SimplifiedRentalWizard = ({
               placeholder="0"
             />
             {formData.payment_status === 'partial' && (
-              <p className="mt-2 text-sm font-semibold text-amber-700">
+              <div className="mt-2 text-sm font-semibold text-amber-700">
                 {tr('Remaining', 'Restant')}: {Math.max((Number(formData.total_amount) || getFixedPackageAmount(formData) || 0) - Number(formData.deposit_amount || 0), 0).toFixed(0)} MAD
-              </p>
+              </div>
             )}
           </div>
         </div>
 
         <div ref={lightDepositStepRef} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
             {tr('Deposit', 'Caution')}
-          </p>
+          </div>
           {!lightDepositReadyToConfirm && (
-            <p className="mt-1 text-sm font-semibold text-amber-700">
+            <div className="mt-1 text-sm font-semibold text-amber-700">
               {tr('Choose a deposit option before confirming the rental.', 'Choisissez une caution avant de confirmer la location.')}
-            </p>
+            </div>
           )}
           <div className="mt-3">
             <DamageDepositTabs
@@ -11720,9 +11913,9 @@ const SimplifiedRentalWizard = ({
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                 {tr('More details', 'Plus de détails')}
-              </p>
+              </div>
             </div>
             <div className="rounded-full bg-slate-100 p-2 text-slate-500">
               {lightPaymentDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -12199,7 +12392,7 @@ const SimplifiedRentalWizard = ({
                 </div>
                 {!selectedVehicle ? (
                   <VehicleCardGrid
-                    vehicles={filteredVehicles.length > 0 ? filteredVehicles : (availableVehicles.length > 0 ? availableVehicles : vehicleModels)}
+                    vehicles={filteredVehicles.length > 0 ? filteredVehicles : (availableVehicles.length > 0 ? availableVehicles : allVehiclesBeforeFilter)}
                     selectedId={formData.vehicle_id}
                     showSearchBar={activeModelFilter === null}
                     onSelect={(vehicleId) => {
@@ -12220,7 +12413,7 @@ const SimplifiedRentalWizard = ({
                           {tr('Selected vehicle', 'Véhicule sélectionné')}
                         </p>
                         <h4 className="mt-1 text-lg font-bold text-slate-900">
-                          {selectedVehicle.plate_number || tr('No plate', 'Sans plaque')}
+                          {getVehicleDisplayNumber(selectedVehicle, tr('No plate', 'Sans plaque'))}
                         </h4>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
@@ -12557,7 +12750,7 @@ const SimplifiedRentalWizard = ({
               {(() => {
                 const vehicle = getSelectedVehicle();
                 if (!vehicle) return tr('Not selected', 'Non sélectionné');
-                return `${vehicle.plate_number || tr('N/A', 'N/D')} - ${vehicle.model || vehicle.name}`;
+                return `${getVehicleDisplayNumber(vehicle, tr('N/A', 'N/D'))} - ${vehicle.model || vehicle.name}`;
               })()}
             </span>
           </div>
@@ -12692,13 +12885,12 @@ const SimplifiedRentalWizard = ({
       {!formData.use_package_pricing && formData.quantity_days > 1 && (
         <TierPricingBreakdown 
           vehicleName={(() => {
-            const vehicle = availableVehicles.find(v => v.id == formData.vehicle_id) || 
-                           vehicleModels.find(v => v.id == formData.vehicle_id);
+            const vehicle = findVehicleRecord(formData.vehicle_id);
             return vehicle?.name || vehicle?.model || '';
           })()}
           vehicleModelId={(() => {
-            const vehicle = availableVehicles.find(v => v.id == formData.vehicle_id);
-            return vehicle?.vehicle_model_id || '';
+            const vehicle = findVehicleRecord(formData.vehicle_id);
+            return resolveVehicleModelId(vehicle) || '';
           })()}
           duration={formData.quantity_days}
           unitPrice={formData.unit_price}

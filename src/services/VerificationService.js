@@ -2,17 +2,24 @@ import { supabase } from '../lib/supabase';
 import { adminApiRequest } from './adminApi';
 import { VERIFICATION_BUCKET } from '../utils/verificationStatus';
 import { createTimedRequestCache } from '../utils/requestCache';
-import { buildTenantScopedStoragePath } from '../utils/storageUpload';
+import { sanitizeStorageSegment } from '../utils/storageUpload';
 import { getCurrentOrganizationId } from './OrganizationService';
 
 const verificationRequestCache = createTimedRequestCache(45000);
-const runWithTimeout = (promise, timeoutMs, errorMessage) =>
-  Promise.race([
+const runWithTimeout = (promise, timeoutMs, errorMessage) => {
+  let timeoutId = null;
+
+  return Promise.race([
     promise,
     new Promise((_, reject) => {
-      window.setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+      timeoutId = globalThis.setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
     }),
-  ]);
+  ]).finally(() => {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  });
+};
 
 const getSessionUser = async () => {
   const { data, error } = await supabase.auth.getUser();
@@ -30,9 +37,23 @@ const buildStoragePath = ({ userId, entityType, entityId, verificationType, file
     .slice(0, 120);
 
   return {
-    pathPrefix: `verifications/${userId}/${entityType}/${entityId}/${verificationType}`,
+    pathPrefix: `verifications/${entityType}/${entityId}/${verificationType}`,
     fileName: `${timestamp}-${safeName}`,
   };
+};
+
+const buildVerificationUploadPath = ({ userId, organizationId, pathPrefix, fileName }) => {
+  const normalizedUserId = sanitizeStorageSegment(userId, 'anonymous-user');
+  const normalizedPrefix = sanitizeStorageSegment(pathPrefix, 'verifications');
+  const normalizedFileName = sanitizeStorageSegment(fileName, 'upload.bin');
+  const tenantSegment = organizationId
+    ? `tenant/${sanitizeStorageSegment(organizationId, 'unknown-org')}`
+    : '';
+  const scopedPrefix = tenantSegment
+    ? `${tenantSegment}/${normalizedPrefix}`
+    : normalizedPrefix;
+
+  return `${normalizedUserId}/${scopedPrefix}/${normalizedFileName}`;
 };
 
 export const uploadVerificationDocument = async ({
@@ -48,7 +69,14 @@ export const uploadVerificationDocument = async ({
 
   const user = await getSessionUser();
   const effectiveOwnerUserId = ownerUserId || user.id;
-  const organizationId = await getCurrentOrganizationId();
+  const organizationId = await runWithTimeout(
+    getCurrentOrganizationId(),
+    2500,
+    'Workspace context timed out.'
+  ).catch((error) => {
+    console.warn('Verification upload continuing without organization scope:', error?.message || error);
+    return null;
+  });
   const pathConfig = buildStoragePath({
     userId: user.id,
     entityType,
@@ -56,7 +84,8 @@ export const uploadVerificationDocument = async ({
     verificationType,
     file,
   });
-  const filePath = buildTenantScopedStoragePath({
+  const filePath = buildVerificationUploadPath({
+    userId: user.id,
     organizationId,
     pathPrefix: pathConfig.pathPrefix,
     fileName: pathConfig.fileName,
@@ -69,8 +98,8 @@ export const uploadVerificationDocument = async ({
         cacheControl: '3600',
         upsert: false,
         contentType: file.type || 'application/octet-stream',
-      }),
-    30000,
+    }),
+    15000,
     'Verification file upload timed out. Please try again.'
   );
 
@@ -95,7 +124,7 @@ export const uploadVerificationDocument = async ({
         notes: typeof notes === 'string' ? notes : JSON.stringify(notes),
       }),
     }),
-    30000,
+    8000,
     'Verification request timed out. Please try again.'
   );
   verificationRequestCache.invalidate(`entity-summary:${entityType}:${String(entityId)}`);
@@ -123,21 +152,22 @@ export const updateProfileFromVerificationScan = async ({ currentProfile = {}, s
     return null;
   }
 
-  return adminApiRequest('/api/me?resource=profile', {
-    method: 'PATCH',
-    body: JSON.stringify({
-      username: currentProfile.username || '',
-      first_name: currentProfile.first_name || '',
-      last_name: currentProfile.last_name || '',
-      full_name: fullName || currentProfile.full_name || currentProfile.fullName || '',
-      phone: currentProfile.phone || currentProfile.phone_number || '',
-      address: currentProfile.address || '',
-      date_of_birth: dateOfBirth || currentProfile.date_of_birth || '',
-      emergency_contact: currentProfile.emergency_contact || '',
-      emergency_phone: currentProfile.emergency_phone || '',
-      preferences: currentProfile.preferences || {},
+  const profilePatch = {};
+  if (fullName) {
+    profilePatch.full_name = fullName;
+  }
+  if (dateOfBirth) {
+    profilePatch.date_of_birth = dateOfBirth;
+  }
+
+  return runWithTimeout(
+    adminApiRequest('/api/me?resource=profile', {
+      method: 'PATCH',
+      body: JSON.stringify(profilePatch),
     }),
-  });
+    12000,
+    'Profile sync timed out. Your document was still submitted successfully.'
+  );
 };
 
 export const getVerificationRequests = (filters = {}) => {

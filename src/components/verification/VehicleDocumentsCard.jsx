@@ -19,11 +19,11 @@ const VehicleDocumentsCard = ({ vehicle, ownerUserId, disabled = false }) => {
   const vehicleId = vehicle?.id;
   const summary = useMemo(() => buildEntityVerificationSummary(requests, 'vehicle'), [requests]);
 
-  const loadRequests = useCallback(async () => {
+  const loadRequests = useCallback(async ({ forceRefresh = false } = {}) => {
     if (!vehicleId) return;
     try {
       setLoading(true);
-      const result = await VerificationService.getEntityVerificationSummary('vehicle', vehicleId);
+      const result = await VerificationService.getEntityVerificationSummary('vehicle', vehicleId, { forceRefresh });
       setRequests(result.requests || []);
     } catch (error) {
       console.warn('Unable to load vehicle verification summary:', error.message);

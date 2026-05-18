@@ -1,7 +1,9 @@
 import { supabase } from '../lib/supabase';
+import { shouldScopeSharedTenantData } from './OrganizationService';
 
 export const RENTAL_EVENTS_TABLE = 'rental_events';
 let rentalEventsTableUnavailable = false;
+let rentalEventsClientWritesUnavailable = false;
 let rentalEventsDispatchKeyUnavailable = false;
 
 const EVENT_LABELS = {
@@ -67,6 +69,20 @@ const isMissingColumnError = (error, columnName) => {
   return errorCode === '42703' || (normalizedColumn && errorMessage.includes(normalizedColumn));
 };
 
+const isPermissionDeniedError = (error) => {
+  const errorCode = String(error?.code || '').trim().toUpperCase();
+  const errorStatus = Number(error?.status || 0);
+  const errorMessage = String(error?.message || error?.details || '').trim().toLowerCase();
+  return (
+    errorCode === '42501' ||
+    errorStatus === 401 ||
+    errorStatus === 403 ||
+    errorMessage.includes('permission denied') ||
+    errorMessage.includes('row-level security') ||
+    errorMessage.includes('rls')
+  );
+};
+
 class RentalEventService {
   static async findByDispatchKey({ rentalId, eventType, dispatchKey }) {
     if (rentalEventsTableUnavailable) return null;
@@ -129,7 +145,12 @@ class RentalEventService {
   }
 
   static async recordEvent({ rentalId, eventType, actor = 'system', metadata = {}, createdAt = null, dispatchKey = '' }) {
-    if (rentalEventsTableUnavailable) return null;
+    if (rentalEventsTableUnavailable || rentalEventsClientWritesUnavailable) return null;
+    if (shouldScopeSharedTenantData()) {
+      // Tenant workspaces do not currently have direct browser write access to rental_events.
+      // Skip the client-side insert rather than surfacing noisy RLS errors during normal flows.
+      return null;
+    }
     const normalizedRentalId = String(rentalId || '').trim();
     const normalizedEventType = normalizeEventType(eventType);
     const normalizedDispatchKey = normalizeDispatchKey(dispatchKey);
@@ -185,6 +206,10 @@ class RentalEventService {
           createdAt,
           dispatchKey: normalizedDispatchKey,
         });
+      }
+      if (isPermissionDeniedError(error)) {
+        rentalEventsClientWritesUnavailable = true;
+        return null;
       }
       if (errorCode === '23505' && normalizedDispatchKey) {
         const existing = await this.findByDispatchKey({

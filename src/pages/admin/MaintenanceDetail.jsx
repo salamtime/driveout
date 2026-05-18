@@ -4,9 +4,10 @@ import { Button } from '../../components/ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 import VehicleReportService from '../../services/VehicleReportService';
 import AddMaintenanceForm from '../../components/maintenance/AddMaintenanceForm';
+import MaintenanceReferenceChip from '../../components/maintenance/MaintenanceReferenceChip';
 import { formatRentalReference } from '../../utils/rentalReference';
-import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
+import { getCurrentLocationPath } from '../../utils/navigationReturn';
 import i18n from '../../i18n';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import {
@@ -177,10 +178,24 @@ export default function MaintenanceDetail() {
   const total    = MaintenanceTrackingService.safeCostToNumber(record.cost || record.total_cost_mad);
   const fmt      = (n) => MaintenanceTrackingService.formatCurrency(n);
   const fmtDate  = (d) => MaintenanceTrackingService.formatDate(d);
+  const currentLocationPath = getCurrentLocationPath(location);
+  const vehicleDisplayName = [record?.vehicle?.name, record?.vehicle?.model]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  const vehiclePlate = String(record?.vehicle?.plate_number || '').trim();
+  const vehicleId = String(record?.vehicle?.id || record?.vehicle_id || '').trim();
 
-  const vehicleName = record.vehicle
-    ? `${record.vehicle.name || ''} (${record.vehicle.plate_number || ''})`.trim()
-    : tr('Unknown Vehicle', 'Véhicule inconnu');
+  const openVehicleProfile = () => {
+    if (!vehicleId) return;
+
+    navigate(`/admin/fleet/${vehicleId}`, {
+      state: {
+        from: currentLocationPath,
+        returnLabel: tr('Back to maintenance', 'Retour à la maintenance'),
+      },
+    });
+  };
 
   return (
     <>
@@ -195,9 +210,7 @@ export default function MaintenanceDetail() {
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-xl font-bold text-gray-900">{tr('Maintenance Record', 'Fiche de maintenance')}</h1>
-                <span className="inline-flex items-center rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                  {formatMaintenanceReference(record.id)}
-                </span>
+                <MaintenanceReferenceChip maintenanceId={record.id} size="xs" />
                 <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${typeVisual.classes}`}>
                   <span>{typeVisual.emoji}</span>
                   <span>{typeVisual.label}</span>
@@ -232,7 +245,27 @@ export default function MaintenanceDetail() {
           <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             <div>
               <p className="text-xs text-gray-500 mb-1 flex items-center gap-1"><Car className="w-3 h-3" /> {tr('Vehicle', 'Véhicule')}</p>
-              <p className="text-sm font-medium text-gray-900">{vehicleName}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-gray-900">
+                  {vehicleDisplayName || tr('Unknown Vehicle', 'Véhicule inconnu')}
+                </p>
+                {vehiclePlate && (
+                  vehicleId ? (
+                    <button
+                      type="button"
+                      onClick={openVehicleProfile}
+                      className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-100"
+                      title={tr('Open vehicle profile', 'Ouvrir le profil véhicule')}
+                    >
+                      {vehiclePlate}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                      {vehiclePlate}
+                    </span>
+                  )
+                )}
+              </div>
             </div>
             <div>
               <p className="text-xs text-gray-500 mb-1 flex items-center gap-1"><Calendar className="w-3 h-3" /> {tr('Service Date', 'Date de service')}</p>
@@ -282,17 +315,8 @@ export default function MaintenanceDetail() {
               <Button
                 variant="outline"
                 size="sm"
-                className="border-orange-300 text-orange-700 hover:bg-orange-100"
-                onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}?view=light`, {
-                  state: {
-                    maintenanceReturnMode: 'vehicle_issue',
-                    maintenanceReturnReportEnabled: false,
-                    maintenanceReturnMaintenanceId: record.id,
-                    maintenanceReturnSource: 'maintenance',
-                    maintenanceReturnInspectionComplete: true,
-                    maintenanceReturnReport: record.linked_rental_report,
-                  },
-                })}
+                className="border-orange-300 bg-white text-orange-700 shadow-sm hover:bg-orange-50"
+                onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`)}
               >
                 <ExternalLink className="w-3 h-3 mr-1.5" /> {tr('Open Rental', 'Ouvrir la location')}
               </Button>

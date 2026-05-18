@@ -178,6 +178,10 @@ const inferVehicleModelData = (vehicleRow, modelLookups) => {
 };
 
 const shouldHideCertifiedFleetVehicle = (vehicleRow, modelData) => {
+  if (vehicleRow?.owner_user_id || !safeText(vehicleRow?.organization_id)) {
+    return true;
+  }
+
   if (modelData) return false;
 
   const rawKeys = [
@@ -532,6 +536,8 @@ const fetchCertifiedFleet = async (adminClient) => {
   const { data, error } = await adminClient
     .from('saharax_0u4w4d_vehicles')
     .select('*')
+    .not('organization_id', 'is', null)
+    .is('owner_user_id', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;

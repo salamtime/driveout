@@ -13,6 +13,11 @@ import { Link } from 'react-router-dom';
 import ConversationThread from './ConversationThread';
 import { normalizeRentalThreadContext } from '../../utils/rentalThreadState';
 import {
+  classifyThreadSection,
+  getThreadActionLabel,
+  MESSAGE_THREAD_SECTIONS,
+} from '../../utils/messageCenter';
+import {
   MAILBOXES,
   formatDateTime,
   getLatestMessage,
@@ -151,6 +156,7 @@ const SharedInboxWorkspace = ({
   showSearch = true,
   showListFilters = true,
   groupThreads = true,
+  threadGroupingMode = 'default',
 }) => {
   const [search, setSearch] = useState('');
   const [selectedThreadKey, setSelectedThreadKey] = useState('');
@@ -554,6 +560,37 @@ const SharedInboxWorkspace = ({
       ];
     }
 
+    if (threadGroupingMode === 'transaction_hub') {
+      const groups = {
+        [MESSAGE_THREAD_SECTIONS.actions]: [],
+        [MESSAGE_THREAD_SECTIONS.conversations]: [],
+        [MESSAGE_THREAD_SECTIONS.updates]: [],
+      };
+
+      filteredVisibleThreads.forEach((thread) => {
+        const section = classifyThreadSection(thread);
+        groups[section] = [...(groups[section] || []), thread];
+      });
+
+      return [
+        {
+          key: MESSAGE_THREAD_SECTIONS.actions,
+          title: tr('Actions required', 'Actions requises'),
+          threads: groups[MESSAGE_THREAD_SECTIONS.actions] || [],
+        },
+        {
+          key: MESSAGE_THREAD_SECTIONS.conversations,
+          title: tr('Live conversations', 'Conversations en direct'),
+          threads: groups[MESSAGE_THREAD_SECTIONS.conversations] || [],
+        },
+        {
+          key: MESSAGE_THREAD_SECTIONS.updates,
+          title: tr('Updates', 'Mises à jour'),
+          threads: groups[MESSAGE_THREAD_SECTIONS.updates] || [],
+        },
+      ].filter((group) => group.threads.length > 0);
+    }
+
     const groups = {
       needs_reply: [],
       active: [],
@@ -578,7 +615,7 @@ const SharedInboxWorkspace = ({
       { key: 'active', title: tr('Active', 'Actifs'), threads: groups.active },
       { key: 'archived', title: tr('Archived', 'Archivés'), threads: groups.archived },
     ].filter((group) => group.threads.length > 0);
-  }, [activeListFilter, currentUserId, filteredVisibleThreads, groupThreads, tr, workspaceContext]);
+  }, [activeListFilter, currentUserId, filteredVisibleThreads, groupThreads, threadGroupingMode, tr, workspaceContext]);
 
   const listFilterOptions = useMemo(
     () => [
@@ -1100,6 +1137,9 @@ const SharedInboxWorkspace = ({
                           thread.latest_message ||
                           '—'
                         ).trim();
+                        const threadActionLabel = threadGroupingMode === 'transaction_hub'
+                          ? getThreadActionLabel(thread)
+                          : '';
                         const hasUnread = Number(thread?.unread_count || 0) > 0;
                         const contextLabel = getThreadContextLabel(thread);
                         const avatarUrl = getThreadAvatarUrl(thread, counterparty);
@@ -1174,6 +1214,15 @@ const SharedInboxWorkspace = ({
                                   <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${getThreadTypeBadgeClassName(thread, selectedThreadKey === threadKey)}`}>
                                     {getThreadTypeBadgeLabel(thread)}
                                   </span>
+                                  {threadActionLabel ? (
+                                    <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-black ${
+                                      selectedThreadKey === threadKey
+                                        ? 'bg-violet-100 text-violet-700'
+                                        : 'bg-amber-50 text-amber-700 ring-1 ring-amber-100'
+                                    }`}>
+                                      {threadActionLabel}
+                                    </span>
+                                  ) : null}
                                   {contextLabel ? (
                                     <p className="chat-copy-body-compact min-w-0 truncate text-slate-500">
                                       {contextLabel}

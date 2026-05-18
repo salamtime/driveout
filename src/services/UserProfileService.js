@@ -140,10 +140,18 @@ class UserProfileService {
   // Update user profile information
   async updateUserProfile(userId, profileData) {
     try {
-      const response = await adminApiRequest('/api/me/profile', {
-        method: 'PATCH',
-        body: JSON.stringify(profileData),
-      });
+      const response = await this.withTimeout(
+        adminApiRequest('/api/me/profile', {
+          method: 'PATCH',
+          body: JSON.stringify(profileData),
+        }),
+        8000,
+        'Profile update'
+      );
+
+      if (response?.error) {
+        return { data: null, error: response.error };
+      }
 
       return { data: this.normalizeUserRow(response?.profile), error: null };
     } catch (error) {

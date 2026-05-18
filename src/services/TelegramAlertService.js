@@ -12,6 +12,9 @@ const buildTelegramAlertRequestKey = (eventType, rental = {}) => {
   const normalizedScope = String(rental?.testScope || '').trim().toLowerCase();
   const normalizedTenantId = String(rental?.tenant_id || '').trim();
   const normalizedBusinessAccountId = String(rental?.business_account_id || '').trim();
+  const normalizedApprovalRequestId = String(rental?.approvalRequestId || rental?.requestId || rental?.request_id || '').trim();
+  const normalizedApprovalType = String(rental?.approvalType || rental?.requestType || rental?.type || '').trim().toLowerCase();
+  const normalizedApprovalView = String(rental?.approvalView || rental?.view || '').trim().toLowerCase();
 
   return [
     normalizedEventType,
@@ -19,6 +22,9 @@ const buildTelegramAlertRequestKey = (eventType, rental = {}) => {
     normalizedScope,
     normalizedTenantId,
     normalizedBusinessAccountId,
+    normalizedApprovalRequestId,
+    normalizedApprovalType,
+    normalizedApprovalView,
   ].join('|');
 };
 

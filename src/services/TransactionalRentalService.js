@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
+import WebsiteBookingLifecycleService from './WebsiteBookingLifecycleService.js';
 import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService.js';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram.js';
 import { applyOrganizationMatch, applyOrganizationScope, getCurrentOrganizationId } from './OrganizationService.js';
@@ -11,6 +12,24 @@ import {
 } from '../utils/customerIdentity.js';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
+const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
+const CUSTOMERS_TABLE = 'app_4c3a7a6153_customers';
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
+const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
+
+const isPermissionDeniedError = (error) => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const status = Number(error?.status || 0);
+  const message = `${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+  return (
+    code === '42501' ||
+    status === 401 ||
+    status === 403 ||
+    message.includes('permission denied') ||
+    message.includes('row-level security') ||
+    message.includes('rls')
+  );
+};
 
 /**
  * TransactionalRentalService - Enhanced rental management with comprehensive transaction support
@@ -41,6 +60,215 @@ const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
  * - CRITICAL BOOKING FIX: Vehicle status check is now informational only - allows multiple bookings as long as dates don't overlap
  */
 class TransactionalRentalService {
+  static parseStorageTargetFromUrl(url) {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return null;
+
+    try {
+      const parsedUrl = new URL(rawUrl);
+      const match = parsedUrl.pathname.match(/\/storage\/v1\/object\/(?:public|sign)\/([^/]+)\/(.+)/);
+      if (!match) return null;
+
+      return {
+        bucket: match[1],
+        path: decodeURIComponent(match[2]),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  static inferRentalMediaPrimaryBucket(mediaRecord = {}) {
+    const publicTarget = this.parseStorageTargetFromUrl(mediaRecord.public_url);
+    if (publicTarget?.bucket) return publicTarget.bucket;
+
+    if (String(mediaRecord.file_type || '').startsWith('video/')) {
+      if (String(mediaRecord.public_url || '').includes('/rental-media-opening/')) {
+        return 'rental-media-opening';
+      }
+      if (String(mediaRecord.public_url || '').includes('/rental-media-closing/')) {
+        return 'rental-media-closing';
+      }
+    }
+
+    return 'rental-videos';
+  }
+
+  static getRentalMediaStorageTargets(mediaRecord = {}) {
+    const targets = [];
+    const seen = new Set();
+    const addTarget = (bucket, path) => {
+      const normalizedBucket = String(bucket || '').trim();
+      const normalizedPath = String(path || '').trim();
+      if (!normalizedBucket || !normalizedPath) return;
+
+      const dedupeKey = `${normalizedBucket}:${normalizedPath}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      targets.push({ bucket: normalizedBucket, path: normalizedPath });
+    };
+
+    if (mediaRecord.storage_path) {
+      addTarget(this.inferRentalMediaPrimaryBucket(mediaRecord), mediaRecord.storage_path);
+    }
+
+    const publicTarget = this.parseStorageTargetFromUrl(mediaRecord.public_url);
+    if (publicTarget) {
+      addTarget(publicTarget.bucket, publicTarget.path);
+    }
+
+    const thumbnailTarget = this.parseStorageTargetFromUrl(mediaRecord.thumbnail_url);
+    if (thumbnailTarget) {
+      addTarget(thumbnailTarget.bucket, thumbnailTarget.path);
+    }
+
+    return targets;
+  }
+
+  static async deleteLinkedRentalMedia(rentalId) {
+    const normalizedRentalId = String(rentalId || '').trim();
+    if (!normalizedRentalId) {
+      return {
+        deletedRows: 0,
+        deletedFiles: 0,
+        failedFiles: [],
+      };
+    }
+
+    const { data: mediaRows, error: mediaFetchError } = await supabase
+      .from('app_2f7bf469b0_rental_media')
+      .select('id, storage_path, public_url, thumbnail_url, file_type')
+      .eq('rental_id', normalizedRentalId);
+
+    if (mediaFetchError) {
+      throw new Error(`Failed to load rental media before deletion: ${mediaFetchError.message}`);
+    }
+
+    const rows = Array.isArray(mediaRows) ? mediaRows : [];
+    if (!rows.length) {
+      return {
+        deletedRows: 0,
+        deletedFiles: 0,
+        failedFiles: [],
+      };
+    }
+
+    const bucketTargets = new Map();
+    rows.forEach((row) => {
+      this.getRentalMediaStorageTargets(row).forEach((target) => {
+        if (!bucketTargets.has(target.bucket)) {
+          bucketTargets.set(target.bucket, new Set());
+        }
+        bucketTargets.get(target.bucket).add(target.path);
+      });
+    });
+
+    const failedFiles = [];
+    let deletedFiles = 0;
+
+    for (const [bucket, paths] of bucketTargets.entries()) {
+      const pathList = Array.from(paths);
+      if (!pathList.length) continue;
+
+      const { data: removed, error: storageError } = await supabase.storage
+        .from(bucket)
+        .remove(pathList);
+
+      if (storageError) {
+        console.warn('⚠️ DELETE RENTAL FIX: Failed to remove rental media storage objects:', {
+          rentalId: normalizedRentalId,
+          bucket,
+          error: storageError.message,
+        });
+        failedFiles.push({ bucket, paths: pathList, error: storageError.message });
+        continue;
+      }
+
+      deletedFiles += Array.isArray(removed) ? removed.length : pathList.length;
+    }
+
+    const mediaIds = rows.map((row) => row.id).filter(Boolean);
+    const { error: mediaDeleteError } = await supabase
+      .from('app_2f7bf469b0_rental_media')
+      .delete()
+      .in('id', mediaIds);
+
+    if (mediaDeleteError) {
+      throw new Error(`Failed to delete rental media rows: ${mediaDeleteError.message}`);
+    }
+
+    return {
+      deletedRows: mediaIds.length,
+      deletedFiles,
+      failedFiles,
+    };
+  }
+
+  static async deleteLinkedRentalEvents(rentalId) {
+    const normalizedRentalId = String(rentalId || '').trim();
+    if (!normalizedRentalId) return 0;
+
+    const { error } = await supabase
+      .from('rental_events')
+      .delete()
+      .eq('rental_id', normalizedRentalId);
+
+    if (error) {
+      const errorCode = String(error?.code || '').trim().toUpperCase();
+      const errorMessage = String(error?.message || error?.details || '').trim().toLowerCase();
+      if (
+        errorCode === '42P01' ||
+        errorCode === 'PGRST205' ||
+        isPermissionDeniedError(error) ||
+        errorMessage.includes('does not exist') ||
+        errorMessage.includes('not found')
+      ) {
+        return 0;
+      }
+      throw new Error(`Failed to delete rental events: ${error.message}`);
+    }
+
+    return 1;
+  }
+
+  static async reconcileVehicleStatusAfterRentalDeletion(vehicleId, {
+    deletedRentalId = '',
+    preserveStatus = '',
+  } = {}) {
+    if (!vehicleId) return null;
+
+    const organizationId = await getCurrentOrganizationId();
+    const { data: openMaintenance, error: maintenanceError } = await applyOrganizationScope(
+      supabase
+        .from('app_687f658e98_maintenance')
+        .select('id')
+        .eq('vehicle_id', vehicleId)
+        .in('status', ['scheduled', 'in_progress'])
+        .limit(1),
+      organizationId
+    );
+
+    if (maintenanceError) {
+      throw new Error(`Failed to reconcile open maintenance after rental deletion: ${maintenanceError.message}`);
+    }
+
+    if ((openMaintenance || []).length > 0) {
+      await this.updateVehicleStatus(vehicleId, 'maintenance');
+      return 'maintenance';
+    }
+
+    const nextStatus = await WebsiteBookingLifecycleService.reconcileVehicleOperationalStatus(vehicleId, {
+      excludeRentalIds: deletedRentalId ? [deletedRentalId] : [],
+    });
+
+    if (nextStatus === 'available' && String(preserveStatus || '').trim().toLowerCase() === 'out_of_service') {
+      await this.updateVehicleStatus(vehicleId, 'out_of_service');
+      return 'out_of_service';
+    }
+
+    return nextStatus || 'available';
+  }
+
   static isExpiredScheduledConflict(rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) {
     if (String(rentalLike?.rental_status || '').toLowerCase() !== 'scheduled' || !rentalLike?.rental_start_date) {
       return false;
@@ -86,10 +314,15 @@ class TransactionalRentalService {
     console.log('🚗 AUTO-STATUS: Updating vehicle status:', { vehicleId, newStatus });
     
     try {
-      const { error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .update({ status: newStatus })
-        .eq('id', vehicleId);
+      const organizationId = await getCurrentOrganizationId();
+      const scopedVehicleUpdate = applyOrganizationScope(
+        supabase
+          .from(VEHICLES_TABLE)
+          .update({ status: newStatus })
+          .eq('id', vehicleId),
+        organizationId
+      );
+      const { error } = await scopedVehicleUpdate;
       
       if (error) {
         console.error('❌ AUTO-STATUS: Failed to update vehicle status:', error);
@@ -127,7 +360,7 @@ class TransactionalRentalService {
         console.log('🔍 TRANSACTIONAL CUSTOMER CREATION: Validating existing customer ID:', existingCustomerIdCandidate);
         
         const { data: existingCustomer, error: lookupError } = await supabase
-          .from('app_4c3a7a6153_customers')
+          .from(CUSTOMERS_TABLE)
           .select('*')
           .eq('id', existingCustomerIdCandidate)
           .maybeSingle();
@@ -179,10 +412,11 @@ class TransactionalRentalService {
       }
 
       const findExistingCustomer = async () => {
-        const customerTable = supabase.from('app_4c3a7a6153_customers');
+        const customerTable = supabase.from(CUSTOMERS_TABLE);
         const licenceNumber = sanitizedCustomerData.licence_number?.trim();
         const idNumber = sanitizedCustomerData.id_number?.trim();
         const phoneNumber = sanitizedCustomerData.phone?.trim();
+        const emailAddress = sanitizedCustomerData.email?.trim();
         const fullName = sanitizedCustomerData.full_name?.trim();
         const runLookup = async (builder) => {
           const { data } = await builder;
@@ -198,6 +432,9 @@ class TransactionalRentalService {
             : Promise.resolve([]),
           phoneNumber
             ? runLookup(applyOrganizationScope(customerTable.select('*').eq('phone', phoneNumber).limit(10), organizationId))
+            : Promise.resolve([]),
+          emailAddress
+            ? runLookup(applyOrganizationScope(customerTable.select('*').eq('email', emailAddress).limit(10), organizationId))
             : Promise.resolve([]),
         ]);
 
@@ -226,7 +463,7 @@ class TransactionalRentalService {
 
       // Insert customer into database
       const { data: newCustomer, error: createError } = await supabase
-        .from('app_4c3a7a6153_customers')
+        .from(CUSTOMERS_TABLE)
         .insert([scopedCustomerData])
         .select()
         .single();
@@ -757,13 +994,19 @@ class TransactionalRentalService {
 
       console.log('✅ FINAL CRITICAL FIX: Valid customer_id confirmed:', linkedCustomerId);
 
+      const organizationId = await getCurrentOrganizationId();
+      console.log('🏢 FINAL CRITICAL FIX: Resolved organization for rental insert:', organizationId);
+
       // STEP 3: Verify customer exists in database
       console.log('🔍 FINAL CRITICAL FIX: Verifying customer exists in database...');
-      let { data: existingCustomer, error: customerError } = await supabase
+      let customerLookupQuery = supabase
         .from('app_4c3a7a6153_customers')
         .select('*')
-        .eq('id', linkedCustomerId)
-        .maybeSingle();
+        .eq('id', linkedCustomerId);
+
+      customerLookupQuery = applyOrganizationScope(customerLookupQuery, organizationId);
+
+      let { data: existingCustomer, error: customerError } = await customerLookupQuery.maybeSingle();
 
       if (!customerError && !existingCustomer) {
         console.warn('⚠️ FINAL CRITICAL FIX: Linked customer record missing at final verification. Attempting recovery...');
@@ -830,7 +1073,7 @@ class TransactionalRentalService {
       console.log('🔗 LINKAGE FIX: Retrieved linked_display_id:', linkedDisplayId);
 
       // STEP 7: Map the normalized date fields to database columns
-      const dbRentalData = {
+      const dbRentalData = applyOrganizationMatch({
         ...sanitizedData,
         // FINAL CRITICAL FIX: GUARANTEE customer_id is in the database payload
         customer_id: linkedCustomerId,
@@ -838,7 +1081,7 @@ class TransactionalRentalService {
         rental_end_date: sanitizedData.rental_end_date,
         // NEW: Add customer ID linkage field for display
         linked_display_id: linkedDisplayId
-      };
+      }, organizationId);
       
       // Remove the _at fields that don't exist in database
       // FIXED: DO NOT delete rental_start_date - it\'s required by database
@@ -947,7 +1190,7 @@ class TransactionalRentalService {
       console.log('🧼 FINAL SANITIZED DATA:', JSON.stringify(finalSanitizedData, null, 2));
 
       const { data: rental, error: insertError } = await supabase
-        .from('app_4c3a7a6153_rentals')
+        .from(RENTALS_TABLE)
         .insert([finalSanitizedData])
         .select()
         .single();
@@ -1008,7 +1251,7 @@ class TransactionalRentalService {
       if (finalEmail || finalPhone) {
         console.log('🏥 HEALING FIX: Updating master customer record with correct contact info...');
         const { error: updateError } = await supabase
-          .from('app_4c3a7a6153_customers')
+          .from(CUSTOMERS_TABLE)
           .update({ 
             email: finalEmail, 
             phone: finalPhone 
@@ -1128,13 +1371,16 @@ class TransactionalRentalService {
       }
 
       // STEP 4: Map the normalized date fields to database columns
-      const dbRentalData = {
+      const organizationId = await getCurrentOrganizationId();
+      console.log('🏢 FIXED: Resolved organization for rental update:', organizationId);
+
+      const dbRentalData = applyOrganizationMatch({
         ...sanitizedData,
         rental_start_date: sanitizedData.rental_start_date,
         rental_end_date: sanitizedData.rental_end_date,
         // NEW: Update customer ID linkage field
         linked_display_id: linkedDisplayId
-      };
+      }, organizationId);
       
       // Remove the _at fields that don't exist in database
       // // FIXED: DO NOT delete rental_start_date - it\'s required by database
@@ -1285,11 +1531,15 @@ class TransactionalRentalService {
       // EXCEPTION: Skip status check if forRentalId is provided (starting an existing rental)
       if (!forRentalId) {
         console.log('🚗 VEHICLE STATUS CHECK: Verifying vehicle exists (informational only)...');
-        const { data: vehicle, error: vehicleError } = await supabase
-          .from('saharax_0u4w4d_vehicles')
-          .select('id, name, status')
-          .eq('id', vehicleId)
-          .single();
+        const organizationId = await getCurrentOrganizationId();
+        const scopedVehicleLookup = applyOrganizationScope(
+          supabase
+            .from(VEHICLES_TABLE)
+            .select('id, name, status')
+            .eq('id', vehicleId),
+          organizationId
+        );
+        const { data: vehicle, error: vehicleError } = await scopedVehicleLookup.single();
         
         if (vehicleError) {
           console.error('❌ VEHICLE STATUS CHECK: Error fetching vehicle:', vehicleError);
@@ -1622,12 +1872,32 @@ class TransactionalRentalService {
         rental_status: rental.rental_status
       });
 
+      let vehicleStatusBeforeDelete = '';
+      if (rental.vehicle_id) {
+        const scopedVehicleSnapshotQuery = applyOrganizationScope(
+          supabase
+            .from(VEHICLES_TABLE)
+            .select('status')
+            .eq('id', rental.vehicle_id),
+          organizationId
+        );
+        const { data: vehicleSnapshot, error: vehicleFetchError } = await scopedVehicleSnapshotQuery.maybeSingle();
+
+        if (vehicleFetchError) {
+          console.warn('⚠️ DELETE RENTAL FIX: Unable to load vehicle status before deletion:', vehicleFetchError);
+        } else {
+          vehicleStatusBeforeDelete = String(vehicleSnapshot?.status || '').trim().toLowerCase();
+        }
+      }
+
       // STEP 2: Delete any linked vehicle reports and maintenance records first
       console.log('🔗 DELETE RENTAL FIX: Checking for linked vehicle reports / maintenance...');
-      const { data: linkedReports, error: reportFetchError } = await supabase
-        .from('app_4c3a7a6153_vehicle_reports')
+      const fetchLinkedReports = () => supabase
+        .from(VEHICLE_REPORTS_TABLE)
         .select('id, maintenance_id')
         .eq('rental_id', id);
+
+      const { data: linkedReports, error: reportFetchError } = await fetchLinkedReports();
 
       if (reportFetchError) {
         console.error('❌ DELETE RENTAL FIX: Error fetching linked vehicle reports:', reportFetchError);
@@ -1642,13 +1912,22 @@ class TransactionalRentalService {
         await MaintenanceService.deleteMaintenanceRecord(maintenanceId);
       }
 
+      console.log('🖼️ DELETE RENTAL FIX: Cleaning linked rental media...');
+      const mediaCleanup = await this.deleteLinkedRentalMedia(id);
+      console.log('✅ DELETE RENTAL FIX: Rental media cleanup completed:', mediaCleanup);
+
+      console.log('🧾 DELETE RENTAL FIX: Cleaning linked rental timeline events...');
+      await this.deleteLinkedRentalEvents(id);
+
       if (reportRows.length > 0) {
         console.log('🧾 DELETE RENTAL FIX: Deleting linked vehicle report rows...');
         const reportIds = reportRows.map((row) => row.id).filter(Boolean);
-        const { error: reportDeleteError } = await supabase
-          .from('app_4c3a7a6153_vehicle_reports')
+        const deleteLinkedReports = () => supabase
+          .from(VEHICLE_REPORTS_TABLE)
           .delete()
           .in('id', reportIds);
+
+        const { error: reportDeleteError } = await deleteLinkedReports();
 
         if (reportDeleteError) {
           console.error('❌ DELETE RENTAL FIX: Error deleting linked vehicle reports:', reportDeleteError);
@@ -1659,28 +1938,40 @@ class TransactionalRentalService {
       // STEP 3: Delete the rental
       console.log('🗑️ DELETE RENTAL FIX: Proceeding with rental deletion...');
       const deleteRentalBaseQuery = supabase
-        .from('app_4c3a7a6153_rentals')
+        .from(RENTALS_TABLE)
         .delete()
         .eq('id', id);
 
       const deleteRentalQuery = deleteAsLegacyOrphan
         ? deleteRentalBaseQuery.is('organization_id', null)
         : applyOrganizationScope(deleteRentalBaseQuery, organizationId);
-      const { error: deleteError } = await deleteRentalQuery;
+      const { data: deletedRows, error: deleteError } = await deleteRentalQuery.select('id');
       
       if (deleteError) {
         console.error('❌ DELETE RENTAL FIX: Error deleting rental:', deleteError);
         throw new Error(`Failed to delete rental: ${deleteError.message}`);
       }
+
+      if (!Array.isArray(deletedRows) || deletedRows.length === 0) {
+        console.error('❌ DELETE RENTAL FIX: Delete matched zero rental rows:', {
+          id,
+          organizationId,
+          deleteAsLegacyOrphan,
+        });
+        throw new Error('Rental delete did not remove any rows. Refresh the rentals list and try again from the correct workspace.');
+      }
       
       console.log('✅ DELETE RENTAL FIX: Rental deleted successfully');
       
-      // STEP 4: AUTO-STATUS UPDATE - Revert vehicle status to "available"
+      // STEP 4: Reconcile vehicle status from the remaining truth in the system
       if (rental.vehicle_id) {
         try {
-          console.log('🚗 DELETE RENTAL FIX: Reverting vehicle status to "available"...');
-          await this.updateVehicleStatus(rental.vehicle_id, 'available');
-          console.log('✅ DELETE RENTAL FIX: Vehicle status reverted to "available"');
+          console.log('🚗 DELETE RENTAL FIX: Reconciling vehicle status after deletion...');
+          const reconciledStatus = await this.reconcileVehicleStatusAfterRentalDeletion(rental.vehicle_id, {
+            deletedRentalId: id,
+            preserveStatus: vehicleStatusBeforeDelete,
+          });
+          console.log('✅ DELETE RENTAL FIX: Vehicle status reconciled:', reconciledStatus);
         } catch (statusError) {
           console.warn('⚠️ DELETE RENTAL FIX: Failed to update vehicle status (non-critical):', statusError.message);
           // Don't fail the deletion if status update fails

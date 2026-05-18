@@ -4,7 +4,6 @@ import { ChevronRight, LogOut, Menu, X } from 'lucide-react';
 import i18n from '../../i18n';
 import { normalizeTenantPlanType } from '../../config/tenantPlans';
 import {
-  ACCOUNT_WORKSPACE_MODES,
   getAccountWorkspaceSectionByPath,
   getAccountWorkspaceSection,
   getAccountWorkspaceSectionsForMode,
@@ -15,6 +14,10 @@ import {
   isPlatformOwnerEmail,
   resolveManagedAccountType,
 } from '../../utils/accountType';
+import {
+  deriveAccountWorkspaceIdentity,
+  getPrimaryAccountWorkspaceSectionIds,
+} from '../../utils/accountProductModel';
 import { useLanguageContext } from '../../contexts/LanguageContext';
 import MessageService from '../../services/MessageService';
 import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
@@ -35,10 +38,8 @@ const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
 const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
 const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
 const NAV_GROUPS = [
-  { id: 'main', label: { en: 'Main', fr: 'Principal' }, items: ['overview', 'marketplace', 'rentals', 'messages'] },
-  { id: 'owner-tools', label: { en: 'Owner tools', fr: 'Outils propriétaire' }, items: ['my-vehicles', 'verification', 'boost'] },
-  { id: 'finance', label: { en: 'Finance', fr: 'Finance' }, items: ['revenue', 'rewards'] },
-  { id: 'account', label: { en: 'Account', fr: 'Compte' }, items: ['reviews', 'tours', 'settings'] },
+  { id: 'workspace', label: { en: 'Workspace', fr: 'Espace' }, items: ['overview', 'marketplace', 'messages', 'rentals', 'revenue'] },
+  { id: 'account', label: { en: 'Account', fr: 'Compte' }, items: ['settings'] },
 ];
 
 const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
@@ -84,6 +85,10 @@ const AccountWorkspaceLayout = () => {
   const tr = (en, fr) => (isFrench ? fr : en);
   const activeLanguage = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const [dbOwnerVehicleCount, setDbOwnerVehicleCount] = useState(0);
+  const [workspaceActivity, setWorkspaceActivity] = useState({
+    hasTripActivity: false,
+    hasWalletActivity: false,
+  });
   const hostContext = useMemo(() => getHostContext(), []);
 
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
@@ -130,35 +135,16 @@ const AccountWorkspaceLayout = () => {
     [location.pathname, user?.id]
   );
   const effectiveOwnerVehicleCount = Math.max(knownOwnerVehicleCount, dbOwnerVehicleCount);
-  const isInsideOwnerFlow = ['/account/vehicles', '/account/boost', '/account/verification'].some((path) =>
-    location.pathname === path || location.pathname.startsWith(`${path}/`)
+  const workspaceIdentity = useMemo(
+    () =>
+      deriveAccountWorkspaceIdentity({
+        managedAccountType,
+        effectiveOwnerVehicleCount,
+        pathname: location.pathname,
+      }),
+    [effectiveOwnerVehicleCount, location.pathname, managedAccountType]
   );
-  const workspaceAccountType = useMemo(() => {
-    if (managedAccountType === 'business_owner') {
-      return 'business_owner';
-    }
-
-    if (
-      isInsideOwnerFlow
-    ) {
-      return 'private_owner';
-    }
-
-    if (managedAccountType === 'private_owner' && effectiveOwnerVehicleCount > 0) {
-      return 'private_owner';
-    }
-
-    if (effectiveOwnerVehicleCount > 0) {
-      return 'private_owner';
-    }
-
-    return 'customer';
-  }, [effectiveOwnerVehicleCount, isInsideOwnerFlow, managedAccountType]);
-  const workspaceMode = workspaceAccountType === 'customer'
-    ? ACCOUNT_WORKSPACE_MODES.service
-    : effectiveOwnerVehicleCount > 0
-      ? ACCOUNT_WORKSPACE_MODES.owner
-      : ACCOUNT_WORKSPACE_MODES.ownerSetup;
+  const { isInsideOwnerFlow, workspaceAccountType, workspaceMode } = workspaceIdentity;
   const tenantPlanType = useMemo(
     () => normalizeTenantPlanType(
       tenantSession?.subscription?.plan_type ||
@@ -190,7 +176,7 @@ const AccountWorkspaceLayout = () => {
   ]);
   const shouldApplyTenantModuleFiltering =
     managedAccountType === 'business_owner' || hostContext.kind === 'tenant';
-  const visibleSections = useMemo(
+  const baseVisibleSections = useMemo(
     () =>
       getAccountWorkspaceSectionsForMode(workspaceMode).filter((section) => {
         if (!section?.moduleName) {
@@ -210,15 +196,29 @@ const AccountWorkspaceLayout = () => {
     [location.pathname]
   );
   const currentSectionId = useMemo(() => {
-    if (
-      location.pathname === '/account/vehicles' ||
-      location.pathname.startsWith('/account/vehicles/') ||
-      location.pathname.startsWith('/account/marketplace/vehicles/')
-    ) {
-      return 'my-vehicles';
+    if (matchedSection?.id) {
+      return matchedSection.id;
     }
-    return visibleSections.find((section) => location.pathname === section.href || location.pathname.startsWith(`${section.href}/`))?.id || 'overview';
-  }, [location.pathname, visibleSections]);
+    return baseVisibleSections.find((section) => location.pathname === section.href || location.pathname.startsWith(`${section.href}/`))?.id || 'overview';
+  }, [baseVisibleSections, location.pathname, matchedSection?.id]);
+  const visibleSections = useMemo(() => {
+    const primarySectionIds = new Set(
+      getPrimaryAccountWorkspaceSectionIds({
+        workspaceMode,
+        hasTripActivity: workspaceActivity.hasTripActivity,
+        hasWalletActivity: workspaceActivity.hasWalletActivity,
+        currentSectionId,
+      })
+    );
+
+    return baseVisibleSections.filter((section) => primarySectionIds.has(section.id));
+  }, [
+    baseVisibleSections,
+    currentSectionId,
+    workspaceActivity.hasTripActivity,
+    workspaceActivity.hasWalletActivity,
+    workspaceMode,
+  ]);
   const currentSection = getAccountWorkspaceSection(
     currentSectionId
   );
@@ -318,6 +318,73 @@ const AccountWorkspaceLayout = () => {
   }, [managedAccountType, user?.id]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadWorkspaceActivity = async () => {
+      if (!user?.id) {
+        setWorkspaceActivity({
+          hasTripActivity: false,
+          hasWalletActivity: false,
+        });
+        return;
+      }
+
+      if (workspaceMode === 'owner') {
+        setWorkspaceActivity({
+          hasTripActivity: true,
+          hasWalletActivity: true,
+        });
+        return;
+      }
+
+      try {
+        const [snapshot, marketplaceRequests, tours] = await Promise.all([
+          CustomerExperienceService.getCustomerAccountSnapshot(user).catch(() => null),
+          CustomerExperienceService.getCustomerMarketplaceRequests(user).catch(() => []),
+          CustomerExperienceService.getCustomerTourHistory(user).catch(() => []),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        const normalizedWalletBalance = Number(snapshot?.wallet?.balance || 0);
+        const normalizedApprovedTopups = Number(snapshot?.wallet?.approvedTopups || 0);
+        const normalizedLoyaltyPoints = Number(snapshot?.loyalty?.points || 0);
+        const hasTripActivity =
+          Array.isArray(snapshot?.active) && snapshot.active.length > 0 ||
+          Array.isArray(snapshot?.upcoming) && snapshot.upcoming.length > 0 ||
+          Array.isArray(snapshot?.recent) && snapshot.recent.length > 0 ||
+          Array.isArray(marketplaceRequests) && marketplaceRequests.length > 0 ||
+          Array.isArray(tours) && tours.length > 0;
+        const hasWalletActivity =
+          normalizedWalletBalance > 0 ||
+          normalizedApprovedTopups > 0 ||
+          normalizedLoyaltyPoints > 0 ||
+          (Array.isArray(snapshot?.walletTransactions) && snapshot.walletTransactions.length > 0);
+
+        setWorkspaceActivity({
+          hasTripActivity,
+          hasWalletActivity,
+        });
+      } catch {
+        if (!cancelled) {
+          setWorkspaceActivity({
+            hasTripActivity: false,
+            hasWalletActivity: false,
+          });
+        }
+      }
+    };
+
+    void loadWorkspaceActivity();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email, user?.id, workspaceMode]);
+
+  useEffect(() => {
     if (!user?.id) return undefined;
 
     const warmWorkspace = () => {
@@ -393,17 +460,17 @@ const AccountWorkspaceLayout = () => {
 
   useEffect(() => {
     if (!matchedSection) return;
-    const sectionVisible = visibleSections.some((section) => section.id === matchedSection.id);
+    const sectionVisible = baseVisibleSections.some((section) => section.id === matchedSection.id);
     if (sectionVisible) return;
     navigate('/account/overview', { replace: true });
-  }, [matchedSection, visibleSections, navigate]);
+  }, [baseVisibleSections, matchedSection, navigate]);
 
   const handleNavigate = (item) => {
     setMenuOpen(false);
-    const href = item?.href || '/account/overview';
+    const href = resolveSectionHref(item) || item?.href || '/account/overview';
     const currentPath = getCurrentLocationPath(location);
     const shouldPreserveReturnPath =
-      item?.id === 'verification' &&
+      item?.id === 'settings' &&
       (
         location.pathname === '/account/vehicles' ||
         location.pathname.startsWith('/account/vehicles/') ||
@@ -423,6 +490,10 @@ const AccountWorkspaceLayout = () => {
   };
 
   const resolveSectionHref = (item) => {
+    if (item?.id === 'marketplace') {
+      return workspaceMode === 'service' ? '/account/marketplace' : '/account/vehicles';
+    }
+
     return item.href;
   };
 
@@ -526,7 +597,7 @@ const AccountWorkspaceLayout = () => {
                 </div>
                 <div>
                   <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
-                  <p className="text-sm text-slate-500">{tr('My profile', 'Mon profil')}</p>
+                  <p className="text-sm text-slate-500">{tr('Account workspace', 'Espace compte')}</p>
                 </div>
                 </Link>
               </div>

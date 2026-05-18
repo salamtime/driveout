@@ -191,6 +191,74 @@ const loadOptionalCount = async (factory, fallbackValue = 0) => {
   }
 };
 
+const loadCanonicalAppUserProfile = async (adminClient, ownerReference) => {
+  const normalizedOwnerReference = String(ownerReference || '').trim();
+  if (!normalizedOwnerReference) return null;
+
+  const directProfile = await loadOptionalQuery(
+    () =>
+      adminClient
+        .from(APP_USERS_TABLE)
+        .select('*')
+        .eq('id', normalizedOwnerReference)
+        .maybeSingle(),
+    null
+  );
+  if (directProfile) return directProfile;
+
+  const linkedProfiles = await loadOptionalQuery(
+    () =>
+      adminClient
+        .from(APP_USERS_TABLE)
+        .select('*')
+        .eq('owner_id', normalizedOwnerReference)
+        .limit(1),
+    []
+  );
+
+  return Array.isArray(linkedProfiles) ? linkedProfiles[0] || null : null;
+};
+
+const loadAuthUserById = async (adminClient, userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return null;
+
+  try {
+    const response = await adminClient.auth.admin.getUserById(normalizedUserId);
+    return response?.data?.user || null;
+  } catch (error) {
+    if (!isSetupError(error)) {
+      return null;
+    }
+    return null;
+  }
+};
+
+const resolveCanonicalOwnerUserId = async (adminClient, listing = {}, profile = null) => {
+  const candidateIds = [
+    String(listing?.owner_id || '').trim(),
+    String(profile?.owner_id || '').trim(),
+  ].filter(Boolean);
+
+  for (const candidateId of candidateIds) {
+    const authUser = await loadAuthUserById(adminClient, candidateId);
+    if (authUser?.id) {
+      return String(authUser.id).trim();
+    }
+
+    const appUserProfile = await loadCanonicalAppUserProfile(adminClient, candidateId);
+    const fallbackOwnerId = String(appUserProfile?.owner_id || '').trim();
+    if (!fallbackOwnerId) continue;
+
+    const fallbackAuthUser = await loadAuthUserById(adminClient, fallbackOwnerId);
+    if (fallbackAuthUser?.id) {
+      return String(fallbackAuthUser.id).trim();
+    }
+  }
+
+  return '';
+};
+
 const loadListingsSnapshot = async (adminClient) => {
   let query = adminClient
     .from(MARKETPLACE_LISTINGS_TABLE)
@@ -350,6 +418,9 @@ const getListingDetail = async (adminClient, listingId, tenantScope = null) => {
     profile = profileRow || {};
   }
 
+  const resolvedOwnerUserId = await resolveCanonicalOwnerUserId(adminClient, listing, profile);
+  const ownerReferenceId = resolvedOwnerUserId || String(listing?.owner_id || '').trim();
+
   let ownerProfile = null;
   let ownerAuthUser = null;
   let totalListings = 0;
@@ -357,23 +428,15 @@ const getListingDetail = async (adminClient, listingId, tenantScope = null) => {
   let moderationHistory = [];
   let messages = [];
 
-  if (listing?.owner_id) {
-    ownerProfile = await loadOptionalQuery(
-      () =>
-        adminClient
-          .from(APP_USERS_TABLE)
-          .select('*')
-          .eq('id', listing.owner_id)
-          .maybeSingle(),
-      null
-    );
+  if (ownerReferenceId) {
+    ownerProfile = await loadCanonicalAppUserProfile(adminClient, ownerReferenceId);
 
     totalListings = await loadOptionalCount(
       () => {
         let query = adminClient
           .from(MARKETPLACE_LISTINGS_TABLE)
           .select('id', { count: 'exact', head: true })
-          .eq('owner_id', listing.owner_id);
+          .eq('owner_id', ownerReferenceId);
         query = applyTenantQueryScope(query, tenantScope);
         return query;
       },
@@ -385,7 +448,7 @@ const getListingDetail = async (adminClient, listingId, tenantScope = null) => {
         let query = adminClient
           .from(MARKETPLACE_LISTINGS_TABLE)
           .select('id', { count: 'exact', head: true })
-          .eq('owner_id', listing.owner_id)
+          .eq('owner_id', ownerReferenceId)
           .eq('listing_status', 'live');
         query = applyTenantQueryScope(query, tenantScope);
         return query;
@@ -413,20 +476,13 @@ const getListingDetail = async (adminClient, listingId, tenantScope = null) => {
       []
     );
 
-    try {
-      const authUserResponse = await adminClient.auth.admin.getUserById(listing.owner_id);
-      ownerAuthUser = authUserResponse?.data?.user || null;
-    } catch (error) {
-      if (!isSetupError(error)) {
-        ownerAuthUser = null;
-      }
-    }
+    ownerAuthUser = await loadAuthUserById(adminClient, ownerReferenceId);
   }
 
   return {
     ...buildListingDetail(listing, profile),
     owner: {
-      id: listing.owner_id || null,
+      id: ownerReferenceId || null,
       email: ownerProfile?.email || ownerAuthUser?.email || '',
       phone: ownerProfile?.phone_number || ownerAuthUser?.phone || ownerAuthUser?.user_metadata?.phone || '',
       fullName:
@@ -588,8 +644,20 @@ const updateListingStatus = async ({
   const actionType = normalizeStatus(action, '');
   const previousStatus = normalizeStatus(listing.listing_status || 'draft', 'draft');
   const shouldSendToOwner = sendToOwner !== false;
+  const resolvedOwnerUserId = await resolveCanonicalOwnerUserId(adminClient, listing);
   let historyPayload = null;
   let ownerMessagePayload = null;
+
+  if (!resolvedOwnerUserId) {
+    const error = new Error('Unable to resolve the canonical marketplace owner account for this listing.');
+    error.status = 409;
+    throw error;
+  }
+
+  if (String(listing.owner_id || '').trim() !== resolvedOwnerUserId) {
+    listingUpdates.owner_id = resolvedOwnerUserId;
+    listing.owner_id = resolvedOwnerUserId;
+  }
 
   if (actionType === 'approve') {
     Object.assign(listingUpdates, {
@@ -606,7 +674,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'approved',
       status_before: previousStatus,
@@ -618,7 +686,7 @@ const updateListingStatus = async ({
     if (shouldSendToOwner && normalizedFeedback) {
       ownerMessagePayload = {
         listing_id: listing.id,
-        owner_id: listing.owner_id,
+        owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'approval',
@@ -642,7 +710,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'changes_requested',
       status_before: previousStatus,
@@ -655,7 +723,7 @@ const updateListingStatus = async ({
     if (shouldSendToOwner && (normalizedMessageBody || normalizedFeedback || normalizedReason)) {
       ownerMessagePayload = {
         listing_id: listing.id,
-        owner_id: listing.owner_id,
+        owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'changes_requested',
@@ -683,7 +751,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'rejected',
       status_before: previousStatus,
@@ -696,7 +764,7 @@ const updateListingStatus = async ({
     if (shouldSendToOwner) {
       ownerMessagePayload = {
         listing_id: listing.id,
-        owner_id: listing.owner_id,
+        owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'rejection',
@@ -725,7 +793,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'published',
       status_before: previousStatus,
@@ -737,7 +805,7 @@ const updateListingStatus = async ({
     if (shouldSendToOwner && normalizedFeedback) {
       ownerMessagePayload = {
         listing_id: listing.id,
-        owner_id: listing.owner_id,
+        owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'publish_notice',
@@ -756,7 +824,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'unpublished',
       status_before: previousStatus,
@@ -769,7 +837,7 @@ const updateListingStatus = async ({
     historyPayload = {
       listing_id: listing.id,
       vehicle_public_profile_id: listing.vehicle_public_profile_id,
-      owner_id: listing.owner_id,
+      owner_id: resolvedOwnerUserId,
       admin_id: userId,
       action_type: 'message_sent',
       status_before: previousStatus,
@@ -781,7 +849,7 @@ const updateListingStatus = async ({
     if (shouldSendToOwner && (normalizedMessageBody || normalizedFeedback)) {
       ownerMessagePayload = {
         listing_id: listing.id,
-        owner_id: listing.owner_id,
+        owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'message',

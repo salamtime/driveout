@@ -2698,6 +2698,47 @@ export default async function handler(req, res) {
     if (req.method === 'PATCH' && resource === 'profile') {
       const payload = req.body && typeof req.body === 'object' ? req.body : {};
       const hasOwn = (key) => Object.prototype.hasOwnProperty.call(payload, key);
+      const payloadKeys = Object.keys(payload);
+      const isPreferencesOnlyUpdate =
+        payloadKeys.length > 0 &&
+        payloadKeys.every((key) => key === 'preferences');
+      const nowIso = new Date().toISOString();
+
+      if (isPreferencesOnlyUpdate) {
+        const preferences = payload.preferences && typeof payload.preferences === 'object' && !Array.isArray(payload.preferences)
+          ? payload.preferences
+          : {};
+        const {
+          data: updatedProfile,
+          error: updateError,
+        } = await updateProfileWithCompatibility(adminClient, user.id, {
+          preferences,
+          updated_at: nowIso,
+        });
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        res.status(200).json({
+          profile: buildProfileFromAuthUser(
+            {
+              ...user,
+              user_metadata: {
+                ...(user.user_metadata || {}),
+                preferences,
+              },
+            },
+            updatedProfile || {
+              id: user.id,
+              email: user.email,
+              preferences,
+            }
+          ),
+        });
+        return;
+      }
+
       const explicitUsername = hasOwn('username')
         ? String(payload.username || '')
             .trim()
@@ -2715,36 +2756,37 @@ export default async function handler(req, res) {
             .filter((value) => value !== null && value !== '')
             .join(' ')
             .trim() || null;
-      const nowIso = new Date().toISOString();
 
-      const profileUpdate = {
-        username: explicitUsername,
-        first_name: explicitFirstName,
-        last_name: explicitLastName,
-        full_name: normalizedFullName || null,
-        phone_number: payload.phone || null,
-        address: payload.address || null,
-        date_of_birth: payload.date_of_birth || null,
-        emergency_contact: payload.emergency_contact || null,
-        emergency_phone: payload.emergency_phone || null,
-        preferences: payload.preferences || {},
-        updated_at: nowIso,
-      };
+      const profileUpdate = { updated_at: nowIso };
+      if (hasOwn('username')) profileUpdate.username = explicitUsername;
+      if (hasOwn('first_name')) profileUpdate.first_name = explicitFirstName;
+      if (hasOwn('last_name')) profileUpdate.last_name = explicitLastName;
+      if (hasOwn('full_name') || hasOwn('name') || hasOwn('first_name') || hasOwn('last_name')) {
+        profileUpdate.full_name = normalizedFullName || null;
+      }
+      if (hasOwn('phone')) profileUpdate.phone_number = payload.phone || null;
+      if (hasOwn('address')) profileUpdate.address = payload.address || null;
+      if (hasOwn('date_of_birth')) profileUpdate.date_of_birth = payload.date_of_birth || null;
+      if (hasOwn('emergency_contact')) profileUpdate.emergency_contact = payload.emergency_contact || null;
+      if (hasOwn('emergency_phone')) profileUpdate.emergency_phone = payload.emergency_phone || null;
+      if (hasOwn('preferences')) profileUpdate.preferences = payload.preferences || {};
 
       const metadataPatch = {
         ...(user.user_metadata || {}),
-        username: explicitUsername,
-        first_name: explicitFirstName,
-        last_name: explicitLastName,
-        full_name: normalizedFullName || null,
-        name: normalizedFullName || null,
-        phone: payload.phone || null,
-        address: payload.address || null,
-        date_of_birth: payload.date_of_birth || null,
-        emergency_contact: payload.emergency_contact || null,
-        emergency_phone: payload.emergency_phone || null,
-        preferences: payload.preferences || {},
       };
+      if (hasOwn('username')) metadataPatch.username = explicitUsername;
+      if (hasOwn('first_name')) metadataPatch.first_name = explicitFirstName;
+      if (hasOwn('last_name')) metadataPatch.last_name = explicitLastName;
+      if (hasOwn('full_name') || hasOwn('name') || hasOwn('first_name') || hasOwn('last_name')) {
+        metadataPatch.full_name = normalizedFullName || null;
+        metadataPatch.name = normalizedFullName || null;
+      }
+      if (hasOwn('phone')) metadataPatch.phone = payload.phone || null;
+      if (hasOwn('address')) metadataPatch.address = payload.address || null;
+      if (hasOwn('date_of_birth')) metadataPatch.date_of_birth = payload.date_of_birth || null;
+      if (hasOwn('emergency_contact')) metadataPatch.emergency_contact = payload.emergency_contact || null;
+      if (hasOwn('emergency_phone')) metadataPatch.emergency_phone = payload.emergency_phone || null;
+      if (hasOwn('preferences')) metadataPatch.preferences = payload.preferences || {};
 
       const {
         data: updatedProfile,

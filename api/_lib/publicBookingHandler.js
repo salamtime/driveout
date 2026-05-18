@@ -15,6 +15,11 @@ import {
   isSharedMessagesSchemaUnavailable,
   isSharedMessageThreadsSchemaUnavailable,
 } from './messages.js';
+import {
+  applyTenantQueryScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './sharedTenantIsolation.js';
 
 const WEBSITE_BOOKING_SOURCE = 'website';
 const WEBSITE_BLOCKING_STATUSES = ['verified', 'awaiting_payment', 'payment_submitted', 'confirmed'];
@@ -275,6 +280,9 @@ const isSchemaCompatibilityError = (error) => {
 
 const getMissingColumnName = (error) => {
   const message = String(error?.message || '');
+  const qualifiedColumnMatch = message.match(/column\s+["']?[\w.]*\.([a-zA-Z0-9_]+)["']?\s+does not exist/i);
+  if (qualifiedColumnMatch?.[1]) return qualifiedColumnMatch[1];
+
   const directMatch = message.match(/column\s+[\w."]*\.?("?)([a-zA-Z0-9_]+)\1\s+does not exist/i);
   if (directMatch?.[2]) return directMatch[2];
 
@@ -689,17 +697,23 @@ const reconcileVehicleOperationalStatus = async (adminClient, vehicleId, { exclu
   return nextVehicleStatus;
 };
 
-const getFleetCandidates = async (adminClient, anchorListing) => {
+const getFleetCandidates = async (adminClient, anchorListing, tenantScope = null) => {
   const anchorVehicle = anchorListing?.raw || {};
   const anchorModelId = String(anchorVehicle?.vehicle_model_id || anchorVehicle?.vehicle_model?.id || '');
   const anchorCategory = String(anchorListing?.category || anchorVehicle?.vehicle_type || '').toLowerCase();
   const anchorModel = String(anchorListing?.model || anchorVehicle?.model || '').toLowerCase();
 
-  const { data, error } = await adminClient
+  let candidatesQuery = adminClient
     .from('saharax_0u4w4d_vehicles')
-    .select('id, name, model, vehicle_type, status, current_odometer, vehicle_model_id')
+    .select('id, organization_id, owner_user_id, name, model, vehicle_type, status, current_odometer, vehicle_model_id')
+    .not('organization_id', 'is', null)
+    .is('owner_user_id', null)
     .in('status', ['available', 'scheduled'])
     .order('current_odometer', { ascending: true, nullsFirst: true });
+
+  candidatesQuery = applyTenantQueryScope(candidatesQuery, tenantScope);
+
+  const { data, error } = await candidatesQuery;
 
   if (error) throw error;
 
@@ -776,6 +790,7 @@ const chooseBestVehicle = async ({
   requestedEnd,
   excludeRentalId = null,
   bufferMinutes = DEFAULT_BUFFER_MINUTES,
+  tenantScope = null,
 }) => {
   const requestStart = toDate(requestedStart);
   const requestEnd = toDate(requestedEnd);
@@ -784,7 +799,7 @@ const chooseBestVehicle = async ({
   }
 
   const normalizedBuffer = normalizeMinutes(bufferMinutes, DEFAULT_BUFFER_MINUTES);
-  const candidates = await getFleetCandidates(adminClient, anchorListing);
+  const candidates = await getFleetCandidates(adminClient, anchorListing, tenantScope);
   if (candidates.length === 0) {
     return {
       assignedVehicle: null,
@@ -874,6 +889,7 @@ const getModelReservationAvailability = async ({
   requestedStart,
   requestedEnd,
   excludeRentalId = null,
+  tenantScope = null,
 }) => {
   const requestStart = toDate(requestedStart);
   const requestEnd = toDate(requestedEnd);
@@ -883,7 +899,7 @@ const getModelReservationAvailability = async ({
 
   await cleanupExpiredWebsiteBookingLocks(adminClient).catch(() => {});
 
-  const candidates = await getFleetCandidates(adminClient, listing);
+  const candidates = await getFleetCandidates(adminClient, listing, tenantScope);
   if (candidates.length === 0) {
     return {
       candidateCount: 0,
@@ -900,7 +916,6 @@ const getModelReservationAvailability = async ({
     .select(`
       id,
       vehicle_id,
-      vehicle_model_id,
       rental_start_date,
       rental_end_date,
       rental_status,
@@ -908,15 +923,7 @@ const getModelReservationAvailability = async ({
       booking_source,
       website_booking_status,
       is_vehicle_locked,
-      hold_expires_at,
-      selected_vehicle_model_snapshot,
-      vehicle_model_snapshot,
-      vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-        id,
-        model,
-        vehicle_type,
-        vehicle_model_id
-      )
+      hold_expires_at
     `)
     .lte('rental_start_date', requestedEnd)
     .gte('rental_end_date', requestedStart)
@@ -989,13 +996,7 @@ const findExistingWebsiteBooking = async ({
         rental_start_date,
         rental_end_date,
         booking_session_key,
-        vehicle_id,
-        vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-          id,
-          model,
-          vehicle_type,
-          vehicle_model_id
-        )
+        vehicle_id
       `)
       .eq('booking_source', WEBSITE_BOOKING_SOURCE)
       .eq('booking_session_key', bookingSessionKey)
@@ -1023,13 +1024,7 @@ const findExistingWebsiteBooking = async ({
       rental_start_date,
       rental_end_date,
       booking_session_key,
-      vehicle_id,
-      vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-        id,
-        model,
-        vehicle_type,
-        vehicle_model_id
-      )
+      vehicle_id
     `)
     .lte('rental_start_date', endIso)
     .gte('rental_end_date', startIso)
@@ -1298,7 +1293,7 @@ const repairAuthenticatedRentalLink = async (adminClient, rental, user, linkedCu
   });
 };
 
-const createCertifiedBooking = async (adminClient, payload, { user = null } = {}) => {
+const createCertifiedBooking = async (adminClient, payload, { user = null, tenantScope = null } = {}) => {
   const {
     listing,
     customerName,
@@ -1342,7 +1337,7 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
   const resolvedLicenseDocumentUrl = cleanValue(linkedCustomer.licenseDocumentUrl || licenseDocumentUrl);
 
   if (!String(resolvedCustomerName || '').trim()) throw createHttpError(400, 'Full name is required.');
-  if (!String(resolvedCustomerPhone || '').trim()) throw createHttpError(400, 'Phone number is required.');
+  if (normalizePhone(resolvedCustomerPhone).length < 8) throw createHttpError(400, 'Valid phone number is required.');
 
   const normalizedDurationUnits = Math.max(
     rentalType === 'hourly' ? 0.5 : 1,
@@ -1366,6 +1361,7 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
     listing,
     requestedStart: startIso,
     requestedEnd: endIso,
+    tenantScope,
   });
 
   if (availability.availableCount <= 0) {
@@ -1397,7 +1393,20 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
   const listingModelId = cleanValue(getListingModelId(listing));
   const listingBrandName = cleanValue(getListingBrandName(listing));
   const listingModelName = cleanValue(getListingModelName(listing));
-  const basePayload = {
+  const listingVehicleContextNotes = [
+    listingModelId ? `Website listing model ID: ${listingModelId}` : '',
+    [listingBrandName, listingModelName].filter(Boolean).join(' ')
+      ? `Website requested model: ${[listingBrandName, listingModelName].filter(Boolean).join(' ')}`
+      : '',
+    listing?.id ? `Website listing ID: ${listing.id}` : '',
+  ].filter(Boolean);
+  const bookingNotes = cleanValue(
+    [
+      cleanValue(notes),
+      ...listingVehicleContextNotes,
+    ].filter(Boolean).join('\n')
+  );
+  const basePayload = stampTenantPayload({
     customer_id: cleanValue(linkedCustomer.customerId),
     customer_name: resolvedCustomerName,
     customer_email: resolvedCustomerEmail,
@@ -1405,11 +1414,6 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
     customer_licence_number: resolvedCustomerLicenseNumber,
     customer_id_image: resolvedLicenseDocumentUrl,
     vehicle_id: null,
-    vehicle_model_id: listingModelId,
-    selected_vehicle_name_snapshot: listingBrandName,
-    selected_vehicle_model_snapshot: listingModelName,
-    vehicle_name_snapshot: listingBrandName,
-    vehicle_model_snapshot: listingModelName,
     rental_start_date: startIso,
     rental_end_date: endIso,
     rental_start_time: cleanValue(toLocalTimeValue(localStart)),
@@ -1431,13 +1435,13 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
         : cleanValue(Number(packageSelection?.includedKilometers || 0) || null),
     selected_package_extra_rate: cleanValue(Number(packageSelection?.extraKmRate || 0) || null),
     use_package_pricing: true,
-    notes: cleanValue(notes),
+    notes: bookingNotes,
     booking_source: 'website',
     inventory_source: 'certified_fleet',
     booking_mode: 'instant',
     booking_session_key: cleanValue(bookingSessionKey),
     ...lifecycleFields,
-  };
+  }, tenantScope);
 
   if (lifecycleFields.website_booking_status === 'confirmed') {
     basePayload.confirmed_at = new Date().toISOString();
@@ -1463,17 +1467,12 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
       customer_email: resolvedCustomerEmail,
       customer_phone: resolvedCustomerPhone,
       vehicle_id: null,
-      vehicle_model_id: listingModelId,
-      selected_vehicle_name_snapshot: listingBrandName,
-      selected_vehicle_model_snapshot: listingModelName,
-      vehicle_name_snapshot: listingBrandName,
-      vehicle_model_snapshot: listingModelName,
       rental_start_date: startIso,
       rental_end_date: endIso,
       total_amount: totalAmount,
       payment_status: 'unpaid',
       rental_status: 'scheduled',
-      notes: cleanValue(notes),
+      notes: bookingNotes,
       booking_source: 'website',
       inventory_source: 'certified_fleet',
       booking_mode: 'instant',
@@ -1511,8 +1510,8 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
   return {
     ...rental,
     assigned_vehicle: assignedVehicle || null,
-    assignment_alternatives: assignment.alternatives || [],
-    assignment_buffer_minutes: assignment.bufferMinutes || null,
+    assignment_alternatives: [],
+    assignment_buffer_minutes: null,
   };
 };
 
@@ -2054,7 +2053,8 @@ export default async function publicBookingHandler(req, res) {
     if (req.method === 'POST' && action === 'create-certified') {
       const body = parseBody(req.body);
       const authenticatedUser = await getAuthenticatedUser(req);
-      const rental = await createCertifiedBooking(adminClient, body, { user: authenticatedUser });
+      const tenantScope = await resolveRequestTenantScope({ req, adminClient, payload: body });
+      const rental = await createCertifiedBooking(adminClient, body, { user: authenticatedUser, tenantScope });
       void sendCertifiedBookingConfirmationEmail({
         adminClient,
         rental,

@@ -860,6 +860,13 @@ const VehicleManagement: React.FC = () => {
       setVehicles(prev => prev.map(v => 
         v.id === vehicleId ? { ...v, status } : v
       ));
+      window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+        detail: {
+          id: vehicleId,
+          status,
+          updated_at: new Date().toISOString(),
+        },
+      }));
     } catch (error) {
       console.error('Error updating vehicle status:', error);
     }
@@ -882,6 +889,13 @@ const VehicleManagement: React.FC = () => {
 
       if (error) throw error;
 
+      window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+        detail: {
+          id: vehicle.id,
+          status: 'available',
+          updated_at: new Date().toISOString(),
+        },
+      }));
       alert(`${vehicle.name} has been returned to service successfully!`);
       await fetchData();
     } catch (error) {
@@ -969,6 +983,10 @@ const VehicleManagement: React.FC = () => {
         if (error) {
           throw new Error(`Impossible de mettre à jour le véhicule : ${error.message}`);
         }
+
+        window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+          detail: updatedVehicle,
+        }));
 
         if (vehicleDocuments.length > 0) {
           // In real implementation, save documents to storage and update vehicle record

@@ -14,6 +14,25 @@ import { supabase } from '../lib/supabase';
 import TransactionalRentalService from './TransactionalRentalService';
 import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
+import { adminApiRequest } from './adminApi';
+import { getCurrentOrganizationId } from './OrganizationService';
+
+const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
+  const timeoutId = setTimeout(() => {
+    reject(new Error(message));
+  }, timeoutMs);
+
+  promise.then(
+    (value) => {
+      clearTimeout(timeoutId);
+      resolve(value);
+    },
+    (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    }
+  );
+});
 
 const getRawStorageValue = (value) => {
   if (!value) return '';
@@ -697,10 +716,39 @@ class EnhancedTransactionalRentalService {
         .from(this.tableName)
         .select('*')
         .eq('id', rentalId)
-        .single();
+        .maybeSingle();
 
       if (rentalError) {
         throw new Error(`Failed to fetch rental before delete: ${rentalError.message}`);
+      }
+
+      if (!rental) {
+        console.warn('⚠️ RENTAL DELETE: Rental was already deleted before cleanup completed:', rentalId);
+        return {
+          success: true,
+          message: 'Rental was already deleted',
+          alreadyDeleted: true,
+        };
+      }
+
+      try {
+        const organizationId = await getCurrentOrganizationId();
+        if (organizationId) {
+          await withTimeout(
+            adminApiRequest('/api/rental-cleanup?action=delete-linked-artifacts', {
+              method: 'POST',
+              body: JSON.stringify({
+                rentalId,
+                organizationId,
+              }),
+            }),
+            5000,
+            'Rental cleanup API timed out'
+          );
+        }
+      } catch (cleanupError) {
+        const message = String(cleanupError?.message || cleanupError || '');
+        console.warn('⚠️ RENTAL DELETE: Shared rental cleanup did not complete before delete; continuing with local delete flow.', message);
       }
 
       const deleteResult = await TransactionalRentalService.deleteRental(rentalId);

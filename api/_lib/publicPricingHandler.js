@@ -27,20 +27,33 @@ const getFallbackPrice = (rentalType, modelType = '') => {
     rentalType === 'weekly' ? 5000 : 1500;
 };
 
+const cleanId = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized === 'null' || normalized === 'undefined') return '';
+  return normalized;
+};
+
 const loadVehicleContext = async (adminClient, vehicleId) => {
   const { data: vehicleData, error: vehicleError } = await adminClient
     .from('saharax_0u4w4d_vehicles')
-    .select('id, vehicle_model_id')
+    .select('id, vehicle_model_id, organization_id, owner_user_id')
     .eq('id', vehicleId)
+    .not('organization_id', 'is', null)
+    .is('owner_user_id', null)
     .single();
 
   if (vehicleError) throw vehicleError;
 
+  const vehicleModelId = cleanId(vehicleData?.vehicle_model_id);
+  if (!vehicleModelId) {
+    return { vehicleData, modelInfo: null };
+  }
+
   const { data: modelInfo, error: modelError } = await adminClient
     .from('saharax_0u4w4d_vehicle_models')
     .select('id, model, hourly_price, daily_price')
-    .eq('id', vehicleData.vehicle_model_id)
-    .single();
+    .eq('id', vehicleModelId)
+    .maybeSingle();
 
   if (modelError) throw modelError;
 
@@ -48,10 +61,13 @@ const loadVehicleContext = async (adminClient, vehicleId) => {
 };
 
 const loadBasePrice = async (adminClient, vehicleModelId) => {
+  const normalizedVehicleModelId = cleanId(vehicleModelId);
+  if (!normalizedVehicleModelId) return null;
+
   const { data, error } = await adminClient
     .from('app_4c3a7a6153_base_prices')
     .select('hourly_price, daily_price')
-    .eq('vehicle_model_id', vehicleModelId)
+    .eq('vehicle_model_id', normalizedVehicleModelId)
     .eq('is_active', true)
     .maybeSingle();
 
@@ -189,7 +205,7 @@ export default async function publicPricingHandler(req, res) {
       });
     }
 
-    const vehicleModelId = String(req.query?.vehicleModelId || '').trim();
+    const vehicleModelId = cleanId(req.query?.vehicleModelId);
     if (!vehicleModelId) {
       return json(res, 400, { error: 'Missing vehicleModelId' });
     }

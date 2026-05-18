@@ -5,12 +5,10 @@ import {
   CreditCard,
   FileBadge,
   Loader2,
-  MessageSquare,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
-import StatusChip from '../../components/account/StatusChip';
 import {
   workspacePanelClass,
   workspaceInsetPanelClass,
@@ -24,6 +22,25 @@ import MessageService from '../../services/MessageService';
 import { resolveReturnPath } from '../../utils/navigationReturn';
 
 const REQUIRED_TYPES = ['driver_license', 'profile_id'];
+const VERIFICATION_SUMMARY_TIMEOUT_MS = 8000;
+const VERIFICATION_THREAD_TIMEOUT_MS = 5000;
+
+const runWithTimeout = (promise, timeoutMs, errorMessage) => {
+  let timeoutId = null;
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeoutId = globalThis.setTimeout(() => {
+        reject(new Error(errorMessage));
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  });
+};
 
 const buildVerificationThreadKey = ({ entityType, entityId }) =>
   ['verification', 'verification', String(entityType || '').trim().toLowerCase(), String(entityId || '').trim()].join(':');
@@ -215,7 +232,7 @@ const AccountVerification = () => {
     userProfile?.license_number
   );
 
-  const loadVerification = useCallback(async ({ silent = false } = {}) => {
+  const loadVerification = useCallback(async ({ silent = false, forceRefresh = false } = {}) => {
     if (!user?.id) {
       setVerificationLoading(false);
       return;
@@ -226,22 +243,41 @@ const AccountVerification = () => {
         setVerificationLoading(true);
       }
       setVerificationError('');
-      const [result, threadResponse] = await Promise.all([
-        VerificationService.getEntityVerificationSummary('user', user.id),
-        MessageService.listSharedThreads({
-          family: 'verification',
-          threadKey: buildVerificationThreadKey({ entityType: 'user', entityId: user.id }),
-        }).catch(() => ({ threads: [] })),
-      ]);
-      const matchingThread = Array.isArray(threadResponse?.threads)
-        ? threadResponse.threads.find((thread) => String(thread?.thread_key || '') === buildVerificationThreadKey({ entityType: 'user', entityId: user.id }))
-        : null;
-      const enrichedRequests = attachLatestVerificationNotes(
-        Array.isArray(result?.requests) ? result.requests : [],
-        Array.isArray(matchingThread?.messages) ? matchingThread.messages : []
+      const threadKey = buildVerificationThreadKey({ entityType: 'user', entityId: user.id });
+      const result = await runWithTimeout(
+        VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh }),
+        VERIFICATION_SUMMARY_TIMEOUT_MS,
+        tr('Loading verification status took too long. You can still upload your documents below.', 'Le chargement du statut de vérification a pris trop de temps. Vous pouvez quand même téléverser vos documents ci-dessous.')
       );
-      setVerificationRequests(enrichedRequests);
+
+      const baseRequests = Array.isArray(result?.requests) ? result.requests : [];
+      setVerificationRequests(baseRequests);
       setVerificationSummary(result?.summary || null);
+
+      if (!silent) {
+        setVerificationLoading(false);
+      }
+
+      try {
+        const threadResponse = await runWithTimeout(
+          MessageService.listSharedThreads({
+            family: 'verification',
+            threadKey,
+          }).catch(() => ({ threads: [] })),
+          VERIFICATION_THREAD_TIMEOUT_MS,
+          'Verification thread lookup timed out.'
+        );
+        const matchingThread = Array.isArray(threadResponse?.threads)
+          ? threadResponse.threads.find((thread) => String(thread?.thread_key || '') === threadKey)
+          : null;
+        const enrichedRequests = attachLatestVerificationNotes(
+          baseRequests,
+          Array.isArray(matchingThread?.messages) ? matchingThread.messages : []
+        );
+        setVerificationRequests(enrichedRequests);
+      } catch (_threadError) {
+        // Keep the verification uploader usable even if the thread lookup is slow.
+      }
     } catch (error) {
       setVerificationError(error?.message || tr('Unable to load verification status right now.', 'Impossible de charger le statut de vérification pour le moment.'));
     } finally {
@@ -321,56 +357,15 @@ const AccountVerification = () => {
     [user?.id]
   );
   const isVerificationComplete = documentState.account.tone === 'success';
-  const primaryActionDocument = useMemo(() => {
-    if (needsIdentityReplacement) {
-      return {
-        key: 'profile_id',
-        title: tr('Replace your document', 'Remplacez votre document'),
-        description: tr('We need a valid, non-expired document.', 'Nous avons besoin d’un document valide et non expiré.'),
-        reason: latestByType?.profile_id?.latest_replacement_note || latestByType?.profile_id?.rejection_reason || '',
-        cta: tr('Upload new document', 'Téléverser un nouveau document'),
-        anchor: 'verification-identity-document',
-      };
-    }
-    if (needsLicenseReplacement) {
-      return {
-        key: 'driver_license',
-        title: tr('Replace your document', 'Remplacez votre document'),
-        description: tr('We need a valid, non-expired document.', 'Nous avons besoin d’un document valide et non expiré.'),
-        reason: latestByType?.driver_license?.latest_replacement_note || latestByType?.driver_license?.rejection_reason || '',
-        cta: tr('Upload new document', 'Téléverser un nouveau document'),
-        anchor: 'verification-driver-license',
-      };
-    }
-    if (!latestByType?.profile_id && !hasIdentityDoc) {
-      return {
-        key: 'profile_id',
-        title: tr('Upload your ID or passport', 'Téléversez votre pièce ou passeport'),
-        description: tr('We need a valid, non-expired document.', 'Nous avons besoin d’un document valide et non expiré.'),
-        reason: '',
-        cta: tr('Upload document', 'Téléverser le document'),
-        anchor: 'verification-identity-document',
-      };
-    }
-    if (!latestByType?.driver_license && !hasDriverLicense) {
-      return {
-        key: 'driver_license',
-        title: tr('Upload your driver license', 'Téléversez votre permis de conduire'),
-        description: tr('We need a valid, non-expired document.', 'Nous avons besoin d’un document valide et non expiré.'),
-        reason: '',
-        cta: tr('Upload document', 'Téléverser le document'),
-        anchor: 'verification-driver-license',
-      };
-    }
-    return null;
-  }, [hasDriverLicense, hasIdentityDoc, latestByType, needsIdentityReplacement, needsLicenseReplacement, tr]);
-
   const verificationResumeHandledRef = useRef(false);
   const highlightedDocumentRef = useRef('');
   const resumeBookingFlow = location.state?.resumeBookingFlow === 'marketplace_request';
   const verificationReturnPath = typeof location.state?.from === 'string' ? location.state.from : '';
   const verificationReturnLabel = typeof location.state?.fromLabel === 'string' ? location.state.fromLabel : '';
   const verificationCtaState = { from: `${location.pathname}${location.search}` };
+  const defaultListingsPath = isAdminWorkspaceShell ? '/admin/fleet' : '/account/vehicles';
+  const defaultInboxPath = isAdminWorkspaceShell ? '/admin/messages' : '/account/messages';
+  const trustCenterReturnPath = !resumeBookingFlow && verificationReturnPath ? verificationReturnPath : defaultListingsPath;
   const focusedDocumentType = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return String(params.get('documentType') || '').trim().toLowerCase();
@@ -398,17 +393,20 @@ const AccountVerification = () => {
 
     return isVerificationComplete
       ? {
-          eyebrow: tr('Owner verification', 'Vérification propriétaire'),
-          title: tr('Owner verification', 'Vérification propriétaire'),
+          eyebrow: tr('Trust center', 'Centre de confiance'),
+          title: tr('Owner trust is approved', 'La confiance propriétaire est approuvée'),
           description: tr(
-            'You can now list vehicles and accept bookings.',
-            'Vous pouvez maintenant publier des véhicules et accepter des réservations.'
+            'Your identity documents are approved. Listings, inbox conversations, payouts, and review submission all now run from the same verified account.',
+            'Vos documents d’identité sont approuvés. Les annonces, conversations Inbox, virements et envois en revue fonctionnent désormais depuis le même compte vérifié.'
           ),
         }
       : {
-          eyebrow: tr('Owner verification', 'Vérification propriétaire'),
-          title: tr('Step 1 of 2', 'Étape 1 sur 2'),
-          description: tr('Complete the next document we ask for.', 'Complétez le prochain document demandé.'),
+          eyebrow: tr('Trust center', 'Centre de confiance'),
+          title: tr('Upload the 2 required documents', 'Téléversez les 2 documents requis'),
+          description: tr(
+            'Upload your driver license and your ID or passport below. You can keep building your listing while admin reviews them.',
+            'Téléversez votre permis et votre pièce ou passeport ci-dessous. Vous pouvez continuer votre annonce pendant que l’admin les révise.'
+          ),
         };
   }, [isVerificationComplete, resumeBookingFlow, tr]);
 
@@ -479,24 +477,37 @@ const AccountVerification = () => {
                 </Link>
               ) : (
                 <Link
-                  to={isAdminWorkspaceShell ? '/admin/fleet' : '/account/vehicles/new/profile?tab=overview'}
+                  to={trustCenterReturnPath}
                   state={verificationCtaState}
                   className={workspacePrimaryButtonClass}
                 >
-                  {tr('List your first vehicle', 'Publier votre premier véhicule')}
+                  {verificationReturnPath
+                    ? tr('Return to listings', 'Retour aux annonces')
+                    : tr('Open listings', 'Ouvrir les annonces')}
                 </Link>
               )
             ) : (
-              <div className={`${workspaceInsetPanelClass} text-left sm:min-w-[210px] sm:text-right`}>
-                <p className="text-sm font-semibold text-slate-500">{tr('Step', 'Étape')}</p>
+              <div className={`${workspaceInsetPanelClass} text-left sm:min-w-[240px] sm:text-right`}>
+                <p className="text-sm font-semibold text-slate-500">{tr('Trust progress', 'Progression confiance')}</p>
                 <p className="mt-1 text-2xl font-black text-slate-950">{completedRequiredCount}/{REQUIRED_TYPES.length}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {pendingCount > 0
+                    ? tr('Your documents are already with admin. You can keep building your listing while they review.', 'Vos documents sont déjà chez l’admin. Vous pouvez continuer votre annonce pendant la revue.')
+                    : tr('Upload the next document below. Listing setup can continue in parallel.', 'Téléversez le document suivant ci-dessous. La configuration de l’annonce peut continuer en parallèle.')}
+                </p>
               </div>
             )}
+            {!resumeBookingFlow ? (
+              <Link
+                to={verificationThreadKey ? `${defaultInboxPath}?threadKey=${encodeURIComponent(verificationThreadKey)}` : defaultInboxPath}
+                className={workspaceSecondaryButtonClass}
+              >
+                {tr('Open Inbox', 'Ouvrir Inbox')}
+              </Link>
+            ) : null}
           </div>
         }
-      >
-        {null}
-      </AccountWorkspaceHero>
+      />
 
       {verificationError ? (
         <section className={`${workspacePanelClass} border-rose-200 text-sm text-rose-700`}>
@@ -515,36 +526,6 @@ const AccountVerification = () => {
               'Vérifiez votre compte pour demander ce véhicule. Nous vous ramènerons à votre réservation une fois approuvée.'
             )}
           </p>
-        </section>
-      ) : null}
-
-      {!isVerificationComplete && primaryActionDocument ? (
-        <section className={`${workspacePanelClass} sm:px-6`}>
-          <div className="max-w-xl">
-            <p className="text-2xl font-black text-slate-950">{primaryActionDocument.title}</p>
-            <p className="mt-2 text-sm text-slate-600">{primaryActionDocument.description}</p>
-            {primaryActionDocument.reason ? (
-              <div className={`${workspaceInsetPanelClass} mt-4 border-rose-100 bg-rose-50`}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-600">{tr('Reason', 'Raison')}</p>
-                <p className="mt-2 text-sm font-medium text-rose-700">{primaryActionDocument.reason}</p>
-              </div>
-            ) : null}
-            <a href={`#${primaryActionDocument.anchor}`} className={`mt-5 inline-flex ${workspacePrimaryButtonClass}`}>
-              {primaryActionDocument.cta}
-            </a>
-            {verificationThreadKey ? (
-              <div className="mt-4">
-                <p className="text-sm text-slate-500">{tr('Need help?', 'Besoin d’aide ?')}</p>
-                <Link
-                  to={`${isAdminWorkspaceShell ? '/admin/messages' : '/account/messages'}?threadKey=${encodeURIComponent(verificationThreadKey)}`}
-                  className="mt-1 inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition hover:text-violet-800"
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  {tr('View messages', 'Voir les messages')}
-                </Link>
-              </div>
-            ) : null}
-          </div>
         </section>
       ) : null}
 
@@ -590,7 +571,7 @@ const AccountVerification = () => {
           <section className={workspacePanelClass}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Manage documents', 'Gérer les documents')}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Update documents', 'Mettre à jour les documents')}</p>
                 <p className="mt-1 text-sm text-slate-600">
                   {tr('Need to update a document? You can scan or replace it here.', 'Besoin de mettre à jour un document ? Vous pouvez le scanner ou le remplacer ici.')}
                 </p>
@@ -614,7 +595,7 @@ const AccountVerification = () => {
                   ownerUserId={user?.id}
                   verificationType="driver_license"
                   request={documentState.license.request}
-                  disabled={!user?.id || verificationLoading}
+                  disabled={!user?.id}
                   enableScan
                   scanTitle={tr('Scan driver license', 'Scanner le permis de conduire')}
                   currentProfile={userProfile}
@@ -638,7 +619,7 @@ const AccountVerification = () => {
                   ownerUserId={user?.id}
                   verificationType="profile_id"
                   request={documentState.identity.request}
-                  disabled={!user?.id || verificationLoading}
+                  disabled={!user?.id}
                   enableScan
                   scanTitle={tr('Scan national ID or passport', 'Scanner la carte nationale ou le passeport')}
                   currentProfile={userProfile}
@@ -651,78 +632,99 @@ const AccountVerification = () => {
       ) : (
         <section className={`${workspacePanelClass} sm:px-6`}>
           <div className="mt-4 space-y-3">
+            {latestRejection ? (
+              <div className={`${workspaceInsetPanelClass} border-rose-100 bg-rose-50`}>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-600">{tr('Action required', 'Action requise')}</p>
+                <p className="mt-2 text-sm font-semibold text-rose-700">
+                  {tr('Replace the document marked below before trust approval can continue.', "Remplacez le document marqué ci-dessous avant que l'approbation puisse continuer.")}
+                </p>
+                {latestRejection?.latest_replacement_note || latestRejection?.rejection_reason ? (
+                  <p className="mt-2 text-sm text-rose-700">
+                    {latestRejection.latest_replacement_note || latestRejection.rejection_reason}
+                  </p>
+                ) : null}
+              </div>
+            ) : pendingCount > 0 ? (
+              <div className={`${workspaceInsetPanelClass} border-amber-100 bg-amber-50`}>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">{tr('Under review', 'En revue')}</p>
+                <p className="mt-2 text-sm text-amber-800">
+                  {tr('Admin is reviewing your documents. Replace one below if needed.', 'L’admin vérifie vos documents. Remplacez-en un ci-dessous si besoin.')}
+                </p>
+              </div>
+            ) : (
+              <div className={`${workspaceInsetPanelClass} border-violet-100 bg-violet-50`}>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('What to do now', 'Que faire maintenant')}</p>
+                <p className="mt-2 text-sm text-violet-900">
+                  {tr('Upload the 2 required documents below. You can complete them in any order.', 'Téléversez les 2 documents requis ci-dessous. Vous pouvez les faire dans n’importe quel ordre.')}
+                </p>
+              </div>
+            )}
             {verificationLoading ? (
               <div className={`${workspaceInsetPanelClass} flex items-center gap-3 bg-white text-sm font-medium text-slate-500`}>
                 <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
                 {tr('Loading your verification file…', 'Chargement de votre dossier de vérification…')}
               </div>
-            ) : (
-              <>
-                <div id="verification-driver-license" className={`${workspaceInsetPanelClass} bg-white`}>
-                  <div className="mb-3 flex items-center gap-3">
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
-                      <CreditCard className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-bold text-slate-950">{tr('Driver license', 'Permis de conduire')}</p>
-                        <StatusChip label={documentState.license.label} tone={documentState.license.tone} />
-                      </div>
-                    </div>
-                  </div>
-                  <VerificationUploadField
-                    entityType="user"
-                    entityId={user?.id}
-                    ownerUserId={user?.id}
-                    verificationType="driver_license"
-                    request={documentState.license.request}
-                    disabled={!user?.id || verificationLoading}
-                    enableScan
-                    scanTitle={tr('Scan driver license', 'Scanner le permis de conduire')}
-                    currentProfile={userProfile}
-                    onUploaded={loadVerification}
-                  />
+            ) : null}
+            <div className="px-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {pendingCount > 0 ? tr('Documents', 'Documents') : tr('Required documents', 'Documents requis')}
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                {pendingCount > 0
+                  ? tr('Review, scan, or replace below.', 'Consultez, scannez ou remplacez ci-dessous.')
+                  : tr('Upload or scan below.', 'Téléversez ou scannez ci-dessous.')}
+              </p>
+            </div>
+            <div id="verification-driver-license" className={`${workspaceInsetPanelClass} bg-white`}>
+              <div className="mb-3 flex items-center gap-3">
+                <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
+                  <CreditCard className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-slate-950">{tr('Driver license', 'Permis de conduire')}</p>
                 </div>
+              </div>
+              <VerificationUploadField
+                entityType="user"
+                entityId={user?.id}
+                ownerUserId={user?.id}
+                verificationType="driver_license"
+                request={documentState.license.request}
+                disabled={!user?.id}
+                enableScan
+                scanTitle={tr('Scan driver license', 'Scanner le permis de conduire')}
+                currentProfile={userProfile}
+                onUploaded={loadVerification}
+                showStatusBadge
+              />
+            </div>
 
-                <div id="verification-identity-document" className={`${workspaceInsetPanelClass} bg-white`}>
-                  <div className="mb-3 flex items-center gap-3">
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
-                      <FileBadge className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-bold text-slate-950">{tr('ID / Passport', 'Pièce / passeport')}</p>
-                        <StatusChip label={documentState.identity.label} tone={documentState.identity.tone} />
-                      </div>
-                    </div>
-                  </div>
-                  <VerificationUploadField
-                    entityType="user"
-                    entityId={user?.id}
-                    ownerUserId={user?.id}
-                    verificationType="profile_id"
-                    request={documentState.identity.request}
-                    disabled={!user?.id || verificationLoading}
-                    enableScan
-                    scanTitle={tr('Scan national ID or passport', 'Scanner la carte nationale ou le passeport')}
-                    currentProfile={userProfile}
-                    onUploaded={loadVerification}
-                  />
+            <div id="verification-identity-document" className={`${workspaceInsetPanelClass} bg-white`}>
+              <div className="mb-3 flex items-center gap-3">
+                <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
+                  <FileBadge className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-slate-950">{tr('ID / Passport', 'Pièce / passeport')}</p>
                 </div>
-              </>
-            )}
+              </div>
+              <VerificationUploadField
+                entityType="user"
+                entityId={user?.id}
+                ownerUserId={user?.id}
+                verificationType="profile_id"
+                request={documentState.identity.request}
+                disabled={!user?.id}
+                enableScan
+                scanTitle={tr('Scan national ID or passport', 'Scanner la carte nationale ou le passeport')}
+                currentProfile={userProfile}
+                onUploaded={loadVerification}
+                showStatusBadge
+              />
+            </div>
           </div>
         </section>
       )}
-
-      {!isVerificationComplete && pendingCount > 0 && !latestRejection ? (
-        <section className={workspacePanelClass}>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">{tr('Under review', 'En revue')}</p>
-          <p className="mt-2 text-sm text-slate-700">
-            {tr('Your documents are being reviewed. We will update you here once they are approved.', 'Vos documents sont en cours de vérification. Nous vous informerons ici dès qu’ils seront approuvés.')}
-          </p>
-        </section>
-      ) : null}
     </div>
   );
 };

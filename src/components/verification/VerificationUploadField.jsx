@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { UploadCloud, Eye, FileText, ScanLine, Trash2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import VerificationStatusBadge from './VerificationStatusBadge';
@@ -19,6 +19,31 @@ const getPreviewKind = (request) => {
   return 'file';
 };
 
+const getPreviewKindFromFile = (file) => {
+  const mimeType = String(file?.type || '').toLowerCase();
+  const fileName = String(file?.name || '').toLowerCase();
+  const source = `${mimeType} ${fileName}`;
+
+  if (mimeType.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|avif|heic|heif)\b/.test(source)) return 'image';
+  if (mimeType === 'application/pdf' || /\.pdf\b/.test(source)) return 'pdf';
+  return 'file';
+};
+
+const withUiTimeout = (promise, timeoutMs, errorMessage) => {
+  let timeoutId = null;
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  });
+};
+
 const VerificationUploadField = ({
   entityType,
   entityId,
@@ -31,25 +56,133 @@ const VerificationUploadField = ({
   enableScan = false,
   scanTitle = null,
   currentProfile = null,
+  showStatusBadge = true,
 }) => {
   const inputRef = useRef(null);
   const { i18n } = useTranslation();
   const language = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const tr = (en, fr) => (language === 'fr' ? fr : en);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [expiresAt, setExpiresAt] = useState(request?.expires_at?.slice(0, 10) || '');
   const [pendingReview, setPendingReview] = useState(null);
+  const [optimisticPreview, setOptimisticPreview] = useState(null);
+  const optimisticPreviewRef = useRef(null);
+  const [pendingReviewPreview, setPendingReviewPreview] = useState(null);
+  const pendingReviewPreviewRef = useRef(null);
   const previewKind = getPreviewKind(request);
   const normalizedRequestStatus = String(request?.status || '').toLowerCase();
+  const isBusy = isUploading || isSubmittingReview;
   const isReplacementRequested = normalizedRequestStatus === 'rejected';
   const canRemoveRequest = Boolean(request?.id);
   const latestReplacementNote = ['rejected', 'suspended'].includes(normalizedRequestStatus)
     ? String(request?.latest_replacement_note || request?.rejection_reason || '').trim()
     : '';
+  const activePreview = pendingReviewPreview || optimisticPreview || (
+    request?.file_url
+      ? {
+          url: request.file_url,
+          name: request?.file_name || getVerificationTypeLabel(verificationType, language),
+          kind: previewKind,
+        }
+      : null
+  );
+  const effectiveStatus = optimisticPreview ? 'pending' : (request?.status || 'missing');
+  const displayedFileName =
+    pendingReviewPreview?.name ||
+    optimisticPreview?.name ||
+    request?.file_name ||
+    tr('No document uploaded yet.', 'Aucun document téléversé.');
+  const displayedSourceLabel = optimisticPreview
+    ? tr('Just uploaded', 'Téléversé à l’instant')
+    : '';
+
+  const releasePreview = (preview) => {
+    if (preview?.revokeOnDispose && preview?.url) {
+      window.URL.revokeObjectURL(preview.url);
+    }
+  };
+
+  const clearOptimisticPreview = () => {
+    setOptimisticPreview((current) => {
+      releasePreview(current);
+      optimisticPreviewRef.current = null;
+      return null;
+    });
+  };
+
+  const clearPendingReviewPreview = () => {
+    setPendingReviewPreview((current) => {
+      releasePreview(current);
+      pendingReviewPreviewRef.current = null;
+      return null;
+    });
+  };
+
+  const rememberUploadedPreview = (file) => {
+    if (!file || typeof window === 'undefined' || !window.URL?.createObjectURL) {
+      return;
+    }
+
+    const nextPreview = {
+      url: window.URL.createObjectURL(file),
+      name: file.name || getVerificationTypeLabel(verificationType, language),
+      kind: getPreviewKindFromFile(file),
+      revokeOnDispose: true,
+    };
+
+    setOptimisticPreview((current) => {
+      releasePreview(current);
+      optimisticPreviewRef.current = nextPreview;
+      return nextPreview;
+    });
+  };
+
+  const rememberPendingReviewPreview = (file) => {
+    if (!file || typeof window === 'undefined' || !window.URL?.createObjectURL) {
+      clearPendingReviewPreview();
+      return;
+    }
+
+    const nextPreview = {
+      url: window.URL.createObjectURL(file),
+      name: file.name || getVerificationTypeLabel(verificationType, language),
+      kind: getPreviewKindFromFile(file),
+      revokeOnDispose: true,
+    };
+
+    setPendingReviewPreview((current) => {
+      releasePreview(current);
+      pendingReviewPreviewRef.current = nextPreview;
+      return nextPreview;
+    });
+  };
+
+  useEffect(() => {
+    if (request?.file_url && optimisticPreviewRef.current) {
+      clearOptimisticPreview();
+    }
+  }, [request?.file_url]);
+
+  useEffect(() => {
+    if (!pendingReview?.file) {
+      clearPendingReviewPreview();
+      return;
+    }
+
+    rememberPendingReviewPreview(pendingReview.file);
+  }, [pendingReview]);
+
+  useEffect(() => () => {
+    releasePreview(optimisticPreviewRef.current);
+    optimisticPreviewRef.current = null;
+    releasePreview(pendingReviewPreviewRef.current);
+    pendingReviewPreviewRef.current = null;
+  }, []);
 
   const mapScanFields = (scanData = {}) => ({
     full_name: scanData?.full_name || scanData?.fullName || scanData?.name || null,
@@ -137,7 +270,7 @@ const VerificationUploadField = ({
     });
 
     if (ocrSucceeded && scanData) {
-      await VerificationService.updateProfileFromVerificationScan({
+      void VerificationService.updateProfileFromVerificationScan({
         currentProfile,
         scanData: {
           ...scanData,
@@ -200,12 +333,14 @@ const VerificationUploadField = ({
       expiresAt: expiresAt || null,
       notes: metadata,
     });
-    onUploaded?.(result);
+    if (typeof onUploaded === 'function') {
+      Promise.resolve(onUploaded({ silent: true, forceRefresh: true, uploadResult: result })).catch(() => null);
+    }
     return result;
   };
 
   const submitFile = async (file, submissionSource = 'manual_upload') => {
-    if (!file || disabled) return;
+    if (!file || disabled || isBusy) return;
 
     if (requiresExpiry && !expiresAt) {
       toast.error(tr('Add the expiry date before uploading.', 'Ajoutez la date d’expiration avant le téléversement.'));
@@ -238,6 +373,7 @@ const VerificationUploadField = ({
           ocrError: ocrPayload.ocrError || null,
           extractedFields: ocrPayload.extractedFields,
         });
+        rememberUploadedPreview(normalizedFile);
         toast.success(
           tr(
             'Document submitted. Scan could not complete, so it was saved for manual review.',
@@ -252,6 +388,7 @@ const VerificationUploadField = ({
           ocrSucceeded: false,
           extractedFields: ocrPayload.extractedFields,
         });
+        rememberUploadedPreview(normalizedFile);
         toast.success(tr('Document submitted for review.', 'Document envoyé pour vérification.'));
       }
     } catch (error) {
@@ -270,7 +407,7 @@ const VerificationUploadField = ({
   const handleDragOver = (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (disabled || isUploading) return;
+    if (disabled || isBusy) return;
     setDragActive(true);
   };
 
@@ -286,12 +423,13 @@ const VerificationUploadField = ({
     event.preventDefault();
     event.stopPropagation();
     setDragActive(false);
+    if (disabled || isBusy) return;
     const file = event.dataTransfer?.files?.[0];
     await submitFile(file, 'drag_drop_upload');
   };
 
   const handleScanComplete = async (scanData, scannedFile) => {
-    if (!scannedFile || disabled) return;
+    if (!scannedFile || disabled || isBusy) return;
 
     try {
       beginReview({
@@ -313,7 +451,7 @@ const VerificationUploadField = ({
   };
 
   const handleRemove = async () => {
-    if (!request?.id || disabled || isRemoving) return;
+    if (!request?.id || disabled || isRemoving || isSubmittingReview) return;
 
     const confirmMessage =
       normalizedRequestStatus === 'approved'
@@ -338,7 +476,9 @@ const VerificationUploadField = ({
     try {
       setIsRemoving(true);
       await VerificationService.deleteVerificationRequest({ id: request.id });
+      clearOptimisticPreview();
       setPendingReview(null);
+      clearPendingReviewPreview();
       toast.success(tr('Document removed.', 'Document supprimé.'));
       onUploaded?.();
     } catch (error) {
@@ -365,15 +505,23 @@ const VerificationUploadField = ({
     if (!pendingReview?.file) return;
 
     try {
-      setIsUploading(true);
-      await finalizeSubmission({
-        file: pendingReview.file,
-        submissionSource: pendingReview.submissionSource,
-        scanData: pendingReview.scanData,
-        extractedFields: pendingReview.fields,
-        ocrAttempted: true,
-        ocrSucceeded: true,
-      });
+      setIsSubmittingReview(true);
+      await withUiTimeout(
+        finalizeSubmission({
+          file: pendingReview.file,
+          submissionSource: pendingReview.submissionSource,
+          scanData: pendingReview.scanData,
+          extractedFields: pendingReview.fields,
+          ocrAttempted: true,
+          ocrSucceeded: true,
+        }),
+        22000,
+        tr(
+          'Submitting took too long. Please refresh and check admin verification before trying again.',
+          'L’envoi prend trop de temps. Actualisez et vérifiez la vérification admin avant de réessayer.'
+        )
+      );
+      rememberUploadedPreview(pendingReview.file);
       toast.success(
         tr(
           'Scanned document submitted for review.',
@@ -381,10 +529,18 @@ const VerificationUploadField = ({
         )
       );
       setPendingReview(null);
+      clearPendingReviewPreview();
     } catch (error) {
+      if (String(error?.message || '').toLowerCase().includes('too long')) {
+        setPendingReview(null);
+        clearPendingReviewPreview();
+        if (typeof onUploaded === 'function') {
+          Promise.resolve(onUploaded({ silent: false, forceRefresh: true })).catch(() => null);
+        }
+      }
       toast.error(error.message || tr('Unable to submit scanned document.', 'Impossible de soumettre le document scanné.'));
     } finally {
-      setIsUploading(false);
+      setIsSubmittingReview(false);
     }
   };
 
@@ -403,15 +559,15 @@ const VerificationUploadField = ({
     >
       <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
-          {request?.file_url ? (
+          {activePreview?.url ? (
             <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.1rem] border border-slate-200 bg-slate-50">
-              {previewKind === 'image' ? (
+              {activePreview.kind === 'image' ? (
                 <img
-                  src={request.file_url}
-                  alt={request?.file_name || getVerificationTypeLabel(verificationType, language)}
+                  src={activePreview.url}
+                  alt={activePreview.name || getVerificationTypeLabel(verificationType, language)}
                   className="h-full w-full object-cover"
                 />
-              ) : previewKind === 'pdf' ? (
+              ) : activePreview.kind === 'pdf' ? (
                 <div className="flex h-full w-full flex-col items-center justify-center bg-slate-100 px-2 text-center">
                   <FileText className="h-5 w-5 text-slate-600" />
                   <span className="mt-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">PDF</span>
@@ -432,14 +588,19 @@ const VerificationUploadField = ({
               <FileText className="h-4 w-4" />
             </span>
             <p className="min-w-0 break-words text-sm font-bold text-slate-950">{getVerificationTypeLabel(verificationType, language)}</p>
-            <VerificationStatusBadge status={request?.status || 'missing'} />
+            {showStatusBadge ? <VerificationStatusBadge status={effectiveStatus} /> : null}
           </div>
           <p className="mt-1 break-words text-xs font-medium text-slate-500 sm:truncate">
-            {request?.file_name || tr('No document uploaded yet.', 'Aucun document téléversé.')}
+            {displayedFileName}
           </p>
-          {request ? (
+          {displayedSourceLabel ? (
             <p className="mt-1 text-xs font-semibold text-slate-400">
-              {request?.submission_source_label || tr('Added manually', 'Ajouté manuellement')}
+              {displayedSourceLabel}
+            </p>
+          ) : null}
+          {!request?.file_url && optimisticPreview ? (
+            <p className="mt-2 text-xs font-semibold text-emerald-600">
+              {tr('Saved. Waiting for review.', 'Enregistré. En attente de vérification.')}
             </p>
           ) : null}
           {latestReplacementNote && (
@@ -463,7 +624,7 @@ const VerificationUploadField = ({
           </div>
         ) : null}
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          {request?.file_url && (
+          {activePreview?.url && (
             <button
               type="button"
               onClick={() => setPreviewOpen(true)}
@@ -476,7 +637,7 @@ const VerificationUploadField = ({
           {canRemoveRequest ? (
             <button
               type="button"
-              disabled={disabled || isUploading || isRemoving}
+              disabled={disabled || isBusy || isRemoving}
               onClick={handleRemove}
               className="inline-flex min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -487,7 +648,7 @@ const VerificationUploadField = ({
           {enableScan && (
             <button
               type="button"
-              disabled={disabled || isUploading}
+              disabled={disabled || isBusy}
               onClick={() => setScanOpen(true)}
               className="inline-flex min-w-0 items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-center text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -497,7 +658,7 @@ const VerificationUploadField = ({
           )}
           <button
             type="button"
-            disabled={disabled || isUploading}
+            disabled={disabled || isBusy}
             onClick={() => inputRef.current?.click()}
             className="inline-flex min-w-0 items-center justify-center rounded-2xl bg-slate-950 px-4 py-2 text-center text-xs font-bold text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -512,7 +673,7 @@ const VerificationUploadField = ({
           </button>
         </div>
       </div>
-      {!request?.file_url ? (
+      {!activePreview?.url ? (
         <p className={`mt-3 text-xs font-medium ${dragActive ? 'text-violet-700' : 'text-slate-500'}`}>
           {tr(
             'Click upload or drag and drop a document here.',
@@ -525,44 +686,85 @@ const VerificationUploadField = ({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
-                {tr('Review scanned details', 'Vérifiez les détails scannés')}
+                {tr('Check details', 'Vérifiez les détails')}
               </p>
               <p className="mt-1 text-sm text-slate-600">
                 {tr(
-                  'Check the extracted fields before sending this document for approval.',
-                  'Vérifiez les champs extraits avant d’envoyer ce document pour approbation.'
+                  'Confirm the fields, then submit.',
+                  'Confirmez les champs, puis envoyez.'
                 )}
               </p>
             </div>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {getReviewFieldConfig().map((field) => (
-              <label key={field.key} className="block">
-                <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                  {field.label}
-                </span>
-                <input
-                  type={field.type}
-                  value={pendingReview.fields?.[field.key] || ''}
-                  onChange={(event) => handleReviewFieldChange(field.key, event.target.value)}
-                  className="mt-1 w-full rounded-2xl border border-white bg-white px-3 py-2.5 text-sm font-medium text-slate-800 outline-none transition focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
-                />
-              </label>
-            ))}
+          <div className="mt-4 grid gap-4 lg:grid-cols-[13rem_minmax(0,1fr)]">
+            {pendingReviewPreview ? (
+              <div className="rounded-[22px] border border-violet-200 bg-white/80 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {tr('Document preview', 'Aperçu du document')}
+                </p>
+                <div className="mt-3 flex h-52 items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-slate-50">
+                  {pendingReviewPreview.kind === 'image' ? (
+                    <img
+                      src={pendingReviewPreview.url}
+                      alt={pendingReviewPreview.name || getVerificationTypeLabel(verificationType, language)}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : pendingReviewPreview.kind === 'pdf' ? (
+                    <div className="flex h-full w-full flex-col items-center justify-center bg-slate-100 px-4 text-center">
+                      <FileText className="h-7 w-7 text-slate-600" />
+                      <span className="mt-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">PDF</span>
+                    </div>
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center bg-slate-100 px-4 text-center">
+                      <FileText className="h-7 w-7 text-slate-600" />
+                      <span className="mt-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                        {tr('File preview', 'Aperçu du fichier')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPreviewOpen(true)}
+                  className="mt-3 inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                >
+                  <Eye className="mr-1 inline h-3.5 w-3.5" />
+                  {tr('Open larger preview', 'Ouvrir un aperçu plus grand')}
+                </button>
+              </div>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {getReviewFieldConfig().map((field) => (
+                <label key={field.key} className="block">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                    {field.label}
+                  </span>
+                  <input
+                    type={field.type}
+                    value={pendingReview.fields?.[field.key] || ''}
+                    onChange={(event) => handleReviewFieldChange(field.key, event.target.value)}
+                    className="mt-1 w-full rounded-2xl border border-white bg-white px-3 py-2.5 text-sm font-medium text-slate-800 outline-none transition focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  />
+                </label>
+              ))}
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={isUploading}
+              disabled={isSubmittingReview}
               onClick={handleSubmitReviewedScan}
               className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-2.5 text-xs font-bold text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isUploading ? tr('Submitting...', 'Envoi...') : tr('Submit for review', 'Envoyer pour vérification')}
+              {isSubmittingReview ? tr('Submitting...', 'Envoi...') : tr('Submit for review', 'Envoyer pour vérification')}
             </button>
             <button
               type="button"
-              disabled={isUploading}
-              onClick={() => setPendingReview(null)}
+              disabled={isSubmittingReview}
+              onClick={() => {
+                setPendingReview(null);
+                clearPendingReviewPreview();
+              }}
               className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {tr('Cancel', 'Annuler')}
@@ -607,7 +809,7 @@ const VerificationUploadField = ({
         }}
       />
     ) : null}
-    {previewOpen && request?.file_url ? (
+    {previewOpen && activePreview?.url ? (
       <div
         className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm sm:p-4"
         onClick={() => setPreviewOpen(false)}
@@ -622,7 +824,7 @@ const VerificationUploadField = ({
                 {getVerificationTypeLabel(verificationType, language)}
               </p>
               <p className="mt-1 truncate text-sm font-semibold text-slate-500">
-                {request?.file_name || tr('Submitted document', 'Document soumis')}
+                {activePreview?.name || tr('Submitted document', 'Document soumis')}
               </p>
             </div>
             <button
@@ -636,18 +838,18 @@ const VerificationUploadField = ({
           </div>
 
           <div className="flex-1 overflow-hidden bg-slate-100 p-3 sm:p-4">
-            {previewKind === 'image' ? (
+            {activePreview.kind === 'image' ? (
               <div className="flex h-full items-center justify-center overflow-auto rounded-[24px] bg-white p-3">
                 <img
-                  src={request.file_url}
-                  alt={request?.file_name || getVerificationTypeLabel(verificationType, language)}
+                  src={activePreview.url}
+                  alt={activePreview?.name || getVerificationTypeLabel(verificationType, language)}
                   className="max-h-full w-auto max-w-full rounded-2xl object-contain"
                 />
               </div>
-            ) : previewKind === 'pdf' ? (
+            ) : activePreview.kind === 'pdf' ? (
               <iframe
-                src={request.file_url}
-                title={request?.file_name || getVerificationTypeLabel(verificationType, language)}
+                src={activePreview.url}
+                title={activePreview?.name || getVerificationTypeLabel(verificationType, language)}
                 className="h-[min(78vh,48rem)] w-full rounded-[24px] border border-slate-200 bg-white"
               />
             ) : (

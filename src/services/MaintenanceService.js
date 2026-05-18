@@ -15,6 +15,18 @@ class MaintenanceService {
     this.vehiclesTable = 'saharax_0u4w4d_vehicles';
   }
 
+  isAuthOrContextUnavailableError(error) {
+    const message = String(error?.message || error?.details || '').trim().toLowerCase();
+    const code = String(error?.code || '').trim().toUpperCase();
+    return (
+      error?.status === 401 ||
+      code === '401' ||
+      message.includes('invalid or expired session') ||
+      message.includes('no active session') ||
+      message.includes('workspace organization context is unavailable')
+    );
+  }
+
   calculateInventoryPartsCost(partsUsed = []) {
     return (Array.isArray(partsUsed) ? partsUsed : []).reduce((sum, part) => {
       const quantity = parseFloat(part.quantity || 0) || 0;
@@ -44,6 +56,44 @@ class MaintenanceService {
     }
 
     return [];
+  }
+
+  normalizePartForComparison(part = {}) {
+    const normalizeString = (value) => String(value || '').trim();
+    const normalizeNumber = (value) => {
+      const parsed = parseFloat(value || 0) || 0;
+      return Number(parsed.toFixed(4));
+    };
+    const sourceType = part.source_type || (part.item_id ? 'inventory' : 'manual');
+
+    if (sourceType === 'manual') {
+      return {
+        source_type: 'manual',
+        part_name: normalizeString(part.part_name || part.item_name),
+        part_number: normalizeString(part.part_number),
+        quantity: normalizeNumber(part.quantity),
+        unit_cost_mad: normalizeNumber(part.unit_cost_mad),
+        unit_price_mad: normalizeNumber(part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad),
+        notes: normalizeString(part.notes)
+      };
+    }
+
+    return {
+      source_type: 'inventory',
+      item_id: normalizeString(part.item_id),
+      quantity: normalizeNumber(part.quantity),
+      notes: normalizeString(part.notes)
+    };
+  }
+
+  normalizePartsForComparison(partsUsed = []) {
+    return this.normalizePartsUsedInput(partsUsed)
+      .map((part) => this.normalizePartForComparison(part))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  }
+
+  havePartsChanged(nextPartsUsed = [], existingPartsUsed = []) {
+    return JSON.stringify(this.normalizePartsForComparison(nextPartsUsed)) !== JSON.stringify(this.normalizePartsForComparison(existingPartsUsed));
   }
 
   buildMaintenancePayload(recordData) {
@@ -184,6 +234,9 @@ class MaintenanceService {
       if (error?.code === 'PGRST116') {
         return null;
       }
+      if (this.isAuthOrContextUnavailableError(error)) {
+        return null;
+      }
       console.error('❌ Error getting maintenance by id:', error);
       throw error;
     }
@@ -245,6 +298,16 @@ class MaintenanceService {
           })
           .eq('id', payload.vehicle_id)
           .eq('organization_id', organizationId);
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+            detail: {
+              id: payload.vehicle_id,
+              status: nextVehicleStatus,
+              updated_at: new Date().toISOString(),
+            },
+          }));
+        }
       }
 
       await applyOrganizationScope(
@@ -290,25 +353,33 @@ class MaintenanceService {
       const organizationId = await requireCurrentOrganizationId();
       const existingRecord = await this.getMaintenanceById(recordId);
       const hasExplicitPartsUpdate = Object.prototype.hasOwnProperty.call(updateData, 'parts_used');
-      const normalizedPartsUsed = hasExplicitPartsUpdate
+      const inputPartsUsed = hasExplicitPartsUpdate
         ? this.normalizePartsUsedInput(updateData.parts_used)
+        : (existingRecord.parts_used || []);
+
+      const previousStatus = existingRecord.status;
+      const shouldRestoreInventory = previousStatus === 'completed';
+      const partsActuallyChanged = hasExplicitPartsUpdate
+        ? this.havePartsChanged(inputPartsUsed, existingRecord.parts_used || [])
+        : false;
+      const effectivePartsUsed = partsActuallyChanged
+        ? inputPartsUsed
         : (existingRecord.parts_used || []);
       const payload = this.buildMaintenancePayload({
         ...existingRecord,
         ...updateData,
-        parts_used: normalizedPartsUsed
+        parts_used: effectivePartsUsed
       });
-
-      const previousStatus = existingRecord.status;
       const nextStatus = payload.status;
-      const shouldRestoreInventory = previousStatus === 'completed';
       const shouldDeductInventory = nextStatus === 'completed';
+      const inventoryLifecycleChanged = shouldRestoreInventory !== shouldDeductInventory;
       const actorName = updateData.created_by || updateData.technician_name || 'Maintenance';
+      const shouldMutateParts = hasExplicitPartsUpdate && (partsActuallyChanged || inventoryLifecycleChanged);
 
-      const partsChanges = hasExplicitPartsUpdate
+      const partsChanges = shouldMutateParts
         ? await MaintenancePartsService.updateMaintenanceParts(
             recordId,
-            normalizedPartsUsed,
+            effectivePartsUsed,
             existingRecord.parts_used || [],
             {
               restoreInventory: shouldRestoreInventory,
@@ -321,7 +392,7 @@ class MaintenanceService {
             updated: [],
             removed: [],
             inventoryUpdates: [],
-            totalPartsCost: this.calculateInventoryPartsCost(existingRecord.parts_used || [])
+            totalPartsCost: this.calculateInventoryPartsCost(effectivePartsUsed)
           };
 
       const totalCost = payload.cost;
@@ -369,6 +440,16 @@ class MaintenanceService {
           })
           .eq('id', payload.vehicle_id)
           .eq('organization_id', organizationId);
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+            detail: {
+              id: payload.vehicle_id,
+              status: nextVehicleStatus,
+              updated_at: new Date().toISOString(),
+            },
+          }));
+        }
       }
 
       await applyOrganizationScope(
@@ -464,6 +545,16 @@ class MaintenanceService {
           })
           .eq('id', vehicleId)
           .eq('organization_id', organizationId);
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+            detail: {
+              id: vehicleId,
+              status: hasOtherOpenMaintenance ? 'maintenance' : fallbackVehicleStatus,
+              updated_at: new Date().toISOString(),
+            },
+          }));
+        }
       }
 
       return {

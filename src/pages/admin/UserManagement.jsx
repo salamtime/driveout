@@ -63,12 +63,15 @@ const TELEGRAM_ALERT_EVENT_OPTIONS = [
   { key: 'rental_created', label: 'Rental created' },
   { key: 'website_reservation_created', label: 'Website reservation' },
   { key: 'rental_started', label: 'Rental started' },
+  { key: 'rental_vehicle_assigned', label: 'Vehicle assigned' },
   { key: 'rental_vehicle_replaced', label: 'Vehicle replaced' },
   { key: 'rental_completed', label: 'Rental completed' },
   { key: 'payment_received', label: 'Payment received' },
   { key: 'rental_overdue', label: 'Rental overdue' },
   { key: 'rental_cancelled', label: 'Rental cancelled' },
   { key: 'deposit_returned', label: 'Deposit returned' },
+  { key: 'rental_extension_requested', label: 'Extension approval request' },
+  { key: 'rental_price_change_requested', label: 'Price approval request' },
 ];
 
 const buildPermissionPreset = (presetKey) => {

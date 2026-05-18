@@ -112,7 +112,10 @@ class VehicleService {
    * This is the function that SmartVehicleSelector expects to exist
    */
   async getAllVehicles() {
-    const cacheKey = this.getCacheKey('all_vehicles');
+    const organizationIdForCache = shouldScopeSharedTenantData() && isTenantOwnedSharedTable(VEHICLES_TABLE)
+      ? (await getCurrentOrganizationId()) || 'tenant:unknown'
+      : 'global';
+    const cacheKey = this.getCacheKey('all_vehicles', { organizationId: organizationIdForCache });
     const cached = this.getCache(cacheKey);
     if (cached) return cached;
 
@@ -134,6 +137,7 @@ class VehicleService {
             current_odometer,
             engine_hours,
             organization_id,
+            owner_user_id,
             status,
             image_url,
             location_id,
@@ -144,6 +148,8 @@ class VehicleService {
             sale_proof_url,
             sale_proof_name
           `)
+          .not('organization_id', 'is', null)
+          .is('owner_user_id', null)
           .order('name', { ascending: true }),
           VEHICLES_TABLE,
           'Workspace organization context is required to load vehicles.'
@@ -176,13 +182,17 @@ class VehicleService {
   }
 
   async getFleetVehicles() {
-    const cacheKey = this.getCacheKey('fleet_vehicles');
+    const organizationIdForCache = shouldScopeSharedTenantData() && isTenantOwnedSharedTable(VEHICLES_TABLE)
+      ? (await getCurrentOrganizationId()) || 'tenant:unknown'
+      : 'global';
+    const cacheKey = this.getCacheKey('fleet_vehicles', { organizationId: organizationIdForCache });
     const cached = this.getCache(cacheKey);
     if (cached) return cached;
 
     const fleetSelectColumns = `
       id,
       organization_id,
+      owner_user_id,
       name,
       model,
       vehicle_type,
@@ -266,6 +276,8 @@ class VehicleService {
           supabase
             .from(VEHICLES_TABLE)
             .select(fleetSelectColumns)
+            .not('organization_id', 'is', null)
+            .is('owner_user_id', null)
             .order('created_at', { ascending: false }),
           VEHICLES_TABLE,
           'Workspace organization context is required to load fleet vehicles.'
@@ -283,6 +295,8 @@ class VehicleService {
             supabase
               .from(VEHICLES_TABLE)
               .select(fallbackFleetSelectColumns)
+              .not('organization_id', 'is', null)
+              .is('owner_user_id', null)
               .order('created_at', { ascending: false }),
             VEHICLES_TABLE,
             'Workspace organization context is required to load fleet vehicles.'
@@ -300,7 +314,7 @@ class VehicleService {
         console.log(
           `✅ Loaded ${data?.length || 0} fleet vehicles from shared vehicle service`
         );
-        return data || [];
+        return (data || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle));
       });
 
       this.setCache(cacheKey, result);
@@ -324,7 +338,10 @@ class VehicleService {
    */
   async getAvailableVehicles(startDate = null, endDate = null, forceRefresh = false) {
     // Check cache first
-    const cacheKey = `${startDate || 'none'}-${endDate || 'none'}`;
+    const organizationIdForCache = shouldScopeSharedTenantData() && isTenantOwnedSharedTable(VEHICLES_TABLE)
+      ? (await getCurrentOrganizationId()) || 'tenant:unknown'
+      : 'global';
+    const cacheKey = `${organizationIdForCache}:${startDate || 'none'}-${endDate || 'none'}`;
     const cache = this.availableVehiclesCache;
     if (!forceRefresh && cache.data && cache.key === cacheKey &&
         cache.timestamp && Date.now() - cache.timestamp < cache.TTL) {
@@ -352,6 +369,7 @@ class VehicleService {
             current_odometer,
             engine_hours,
             organization_id,
+            owner_user_id,
             status,
             sold_date,
             sale_price_mad,
@@ -361,6 +379,8 @@ class VehicleService {
             sale_proof_name
           `)
           .eq('status', 'available')
+          .not('organization_id', 'is', null)
+          .is('owner_user_id', null)
           .order('name', { ascending: true }),
           VEHICLES_TABLE,
           'Workspace organization context is required to load available vehicles.'
@@ -462,9 +482,12 @@ class VehicleService {
           vehicle_type,
           plate_number,
           status,
-          organization_id
+          organization_id,
+          owner_user_id
         `)
         .eq('id', id)
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         .single(),
         VEHICLES_TABLE,
         'Workspace organization context is required to load vehicles.'
@@ -683,6 +706,11 @@ class VehicleService {
 
       // Clear cache
       this.clearCache();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('driveout:vehicle-status-updated', {
+          detail: vehicle,
+        }));
+      }
 
       console.log('✅ Vehicle updated successfully');
       return { success: true, vehicle };
@@ -748,7 +776,9 @@ class VehicleService {
       const { data: vehicles, error } = await this.applyReadScope(
         supabase
         .from(VEHICLES_TABLE)
-        .select('status, vehicle_model_id, organization_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model')
+        .select('status, vehicle_model_id, organization_id, owner_user_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model')
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         ,
         VEHICLES_TABLE,
         'Workspace organization context is required to load vehicle statistics.'
@@ -817,6 +847,7 @@ class VehicleService {
           engine_hours,
           vehicle_model_id,
           organization_id,
+          owner_user_id,
           status,
           sold_date,
           sale_price_mad,
@@ -826,6 +857,8 @@ class VehicleService {
           sale_proof_name
         `)
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
+        .not('organization_id', 'is', null)
+        .is('owner_user_id', null)
         .order('name', { ascending: true }),
         VEHICLES_TABLE,
         'Workspace organization context is required to search vehicles.'

@@ -33,6 +33,19 @@ const parseFuelNumber = (value) => {
 };
 const roundToHalfLiter = (value) => roundTo(Math.round(parseFuelNumber(value) * 2) / 2, 1);
 const isSoldVehicleRecord = (vehicle = {}) => String(vehicle?.status || '').trim().toLowerCase() === 'sold';
+const VEHICLE_FUEL_STATE_ORG_COLUMN_CACHE_KEY = 'fuel:vehicle-fuel-state:supports-organization-column';
+const FUEL_REFILLS_ORG_COLUMN_CACHE_KEY = 'fuel:fuel-refills:supports-organization-column';
+const isMissingFuelStateOrganizationColumnError = (error) =>
+  ['42703', 'PGRST204'].includes(String(error?.code || '').toUpperCase()) &&
+  `${error?.message || ''} ${error?.details || ''}`.toLowerCase().includes('organization_id');
+const isMissingFuelRefillsOrganizationColumnError = (error) =>
+  ['42703', 'PGRST204'].includes(String(error?.code || '').toUpperCase()) &&
+  `${error?.message || ''} ${error?.details || ''}`.toLowerCase().includes('organization_id');
+const stripOrganizationField = (payload = {}) => {
+  if (!payload || typeof payload !== 'object') return payload;
+  const { organization_id: _organizationId, ...rest } = payload;
+  return rest;
+};
 
 class FuelTransactionService {
   constructor() {
@@ -68,6 +81,8 @@ class FuelTransactionService {
     this.vehicleFuelStatesCacheTimestamp = 0;
     this.vehicleFuelStatesPromise = null;
     this.vehicleModelTankCapacitySupport = null;
+    this.vehicleFuelStateOrganizationColumnSupport = null;
+    this.fuelRefillsOrganizationColumnSupport = null;
     this.tableFailureCooldowns = new Map();
     this.clientChangeSubscribers = new Set();
     this.broadcastChannel = null;
@@ -80,6 +95,20 @@ class FuelTransactionService {
         this.vehicleModelTankCapacitySupport = true;
       } else if (cachedSupport === 'false') {
         this.vehicleModelTankCapacitySupport = false;
+      }
+
+      const cachedVehicleFuelStateSupport = window.sessionStorage.getItem(VEHICLE_FUEL_STATE_ORG_COLUMN_CACHE_KEY);
+      if (cachedVehicleFuelStateSupport === 'true') {
+        this.vehicleFuelStateOrganizationColumnSupport = true;
+      } else if (cachedVehicleFuelStateSupport === 'false') {
+        this.vehicleFuelStateOrganizationColumnSupport = false;
+      }
+
+      const cachedFuelRefillsSupport = window.sessionStorage.getItem(FUEL_REFILLS_ORG_COLUMN_CACHE_KEY);
+      if (cachedFuelRefillsSupport === 'true') {
+        this.fuelRefillsOrganizationColumnSupport = true;
+      } else if (cachedFuelRefillsSupport === 'false') {
+        this.fuelRefillsOrganizationColumnSupport = false;
       }
 
       if (typeof window.BroadcastChannel === 'function') {
@@ -196,6 +225,126 @@ class FuelTransactionService {
     return matchTenantOwnedPayload(payload, tableName, {
       message: message || `Workspace organization context is required for ${tableName}.`,
     });
+  }
+
+  markVehicleFuelStateTableWithoutOrganizationColumn() {
+    this.vehicleFuelStateOrganizationColumnSupport = false;
+    try {
+      if (typeof window === 'undefined') return;
+      window.sessionStorage.setItem(VEHICLE_FUEL_STATE_ORG_COLUMN_CACHE_KEY, 'false');
+    } catch (_error) {
+      // Ignore storage access issues.
+    }
+  }
+
+  markFuelRefillsTableWithoutOrganizationColumn() {
+    this.fuelRefillsOrganizationColumnSupport = false;
+    try {
+      if (typeof window === 'undefined') return;
+      window.sessionStorage.setItem(FUEL_REFILLS_ORG_COLUMN_CACHE_KEY, 'false');
+    } catch (_error) {
+      // Ignore storage access issues.
+    }
+  }
+
+  async runFuelRefillsReadQuery(selectCandidates, configureQuery) {
+    if (shouldScopeSharedTenantData() && this.fuelRefillsOrganizationColumnSupport === false) {
+      return { data: [], error: null };
+    }
+
+    let data = null;
+    let error = null;
+
+    for (let index = 0; index < selectCandidates.length; index += 1) {
+      let query = supabase.from(this.fuelRefillsTable).select(selectCandidates[index]);
+      query = configureQuery(query);
+      query = await this.scopeFuelQuery(query, this.fuelRefillsTable);
+      const result = await query;
+      data = result.data;
+      error = result.error;
+
+      if (isMissingFuelRefillsOrganizationColumnError(error)) {
+        this.markFuelRefillsTableWithoutOrganizationColumn();
+        console.warn('fuel_refills has no organization_id column; skipping legacy fuel_refills in tenant-scoped workspace.');
+        return { data: [], error: null };
+      }
+
+      if (!error) {
+        break;
+      }
+
+      if (!this.isRetryableSchemaError(error) || index === selectCandidates.length - 1) {
+        break;
+      }
+    }
+
+    return { data, error };
+  }
+
+  async runVehicleFuelStateReadQuery(buildQuery, message = null) {
+    const runUnscoped = async () => buildQuery();
+
+    if (this.vehicleFuelStateOrganizationColumnSupport === false) {
+      return runUnscoped();
+    }
+
+    let query = buildQuery();
+    query = await this.scopeFuelQuery(
+      query,
+      this.vehicleFuelStateTable,
+      message || 'Workspace organization context is required to load vehicle fuel states.',
+    );
+
+    const result = await query;
+    if (isMissingFuelStateOrganizationColumnError(result?.error)) {
+      this.markVehicleFuelStateTableWithoutOrganizationColumn();
+      console.warn('vehicle_fuel_state has no organization_id column; retrying read without organization filter.');
+      return runUnscoped();
+    }
+
+    return result;
+  }
+
+  async runVehicleFuelStateWriteQuery(buildPayload, message = null) {
+    const runUnscoped = async () => {
+      const payload = stripOrganizationField(buildPayload());
+      return supabase
+        .from(this.vehicleFuelStateTable)
+        .upsert(payload, { onConflict: 'vehicle_id' })
+        .select('*')
+        .maybeSingle();
+    };
+
+    if (this.vehicleFuelStateOrganizationColumnSupport === false) {
+      return runUnscoped();
+    }
+
+    const scopedPayload = await this.scopeFuelPayload(
+      buildPayload(),
+      this.vehicleFuelStateTable,
+      message || 'Workspace organization context is required to save vehicle fuel states.',
+    );
+
+    let query = supabase
+      .from(this.vehicleFuelStateTable)
+      .upsert(scopedPayload, { onConflict: 'vehicle_id' })
+      .select('*');
+    query = this.applyResolvedFuelScope(
+      query,
+      await this.resolveFuelScopeOrganizationId(
+        this.vehicleFuelStateTable,
+        message || 'Workspace organization context is required to save vehicle fuel states.',
+      ),
+    );
+
+    const result = await query.maybeSingle();
+    if (isMissingFuelStateOrganizationColumnError(result?.error)) {
+      this.markVehicleFuelStateTableWithoutOrganizationColumn();
+      console.warn('vehicle_fuel_state has no organization_id column; retrying write without organization field.');
+      return runUnscoped();
+    }
+
+    return result;
   }
 
   async tableExists(tableName) {
@@ -1397,8 +1546,7 @@ class FuelTransactionService {
       return nextQuery;
     };
 
-    const { data, error } = await this.runSelectWithFallbacks(
-      this.fuelRefillsTable,
+    const { data, error } = await this.runFuelRefillsReadQuery(
       [
         'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
         'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
@@ -1514,8 +1662,7 @@ class FuelTransactionService {
         return nextQuery;
       };
 
-      const { data, error } = await this.runSelectWithFallbacks(
-        this.fuelRefillsTable,
+      const { data, error } = await this.runFuelRefillsReadQuery(
         [
           'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
           'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
@@ -1986,15 +2133,12 @@ class FuelTransactionService {
     let stateMap = new Map();
     const vehicleModelMap = new Map((vehicleModels || []).map((model) => [String(model.id), model]));
     if (hasVehicleFuelStateTable) {
-      let stateQuery = supabase
-        .from(this.vehicleFuelStateTable)
-        .select('*');
-      stateQuery = await this.scopeFuelQuery(
-        stateQuery,
-        this.vehicleFuelStateTable,
+      const { data } = await this.runVehicleFuelStateReadQuery(
+        () => supabase
+          .from(this.vehicleFuelStateTable)
+          .select('*'),
         'Workspace organization context is required to load vehicle fuel states.',
       );
-      const { data } = await stateQuery;
       stateMap = new Map((data || []).map((row) => [String(row.vehicle_id), row]));
     }
 
@@ -2080,15 +2224,12 @@ class FuelTransactionService {
 
       let stateMap = new Map();
       if (hasVehicleFuelStateTable) {
-        let stateQuery = supabase
-          .from(this.vehicleFuelStateTable)
-          .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at');
-        stateQuery = await this.scopeFuelQuery(
-          stateQuery,
-          this.vehicleFuelStateTable,
+        const { data, error } = await this.runVehicleFuelStateReadQuery(
+          () => supabase
+            .from(this.vehicleFuelStateTable)
+            .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at'),
           'Workspace organization context is required to load vehicle fuel states.',
         );
-        const { data, error } = await stateQuery;
 
         if (!error) {
           stateMap = new Map((data || []).map((row) => [String(row.vehicle_id), row]));
@@ -2167,7 +2308,7 @@ class FuelTransactionService {
       return { success: true, skipped: true, state: normalized };
     }
 
-    const payload = await this.scopeFuelPayload({
+    const payload = {
       vehicle_id: vehicleId,
       current_fuel_liters: normalized.liters,
       current_fuel_lines: normalized.lines,
@@ -2177,20 +2318,12 @@ class FuelTransactionService {
       last_transaction_id: transactionId,
       last_rental_id: rentalId,
       last_updated_at: new Date().toISOString(),
-    }, this.vehicleFuelStateTable, 'Workspace organization context is required to save vehicle fuel states.');
+    };
 
-    let query = supabase
-      .from(this.vehicleFuelStateTable)
-      .upsert(payload, { onConflict: 'vehicle_id' })
-      .select('*');
-    query = this.applyResolvedFuelScope(
-      query,
-      await this.resolveFuelScopeOrganizationId(
-        this.vehicleFuelStateTable,
-        'Workspace organization context is required to save vehicle fuel states.',
-      ),
+    const { data, error } = await this.runVehicleFuelStateWriteQuery(
+      () => payload,
+      'Workspace organization context is required to save vehicle fuel states.',
     );
-    const { data, error } = await query.maybeSingle();
 
     if (error) {
       return { success: false, error: error.message };
@@ -2339,6 +2472,7 @@ class FuelTransactionService {
     const averageUnitCost = this.calculateAverageFuelUnitCost(vehicleRefills);
 
     let totalFuelSuppliedLiters = 0;
+    let totalFuelUsedLiters = 0;
     let trackedSupplyCostMad = 0;
     let lastFuelActivityAt = null;
 
@@ -2397,7 +2531,6 @@ class FuelTransactionService {
       }
     }
 
-    let totalFuelUsedLiters = 0;
     for (const snapshot of rentalSnapshots.values()) {
       const opening = Number(snapshot.openingLiters || 0);
       const closing = Number(snapshot.closingLiters || 0);
@@ -2493,11 +2626,14 @@ class FuelTransactionService {
     let storedState = null;
 
     if (await this.tableExists(this.vehicleFuelStateTable)) {
-      const { data } = await supabase
-        .from(this.vehicleFuelStateTable)
-        .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_transaction_id, last_rental_id, last_updated_at')
-        .eq('vehicle_id', vehicleId)
-        .maybeSingle();
+      const { data } = await this.runVehicleFuelStateReadQuery(
+        () => supabase
+          .from(this.vehicleFuelStateTable)
+          .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_transaction_id, last_rental_id, last_updated_at')
+          .eq('vehicle_id', vehicleId)
+          .maybeSingle(),
+        'Workspace organization context is required to refresh vehicle fuel tracking.',
+      );
       storedState = data || null;
     }
 
@@ -4549,11 +4685,14 @@ class FuelTransactionService {
     }
 
     try {
-      const { data: directState, error: directError } = await supabase
-        .from(this.vehicleFuelStateTable)
-        .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at')
-        .eq('vehicle_id', vehicleId)
-        .maybeSingle();
+      const { data: directState, error: directError } = await this.runVehicleFuelStateReadQuery(
+        () => supabase
+          .from(this.vehicleFuelStateTable)
+          .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at')
+          .eq('vehicle_id', vehicleId)
+          .maybeSingle(),
+        'Workspace organization context is required to load vehicle fuel state.',
+      );
 
       if (!directError && directState) {
         const resolvedTankCapacityLiters =

@@ -6,9 +6,14 @@ const parseJsonResponse = async (response) => {
   return body;
 };
 
+const hasUsableId = (value) => {
+  const normalized = String(value || '').trim();
+  return Boolean(normalized && normalized !== 'null' && normalized !== 'undefined');
+};
+
 export const DynamicPricingService = {
   async getDynamicPrice(vehicleId, rentalType, quantity = 1) {
-    if (!vehicleId || !rentalType) return 0;
+    if (!hasUsableId(vehicleId) || !rentalType) return 0;
 
     try {
       const search = new URLSearchParams({
@@ -34,7 +39,7 @@ export const DynamicPricingService = {
   },
 
   async getPricingForDuration(vehicleModelId, days) {
-    if (!vehicleModelId) {
+    if (!hasUsableId(vehicleModelId)) {
       return { price: 0, source: 'none', tierMatched: false };
     }
 

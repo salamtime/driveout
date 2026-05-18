@@ -399,6 +399,24 @@ export const AuthProvider = ({ children }) => {
       }
     });
 
+    const currentMetadata = authUser?.user_metadata && typeof authUser.user_metadata === 'object'
+      ? authUser.user_metadata
+      : {};
+    const pendingIntentAlreadyApplied = Object.entries(metadataPatch).every(([key, value]) => {
+      const currentValue = currentMetadata[key];
+
+      if (typeof value === 'boolean') {
+        return Boolean(currentValue) === value;
+      }
+
+      return String(currentValue ?? '').trim() === String(value ?? '').trim();
+    });
+
+    if (pendingIntentAlreadyApplied) {
+      clearPendingAccountIntent();
+      return authUser;
+    }
+
     try {
       const { data, error } = await withBootstrapTimeout(
         () => supabase.auth.updateUser({
@@ -1483,6 +1501,8 @@ export const AuthProvider = ({ children }) => {
           marketplaceEnabled: Boolean(data.user.user_metadata?.marketplace_enabled),
         });
       }
+
+      clearPendingAccountIntent();
 
       return { success: true, persisted: true };
     } catch (error) {

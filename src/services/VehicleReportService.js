@@ -57,6 +57,18 @@ class VehicleReportService {
     return Math.abs(Number(currentValue || 0) - Number(nextValue || 0)) > 0.009;
   }
 
+  normalizeMaintenanceLifecycleStatus(status) {
+    const normalizedStatus = String(status || '').toLowerCase();
+    if (!normalizedStatus) return null;
+    if (normalizedStatus === 'completed' || normalizedStatus === 'maintenance_completed') {
+      return 'maintenance_completed';
+    }
+    if (['scheduled', 'in_progress', 'maintenance_created', 'maintenance_in_progress'].includes(normalizedStatus)) {
+      return 'maintenance_in_progress';
+    }
+    return normalizedStatus;
+  }
+
   isRentalPricingLocked(rental = null) {
     const normalizedStatus = String(rental?.rental_status || rental?.status || '').toLowerCase();
     return ['completed', 'closed', 'returned'].includes(normalizedStatus) || Boolean(rental?.completed_at);
@@ -263,6 +275,59 @@ class VehicleReportService {
     };
   }
 
+  async hydrateReportsWithLiveMaintenance(reports = []) {
+    const normalizedReports = (reports || [])
+      .map((row) => this.normalizeReport(row))
+      .filter(Boolean);
+
+    const maintenanceIds = [
+      ...new Set(normalizedReports.map((report) => report?.maintenance_id).filter(Boolean).map(String)),
+    ];
+
+    if (maintenanceIds.length === 0) {
+      return normalizedReports;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from(MaintenanceService.table)
+        .select('id,status,cost')
+        .in('id', maintenanceIds);
+
+      if (error) {
+        throw error;
+      }
+
+      const maintenanceById = new Map(
+        (data || []).map((row) => [String(row.id), row])
+      );
+
+      return normalizedReports.map((report) => {
+        const maintenance = maintenanceById.get(String(report?.maintenance_id || ''));
+        if (!maintenance) {
+          return report;
+        }
+
+        const nextStatus = this.normalizeMaintenanceLifecycleStatus(maintenance.status);
+        const nextMaintenanceCost = Number(maintenance.cost || report.maintenance_cost_total || 0);
+        const nextCustomerCharge = report.customer_chargeable
+          ? nextMaintenanceCost
+          : Number(report.customer_charge_amount || 0);
+
+        return {
+          ...report,
+          maintenance,
+          status: nextStatus || report.status,
+          maintenance_cost_total: nextMaintenanceCost,
+          ...(report.customer_chargeable ? { customer_charge_amount: nextCustomerCharge } : {}),
+        };
+      });
+    } catch (error) {
+      console.warn('Unable to hydrate vehicle reports with live maintenance state:', error);
+      return normalizedReports;
+    }
+  }
+
   async getReportsForRental(rentalId) {
     const tableAvailable = await this.isTableAvailable();
     this.ensureTableReady();
@@ -277,7 +342,7 @@ class VehicleReportService {
       throw error;
     }
 
-    return (data || []).map((row) => this.normalizeReport(row));
+    return this.hydrateReportsWithLiveMaintenance(data || []);
   }
 
   async getReportsForVehicle(vehicleId) {
@@ -294,7 +359,7 @@ class VehicleReportService {
       throw error;
     }
 
-    return (data || []).map((row) => this.normalizeReport(row));
+    return this.hydrateReportsWithLiveMaintenance(data || []);
   }
 
   async getLatestReportForRental(rentalId) {
@@ -321,8 +386,9 @@ class VehicleReportService {
       throw error;
     }
 
-    (data || []).forEach((row) => {
-      const normalized = this.normalizeReport(row);
+    const hydratedReports = await this.hydrateReportsWithLiveMaintenance(data || []);
+
+    hydratedReports.forEach((normalized) => {
       if (!reportsByRental[normalized.rental_id]) {
         reportsByRental[normalized.rental_id] = normalized;
       }
@@ -345,7 +411,7 @@ class VehicleReportService {
       throw error;
     }
 
-    const normalized = this.normalizeReport(data);
+    const [normalized] = await this.hydrateReportsWithLiveMaintenance(data ? [data] : []);
     await this.syncRentalMaintenanceSnapshot(normalized);
     return normalized;
   }
@@ -364,7 +430,7 @@ class VehicleReportService {
       throw error;
     }
 
-    const normalized = this.normalizeReport(data);
+    const [normalized] = await this.hydrateReportsWithLiveMaintenance(data ? [data] : []);
     await this.syncRentalMaintenanceSnapshot(normalized);
     return normalized;
   }
@@ -388,8 +454,9 @@ class VehicleReportService {
       throw error;
     }
 
-    (data || []).forEach((row) => {
-      const normalized = this.normalizeReport(row);
+    const hydratedReports = await this.hydrateReportsWithLiveMaintenance(data || []);
+
+    hydratedReports.forEach((normalized) => {
       if (normalized?.maintenance_id && !reportsByMaintenance[normalized.maintenance_id]) {
         reportsByMaintenance[normalized.maintenance_id] = normalized;
       }

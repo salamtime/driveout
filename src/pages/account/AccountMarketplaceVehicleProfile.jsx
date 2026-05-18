@@ -3,9 +3,11 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
+  ArrowRight,
   CalendarClock,
   Car,
   CheckCircle2,
+  ChevronDown,
   Edit,
   ExternalLink,
   FileText,
@@ -53,15 +55,23 @@ import { getMarketplaceFundsPolicy, getMarketplaceMoneyBreakdown, normalizeMarke
 import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { getCurrentLocationPath, resolveReturnPath } from '../../utils/navigationReturn';
+import { getEffectiveMarketplaceJourneyState } from '../../utils/accountProductModel';
 import { supabase } from '../../lib/supabase';
 import { buildStoragePathCandidates } from '../../utils/storageUpload';
 import { getCurrentOrganizationId } from '../../services/OrganizationService';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 import RentalEvidenceGallery from '../../components/account/RentalEvidenceGallery';
 import RentalPhotoEvidenceCapture from '../../components/account/RentalPhotoEvidenceCapture';
+import OwnerListingSetupGuide from '../../components/account/OwnerListingSetupGuide';
 import MessageAttachmentService from '../../services/MessageAttachmentService';
 import RentalEventService from '../../services/RentalEventService';
 import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
+import { buildOwnerListingSetupProgress } from '../../utils/ownerListingSetupProgress';
+import {
+  ACCOUNT_JOURNEY_EVENTS,
+  trackAccountJourneyEvent,
+  trackAccountJourneyEventOnce,
+} from '../../utils/accountJourneyAnalytics';
 
 const RENTAL_PHOTOS_TABLE = 'rental_photos';
 
@@ -74,6 +84,15 @@ const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
 const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
 const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
 const OWNER_EXECUTION_FLOW_KEY = 'saharax_owner_execution_flow';
+const OWNER_VEHICLE_SAVE_TIMEOUT_MS = 20000;
+
+const withTimeout = (promise, timeoutMs, message) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
 
 const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   const normalizedUserId = String(userId || '').trim();
@@ -570,6 +589,40 @@ const mapVehicleVerificationRequestsToDocuments = (requests = []) => {
     .filter((document) => document.url || document.storagePath);
 };
 
+const mergeVehicleDocuments = (currentDocuments = [], nextDocuments = []) => {
+  const mergedDocuments = [];
+  const seenKeys = new Set();
+  const replacementIds = new Set(
+    (Array.isArray(nextDocuments) ? nextDocuments : [])
+      .map((document) => String(document?.replacesDocumentId || '').trim())
+      .filter(Boolean)
+  );
+
+  [...(Array.isArray(nextDocuments) ? nextDocuments : []), ...(Array.isArray(currentDocuments) ? currentDocuments : [])]
+    .filter(Boolean)
+    .forEach((document) => {
+      if (replacementIds.has(String(document?.id || '').trim())) {
+        return;
+      }
+
+      const source = String(document?.source || '').trim().toLowerCase();
+      const categoryKey = String(document?.categoryKey || '').trim().toLowerCase();
+      const documentKey =
+        source === 'verification' && categoryKey
+          ? `verification:${categoryKey}`
+          : document?.storagePath || document?.url || document?.id;
+
+      if (!documentKey || seenKeys.has(documentKey)) {
+        return;
+      }
+
+      seenKeys.add(documentKey);
+      mergedDocuments.push(document);
+    });
+
+  return mergedDocuments;
+};
+
 const hasMeaningfulVehicleDraft = (formData = {}, normalizedMedia = []) => {
   const textKeys = [
     'brandName',
@@ -638,10 +691,10 @@ const getCombinedReviewEntryMeta = ({
 
   if (!ownerVerificationReady) {
     return {
-      title: tr('Finish owner trust first', "Terminez d'abord la confiance propriétaire"),
+      title: tr('Owner trust approval required before review', 'Approbation de confiance propriétaire requise avant la revue'),
       body: tr(
-        'Your driver license and profile ID must be approved before this vehicle can move into marketplace review.',
-        "Votre permis de conduire et votre pièce d'identité doivent être approuvés avant que ce véhicule puisse passer en revue marketplace."
+        'Your driver license and profile ID must be approved before this vehicle can move into marketplace review. You can keep building pricing, photos, and pickup setup while admin reviews them.',
+        "Votre permis de conduire et votre pièce d'identité doivent être approuvés avant que ce véhicule puisse passer en revue marketplace. Vous pouvez continuer les prix, photos et le départ pendant la revue admin."
       ),
       tone: 'border-amber-200 bg-amber-50 text-amber-800',
       ready: false,
@@ -651,7 +704,7 @@ const getCombinedReviewEntryMeta = ({
   if (!marketplaceVerificationReady) {
     return {
       title: tr('Documents already go to admin', "Les documents partent déjà à l'admin"),
-      body: tr('Registration and insurance uploads are sent automatically for verification. Once vehicle verification is approved, you can send the full package for review in one step.', "Les téléversements d'immatriculation et d'assurance partent automatiquement en vérification. Une fois le véhicule approuvé, vous pourrez envoyer tout le dossier en une seule étape."),
+      body: tr('Registration and insurance uploads are sent automatically for verification. Keep completing the listing while admin reviews them. Once vehicle verification is approved, you can send the full package for review in one step.', "Les téléversements d'immatriculation et d'assurance partent automatiquement en vérification. Continuez l'annonce pendant la revue admin. Une fois le véhicule approuvé, vous pourrez envoyer tout le dossier en une seule étape."),
       tone: 'border-amber-200 bg-amber-50 text-amber-800',
       ready: false,
     };
@@ -1110,27 +1163,6 @@ const getOwnerReviewJourneyLabel = ({ reviewStatus, moderationStatus, tr }) => {
   return tr('Not submitted yet', 'Pas encore soumis');
 };
 
-const getEffectiveMarketplaceJourneyState = ({
-  marketplaceVerificationReady,
-  hasStartedDraft,
-  listingStatus,
-  reviewStatus,
-  moderationStatus,
-}) => {
-  const normalizedListing = String(listingStatus || '').trim().toLowerCase();
-  const normalizedReview = String(reviewStatus || '').trim().toLowerCase();
-  const normalizedModeration = String(moderationStatus || '').trim().toLowerCase();
-
-  if (!hasStartedDraft) return 'not_started';
-  if (!marketplaceVerificationReady) return 'verification_required';
-  if (normalizedListing === 'live') return 'live';
-  if (normalizedListing === 'approved' || normalizedReview === 'approved') return 'approved';
-  if (normalizedListing === 'pending_review' || normalizedReview === 'pending_review' || normalizedModeration === 'pending_review') return 'pending_review';
-  if (normalizedModeration === 'changes_requested') return 'changes_requested';
-  if (normalizedListing === 'rejected' || normalizedReview === 'rejected') return 'rejected';
-  return 'draft';
-};
-
 const getMarketplaceJourneyMeta = (journeyState, tr) => {
   switch (journeyState) {
     case 'verification_required':
@@ -1261,12 +1293,54 @@ const ViewField = ({ label, value }) => (
   </div>
 );
 
-const OwnerFuelLevelPicker = ({ value, onChange, disabled = false, tr, litersLabel = '' }) => (
+const OwnerSectionSaveAction = ({
+  label,
+  savedLabel,
+  saving = false,
+  disabled = false,
+  onSave,
+  tone = 'dark',
+}) => (
+  <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-4">
+    {savedLabel ? (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        {savedLabel}
+      </span>
+    ) : null}
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={disabled || saving}
+      className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold transition disabled:cursor-not-allowed ${
+        tone === 'soft'
+          ? 'border border-violet-200 bg-violet-50 text-violet-700 hover:border-violet-300 hover:bg-violet-100 disabled:opacity-60'
+          : 'bg-slate-950 text-white shadow-sm hover:bg-slate-800 disabled:bg-slate-300'
+      }`}
+    >
+      {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+      {label}
+    </button>
+  </div>
+);
+
+const OwnerFuelLevelPicker = ({
+  value,
+  onChange,
+  onSelect,
+  disabled = false,
+  tr,
+  litersLabel = '',
+  title,
+  description,
+}) => (
   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-sm font-bold text-slate-950">{tr('Starting fuel level', 'Niveau de carburant de départ')}</p>
-        <p className="mt-1 text-sm text-slate-500">{tr('Choose one of the 8 fuel lines before pickup.', 'Choisissez un des 8 niveaux avant le départ.')}</p>
+        <p className="text-sm font-bold text-slate-950">{title || tr('Starting fuel level', 'Niveau de carburant de départ')}</p>
+        <p className="mt-1 text-sm text-slate-500">
+          {description || tr('Choose one of the 8 fuel lines before pickup.', 'Choisissez un des 8 niveaux avant le départ.')}
+        </p>
       </div>
       <div className="text-right">
         <p className="text-lg font-black text-slate-950">
@@ -1283,7 +1357,7 @@ const OwnerFuelLevelPicker = ({ value, onChange, disabled = false, tr, litersLab
             key={option}
             type="button"
             disabled={disabled}
-            onClick={() => onChange(option)}
+            onClick={() => (onChange || onSelect)?.(option)}
             className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
               selected
                 ? 'border-violet-300 bg-violet-50 text-violet-700 shadow-sm'
@@ -1320,6 +1394,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState('');
+  const [sectionSaveMeta, setSectionSaveMeta] = useState({});
   const [vehicleLegalScanResults, setVehicleLegalScanResults] = useState({});
   const [formData, setFormData] = useState(() => buildFormData(null));
   const [fieldErrors, setFieldErrors] = useState({});
@@ -1369,6 +1444,8 @@ const AccountMarketplaceVehicleProfile = () => {
     return '/account/vehicles';
   }, [location, user?.id]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const resumeEditingAfterLoad = Boolean(location.state?.resumeEditing);
+  const resumeFocusedSectionId = String(location.state?.focusSectionId || '').trim();
   const resolvedVehicleId = vehicle?.id || vehicleId;
   const linkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(vehicle?.rawProfile, vehicle);
   const vehicleVerificationEntityId = linkedFleetVehicleId || null;
@@ -1525,12 +1602,14 @@ const AccountMarketplaceVehicleProfile = () => {
       const verificationFileResult = nextVehicleVerificationEntityId
         ? await VerificationService.getEntityVerificationFile('vehicle', nextVehicleVerificationEntityId, { forceRefresh: silent }).catch(() => ({ summary: null, requests: [] }))
         : { summary: null, requests: [] };
+      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []);
       setVehicleVerificationSummary(verificationFileResult?.summary || null);
-      setVehicleDocuments(mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []));
+      setVehicleDocuments((current) => mergeVehicleDocuments(current, nextVerificationDocuments));
       setOwnerVerificationSummary(ownerVerificationResult?.summary || null);
       setVehicle(nextVehicle);
       setFormData(buildFormData(nextVehicle));
-      setIsEditingVehicle(false);
+      setIsEditingVehicle(resumeEditingAfterLoad);
+      setFocusedSectionId(resumeFocusedSectionId || '');
       storeOwnerVehicleId(user?.id, nextVehicle?.id);
       const nextLinkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(nextVehicle?.rawProfile, nextVehicle);
       if (nextLinkedFleetVehicleId) {
@@ -1566,7 +1645,7 @@ const AccountMarketplaceVehicleProfile = () => {
         setVehicleRequests([]);
       }
     },
-    [isNewVehicle, user?.id, vehicleId]
+    [isNewVehicle, resumeEditingAfterLoad, resumeFocusedSectionId, user?.id, vehicleId]
   );
 
   useEffect(() => {
@@ -2566,7 +2645,8 @@ const AccountMarketplaceVehicleProfile = () => {
         false,
         false,
         nextFormData,
-        tr('Vehicle photos saved.', 'Photos du véhicule enregistrées.')
+        tr('Vehicle photos saved.', 'Photos du véhicule enregistrées.'),
+        { source: 'auto_media_sync', suppressJourneyEvent: true, background: true }
       );
     }
   };
@@ -2648,6 +2728,7 @@ const AccountMarketplaceVehicleProfile = () => {
       ...normalizedMissingFieldLabels,
       ...inferredMissingFieldLabels,
     ])];
+    const scanCompleted = Boolean(success && filledFieldLabels.length > 0 && combinedMissingFieldLabels.length === 0);
 
     const detailParts = [];
     if (filledFieldLabels.length > 0) {
@@ -2667,9 +2748,10 @@ const AccountMarketplaceVehicleProfile = () => {
         category: normalizedCategory,
         title: getVehicleLegalScanTitle(normalizedCategory),
         documentName: document?.name || '',
-        pendingSave: Boolean(!persisted),
-        success: Boolean(persisted && success && filledFieldLabels.length > 0 && combinedMissingFieldLabels.length === 0),
+        pendingSave: Boolean(!persisted && !scanCompleted),
+        success: scanCompleted,
         requestSent: Boolean(
+          !scanCompleted &&
           persisted &&
           (!success || combinedMissingFieldLabels.length > 0)
         ),
@@ -2689,8 +2771,18 @@ const AccountMarketplaceVehicleProfile = () => {
         nextFormData,
         detailParts.length > 0
           ? `${tr('Document scanned.', 'Document scanné.')} ${detailParts.join(' • ')}`
-          : tr('Document scanned and legal fields updated.', 'Document scanné et champs légaux mis à jour.')
+          : tr('Document scanned and legal fields updated.', 'Document scanné et champs légaux mis à jour.'),
+        { source: 'auto_legal_sync', suppressJourneyEvent: true }
       );
+      setVehicleLegalScanResults((current) => ({
+        ...current,
+        [normalizedCategory]: {
+          ...(current[normalizedCategory] || {}),
+          pendingSave: false,
+          success: combinedMissingFieldLabels.length === 0,
+          requestSent: combinedMissingFieldLabels.length > 0,
+        },
+      }));
       return;
     }
 
@@ -2725,8 +2817,9 @@ const AccountMarketplaceVehicleProfile = () => {
         { forceRefresh: true }
       );
 
+      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []);
       setVehicleVerificationSummary(verificationFileResult?.summary || null);
-      setVehicleDocuments(mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []));
+      setVehicleDocuments((current) => mergeVehicleDocuments(current, nextVerificationDocuments));
     } catch (verificationRefreshError) {
       console.warn('Unable to refresh vehicle verification documents:', verificationRefreshError);
     }
@@ -2740,17 +2833,27 @@ const AccountMarketplaceVehicleProfile = () => {
     await refreshVehicleVerificationDocuments();
   }, [refreshVehicleVerificationDocuments]);
 
-  const persistVehicle = async (submitForReview = false, saveListing = false, overrideFormData = null, successMessageOverride = '') => {
+  const persistVehicle = async (
+    submitForReview = false,
+    saveListing = false,
+    overrideFormData = null,
+    successMessageOverride = '',
+    analyticsMeta = {}
+  ) => {
     if (!user?.id) return;
+
+    const isBackgroundSave = Boolean(analyticsMeta?.background);
 
     try {
       if (submitForReview) {
         setSubmitting(true);
-      } else {
+      } else if (!isBackgroundSave) {
         setSaving(true);
       }
-      setSaveError('');
-      setSaveSuccess('');
+      if (!isBackgroundSave) {
+        setSaveError('');
+        setSaveSuccess('');
+      }
 
       const sourceFormData = overrideFormData || formData;
       const nextNormalizedMedia = normalizeMediaFromFormState(sourceFormData);
@@ -2772,55 +2875,102 @@ const AccountMarketplaceVehicleProfile = () => {
         media: nextNormalizedMedia,
       };
 
-      const result = await BusinessMarketplaceService.saveOwnerVehicle({
-        ownerId: user.id,
-        accountType:
-          userProfile?.accountType ||
-          user?.user_metadata?.account_type ||
-          user?.app_metadata?.account_type ||
-          'individual_owner',
-        metadata: ownerMetadata,
-        vehicleId: isNewVehicle ? null : vehicleId,
-        formData: payload,
-        submitForReview,
-        saveListing,
-      });
+      const result = await withTimeout(
+        BusinessMarketplaceService.saveOwnerVehicle({
+          ownerId: user.id,
+          accountType:
+            userProfile?.accountType ||
+            user?.user_metadata?.account_type ||
+            user?.app_metadata?.account_type ||
+            'individual_owner',
+          metadata: ownerMetadata,
+          vehicleId: isNewVehicle ? null : vehicleId,
+          formData: payload,
+          submitForReview,
+          saveListing,
+        }),
+        OWNER_VEHICLE_SAVE_TIMEOUT_MS,
+        tr('Saving took too long. Please try again.', 'L’enregistrement a pris trop de temps. Veuillez réessayer.')
+      );
 
-      setVehicle(result?.vehicle || null);
-      setFormData(buildFormData(result?.vehicle || null));
-      storeOwnerVehicleId(user?.id, result?.vehicle?.id, { incrementCount: isNewVehicle });
-      if (result?.vehicle?.id) {
+      const savedVehicle = result?.vehicle || null;
+
+      setVehicle(savedVehicle);
+      setFormData(buildFormData(savedVehicle));
+      storeOwnerVehicleId(user?.id, savedVehicle?.id, { incrementCount: isNewVehicle });
+      if (savedVehicle?.id) {
         void activatePrivateOwnerAccount({ source: 'vehicle_saved' });
       }
-      setFieldErrors({});
-      setIsEditingVehicle(false);
-      setTaxEditing(false);
-      setSaveSuccess(
-        successMessageOverride || (
+
+      if (!analyticsMeta?.suppressJourneyEvent) {
+        const journeyPayload = {
+          source: analyticsMeta?.source || (submitForReview ? 'listing_review_submission' : 'listing_profile_save'),
+          vehicleId: savedVehicle?.id || vehicle?.id || vehicleId || '',
+          listingId: savedVehicle?.listingId || vehicle?.listingId || '',
+          activeTab,
+          saveListing: Boolean(saveListing),
+          isNewVehicle,
+        };
+
+        trackAccountJourneyEvent(
           submitForReview
-            ? tr('Full vehicle package sent for review.', 'Dossier complet du véhicule envoyé en revue.')
-            : tr('Vehicle changes saved.', 'Modifications du véhicule enregistrées.')
-        )
-      );
-      if (isNewVehicle && result?.vehicle?.id) {
+            ? ACCOUNT_JOURNEY_EVENTS.reviewSubmitted
+            : ACCOUNT_JOURNEY_EVENTS.draftSaved,
+          journeyPayload
+        );
+      }
+
+      setFieldErrors({});
+      if (!analyticsMeta?.keepEditing) {
+        setIsEditingVehicle(false);
+      }
+      setTaxEditing(false);
+      if (analyticsMeta?.sectionKey) {
+        setSectionSaveMeta((current) => ({
+          ...current,
+          [analyticsMeta.sectionKey]: {
+            savedAt: Date.now(),
+          },
+        }));
+      }
+      if (!isBackgroundSave) {
+        if (!analyticsMeta?.suppressGlobalSuccess) {
+          setSaveSuccess(
+            successMessageOverride || (
+              submitForReview
+                ? tr('Full vehicle package sent for review.', 'Dossier complet du véhicule envoyé en revue.')
+                : tr('Vehicle changes saved.', 'Modifications du véhicule enregistrées.')
+            )
+          )
+        }
+      }
+      if (isNewVehicle && savedVehicle?.id) {
         const nextTab = ['overview', 'listing', 'bookings', 'finance', 'legal'].includes(String(activeTab || '').toLowerCase())
           ? String(activeTab).toLowerCase()
           : 'overview';
         navigate(
-          `/account/vehicles/${encodeURIComponent(String(result.vehicle.id))}/profile?tab=${encodeURIComponent(nextTab)}`,
+          `/account/vehicles/${encodeURIComponent(String(savedVehicle.id))}/profile?tab=${encodeURIComponent(nextTab)}`,
           {
             replace: true,
             state: {
               ...(location.state || {}),
               from: location.state?.from || '/account/vehicles',
+              resumeEditing: true,
+              focusSectionId: nextNormalizedMedia.length === 0 ? 'primary-photo' : '',
             },
           }
         );
       }
     } catch (saveErrorValue) {
-      setSaveError(saveErrorValue?.message || tr('Unable to save this vehicle right now.', 'Impossible d’enregistrer ce véhicule pour le moment.'));
+      if (isBackgroundSave) {
+        console.warn('Background vehicle save failed:', saveErrorValue);
+      } else {
+        setSaveError(saveErrorValue?.message || tr('Unable to save this vehicle right now.', 'Impossible d’enregistrer ce véhicule pour le moment.'));
+      }
     } finally {
-      setSaving(false);
+      if (!isBackgroundSave) {
+        setSaving(false);
+      }
       setSubmitting(false);
     }
   };
@@ -2830,7 +2980,8 @@ const AccountMarketplaceVehicleProfile = () => {
       false,
       false,
       null,
-      tr('Legal details saved.', 'Détails légaux enregistrés.')
+      tr('Legal details saved.', 'Détails légaux enregistrés.'),
+      { source: 'legal_details_save' }
     );
   };
 
@@ -2897,43 +3048,24 @@ const AccountMarketplaceVehicleProfile = () => {
   };
 
   const handleSaveVehicle = async () => {
-    await persistVehicle(false, activeTab === 'listing');
+    await persistVehicle(false, activeTab === 'listing', null, '', {
+      source: activeTab === 'listing' ? 'listing_tab_save' : 'vehicle_profile_save',
+    });
   };
 
-  const tabs = useMemo(() => {
-    return [
-      { key: 'overview', label: tr('Overview', 'Aperçu'), icon: Car },
-      { key: 'listing', label: tr('Listing', 'Annonce'), icon: Store },
-      { key: 'bookings', label: tr('Bookings', 'Réservations'), icon: CalendarClock },
-      { key: 'finance', label: tr('Finance', 'Finance'), icon: DollarSign },
-      { key: 'legal', label: tr('Legal & documents', 'Légal & documents'), icon: ShieldCheck },
-    ];
-  }, [isFrench]);
+  const handleSaveVehicleSection = async (sectionKey, source) => {
+    await persistVehicle(false, activeTab === 'listing', null, '', {
+      source,
+      sectionKey,
+      keepEditing: true,
+      suppressGlobalSuccess: true,
+    });
+  };
 
-  if (loading && suppressBlockingLoader) {
-    return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} showHeader={true} />;
-  }
-
-  if (loading && !suppressBlockingLoader) {
-    return (
-      <div className="space-y-4">
-        <div className={`h-40 animate-pulse ${workspacePanelClass}`} />
-        <div className="grid gap-4 lg:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className={`h-32 animate-pulse ${workspacePanelClass}`} />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className={`${workspacePanelClass} border-rose-200 text-sm text-rose-700`}>
-        {error}
-      </div>
-    );
-  }
+  const getSectionSavedLabel = (sectionKey) => {
+    if (!sectionSaveMeta?.[sectionKey]?.savedAt) return '';
+    return tr('Saved just now', 'Enregistré à l’instant');
+  };
 
   const coverImage = vehicle?.coverImageUrl || vehicle?.media?.[0]?.url || '';
   const ownerVerificationStatus = String(ownerVerificationSummary?.status || '').trim().toLowerCase();
@@ -3001,13 +3133,80 @@ const AccountMarketplaceVehicleProfile = () => {
     hasVehicleMedia,
     documentCount: vehicleDocuments.length,
   });
+  const normalizedFuelPolicy = String(formData.fuelPolicy || '').trim().toLowerCase();
+  const returnSameFuelLevel =
+    !normalizedFuelPolicy ||
+    normalizedFuelPolicy === 'return_same_level' ||
+    normalizedFuelPolicy.includes('same') ||
+    normalizedFuelPolicy.includes('full') ||
+    normalizedFuelPolicy.includes('return');
+  const listingFuelLevel = Number.isFinite(Number(vehicleFuelState?.current_fuel_lines))
+    ? Number(vehicleFuelState.current_fuel_lines)
+    : 8;
+  const listingFuelLitersLabel = Number.isFinite(Number(listingFuelLevel))
+    ? `${FuelTransactionService.linesToLiters(
+        listingFuelLevel,
+        vehicleFuelState?.tank_capacity_liters || undefined
+      ).toFixed(1)} L`
+    : '';
+  const fuelPolicyDisplay = returnSameFuelLevel
+    ? tr('Return with the same fuel level', 'Retour avec le même niveau de carburant')
+    : (formData.fuelPolicy || tr('Custom fuel policy', 'Politique carburant personnalisée'));
+  const listingReviewStatusLabel = marketplaceJourneyMeta?.badge || getMarketplaceStatusLabel(
+    vehicle?.listingStatus || vehicle?.moderationStatus || 'draft',
+    isFrench ? 'fr' : 'en'
+  );
+  const latestReviewDetail =
+    listingReviewSummary.latestModerationEntry?.feedback ||
+    listingReviewSummary.latestModerationEntry?.reason ||
+    listingReviewSummary.latestOwnerMessage?.body ||
+    '';
+  const tabs = useMemo(() => {
+    const baseTabs = [
+      { key: 'overview', label: tr('Vehicle', 'Véhicule'), icon: Car },
+      { key: 'listing', label: tr('Pricing & publish', 'Prix & publication'), icon: Store },
+      { key: 'legal', label: tr('Documents', 'Documents'), icon: ShieldCheck },
+    ];
+
+    if (hasStartedDraft || operationalRequest) {
+      baseTabs.push({ key: 'bookings', label: tr('Operations', 'Opérations'), icon: CalendarClock });
+    }
+
+    if (linkedFleetVehicleId || vehicleFinanceOverview) {
+      baseTabs.push({ key: 'finance', label: tr('Money', 'Argent'), icon: DollarSign });
+    }
+
+    return baseTabs;
+  }, [
+    hasStartedDraft,
+    isFrench,
+    linkedFleetVehicleId,
+    operationalRequest,
+    vehicleFinanceOverview,
+  ]);
   const ownerProfileAlerts = [
     formData.nextOilChangeDue ? { id: 'oil', label: tr('Oil change due', 'Vidange à prévoir') } : null,
     formData.registrationExpiryDate ? { id: 'registration', label: tr('Registration tracked', "Immatriculation suivie") } : null,
     insuranceExpired ? { id: 'insurance', label: tr('Insurance expired', 'Assurance expirée') } : null,
   ].filter(Boolean);
   const vehicleLegalScanCards = ['registration', 'insurance']
-    .map((category) => vehicleLegalScanResults[category])
+    .map((category) => {
+      const result = vehicleLegalScanResults[category];
+      if (!result) return null;
+
+      const fieldsComplete = category === 'registration' ? registrationFieldsComplete : insuranceFieldsComplete;
+      const shouldTreatAsComplete = fieldsComplete && result.filledFieldLabels?.length > 0;
+
+      return shouldTreatAsComplete
+        ? {
+            ...result,
+            pendingSave: false,
+            success: true,
+            requestSent: false,
+            missingFieldLabels: [],
+          }
+        : result;
+    })
     .filter(Boolean)
     .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
   const vehicleLegalDocumentStatusMap = {
@@ -3152,36 +3351,40 @@ const AccountMarketplaceVehicleProfile = () => {
   })();
   const ownerWorkflowStepOne = ownerVerificationReady
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Verify owner', 'Vérifier le propriétaire'),
         body: '',
-        actionLabel: tr('Open verification', 'Ouvrir la vérification'),
+        actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
       }
     : ownerVerificationStatus === 'pending'
       ? {
+          statusKey: 'waiting',
           statusLabel: tr('Waiting', 'En attente'),
           statusTone: 'bg-amber-100 text-amber-700',
           title: tr('Verify owner', 'Vérifier le propriétaire'),
           body: tr(
-            'Your ID and driver license were sent to admin. We are waiting for approval before the listing can move forward.',
-            'Votre pièce et votre permis ont été envoyés à l’admin. Nous attendons l’approbation avant de faire avancer l’annonce.'
+            'Your ID and driver license were sent to admin. Keep building the listing while we wait for approval. Full review will unlock automatically after that.',
+            'Votre pièce et votre permis ont été envoyés à l’admin. Continuez l’annonce pendant l’attente. L’envoi complet en revue se débloquera ensuite automatiquement.'
           ),
-          actionLabel: tr('Open verification', 'Ouvrir la vérification'),
+          actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
         }
       : {
+          statusKey: 'action',
           statusLabel: tr('Action required', 'Action requise'),
           statusTone: 'bg-violet-100 text-violet-700',
           title: tr('Verify owner', 'Vérifier le propriétaire'),
           body: tr(
-            'Start with your profile ID and driver license. This must be approved before vehicle review can begin.',
-            'Commencez par votre pièce d’identité et votre permis. Cela doit être approuvé avant de lancer la revue du véhicule.'
+            'Start with your profile ID and driver license. Listing setup can continue while admin reviews them, but the full review send waits for approval.',
+            'Commencez par votre pièce d’identité et votre permis. La configuration de l’annonce peut continuer pendant la revue admin, mais l’envoi complet attend l’approbation.'
           ),
-          actionLabel: tr('Complete step 1', 'Compléter l’étape 1'),
+          actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
         };
   const vehicleBasicsComplete = Boolean(formData.brandName && formData.modelName && formData.plateNumber && formData.cityName);
   const ownerWorkflowStepTwo = vehicleBasicsComplete
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Complete vehicle basics', 'Compléter les bases du véhicule'),
@@ -3189,6 +3392,7 @@ const AccountMarketplaceVehicleProfile = () => {
         actionLabel: tr('Open vehicle basics', 'Ouvrir les bases du véhicule'),
       }
     : {
+        statusKey: 'action',
         statusLabel: tr('Action required', 'Action requise'),
         statusTone: 'bg-violet-100 text-violet-700',
         title: tr('Complete vehicle basics', 'Compléter les bases du véhicule'),
@@ -3200,41 +3404,45 @@ const AccountMarketplaceVehicleProfile = () => {
       };
   const ownerWorkflowStepThree = vehicleLegalStepComplete
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
-        title: tr('Upload legal documents', 'Téléverser les documents légaux'),
+        title: tr('Upload vehicle documents', 'Téléverser les documents du véhicule'),
         body: '',
-        actionLabel: tr('Open legal documents', 'Ouvrir les documents légaux'),
+        actionLabel: tr('Open documents', 'Ouvrir les documents'),
       }
     : vehicleLegalManualFallbackSubmitted
       ? {
+          statusKey: 'waiting',
           statusLabel: tr('Request sent', 'Demande envoyée'),
           statusTone: 'bg-amber-100 text-amber-700',
-          title: tr('Upload legal documents', 'Téléverser les documents légaux'),
+          title: tr('Upload vehicle documents', 'Téléverser les documents du véhicule'),
           body: tr(
-            'Your legal documents were uploaded, but some fields still need manual completion. The request was sent to admin and is waiting for approval.',
-            'Vos documents légaux ont été téléversés, mais certains champs demandent encore une saisie manuelle. La demande a été envoyée à l’admin et attend une approbation.'
+            'Your registration and insurance files were sent, but a few fields still need manual completion. Admin review is now pending.',
+            'Vos fichiers d’immatriculation et d’assurance ont été envoyés, mais quelques champs demandent encore une saisie manuelle. La revue admin est maintenant en attente.'
           ),
-          actionLabel: tr('Open legal documents', 'Ouvrir les documents légaux'),
+          actionLabel: tr('Open documents', 'Ouvrir les documents'),
         }
       : vehicleVerificationWaitingOnAdmin || vehicleVerificationSubmitted
       ? {
+          statusKey: 'waiting',
           statusLabel: tr('Waiting', 'En attente'),
           statusTone: 'bg-amber-100 text-amber-700',
-          title: tr('Upload legal documents', 'Téléverser les documents légaux'),
+          title: tr('Upload vehicle documents', 'Téléverser les documents du véhicule'),
           body: tr(
-            'Your registration and insurance documents were sent to admin. We are waiting for vehicle verification approval.',
-            'Vos documents d’immatriculation et d’assurance ont été envoyés à l’admin. Nous attendons l’approbation de la vérification véhicule.'
+            'Your registration and insurance files are with admin. We are waiting for vehicle verification approval.',
+            'Vos fichiers d’immatriculation et d’assurance sont chez l’admin. Nous attendons l’approbation de la vérification véhicule.'
           ),
-          actionLabel: tr('Open legal documents', 'Ouvrir les documents légaux'),
+          actionLabel: tr('Open documents', 'Ouvrir les documents'),
         }
       : {
+          statusKey: 'action',
           statusLabel: tr('Action required', 'Action requise'),
           statusTone: 'bg-violet-100 text-violet-700',
-          title: tr('Upload legal documents', 'Téléverser les documents légaux'),
+          title: tr('Upload vehicle documents', 'Téléverser les documents du véhicule'),
           body: tr(
-            'Upload the registration and insurance files. Once they are sent, admin review can start automatically.',
-          'Téléversez les fichiers d’immatriculation et d’assurance. Une fois envoyés, la revue admin peut commencer automatiquement.'
+            'Upload the registration and insurance files. Once they are sent, admin review can start.',
+            'Téléversez les fichiers d’immatriculation et d’assurance. Une fois envoyés, la revue admin peut commencer.'
         ),
         actionLabel: tr('Complete step 3', 'Compléter l’étape 3'),
       };
@@ -3247,6 +3455,7 @@ const AccountMarketplaceVehicleProfile = () => {
     null;
   const ownerWorkflowStepFour = listingSetupComplete
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Prepare the listing', "Préparer l'annonce"),
@@ -3254,6 +3463,7 @@ const AccountMarketplaceVehicleProfile = () => {
         actionLabel: tr('Open listing setup', "Ouvrir la configuration de l'annonce"),
       }
     : {
+        statusKey: 'action',
         statusLabel: tr('Action required', 'Action requise'),
         statusTone: 'bg-violet-100 text-violet-700',
         title: tr('Prepare the listing', "Préparer l'annonce"),
@@ -3266,6 +3476,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const pickupSetupComplete = Boolean(formData.pickupLocationName);
   const ownerWorkflowStepFive = pickupSetupComplete
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Prepare pickup', 'Préparer le départ'),
@@ -3273,6 +3484,7 @@ const AccountMarketplaceVehicleProfile = () => {
         actionLabel: tr('Open pickup setup', 'Ouvrir la préparation du départ'),
       }
     : {
+        statusKey: 'action',
         statusLabel: tr('Action required', 'Action requise'),
         statusTone: 'bg-violet-100 text-violet-700',
         title: tr('Prepare pickup', 'Préparer le départ'),
@@ -3284,6 +3496,7 @@ const AccountMarketplaceVehicleProfile = () => {
       };
   const ownerWorkflowStepSix = listingIsLive
     ? {
+        statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Review and go live', 'Revoir et publier'),
@@ -3293,6 +3506,7 @@ const AccountMarketplaceVehicleProfile = () => {
       }
     : effectiveMarketplaceJourneyState === 'approved'
       ? {
+          statusKey: 'action',
           statusLabel: tr('Action required', 'Action requise'),
           statusTone: 'bg-violet-100 text-violet-700',
           title: tr('Review and go live', 'Revoir et publier'),
@@ -3305,6 +3519,7 @@ const AccountMarketplaceVehicleProfile = () => {
         }
       : effectiveMarketplaceJourneyState === 'pending_review'
         ? {
+            statusKey: 'waiting',
             statusLabel: tr('Waiting', 'En attente'),
             statusTone: 'bg-amber-100 text-amber-700',
             title: tr('Review and go live', 'Revoir et publier'),
@@ -3312,11 +3527,12 @@ const AccountMarketplaceVehicleProfile = () => {
               'Your full package is already with admin. We are waiting for review before the listing can go live.',
               'Votre dossier complet est déjà chez l’admin. Nous attendons la revue avant que l’annonce puisse être publiée.'
             ),
-            actionLabel: tr('Open messages', 'Ouvrir les messages'),
+            actionLabel: tr('Open Inbox', 'Ouvrir Inbox'),
             actionMode: 'messages',
           }
         : canSendFullReview
           ? {
+              statusKey: 'action',
               statusLabel: tr('Action required', 'Action requise'),
               statusTone: 'bg-violet-100 text-violet-700',
               title: tr('Review and go live', 'Revoir et publier'),
@@ -3328,6 +3544,7 @@ const AccountMarketplaceVehicleProfile = () => {
               actionMode: 'submit-review',
             }
           : {
+              statusKey: 'locked',
               statusLabel: tr('Locked', 'Verrouillé'),
               statusTone: 'bg-slate-100 text-slate-600',
               title: tr('Review and go live', 'Revoir et publier'),
@@ -3346,9 +3563,119 @@ const AccountMarketplaceVehicleProfile = () => {
     totalMarketplaceChecklistCount: marketplaceChecklist.length,
     tr,
   });
+  const ownerListingSetupProgress = buildOwnerListingSetupProgress({
+    tr,
+    vehicleId: vehicle?.id || vehicleId || '',
+    currentPath,
+    ownerVerificationReady,
+    ownerVerificationPending: ownerVerificationStatus === 'pending',
+    ownerVerificationIssue: ['rejected', 'suspended', 'expired'].includes(ownerVerificationStatus),
+    vehicleHasDraft: hasStartedDraft,
+    vehicleBasicsComplete,
+    vehiclePhotosComplete: vehiclePhotoRequirements.isComplete,
+    vehicleDocumentsComplete: vehicleLegalStepComplete,
+    vehicleDocumentsPending: vehicleLegalManualFallbackSubmitted || vehicleVerificationWaitingOnAdmin || vehicleVerificationStatus === 'pending',
+    vehicleDocumentsIssue: ['rejected', 'suspended', 'expired'].includes(vehicleVerificationStatus),
+    listingDetailsComplete: Boolean(formData.listingTitle),
+    listingPricingComplete: Boolean(hasListingPrice && hasDepositAmount),
+    pickupSetupComplete,
+    listingReviewSubmitted: effectiveMarketplaceJourneyState === 'pending_review',
+    listingApproved: effectiveMarketplaceJourneyState === 'approved',
+    listingLive: listingIsLive,
+    listingIssue: ['changes_requested', 'rejected'].includes(effectiveMarketplaceJourneyState),
+    canSendFullReview,
+  });
+  const ownerWorkflowMilestones = [
+    {
+      key: 'owner_verification',
+      stepNumber: 1,
+      checklistKeys: ['owner_verification'],
+      primaryTask: marketplaceChecklist.find((item) => item.key === 'owner_verification') || null,
+      ...ownerWorkflowStepOne,
+    },
+    {
+      key: 'vehicle_profile',
+      stepNumber: 2,
+      checklistKeys: ['vehicle_profile'],
+      primaryTask: marketplaceChecklist.find((item) => item.key === 'vehicle_profile') || null,
+      ...ownerWorkflowStepTwo,
+    },
+    {
+      key: 'vehicle_documents',
+      stepNumber: 3,
+      checklistKeys: ['vehicle_documents', 'verification'],
+      primaryTask: marketplaceChecklist.find((item) => item.key === 'vehicle_documents') || null,
+      ...ownerWorkflowStepThree,
+    },
+    {
+      key: 'listing_setup',
+      stepNumber: 4,
+      checklistKeys: ['listing_details', 'listing_pricing', 'listing_media'],
+      primaryTask: stepFourTargetItem,
+      ...ownerWorkflowStepFour,
+    },
+    {
+      key: 'pickup_setup',
+      stepNumber: 5,
+      checklistKeys: ['renter_setup'],
+      primaryTask: marketplaceChecklist.find((item) => item.key === 'renter_setup') || null,
+      ...ownerWorkflowStepFive,
+    },
+    {
+      key: 'review_publish',
+      stepNumber: 6,
+      checklistKeys: ['listing_review', 'publish'],
+      primaryTask:
+        marketplaceChecklist.find((item) => item.key === 'listing_review' && !item.done) ||
+        marketplaceChecklist.find((item) => item.key === 'publish' && !item.done) ||
+        marketplaceChecklist.find((item) => item.key === 'listing_review') ||
+        marketplaceChecklist.find((item) => item.key === 'publish') ||
+        null,
+      ...ownerWorkflowStepSix,
+    },
+  ];
+  const completedOwnerWorkflowMilestones = ownerWorkflowMilestones.filter((item) => item.statusKey === 'done').length;
+  const currentOwnerWorkflowMilestone =
+    ownerWorkflowMilestones.find((item) => item.statusKey !== 'done') ||
+    ownerWorkflowMilestones[ownerWorkflowMilestones.length - 1] ||
+    null;
+  const ownerWorkflowProgressPercent = ownerWorkflowMilestones.length
+    ? Math.round((completedOwnerWorkflowMilestones / ownerWorkflowMilestones.length) * 100)
+    : 0;
+  const ownerWorkflowVisualProgressPercent = completedOwnerWorkflowMilestones === 0
+    ? 8
+    : Math.max(ownerWorkflowProgressPercent, 8);
+  const currentOwnerWorkflowChecklist = currentOwnerWorkflowMilestone
+    ? marketplaceChecklist.filter((item) => currentOwnerWorkflowMilestone.checklistKeys.includes(item.key))
+    : [];
+  const handleOwnerWorkflowMilestoneAction = (milestone = currentOwnerWorkflowMilestone) => {
+    if (!milestone) return;
+
+    if (milestone.key === 'review_publish') {
+      if (milestone.actionMode === 'submit-review') {
+        void persistVehicle(true);
+        return;
+      }
+      if (milestone.actionMode === 'messages') {
+        handleOpenReviewThread();
+        return;
+      }
+    }
+
+    openMarketplaceChecklistTask(milestone.primaryTask);
+  };
   const openMarketplaceChecklistTask = (item) => {
     if (!item) return;
     if (item.route) {
+      if (item.route === '/account/verification') {
+        trackAccountJourneyEvent(ACCOUNT_JOURNEY_EVENTS.trustCenterOpened, {
+          source: 'listing_checklist',
+          route: item.route,
+          vehicleId: vehicle?.id || vehicleId || '',
+          listingId: vehicle?.listingId || '',
+          checklistKey: item.key,
+        });
+      }
       const currentPath = getCurrentLocationPath(location);
       const ownerListingReturnPath =
         currentPath.includes('?tab=')
@@ -3368,9 +3695,87 @@ const AccountMarketplaceVehicleProfile = () => {
     if (!vehicle?.listingId) return;
     setReviewThreadOpenSignal((current) => current + 1);
   };
+  const handleOwnerListingSetupStepAction = (step) => {
+    if (!step) return false;
+    if (step.actionMode === 'submit-review') {
+      void persistVehicle(true);
+      return true;
+    }
+
+    const target = step.target || {};
+    const targetPath = String(target.to || '').trim();
+    if (!targetPath.startsWith('/account/vehicles/')) {
+      return false;
+    }
+
+    try {
+      const targetUrl = new URL(targetPath, window.location.origin);
+      const targetTab = targetUrl.searchParams.get('tab') || '';
+      if (['overview', 'listing', 'bookings', 'finance', 'legal'].includes(targetTab)) {
+        setActiveTab(targetTab);
+      }
+    } catch {
+      // If URL parsing fails, fall back to the target state below.
+    }
+
+    const targetSection = String(target.state?.focusSectionId || '').trim();
+    if (targetSection) {
+      setFocusedSectionId(targetSection);
+    }
+    return true;
+  };
+
+  useEffect(() => {
+    if (tabs.some((tab) => tab.key === activeTab)) {
+      return;
+    }
+    setActiveTab('overview');
+  }, [activeTab, tabs]);
+
+  useEffect(() => {
+    if (effectiveMarketplaceJourneyState !== 'live') {
+      return;
+    }
+
+    const listingIdentity = String(vehicle?.listingId || vehicle?.id || vehicleId || 'live-listing').trim();
+    trackAccountJourneyEventOnce(
+      ACCOUNT_JOURNEY_EVENTS.listingWentLive,
+      `listing-live:${listingIdentity}`,
+      {
+        source: 'listing_profile',
+        vehicleId: vehicle?.id || vehicleId || '',
+        listingId: vehicle?.listingId || '',
+      }
+    );
+  }, [effectiveMarketplaceJourneyState, vehicle?.id, vehicle?.listingId, vehicleId]);
+
+  if (loading && suppressBlockingLoader) {
+    return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} showHeader={true} />;
+  }
+
+  if (loading && !suppressBlockingLoader) {
+    return (
+      <div className="space-y-4">
+        <div className={`h-40 animate-pulse ${workspacePanelClass}`} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className={`h-32 animate-pulse ${workspacePanelClass}`} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={`${workspacePanelClass} border-rose-200 text-sm text-rose-700`}>
+        {error}
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 pb-28">
       <div className={`sticky top-0 z-30 ${workspaceShellClass}`}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
@@ -3378,12 +3783,12 @@ const AccountMarketplaceVehicleProfile = () => {
               type="button"
               onClick={() => navigate(backLink)}
               className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
-              title={location.state?.from ? tr('Back', 'Retour') : tr('Back to marketplace', 'Retour à marketplace')}
+              title={location.state?.from ? tr('Back', 'Retour') : tr('Back to listings', 'Retour aux annonces')}
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
             <div>
-              <p className={workspaceEyebrowClass}>{tr('Vehicle Profile', 'Profil véhicule')}</p>
+              <p className={workspaceEyebrowClass}>{tr('Listing workspace', "Espace d'annonce")}</p>
               <h1 className="text-3xl font-black tracking-tight text-slate-900 lg:text-4xl">
                 {formData.plateNumber || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle profile', 'Profil véhicule')}
               </h1>
@@ -3482,6 +3887,14 @@ const AccountMarketplaceVehicleProfile = () => {
         </div>
       </div>
 
+      <OwnerListingSetupGuide
+        progress={ownerListingSetupProgress}
+        tr={tr}
+        variant="compact"
+        className="sticky top-[112px] z-20"
+        onStepAction={handleOwnerListingSetupStepAction}
+      />
+
       {saveError ? (
         <section className={`${workspacePanelClass} border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700`}>
           <div className="flex items-start gap-2">
@@ -3497,7 +3910,7 @@ const AccountMarketplaceVehicleProfile = () => {
         </section>
       ) : null}
 
-      <div className="sticky top-[120px] z-20 -mx-3 overflow-x-auto px-3 py-2 sm:top-[140px] sm:mx-0">
+      <div className="sticky top-[198px] z-20 -mx-3 overflow-x-auto px-3 py-2 sm:top-[190px] sm:mx-0">
         <div className={`${workspaceShellClass} flex min-w-max gap-2 p-2`}>
           {tabs.map((tab) => {
             const TabIcon = tab.icon;
@@ -3524,8 +3937,8 @@ const AccountMarketplaceVehicleProfile = () => {
       {activeTab === 'overview' ? (
         <>
           <SectionCard
-            title={tr('Overview', "Vue d'ensemble")}
-            description={tr('A quick operational snapshot for this vehicle.', 'Un aperçu opérationnel rapide de ce véhicule.')}
+            title={tr('Vehicle setup', 'Configuration du véhicule')}
+            description={tr('Core vehicle identity, photos, and setup status for this listing.', "Identité du véhicule, photos et état d'avancement de cette annonce.")}
             icon={Car}
           >
             <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
@@ -3614,7 +4027,14 @@ const AccountMarketplaceVehicleProfile = () => {
 
           <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
             <div id="vehicle-basics" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'vehicle-basics')}`}>
-              <h2 className="text-xl font-bold text-slate-950">{tr('Basic information', 'Informations de base')}</h2>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 1 of 6', 'Étape 1 sur 6')}</p>
+              <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Vehicle basics', 'Bases du véhicule')}</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                {tr(
+                  'Keep this section focused on the vehicle itself: identity, location, and core specs.',
+                  'Gardez cette section centrée sur le véhicule lui-même : identité, emplacement et caractéristiques principales.'
+                )}
+              </p>
               {isEditingVehicle ? (
                 <>
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -3657,9 +4077,6 @@ const AccountMarketplaceVehicleProfile = () => {
                       <input value={formData.color} onChange={(event) => updateField('color', event.target.value)} className={baseFieldClassName} />
                     </OwnerField>
                   </div>
-                  <OwnerField label={tr('Short summary', 'Résumé court')}>
-                    <textarea value={formData.shortDescription} onChange={(event) => updateField('shortDescription', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
-                  </OwnerField>
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
                     <OwnerField label={tr('Current odometer reading', 'Kilométrage actuel')}>
                       <input type="number" value={formData.currentOdometer} onChange={(event) => updateField('currentOdometer', event.target.value)} className={baseFieldClassName} />
@@ -3681,9 +4098,6 @@ const AccountMarketplaceVehicleProfile = () => {
                   <ViewField label={tr('Capacity', 'Capacité')} value={formData.seats} />
                   <ViewField label={tr('Engine size (cc)', 'Cylindrée (cc)')} value={formData.engineCc ? `${formData.engineCc} cc` : '—'} />
                   <ViewField label={tr('Color', 'Couleur')} value={formData.color} />
-                  <div className="sm:col-span-2">
-                    <ViewField label={tr('Short summary', 'Résumé court')} value={formData.shortDescription} />
-                  </div>
                   <ViewField label={tr('Current odometer reading', 'Kilométrage actuel')} value={formData.currentOdometer ? `${formData.currentOdometer} km` : '—'} />
                   <ViewField label={tr('Engine hours', 'Heures moteur')} value={formData.engineHours ? `${formData.engineHours} h` : '—'} />
                 </div>
@@ -3692,25 +4106,78 @@ const AccountMarketplaceVehicleProfile = () => {
 
             <div className="space-y-4">
               <section id="operations-snapshot" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'operations-snapshot')}`}>
-                <h2 className="text-xl font-bold text-slate-950">{tr('Operational snapshot', 'Aperçu opérationnel')}</h2>
+                <h2 className="text-xl font-bold text-slate-950">{tr('Quick status', 'Statut rapide')}</h2>
                 <p className="mt-2 text-sm text-slate-600">
-                  {tr('Keep the quick operational details here. Maintenance planning and booking readiness live in Bookings.', 'Gardez ici les détails opérationnels rapides. La planification maintenance et l’état de réservation se trouvent dans Réservations.')}
+                  {tr(
+                    'This panel stays asset-focused. Pricing, public copy, and pickup live in Pricing & publish.',
+                    'Ce panneau reste centré sur le véhicule. Les prix, le texte public et le retrait se trouvent dans Prix & publication.'
+                  )}
                 </p>
                 <div className="mt-5 space-y-3">
                   <InfoRow label={tr('Linked fleet record', 'Fiche flotte liée')} value={linkedFleetVehicleId ? `#${linkedFleetVehicleId}` : tr('Created after first save', 'Créée après le premier enregistrement')} />
                   <InfoRow label={tr('Current fuel level', 'Niveau de carburant actuel')} value={linkedFleetVehicleId ? `${vehicleFuelState?.current_fuel_lines ?? 0}/8` : '—'} />
-                  <InfoRow label={tr('Profile status', 'Statut du profil')} value={listingLabel} />
-                  <InfoRow label={tr('Listing title', 'Titre de l’annonce')} value={formData.listingTitle || '—'} />
-                  <InfoRow label={tr('Pickup location', 'Point de retrait')} value={formData.pickupLocationName || '—'} />
-                  <InfoRow label={tr('Half-day rental', 'Location demi-journée')} value={formData.halfDayPriceAmount ? `${formData.halfDayPriceAmount} MAD` : tr('Not set', 'Non défini')} />
+                  <InfoRow
+                    label={tr('Listing status', "Statut de l'annonce")}
+                    value={listingLabel}
+                  />
+                  <InfoRow
+                    label={tr('Photo status', 'Statut photos')}
+                    value={
+                      vehiclePhotoRequirements.isComplete
+                        ? tr('Required photos ready', 'Photos requises prêtes')
+                        : tr(
+                            `Missing: ${vehiclePhotoRequirements.missingTypes.join(', ')}`,
+                            `Manquantes : ${vehiclePhotoRequirements.missingTypes.join(', ')}`
+                          )
+                    }
+                  />
+                  <InfoRow
+                    label={tr('Owner trust', 'Confiance propriétaire')}
+                    value={
+                      ownerVerificationReady
+                        ? tr('Approved', 'Approuvée')
+                        : ownerVerificationStatus === 'pending'
+                          ? tr('Under review', 'En revue')
+                          : tr('Needed', 'Requise')
+                    }
+                  />
+                  <InfoRow
+                    label={tr('Vehicle documents', 'Documents véhicule')}
+                    value={
+                      vehicleVerificationReady
+                        ? tr('Approved', 'Approuvés')
+                        : vehicleLegalStepComplete || vehicleVerificationWaitingOnAdmin
+                          ? tr('Submitted', 'Envoyés')
+                          : tr('Needed', 'Requis')
+                    }
+                  />
                 </div>
               </section>
 
               <section id="primary-photo" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'primary-photo')}`}>
-                <h2 className="text-xl font-bold text-slate-950">{tr('Vehicle photos', 'Photos du véhicule')}</h2>
-                <p className="mt-2 text-sm text-slate-600">
-                  {tr('Upload the required hero, context, and detail shots here.', 'Téléversez ici les photos requises : principale, contexte et détail.')}
-                </p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 2 of 6', 'Étape 2 sur 6')}</p>
+                    <h2 className="text-xl font-bold text-slate-950">{tr('Vehicle photos', 'Photos du véhicule')}</h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                      {tr('Upload the required hero, context, and detail shots here.', 'Téléversez ici les photos requises : principale, contexte et détail.')}
+                    </p>
+                  </div>
+                  {!isEditingVehicle ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleStartEditing();
+                        setFocusedSectionId('primary-photo');
+                      }}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                    >
+                      {normalizedMedia.length > 0
+                        ? tr('Manage photos', 'Gérer les photos')
+                        : tr('Add photos', 'Ajouter des photos')}
+                    </button>
+                  ) : null}
+                </div>
                 {isEditingVehicle ? (
                   <>
                     <div className="mt-4">
@@ -3756,8 +4223,14 @@ const AccountMarketplaceVehicleProfile = () => {
               <section id="listing-details" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'listing-details')}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Listing setup', "Configuration de l'annonce")}</p>
-                    <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Complete your listing', 'Finalisez votre annonce')}</h2>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 4 of 6', 'Étape 4 sur 6')}</p>
+                    <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Pricing and listing details', "Tarification et détails de l'annonce")}</h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                      {tr(
+                        'Set the price first, then refine what renters will read on the public listing.',
+                        "Définissez d'abord le prix, puis affinez ce que les locataires liront sur l'annonce publique."
+                      )}
+                    </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`rounded-full px-3 py-1 text-xs font-bold ${listingTone}`}>
@@ -3765,371 +4238,132 @@ const AccountMarketplaceVehicleProfile = () => {
                     </span>
                   </div>
                 </div>
-                <div className="mt-5 rounded-[1.4rem] border border-violet-200 bg-violet-50/70 p-4">
-                  <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 1 of 6', 'Étape 1 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepOne.title}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {ownerWorkflowStepOne.body}
-                        </p>
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepOne.statusTone}`}>
-                        {ownerWorkflowStepOne.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => openMarketplaceChecklistTask(marketplaceChecklist.find((item) => item.key === 'owner_verification'))}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepOne.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 2 of 6', 'Étape 2 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepTwo.title}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {ownerWorkflowStepTwo.body}
-                        </p>
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepTwo.statusTone}`}>
-                        {ownerWorkflowStepTwo.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => openMarketplaceChecklistTask(marketplaceChecklist.find((item) => item.key === 'vehicle_profile'))}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepTwo.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 3 of 6', 'Étape 3 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepThree.title}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {ownerWorkflowStepThree.body}
-                        </p>
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepThree.statusTone}`}>
-                        {ownerWorkflowStepThree.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => openMarketplaceChecklistTask(marketplaceChecklist.find((item) => item.key === 'vehicle_documents'))}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepThree.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 4 of 6', 'Étape 4 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepFour.title}
-                        </p>
-                        {ownerWorkflowStepFour.body ? (
-                          <p className="mt-1 text-sm text-slate-600">
-                            {ownerWorkflowStepFour.body}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepFour.statusTone}`}>
-                        {ownerWorkflowStepFour.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => openMarketplaceChecklistTask(stepFourTargetItem)}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepFour.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 5 of 6', 'Étape 5 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepFive.title}
-                        </p>
-                        {ownerWorkflowStepFive.body ? (
-                          <p className="mt-1 text-sm text-slate-600">
-                            {ownerWorkflowStepFive.body}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepFive.statusTone}`}>
-                        {ownerWorkflowStepFive.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => openMarketplaceChecklistTask(marketplaceChecklist.find((item) => item.key === 'renter_setup'))}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepFive.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                          {tr('Step 6 of 6', 'Étape 6 sur 6')}
-                        </p>
-                        <p className="mt-2 text-base font-bold text-slate-950">
-                          {ownerWorkflowStepSix.title}
-                        </p>
-                        {ownerWorkflowStepSix.body ? (
-                          <p className="mt-1 text-sm text-slate-600">
-                            {ownerWorkflowStepSix.body}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${ownerWorkflowStepSix.statusTone}`}>
-                        {ownerWorkflowStepSix.statusLabel}
-                      </span>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (ownerWorkflowStepSix.actionMode === 'submit-review') {
-                            void persistVehicle(true);
-                            return;
-                          }
-                          if (ownerWorkflowStepSix.actionMode === 'messages') {
-                            handleOpenReviewThread();
-                            return;
-                          }
-                          openMarketplaceChecklistTask(marketplaceChecklist.find((item) => item.key === 'listing_review'));
-                        }}
-                        className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        {ownerWorkflowStepSix.actionLabel}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700">{tr('Progress', 'Progression')}</p>
-                      <p className="mt-2 text-3xl font-black text-slate-950">
-                        {Math.round((completedMarketplaceChecklistCount / marketplaceChecklist.length) * 100)}%
-                      </p>
-                      <p className="mt-3 text-sm font-semibold text-slate-900">
-                        {nextMarketplaceChecklistItem
-                          ? tr('Next step', 'Étape suivante') + `: ${nextMarketplaceChecklistItem.label}`
-                          : tr('Ready to review', 'Prête pour la revue')}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-center shadow-sm">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">{tr('Tasks', 'Tâches')}</p>
-                      <p className="mt-1 text-xl font-black text-slate-950">
-                        {completedMarketplaceChecklistCount}/{marketplaceChecklist.length}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/90">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 transition-all"
-                      style={{ width: `${(completedMarketplaceChecklistCount / marketplaceChecklist.length) * 100}%` }}
-                    />
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-white/80 bg-white/85 px-4 py-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Next action', 'Action suivante')}</p>
-                    <p className="mt-2 text-base font-bold text-slate-950">
-                      {nextMarketplaceChecklistItem?.label || (
-                        effectiveMarketplaceJourneyState === 'pending_review'
-                          ? tr('Admin review in progress', 'Revue admin en cours')
-                          : effectiveMarketplaceJourneyState === 'approved'
-                            ? tr('Go live', 'Mettre en ligne')
-                            : tr('Send for review', 'Envoyer en revue')
-                      )}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {nextMarketplaceChecklistItem
-                        ? tr('Finish this step to keep your listing moving.', 'Terminez cette étape pour faire avancer votre annonce.')
-                        : effectiveMarketplaceJourneyState === 'pending_review'
-                          ? tr('Your full package is already with admin. We are waiting for review before the listing can go live.', 'Votre dossier complet est déjà chez l’admin. Nous attendons la revue avant que l’annonce puisse être publiée.')
-                        : marketplaceVerificationReady
-                          ? tr('Everything important is ready. Send your listing when you are ready.', 'Tout l’essentiel est prêt. Envoyez votre annonce quand vous êtes prêt.')
-                          : tr('Wait for verification approval before sending this listing.', 'Attendez la validation de la vérification avant d’envoyer cette annonce.')}
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      {nextMarketplaceChecklistItem ? (
-                        <button
-                          type="button"
-                          onClick={() => openMarketplaceChecklistTask(nextMarketplaceChecklistItem)}
-                          className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_18px_34px_rgba(79,70,229,0.20)] transition hover:-translate-y-0.5"
-                        >
-                          {tr('Continue setup', 'Continuer la configuration')}
-                        </button>
-                      ) : effectiveMarketplaceJourneyState === 'pending_review' ? (
-                        <button
-                          type="button"
-                          onClick={handleOpenReviewThread}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                        >
-                          <MessageSquareText className="h-4 w-4" />
-                          {tr('Open messages', 'Ouvrir les messages')}
-                        </button>
-                      ) : !isEditingVehicle ? (
-                        <button
-                          type="button"
-                          onClick={() => void persistVehicle(true)}
-                          disabled={saving || submitting || !canSendFullReview}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_18px_34px_rgba(79,70,229,0.20)] transition hover:-translate-y-0.5 disabled:opacity-60"
-                        >
-                          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                          {tr('Send for review', 'Envoyer en revue')}
-                        </button>
-                      ) : (
-                        <div className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-800">
-                          {tr('Save changes to continue.', 'Enregistrez les changements pour continuer.')}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Checklist', 'Checklist')}</p>
-                    <div className="mt-3 space-y-3">
-                      {marketplaceChecklist.map((item) => (
-                        <button
-                          key={item.key}
-                          type="button"
-                          onClick={() => openMarketplaceChecklistTask(item)}
-                          className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:border-violet-200 hover:bg-violet-50/40"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-slate-900">{item.label}</p>
-                          </div>
-                          <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${
-                            item.done
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : item.key === nextMarketplaceChecklistItem?.key
-                                ? 'bg-violet-100 text-violet-700'
-                                : item.key === 'verification' && !vehicleVerificationReady
-                                  ? 'bg-amber-100 text-amber-700'
-                                  : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {item.done
-                              ? tr('Done', 'Fait')
-                              : item.key === nextMarketplaceChecklistItem?.key
-                                ? tr('Action required', 'Action requise')
-                                : item.key === 'verification' && !vehicleVerificationReady
-                                  ? tr('Waiting', 'En attente')
-                                  : tr('Action required', 'Action requise')}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <OwnerListingSetupGuide
+                  progress={ownerListingSetupProgress}
+                  tr={tr}
+                  className="mt-5"
+                  onStepAction={handleOwnerListingSetupStepAction}
+                />
                 {isEditingVehicle ? (
                   <>
-                    <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                      <OwnerField label={tr('Short summary', 'Résumé court')}>
-                        <textarea value={formData.shortDescription} onChange={(event) => updateField('shortDescription', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
-                      </OwnerField>
-                      <OwnerField label={tr('Detailed description', 'Description détaillée')}>
-                        <textarea value={formData.fullDescription} onChange={(event) => updateField('fullDescription', event.target.value)} className={`${baseFieldClassName} min-h-[144px] resize-y`} />
-                      </OwnerField>
-                    </div>
-                    <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                      <OwnerField label={tr('Listing title', 'Titre de l’annonce')}>
-                        <input value={formData.listingTitle} onChange={(event) => updateField('listingTitle', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Daily price', 'Prix journalier')}>
-                        <input value={formData.dailyPriceAmount} onChange={(event) => updateField('dailyPriceAmount', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Half-day package price', 'Prix du forfait demi-journée')}>
-                        <input value={formData.halfDayPriceAmount} onChange={(event) => updateField('halfDayPriceAmount', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Half-day minimum hours', 'Heures minimum demi-journée')}>
-                        <input type="number" min="1" value={formData.halfDayMinHours} onChange={(event) => updateField('halfDayMinHours', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Half-day maximum hours', 'Heures maximum demi-journée')}>
-                        <input type="number" min="1" value={formData.halfDayMaxHours} onChange={(event) => updateField('halfDayMaxHours', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Deposit', 'Caution')}>
-                        <input value={formData.depositAmount} onChange={(event) => updateField('depositAmount', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Included kilometers', 'Kilomètres inclus')}>
-                        <input value={formData.mileageLimitKm} onChange={(event) => updateField('mileageLimitKm', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                      <OwnerField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')}>
-                        <input value={formData.extraKmRate} onChange={(event) => updateField('extraKmRate', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
-                    </div>
-                    <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                      <div className="rounded-[1.25rem] border border-sky-200 bg-sky-50 px-4 py-4">
-                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-sky-700">{tr('Daily guide', 'Guide journalier')}</p>
-                        <p className="mt-2 text-sm font-semibold text-slate-900">
-                          {tr('Recommended', 'Recommandé')}: {pricingGuide.daily.recommendedMin}-{pricingGuide.daily.recommendedMax} MAD
-                        </p>
-                        <p className="mt-1 text-xs font-medium text-slate-600">
-                          {tr('Allowed range', 'Plage autorisée')}: {pricingGuide.daily.allowedMin}-{pricingGuide.daily.allowedMax} MAD
-                        </p>
+                    <div className="mt-5 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Pricing', 'Tarification')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Rates and deposit', 'Tarifs et caution')}</h3>
+                      <p className="mt-2 text-sm text-slate-600">
+                        {tr(
+                          'Daily rate, deposit, and distance rules. This is the main pricing area renters depend on.',
+                          'Tarif journalier, caution et règles kilométriques. C’est la zone tarifaire principale sur laquelle les locataires se basent.'
+                        )}
+                      </p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <OwnerField label={tr('Daily price', 'Prix journalier')}>
+                          <input value={formData.dailyPriceAmount} onChange={(event) => updateField('dailyPriceAmount', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Deposit', 'Caution')}>
+                          <input value={formData.depositAmount} onChange={(event) => updateField('depositAmount', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Half-day package price', 'Prix du forfait demi-journée')}>
+                          <input value={formData.halfDayPriceAmount} onChange={(event) => updateField('halfDayPriceAmount', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Included kilometers', 'Kilomètres inclus')}>
+                          <input value={formData.mileageLimitKm} onChange={(event) => updateField('mileageLimitKm', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Half-day minimum hours', 'Heures minimum demi-journée')}>
+                          <input type="number" min="1" value={formData.halfDayMinHours} onChange={(event) => updateField('halfDayMinHours', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')}>
+                          <input value={formData.extraKmRate} onChange={(event) => updateField('extraKmRate', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <OwnerField label={tr('Half-day maximum hours', 'Heures maximum demi-journée')}>
+                          <input type="number" min="1" value={formData.halfDayMaxHours} onChange={(event) => updateField('halfDayMaxHours', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
                       </div>
-                      <div className="rounded-[1.25rem] border border-violet-200 bg-violet-50 px-4 py-4">
-                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-violet-700">{tr('Half-day guide', 'Guide demi-journée')}</p>
-                        <p className="mt-2 text-sm font-semibold text-slate-900">
-                          {tr('Recommended', 'Recommandé')}: {pricingGuide.halfDay.recommendedMin}-{pricingGuide.halfDay.recommendedMax} MAD
-                        </p>
-                        <p className="mt-1 text-xs font-medium text-slate-600">
-                          {tr('Allowed range', 'Plage autorisée')}: {pricingGuide.halfDay.allowedMin}-{pricingGuide.halfDay.allowedMax} MAD
-                        </p>
-                        <p className="mt-2 text-xs font-semibold text-violet-700">
-                          {tr('Best owner flow: treat half-day as a 4-5 hour package.', 'Meilleur flux propriétaire : traitez la demi-journée comme un forfait de 4 à 5 heures.')}
-                        </p>
+                      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-[1.1rem] border border-slate-200 bg-slate-50 px-4 py-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Daily guide', 'Guide journalier')}</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">
+                            {tr('Recommended', 'Recommandé')}: {pricingGuide.daily.recommendedMin}-{pricingGuide.daily.recommendedMax} MAD
+                          </p>
+                          <p className="mt-1 text-xs font-medium text-slate-600">
+                            {tr('Allowed range', 'Plage autorisée')}: {pricingGuide.daily.allowedMin}-{pricingGuide.daily.allowedMax} MAD
+                          </p>
+                        </div>
+                        <div className="rounded-[1.1rem] border border-slate-200 bg-slate-50 px-4 py-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Half-day guide', 'Guide demi-journée')}</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">
+                            {tr('Recommended', 'Recommandé')}: {pricingGuide.halfDay.recommendedMin}-{pricingGuide.halfDay.recommendedMax} MAD
+                          </p>
+                          <p className="mt-1 text-xs font-medium text-slate-600">
+                            {tr('Allowed range', 'Plage autorisée')}: {pricingGuide.halfDay.allowedMin}-{pricingGuide.halfDay.allowedMax} MAD
+                          </p>
+                          <p className="mt-2 text-xs font-semibold text-slate-700">
+                            {tr('Best owner flow: treat half-day as a 4-5 hour package.', 'Meilleur flux propriétaire : traitez la demi-journée comme un forfait de 4 à 5 heures.')}
+                          </p>
+                        </div>
                       </div>
+                      <OwnerSectionSaveAction
+                        label={tr('Save pricing', 'Enregistrer les prix')}
+                        savedLabel={getSectionSavedLabel('pricing')}
+                        saving={saving}
+                        disabled={submitting}
+                        onSave={() => void handleSaveVehicleSection('pricing', 'listing_pricing_save')}
+                      />
+                    </div>
+                    <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('What renters will read', 'Ce que les locataires verront')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Public listing copy', "Texte public de l'annonce")}</h3>
+                      <p className="mt-2 text-sm text-slate-600">
+                        {tr(
+                          'Name the listing clearly, then add the short and detailed description.',
+                          "Donnez un titre clair à l'annonce, puis ajoutez le résumé et la description détaillée."
+                        )}
+                      </p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <OwnerField label={tr('Listing title', 'Titre de l’annonce')}>
+                          <input value={formData.listingTitle} onChange={(event) => updateField('listingTitle', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <div className="hidden sm:block" />
+                        <OwnerField label={tr('Short summary', 'Résumé court')}>
+                          <textarea value={formData.shortDescription} onChange={(event) => updateField('shortDescription', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
+                        </OwnerField>
+                        <OwnerField label={tr('Detailed description', 'Description détaillée')}>
+                          <textarea value={formData.fullDescription} onChange={(event) => updateField('fullDescription', event.target.value)} className={`${baseFieldClassName} min-h-[144px] resize-y`} />
+                        </OwnerField>
+                      </div>
+                      <OwnerSectionSaveAction
+                        label={tr('Save listing copy', "Enregistrer le texte de l'annonce")}
+                        savedLabel={getSectionSavedLabel('listingCopy')}
+                        saving={saving}
+                        disabled={submitting}
+                        onSave={() => void handleSaveVehicleSection('listingCopy', 'listing_copy_save')}
+                        tone="soft"
+                      />
                     </div>
                   </>
                 ) : (
-                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                    <ViewField label={tr('Short summary', 'Résumé court')} value={formData.shortDescription} />
-                    <ViewField label={tr('Detailed description', 'Description détaillée')} value={formData.fullDescription} />
-                    <ViewField label={tr('Listing title', 'Titre de l’annonce')} value={formData.listingTitle} />
-                    <ViewField label={tr('Daily price', 'Prix journalier')} value={formData.dailyPriceAmount ? `${formData.dailyPriceAmount} MAD` : '—'} />
-                    <ViewField label={tr('Half-day package price', 'Prix du forfait demi-journée')} value={formData.halfDayPriceAmount ? `${formData.halfDayPriceAmount} MAD` : '—'} />
-                    <ViewField label={tr('Half-day hours', 'Heures demi-journée')} value={formData.halfDayMinHours && formData.halfDayMaxHours ? `${formData.halfDayMinHours}-${formData.halfDayMaxHours} h` : '—'} />
-                    <ViewField label={tr('Deposit', 'Caution')} value={formData.depositAmount ? `${formData.depositAmount} MAD` : '—'} />
-                    <ViewField label={tr('Included kilometers', 'Kilomètres inclus')} value={formData.mileageLimitKm ? `${formData.mileageLimitKm} km` : '—'} />
-                    <ViewField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')} value={formData.extraKmRate ? `${formData.extraKmRate} MAD` : '—'} />
+                  <div className="mt-5 grid gap-4">
+                    <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Pricing', 'Tarification')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Rates and deposit', 'Tarifs et caution')}</h3>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <ViewField label={tr('Daily price', 'Prix journalier')} value={formData.dailyPriceAmount ? `${formData.dailyPriceAmount} MAD` : '—'} />
+                        <ViewField label={tr('Deposit', 'Caution')} value={formData.depositAmount ? `${formData.depositAmount} MAD` : '—'} />
+                        <ViewField label={tr('Half-day package price', 'Prix du forfait demi-journée')} value={formData.halfDayPriceAmount ? `${formData.halfDayPriceAmount} MAD` : '—'} />
+                        <ViewField label={tr('Included kilometers', 'Kilomètres inclus')} value={formData.mileageLimitKm ? `${formData.mileageLimitKm} km` : '—'} />
+                        <ViewField label={tr('Half-day hours', 'Heures demi-journée')} value={formData.halfDayMinHours && formData.halfDayMaxHours ? `${formData.halfDayMinHours}-${formData.halfDayMaxHours} h` : '—'} />
+                        <ViewField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')} value={formData.extraKmRate ? `${formData.extraKmRate} MAD` : '—'} />
+                      </div>
+                    </div>
+                    <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('What renters will read', 'Ce que les locataires verront')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Public listing copy', "Texte public de l'annonce")}</h3>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <ViewField label={tr('Listing title', 'Titre de l’annonce')} value={formData.listingTitle} />
+                        <div className="hidden sm:block" />
+                        <ViewField label={tr('Short summary', 'Résumé court')} value={formData.shortDescription} />
+                        <ViewField label={tr('Detailed description', 'Description détaillée')} value={formData.fullDescription} />
+                      </div>
+                    </div>
                   </div>
                 )}
                 {fieldErrors.pricing ? <p className="mt-3 text-xs font-semibold text-rose-600">{fieldErrors.pricing}</p> : null}
@@ -4137,36 +4371,106 @@ const AccountMarketplaceVehicleProfile = () => {
               </section>
 
               <section id="listing-rules" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'listing-rules')}`}>
-                <h2 className="text-xl font-bold text-slate-950">{tr('Renter setup', 'Configuration locataire')}</h2>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 5 of 6', 'Étape 5 sur 6')}</p>
+                <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Pickup and renter setup', 'Retrait et configuration locataire')}</h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  {tr(
+                    'Set where the handoff happens and what renters should know before booking.',
+                    'Définissez où la remise a lieu et ce que les locataires doivent savoir avant de réserver.'
+                  )}
+                </p>
                 {isEditingVehicle ? (
                   <>
-                    <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                      <OwnerField label={tr('Pickup location name', 'Nom du point de retrait')}>
-                        <input value={formData.pickupLocationName} onChange={(event) => updateField('pickupLocationName', event.target.value)} className={baseFieldClassName} />
+                    <div className="mt-5 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Pickup', 'Retrait')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Handoff details', 'Détails de remise')}</h3>
+                      <p className="mt-2 text-sm text-slate-600">
+                        {tr(
+                          'Set the pickup point and the fuel rule renters should expect.',
+                          'Définissez le point de retrait et la règle carburant attendue par les locataires.'
+                        )}
+                      </p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <OwnerField label={tr('Pickup location name', 'Nom du point de retrait')}>
+                          <input value={formData.pickupLocationName} onChange={(event) => updateField('pickupLocationName', event.target.value)} className={baseFieldClassName} />
+                        </OwnerField>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                          <label className="flex items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={returnSameFuelLevel}
+                              onChange={(event) => updateField('fuelPolicy', event.target.checked ? 'return_same_level' : 'custom_fuel_policy')}
+                              className="mt-1 h-5 w-5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                            />
+                            <span>
+                              <span className="block text-sm font-black text-slate-950">
+                                {tr('Bring it back with the same fuel level', 'Retourner avec le même niveau de carburant')}
+                              </span>
+                              <span className="mt-1 block text-sm font-medium text-slate-500">
+                                {tr('Default rule: renter returns the vehicle the way it was handed over.', 'Règle par défaut : le locataire rend le véhicule comme il l’a reçu.')}
+                              </span>
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <OwnerFuelLevelPicker
+                          value={listingFuelLevel}
+                          disabled
+                          tr={tr}
+                          litersLabel={listingFuelLitersLabel}
+                          title={tr('Fuel level given to renter', 'Niveau carburant remis au locataire')}
+                          description={tr('This is the level renters should match when returning the vehicle.', 'C’est le niveau que le locataire doit retrouver au retour.')}
+                        />
+                      </div>
+                      <OwnerField label={tr('Pickup address', 'Adresse de retrait')}>
+                        <textarea value={formData.pickupAddress} onChange={(event) => updateField('pickupAddress', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
                       </OwnerField>
-                      <OwnerField label={tr('Fuel policy', 'Politique carburant')}>
-                        <input value={formData.fuelPolicy} onChange={(event) => updateField('fuelPolicy', event.target.value)} className={baseFieldClassName} />
-                      </OwnerField>
+                      <OwnerSectionSaveAction
+                        label={tr('Save pickup setup', 'Enregistrer le retrait')}
+                        savedLabel={getSectionSavedLabel('pickup')}
+                        saving={saving}
+                        disabled={submitting}
+                        onSave={() => void handleSaveVehicleSection('pickup', 'listing_pickup_save')}
+                      />
                     </div>
-                    <OwnerField label={tr('Pickup address', 'Adresse de retrait')}>
-                      <textarea value={formData.pickupAddress} onChange={(event) => updateField('pickupAddress', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
-                    </OwnerField>
-                    <OwnerField label={tr('Extras (comma separated)', 'Extras (séparés par des virgules)')}>
-                      <input value={formData.extrasText} onChange={(event) => updateField('extrasText', event.target.value)} className={baseFieldClassName} />
-                    </OwnerField>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+                    <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Renter notes', 'Notes locataire')}</p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Extras and review readiness', 'Extras et préparation revue')}</h3>
+                      <p className="mt-2 text-sm text-slate-600">
+                        {tr(
+                          'Add optional extras, then mark the setup ready when the handoff details are clear.',
+                          'Ajoutez les extras optionnels, puis marquez la configuration prête quand les détails de remise sont clairs.'
+                        )}
+                      </p>
+                      <OwnerField label={tr('Extras (comma separated)', 'Extras (séparés par des virgules)')}>
+                        <input value={formData.extrasText} onChange={(event) => updateField('extrasText', event.target.value)} className={baseFieldClassName} />
+                      </OwnerField>
+                      <label className="mt-4 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
                         <input type="checkbox" checked={formData.termsAcceptedForSubmission} onChange={(event) => updateField('termsAcceptedForSubmission', event.target.checked)} />
                         {tr('Ready to submit for review', 'Prêt à envoyer en revue')}
                       </label>
+                      <OwnerSectionSaveAction
+                        label={tr('Save renter setup', 'Enregistrer la configuration')}
+                        savedLabel={getSectionSavedLabel('renterSetup')}
+                        saving={saving}
+                        disabled={submitting}
+                        onSave={() => void handleSaveVehicleSection('renterSetup', 'listing_renter_setup_save')}
+                        tone="soft"
+                      />
                     </div>
                   </>
                 ) : (
-                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                    <ViewField label={tr('Pickup location name', 'Nom du point de retrait')} value={formData.pickupLocationName} />
-                    <ViewField label={tr('Fuel policy', 'Politique carburant')} value={formData.fuelPolicy} />
-                    <ViewField label={tr('Pickup address', 'Adresse de retrait')} value={formData.pickupAddress} />
-                    <ViewField label={tr('Extras', 'Extras')} value={formData.extrasText} />
+                  <div className="mt-5 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Pickup', 'Retrait')}</p>
+                    <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Handoff details', 'Détails de remise')}</h3>
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <ViewField label={tr('Pickup location name', 'Nom du point de retrait')} value={formData.pickupLocationName} />
+                      <ViewField label={tr('Fuel policy', 'Politique carburant')} value={fuelPolicyDisplay} />
+                      <ViewField label={tr('Fuel level', 'Niveau carburant')} value={`${listingFuelLevel}/8`} />
+                      <ViewField label={tr('Pickup address', 'Adresse de retrait')} value={formData.pickupAddress} />
+                      <ViewField label={tr('Extras', 'Extras')} value={formData.extrasText} />
+                    </div>
                   </div>
                 )}
               </section>
@@ -4174,21 +4478,62 @@ const AccountMarketplaceVehicleProfile = () => {
 
             <div className="space-y-4">
               <section id="listing-journey" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'listing-journey')}`}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Verification status', 'Statut de vérification')}</p>
-                <div className={`mt-4 rounded-[1.25rem] border px-4 py-4 ${marketplaceVerificationReady ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
-                  <p className="text-base font-bold text-slate-950">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 6 of 6', 'Étape 6 sur 6')}</p>
+                <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Review and publish', 'Revoir et publier')}</h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  {tr(
+                    'Track the approval gate and public status here. The current-step card above handles the main action.',
+                    "Suivez ici le verrou d'approbation et le statut public. La carte d'étape actuelle ci-dessus gère l'action principale."
+                  )}
+                </p>
+                <div className={`mt-4 rounded-[1.25rem] border px-4 py-4 shadow-sm ${marketplaceVerificationReady ? 'border-emerald-200 bg-emerald-50/70' : 'border-amber-200 bg-amber-50/70'}`}>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Approval gate', "Verrou d'approbation")}</p>
+                  <h3 className="mt-2 text-lg font-bold text-slate-950">
                     {marketplaceVerificationReady ? tr('Approved', 'Approuvée') : tr('Waiting', 'En attente')}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
+                  </h3>
+                  <p className="mt-2 text-sm text-slate-600">
                     {marketplaceVerificationReady
                       ? tr('Your listing can move forward as soon as the remaining setup is done.', 'Votre annonce peut avancer dès que la configuration restante est terminée.')
-                      : tr('Verification must be approved before this listing can go live.', 'La vérification doit être approuvée avant que cette annonce puisse être publiée.')}
+                      : tr('Verification approval is still pending. You can keep editing this listing now, but review and go-live stay locked until approval.', "L'approbation de vérification est encore en attente. Vous pouvez continuer cette annonce maintenant, mais la revue et la mise en ligne restent verrouillées jusqu'à l'approbation.")}
                   </p>
                   {!marketplaceVerificationReady && verificationMissingLabels.length ? (
                     <p className="mt-3 text-sm font-semibold text-amber-900">
                       {tr('Missing', 'Manquants')} : {verificationMissingLabels.join(', ')}
                     </p>
                   ) : null}
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                        {tr('Owner verification', 'Vérification propriétaire')}
+                      </p>
+                      <p className="mt-2 text-sm font-black text-slate-950">
+                        {ownerVerificationReady ? tr('Approved', 'Approuvée') : tr('Waiting', 'En attente')}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                        {tr('Vehicle documents', 'Documents véhicule')}
+                      </p>
+                      <p className="mt-2 text-sm font-black text-slate-950">
+                        {vehicleVerificationReady ? tr('Approved', 'Approuvés') : vehicleVerificationSubmitted ? tr('Under review', 'En revue') : tr('Missing', 'Manquants')}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                        {tr('Listing review', "Revue de l'annonce")}
+                      </p>
+                      <p className="mt-2 text-sm font-black text-slate-950">{listingReviewStatusLabel}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600">
+                    <p className="font-bold text-slate-950">{tr('Approval details', "Détails d'approbation")}</p>
+                    <p className="mt-1">
+                      {latestReviewDetail ||
+                        (vehicle?.listingId
+                          ? tr('No admin message yet. If the listing is waiting, admin still needs to review it.', "Aucun message admin pour le moment. Si l'annonce attend, l’admin doit encore la revoir.")
+                          : tr('Save the listing once to create the approval record.', "Enregistrez l'annonce une fois pour créer le dossier d'approbation."))}
+                    </p>
+                  </div>
                   {vehicle?.listingId ? (
                     <div className="mt-4">
                       <button
@@ -4198,17 +4543,25 @@ const AccountMarketplaceVehicleProfile = () => {
                       >
                         <MessageSquareText className="h-4 w-4" />
                         {listingReviewThreadHasVisibleMessages
-                          ? tr('Open messages', 'Ouvrir les messages')
-                          : tr('Open approval messages', "Ouvrir les messages d'approbation")}
+                          ? tr('Open Inbox', 'Ouvrir Inbox')
+                          : tr('Open approval Inbox', "Ouvrir l'Inbox d'approbation")}
                       </button>
                     </div>
                   ) : null}
                 </div>
               </section>
               <section className={workspacePanelClass}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Listing preview', "Aperçu de l'annonce")}</p>
-                <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4">
-                  <p className="text-lg font-bold text-slate-950">{formData.listingTitle || tr('Untitled listing', 'Annonce sans titre')}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Public preview', 'Aperçu public')}</p>
+                <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Listing preview', "Aperçu de l'annonce")}</h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  {tr(
+                    'This is the compact renter-facing summary based on the fields above.',
+                    'Voici le résumé compact visible par les locataires à partir des champs ci-dessus.'
+                  )}
+                </p>
+                <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Public card', 'Carte publique')}</p>
+                  <h3 className="mt-2 text-lg font-bold text-slate-950">{formData.listingTitle || tr('Untitled listing', 'Annonce sans titre')}</h3>
                   <p className="mt-2 text-sm font-semibold text-slate-700">
                     {formData.dailyPriceAmount ? `${formData.dailyPriceAmount} MAD` : tr('Price not set', 'Prix non défini')}
                   </p>
@@ -4220,7 +4573,7 @@ const AccountMarketplaceVehicleProfile = () => {
                     onClick={() => setFocusedSectionId('listing-details')}
                     className="mt-4 inline-flex items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
                   >
-                    {tr('Edit listing', "Modifier l'annonce")}
+                    {tr('Edit pricing and details', 'Modifier prix et détails')}
                   </button>
                 </div>
                 {vehicle?.listingId && listingIsLive ? (
@@ -4802,7 +5155,7 @@ const AccountMarketplaceVehicleProfile = () => {
                       className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
                     >
                       <MessageSquareText className="h-4 w-4" />
-                      {tr('Open in messages', 'Ouvrir dans messages')}
+                      {tr('Open in Inbox', 'Ouvrir dans Inbox')}
                     </Link>
                     <button
                       type="button"
@@ -4991,19 +5344,33 @@ const AccountMarketplaceVehicleProfile = () => {
         <div className="space-y-4">
           <div id="legal-documents" className={getFocusedSectionClass(focusedSectionId, 'legal-documents')}>
           <SectionCard
-            title={tr('Legal & documents', 'Légal & documents')}
-            description={tr('Upload, scan, confirm, then continue.', 'Téléversez, scannez, confirmez, puis continuez.')}
+            title={tr('Vehicle documents', 'Documents du véhicule')}
+            description={tr('Upload the required files, then review the extracted details.', 'Téléversez les fichiers requis, puis vérifiez les détails extraits.')}
             icon={ShieldCheck}
           >
             <div className={`mt-6 ${workspaceInsetPanelClass}`}>
-              <h3 className="text-sm font-semibold text-slate-900">{tr('Registration & insurance documents', 'Documents d’immatriculation et d’assurance')}</h3>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Step 3 of 6', 'Étape 3 sur 6')}
+                </p>
+                <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Upload and scan', 'Téléverser et scanner')}</h3>
+                <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                  {tr(
+                    'Add the registration and insurance files here so admin can review the vehicle.',
+                    'Ajoutez ici les fichiers d’immatriculation et d’assurance afin que l’admin puisse vérifier le véhicule.'
+                  )}
+                </p>
+              </div>
               <div className="mt-4">
                 <VehicleDocuments
                   vehicleId={vehicle?.id || (isNewVehicle && user?.id ? `owner-draft-${user.id}` : resolvedVehicleId)}
                   documents={vehicleDocuments}
-                  onDocumentsChange={setVehicleDocuments}
+                  onDocumentsChange={(nextDocuments) => {
+                    setVehicleDocuments((current) => mergeVehicleDocuments(current, nextDocuments));
+                  }}
                   onDeleteDocument={handleDeleteVehicleDocument}
                   loadFromStorage={false}
+                  syncStorageToParent={false}
                   canDelete={true}
                   documentStatusMap={vehicleLegalDocumentStatusMap}
                 />
@@ -5015,13 +5382,21 @@ const AccountMarketplaceVehicleProfile = () => {
                     verificationEntityId={vehicleVerificationEntityId}
                     ownerUserId={user?.id || null}
                     documents={vehicleDocuments}
-                    onDocumentsChange={setVehicleDocuments}
+                    onDocumentsChange={(nextDocuments) => {
+                      setVehicleDocuments((current) => mergeVehicleDocuments(current, nextDocuments));
+                    }}
                     onOcrExtracted={handleVehicleLegalOcrExtracted}
                     allowedCategoryValues={['registration', 'insurance']}
                     defaultCategory={nextVehicleLegalUploadCategory}
-                    lockedCategory={nextVehicleLegalUploadCategory}
-                    onUploadComplete={() => {
-                      void refreshVehicleVerificationDocuments();
+                    onUploadComplete={(updatedDocuments = []) => {
+                      setVehicleDocuments((current) => mergeVehicleDocuments(current, updatedDocuments));
+                      const hasVerificationBackedUpload = (Array.isArray(updatedDocuments) ? updatedDocuments : []).some(
+                        (document) => String(document?.source || '').trim().toLowerCase() === 'verification'
+                      );
+
+                      if (hasVerificationBackedUpload || vehicleVerificationEntityId) {
+                        void refreshVehicleVerificationDocuments();
+                      }
                     }}
                     className="w-full"
                   />
@@ -5029,16 +5404,16 @@ const AccountMarketplaceVehicleProfile = () => {
               ) : (
                 <div className="mt-4 rounded-[1.4rem] border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800 shadow-sm">
                   <p className="font-bold text-emerald-900">
-                    {tr('Legal documents completed', 'Documents légaux terminés')}
+                    {tr('Vehicle documents complete', 'Documents du véhicule terminés')}
                   </p>
                   <p className="mt-1">
                     {tr(
                       vehicleVerificationReady
                         ? 'Registration and insurance are verified and ready.'
-                        : 'Registration and insurance were both verified by scan and filled automatically.',
+                        : 'Registration and insurance were scanned and filled automatically.',
                       vehicleVerificationReady
                         ? 'L’immatriculation et l’assurance sont vérifiées et prêtes.'
-                        : 'L’immatriculation et l’assurance ont toutes deux été vérifiées par scan et remplies automatiquement.'
+                        : 'L’immatriculation et l’assurance ont été scannées et remplies automatiquement.'
                     )}
                   </p>
                 </div>
@@ -5113,16 +5488,6 @@ const AccountMarketplaceVehicleProfile = () => {
                   ))}
                 </div>
               ) : null}
-              {(vehicleVerificationReady || vehicleLegalScanComplete) ? (
-                <div className="mt-4 rounded-[1.4rem] border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800 shadow-sm">
-                  <p className="font-bold text-emerald-900">
-                    {tr('Documents uploaded and verified', 'Documents téléversés et vérifiés')}
-                  </p>
-                  <p className="mt-1">
-                    {tr('Your vehicle is ready for review.', 'Votre véhicule est prêt pour la revue.')}
-                  </p>
-                </div>
-              ) : null}
             </div>
           </SectionCard>
           </div>
@@ -5130,9 +5495,12 @@ const AccountMarketplaceVehicleProfile = () => {
           <section className={workspacePanelClass}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-xl font-bold text-slate-950">{tr('Confirm details', 'Confirmer les détails')}</h2>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Still step 3', 'Toujours étape 3')}
+                </p>
+                <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Review extracted details', 'Vérifier les détails extraits')}</h2>
                 <p className="mt-2 text-sm text-slate-600">
-                  {tr('Review the scanned details and edit anything missing before you continue.', 'Vérifiez les détails scannés et modifiez les champs manquants avant de continuer.')}
+                  {tr('Check the scanned fields and fix anything missing before you continue.', 'Vérifiez les champs scannés et corrigez ce qui manque avant de continuer.')}
                 </p>
               </div>
               {isEditingVehicle ? (
@@ -5182,14 +5550,14 @@ const AccountMarketplaceVehicleProfile = () => {
           <div id="annual-tax" className={getFocusedSectionClass(focusedSectionId, 'annual-tax')}>
           <SectionCard
             title={tr('Annual road tax (vignette)', 'Taxe routière annuelle (vignette)')}
-            description={tr('Track annual road tax payments for the linked fleet vehicle.', 'Suivez les paiements de taxe routière annuelle pour le véhicule flotte lié.')}
+            description={tr('Keep the linked annual tax record up to date.', 'Gardez la taxe annuelle liée à jour.')}
             icon={FileText}
           >
             {linkedFleetVehicleId ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm text-slate-600">
-                    {tr('Use this section exactly like fleet management: add the annual payment, dates, and keep the receipt in Legal & documents.', 'Utilisez cette section comme dans la flotte : ajoutez le paiement annuel, les dates, et gardez le reçu dans Légal & documents.')}
+                    {tr('Add the annual payment, valid dates, and link the receipt from Documents if you have one.', 'Ajoutez le paiement annuel, les dates de validité, et liez le reçu depuis Documents si vous en avez un.')}
                   </p>
                   <button
                     type="button"
@@ -5227,8 +5595,8 @@ const AccountMarketplaceVehicleProfile = () => {
                         <div className="rounded-[1.25rem] border border-dashed border-slate-200 bg-white px-4 py-3">
                           <p>
                             {getAnnualTaxDocumentForRecord(taxForm)
-                              ? tr('Linked from Legal & documents.', 'Lié depuis Légal & documents.')
-                              : tr('Upload the receipt in Legal & documents using “Annual vehicle tax receipt”.', 'Téléversez le reçu dans Légal & documents avec « Reçu de taxe annuelle véhicule ».')}
+                              ? tr('Linked from Documents.', 'Lié depuis Documents.')
+                              : tr('Upload the receipt in Documents using “Annual vehicle tax receipt”.', 'Téléversez le reçu dans Documents avec « Reçu de taxe annuelle véhicule ».')}
                           </p>
                           {getAnnualTaxDocumentForRecord(taxForm)?.url ? (
                             <a
@@ -5242,7 +5610,7 @@ const AccountMarketplaceVehicleProfile = () => {
                             </a>
                           ) : (
                             <a href="#legal-documents" className="mt-2 inline-flex text-xs font-semibold text-emerald-700 hover:text-emerald-800">
-                              {tr('Go to Legal & documents', 'Aller à Légal & documents')}
+                              {tr('Go to Documents', 'Aller à Documents')}
                             </a>
                           )}
                         </div>
@@ -5391,6 +5759,54 @@ const AccountMarketplaceVehicleProfile = () => {
           seedThread={listingReviewSeedThread}
         />
       ) : null}
+
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-violet-100 bg-white/95 px-4 py-3 shadow-[0_-18px_42px_rgba(15,23,42,0.10)] backdrop-blur lg:left-[var(--account-sidebar-width,0px)]">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-500">
+              {isEditingVehicle
+                ? tr('Save inside each card, then continue', 'Enregistrez dans chaque carte, puis continuez')
+                : tr('Next listing step', "Prochaine étape d'annonce")}
+            </p>
+            <p className="mt-1 truncate text-sm font-black text-slate-950">
+              {tr('Step', 'Étape')} {ownerListingSetupProgress.currentStep?.stepNumber || ownerListingSetupProgress.currentStepNumber}: {ownerListingSetupProgress.currentStep?.title}
+            </p>
+            <div className="mt-2 h-1.5 max-w-sm overflow-hidden rounded-full bg-violet-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 transition-[width] duration-300"
+                style={{ width: `${ownerListingSetupProgress.visualProgressPercent}%` }}
+              />
+            </div>
+          </div>
+
+          {isEditingVehicle ? (
+            <button
+              type="button"
+              onClick={() => void handleSaveVehicle()}
+              disabled={saving || submitting}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
+              title={tr('Global backup save for all edited fields', 'Sauvegarde globale de secours pour tous les champs modifiés')}
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {tr('Save all', 'Tout enregistrer')}
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => handleOwnerListingSetupStepAction(ownerListingSetupProgress.currentStep)}
+            disabled={!ownerListingSetupProgress.currentStep || saving || submitting}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-black text-white shadow-[0_16px_34px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px] disabled:opacity-60"
+          >
+            {submitting && ownerListingSetupProgress.currentStep?.actionMode === 'submit-review' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowRight className="h-4 w-4" />
+            )}
+            <span>{ownerListingSetupProgress.currentStep?.ctaLabel || tr('Continue', 'Continuer')}</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

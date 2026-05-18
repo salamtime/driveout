@@ -16,6 +16,11 @@ const requestPublicBookingApi = async (action, body, method = 'POST') => {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    console.error('Public booking API error:', {
+      action,
+      status: response.status,
+      error: payload?.error || payload,
+    });
     throw new Error(payload?.error || 'Failed to process booking request');
   }
 

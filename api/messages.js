@@ -780,6 +780,120 @@ const buildCanonicalContextThreadKey = ({
   senderUserId: 'canonical',
 });
 
+const canBootstrapContextThreadState = ({
+  family = '',
+  threadType = '',
+  entityType = '',
+  entityId = '',
+  recipientUserId = '',
+} = {}) => {
+  const normalizedFamily = String(family || '').trim().toLowerCase();
+  const normalizedThreadType = String(threadType || '').trim().toLowerCase();
+  const normalizedEntityType = String(entityType || '').trim().toLowerCase();
+  const normalizedEntityId = String(entityId || '').trim();
+  const normalizedRecipientUserId = String(recipientUserId || '').trim();
+
+  if (!normalizedEntityType || !normalizedEntityId || !normalizedRecipientUserId) {
+    return false;
+  }
+
+  return (
+    normalizedFamily === 'account_trust' &&
+    normalizedThreadType === 'account_status' &&
+    normalizedEntityType === 'user'
+  );
+};
+
+const bootstrapContextThreadState = async (
+  adminClient,
+  {
+    tenantScope = null,
+    family = '',
+    threadType = '',
+    entityType = '',
+    entityId = '',
+    senderUserId = '',
+    recipientUserId = '',
+    priority = 'normal',
+    waitingOn = null,
+    metadata = {},
+  } = {}
+) => {
+  const shouldUseCanonicalThreadKey = canBootstrapContextThreadState({
+    family,
+    threadType,
+    entityType,
+    entityId,
+    recipientUserId,
+  });
+
+  if (!shouldUseCanonicalThreadKey) {
+    return null;
+  }
+
+  const threadKey = String(
+    buildCanonicalContextThreadKey({ family, threadType, entityType, entityId })
+  ).trim();
+
+  if (!threadKey) return null;
+
+  return upsertThreadState(adminClient, {
+    thread_key: threadKey,
+    family,
+    thread_type: threadType,
+    entity_type: entityType,
+    entity_id: entityId,
+    sender_user_id: senderUserId,
+    recipient_user_id: recipientUserId,
+    priority,
+    waiting_on: waitingOn,
+    context_type: entityType,
+    context_id: entityId,
+    workflow_status: 'active',
+    metadata,
+  }, tenantScope);
+};
+
+const buildEphemeralContextThreadState = ({
+  family = '',
+  threadType = '',
+  entityType = '',
+  entityId = '',
+  senderUserId = '',
+  recipientUserId = '',
+  priority = 'normal',
+  waitingOn = null,
+  metadata = {},
+} = {}) => {
+  if (!canBootstrapContextThreadState({ family, threadType, entityType, entityId, recipientUserId })) {
+    return null;
+  }
+
+  const threadKey = String(
+    buildCanonicalContextThreadKey({ family, threadType, entityType, entityId })
+  ).trim();
+
+  if (!threadKey) return null;
+
+  return {
+    id: null,
+    thread_key: threadKey,
+    family,
+    thread_type: threadType,
+    entity_type: entityType,
+    entity_id: entityId,
+    sender_user_id: senderUserId || null,
+    recipient_user_id: recipientUserId || null,
+    priority: normalizeMessagePriority(priority),
+    waiting_on: normalizeWaitingOn(waitingOn),
+    context_type: entityType,
+    context_id: entityId,
+    workflow_status: 'active',
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+    is_ephemeral: true,
+  };
+};
+
 const deriveThreadStateFromMessage = (body = {}, user = {}) => {
   const messageType = String(body.messageType || 'note').trim().toLowerCase();
   const isInternal = Boolean(body?.metadata?.isInternal) || messageType === 'internal_note';
@@ -1248,7 +1362,7 @@ const handlePost = async (req, res) => {
 
   const explicitEntityType = String(existingThreadMessage?.entity_type || body.entityType || '').trim() || null;
   const explicitEntityId = String(existingThreadMessage?.entity_id || body.entityId || '').trim() || null;
-  const existingContextThreadState = existingThreadState || (!requestedThreadKey && explicitEntityType && explicitEntityId
+  let existingContextThreadState = existingThreadState || (!requestedThreadKey && explicitEntityType && explicitEntityId
     ? await loadThreadStateByContext(adminClient, {
         scope,
         userId: user.id,
@@ -1289,6 +1403,49 @@ const handlePost = async (req, res) => {
   }
 
   if (!existingContextThreadState?.thread_key || !existingContextThreadState?.id) {
+    try {
+      const bootstrappedThreadState = await bootstrapContextThreadState(adminClient, {
+        tenantScope,
+        family,
+        threadType: requestedThreadType,
+        entityType: explicitEntityType,
+        entityId: explicitEntityId,
+        senderUserId: user.id,
+        recipientUserId,
+        priority: body.priority || existingThreadState?.priority || 'normal',
+        waitingOn: body.waitingOn || recipientRole || null,
+        metadata: {
+          source: 'messages_api_bootstrap',
+        },
+      });
+
+      if (bootstrappedThreadState?.thread_key && bootstrappedThreadState?.id) {
+        existingContextThreadState = bootstrappedThreadState;
+      }
+    } catch (bootstrapError) {
+      if (!isSharedMessageThreadsSchemaUnavailable(bootstrapError)) {
+        return sendJson(res, 500, { error: bootstrapError.message || 'Unable to initialize the message thread.' });
+      }
+    }
+  }
+
+  if (!existingContextThreadState?.thread_key) {
+    existingContextThreadState = buildEphemeralContextThreadState({
+      family,
+      threadType: requestedThreadType,
+      entityType: explicitEntityType,
+      entityId: explicitEntityId,
+      senderUserId: user.id,
+      recipientUserId,
+      priority: body.priority || existingThreadState?.priority || 'normal',
+      waitingOn: body.waitingOn || recipientRole || null,
+      metadata: {
+        source: 'messages_api_ephemeral_bootstrap',
+      },
+    }) || existingContextThreadState;
+  }
+
+  if (!existingContextThreadState?.thread_key) {
     return sendJson(res, 409, {
       error: 'Canonical thread not found for this context. Threads must be created from the source workflow before messages can be sent.',
     });
@@ -1301,7 +1458,7 @@ const handlePost = async (req, res) => {
   const threadId = String(existingContextThreadState?.id || '').trim();
 
   const insertPayload = {
-    thread_id: threadId,
+    thread_id: threadId || null,
     thread_key: threadKey,
     family,
     thread_type: threadType,
@@ -1616,6 +1773,44 @@ const handlePatch = async (req, res) => {
     if (existingState?.thread_key) {
       return sendJson(res, 200, { ok: true, threadState: existingState, created: false });
     }
+
+    const bootstrappedThreadState = await bootstrapContextThreadState(adminClient, {
+      tenantScope,
+      family,
+      threadType,
+      entityType: normalizedContextType,
+      entityId: normalizedContextId,
+      senderUserId: user.id,
+      recipientUserId: normalizedContextType === 'user' ? normalizedContextId : '',
+      priority: 'normal',
+      waitingOn,
+      metadata: {
+        source: 'messages_ensure_thread',
+      },
+    });
+
+    if (bootstrappedThreadState?.thread_key) {
+      return sendJson(res, 200, { ok: true, threadState: bootstrappedThreadState, created: true });
+    }
+
+    const ephemeralThreadState = buildEphemeralContextThreadState({
+      family,
+      threadType,
+      entityType: normalizedContextType,
+      entityId: normalizedContextId,
+      senderUserId: user.id,
+      recipientUserId: normalizedContextType === 'user' ? normalizedContextId : '',
+      priority: 'normal',
+      waitingOn,
+      metadata: {
+        source: 'messages_ensure_thread_ephemeral',
+      },
+    });
+
+    if (ephemeralThreadState?.thread_key) {
+      return sendJson(res, 200, { ok: true, threadState: ephemeralThreadState, created: true, ephemeral: true });
+    }
+
     return sendJson(res, 409, {
       ok: false,
       created: false,

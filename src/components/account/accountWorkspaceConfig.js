@@ -12,17 +12,18 @@ import {
   Store,
   Gift,
 } from 'lucide-react';
+import {
+  ACCOUNT_PRODUCT_PILLARS,
+  ACCOUNT_WORKSPACE_MODES,
+} from '../../utils/accountProductModel';
 
-export const ACCOUNT_WORKSPACE_MODES = {
-  service: 'service',
-  ownerSetup: 'owner_setup',
-  owner: 'owner',
-};
+export { ACCOUNT_WORKSPACE_MODES };
 
 export const ACCOUNT_WORKSPACE_SECTIONS = [
   {
     id: 'overview',
-    label: { en: 'My Profile', fr: 'Mon profil' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.home,
+    label: { en: 'Home', fr: 'Accueil' },
     href: '/account/overview',
     icon: LayoutDashboard,
     accent: 'from-violet-500 to-indigo-600',
@@ -34,7 +35,8 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
   },
   {
     id: 'rentals',
-    label: { en: 'My Rentals', fr: 'Mes locations' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.trips,
+    label: { en: 'Trips', fr: 'Parcours' },
     href: '/account/rentals',
     moduleName: 'Rental Management',
     icon: Compass,
@@ -47,7 +49,8 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
   },
   {
     id: 'tours',
-    label: { en: 'My Tours', fr: 'Mes tours' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.trips,
+    label: { en: 'Tours', fr: 'Tours' },
     href: '/account/tours',
     moduleName: 'Tours & Bookings',
     icon: Bell,
@@ -57,36 +60,41 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
       fr: 'Historique des tours et accès support.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'marketplace',
-    label: { en: 'Marketplace', fr: 'Marketplace' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.listings,
+    label: { en: 'Listings', fr: 'Annonces' },
     href: '/account/marketplace',
     moduleName: 'Marketplace Review',
     icon: Store,
     accent: 'from-violet-500 to-fuchsia-600',
     description: {
-      en: 'Vehicles, requests, approvals, and owner activity.',
-      fr: 'Véhicules, demandes, approbations et activité propriétaire.',
+      en: 'Listing setup, pricing, requests, approvals, and owner activity.',
+      fr: 'Configuration des annonces, tarifs, demandes, approbations et activité propriétaire.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
   },
   {
     id: 'my-vehicles',
-    label: { en: 'My Vehicles', fr: 'Mes véhicules' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.listings,
+    label: { en: 'Listing Studio', fr: "Studio d'annonce" },
     href: '/account/vehicles',
     moduleName: 'Fleet Management',
     icon: Car,
     accent: 'from-indigo-500 to-violet-600',
     description: {
-      en: 'Your vehicle profiles, maintenance tracking, and listing readiness.',
-      fr: 'Vos profils véhicules, suivi maintenance et préparation à la mise en ligne.',
+      en: 'Vehicle profile, legal documents, pricing, readiness, and go-live controls.',
+      fr: 'Profil véhicule, documents légaux, tarification, préparation et contrôles de mise en ligne.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'messages',
-    label: { en: 'Messages', fr: 'Messages' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.inbox,
+    label: { en: 'Inbox', fr: 'Inbox' },
     href: '/account/messages',
     moduleName: 'Messages',
     icon: MessageSquare,
@@ -99,6 +107,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
   },
   {
     id: 'boost',
+    productPillar: ACCOUNT_PRODUCT_PILLARS.listings,
     label: { en: 'Boost', fr: 'Boost' },
     href: '/account/boost',
     moduleName: 'Marketplace Review',
@@ -109,9 +118,11 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
       fr: 'Crédits, missions, boosts en vedette et récompenses de croissance.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'rewards',
+    productPillar: ACCOUNT_PRODUCT_PILLARS.wallet,
     label: { en: 'Credits', fr: 'Crédits' },
     href: '/account/rewards',
     icon: Gift,
@@ -121,21 +132,25 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
       fr: 'Crédits de missions, utilisations et valeur fidélité dans votre portefeuille.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'reviews',
-    label: { en: 'Reviews', fr: 'Avis' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.account,
+    label: { en: 'Reputation', fr: 'Reputation' },
     href: '/account/reviews',
     icon: Star,
     accent: 'from-amber-500 to-orange-500',
     description: {
-      en: 'Reputation, ratings, and feedback history.',
-      fr: 'Réputation, notes et historique de feedback.',
+      en: 'Account reputation, listing feedback, and trip-linked review history.',
+      fr: 'Reputation du compte, retours d’annonce et historique d’avis lié aux trajets.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'revenue',
+    productPillar: ACCOUNT_PRODUCT_PILLARS.wallet,
     label: { en: 'Wallet', fr: 'Portefeuille' },
     href: '/account/revenue',
     moduleName: 'Finance Management',
@@ -149,26 +164,29 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
   },
   {
     id: 'verification',
-    label: { en: 'Verification', fr: 'Vérification' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.account,
+    label: { en: 'Trust center', fr: 'Centre de confiance' },
     href: '/account/verification',
     moduleName: 'Verification Center',
     icon: ShieldCheck,
     accent: 'from-cyan-500 to-sky-600',
     description: {
-      en: 'Trust status, approvals, and missing requirements.',
-      fr: 'Statut de confiance, validations et éléments manquants.',
+      en: 'Identity trust, approvals, and the requirements that unlock review and go-live.',
+      fr: 'Confiance identité, validations et éléments qui débloquent la revue et la mise en ligne.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
+    hiddenInPrimaryNav: true,
   },
   {
     id: 'settings',
-    label: { en: 'Settings', fr: 'Paramètres' },
+    productPillar: ACCOUNT_PRODUCT_PILLARS.account,
+    label: { en: 'Account', fr: 'Compte' },
     href: '/account/settings',
     icon: Settings,
     accent: 'from-slate-500 to-slate-700',
     description: {
-      en: 'Profile, contact details, and workspace preferences.',
-      fr: 'Profil, coordonnées et préférences d’espace.',
+      en: 'Profile, trust center, contact details, and workspace preferences.',
+      fr: 'Profil, centre de confiance, coordonnées et préférences d’espace.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
   },
@@ -180,56 +198,19 @@ export const getAccountWorkspaceSection = (sectionId) =>
 export const getAccountWorkspaceSectionsForMode = (mode = ACCOUNT_WORKSPACE_MODES.service) =>
   ACCOUNT_WORKSPACE_SECTIONS
     .filter((section) =>
-      Array.isArray(section.visibleIn) ? section.visibleIn.includes(mode) : true
+      (Array.isArray(section.visibleIn) ? section.visibleIn.includes(mode) : true) &&
+      !section.hiddenInPrimaryNav
     )
     .sort((left, right) => {
-      const ownerOrder = [
-        'overview',
-        'marketplace',
-        'my-vehicles',
-        'messages',
-        'revenue',
-        'rewards',
-        'verification',
-        'boost',
-        'reviews',
-        'rentals',
-        'tours',
-        'settings',
-      ];
-
-      const ownerSetupOrder = [
-        'overview',
-        'marketplace',
-        'my-vehicles',
-        'messages',
-        'revenue',
-        'rewards',
-        'verification',
-        'reviews',
-        'rentals',
-        'tours',
-        'settings',
-      ];
-
-      const serviceOrder = [
+      const sharedOrder = [
         'overview',
         'marketplace',
         'messages',
-        'revenue',
-        'rewards',
         'rentals',
-        'tours',
-        'reviews',
+        'revenue',
         'settings',
       ];
-
-      const order =
-        mode === ACCOUNT_WORKSPACE_MODES.owner
-          ? ownerOrder
-          : mode === ACCOUNT_WORKSPACE_MODES.ownerSetup
-            ? ownerSetupOrder
-            : serviceOrder;
+      const order = sharedOrder;
       const leftIndex = order.indexOf(left.id);
       const rightIndex = order.indexOf(right.id);
       const normalizedLeftIndex = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
@@ -238,6 +219,49 @@ export const getAccountWorkspaceSectionsForMode = (mode = ACCOUNT_WORKSPACE_MODE
     });
 
 export const getAccountWorkspaceSectionByPath = (pathname = '') => {
-  const matched = ACCOUNT_WORKSPACE_SECTIONS.find((section) => pathname === section.href || pathname.startsWith(`${section.href}/`));
+  const normalizedPathname = String(pathname || '').trim();
+
+  if (
+    normalizedPathname === '/account/vehicles' ||
+    normalizedPathname.startsWith('/account/vehicles/') ||
+    normalizedPathname.startsWith('/account/marketplace/vehicles/') ||
+    normalizedPathname === '/account/marketplace' ||
+    normalizedPathname.startsWith('/account/marketplace/') ||
+    normalizedPathname === '/account/boost' ||
+    normalizedPathname.startsWith('/account/boost/')
+  ) {
+    return getAccountWorkspaceSection('marketplace');
+  }
+
+  if (
+    normalizedPathname === '/account/tours' ||
+    normalizedPathname.startsWith('/account/tours/') ||
+    normalizedPathname === '/account/rentals' ||
+    normalizedPathname.startsWith('/account/rentals/')
+  ) {
+    return getAccountWorkspaceSection('rentals');
+  }
+
+  if (
+    normalizedPathname === '/account/revenue' ||
+    normalizedPathname.startsWith('/account/revenue/') ||
+    normalizedPathname === '/account/rewards' ||
+    normalizedPathname.startsWith('/account/rewards/')
+  ) {
+    return getAccountWorkspaceSection('revenue');
+  }
+
+  if (
+    normalizedPathname === '/account/settings' ||
+    normalizedPathname.startsWith('/account/settings/') ||
+    normalizedPathname === '/account/verification' ||
+    normalizedPathname.startsWith('/account/verification/') ||
+    normalizedPathname === '/account/reviews' ||
+    normalizedPathname.startsWith('/account/reviews/')
+  ) {
+    return getAccountWorkspaceSection('settings');
+  }
+
+  const matched = ACCOUNT_WORKSPACE_SECTIONS.find((section) => normalizedPathname === section.href || normalizedPathname.startsWith(`${section.href}/`));
   return matched || null;
 };

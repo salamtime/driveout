@@ -11,6 +11,10 @@ import i18n from '../i18n';
 import { useAuth } from '../contexts/AuthContext';
 import VehicleModelService from '../services/VehicleModelService';
 import {
+  getDepositPresetSettings,
+  saveDepositPresetSettings,
+} from '../services/DepositPresetSettingsService';
+import {
   matchTenantOwnedPayload,
   scopeTenantOwnedQuery,
   shouldScopeSharedTenantData,
@@ -86,11 +90,18 @@ const attachVehicleModelDetails = (prices: BasePrice[] = [], vehicleModels: Vehi
 };
 
 const isGlobalPricingSettingsBlocked = () => shouldScopeSharedTenantData();
+const isTenantScopedDepositSettings = () => shouldScopeSharedTenantData();
 
 const getSharedSettingsBlockedMessage = () =>
   tr(
     'Shared tenant workspaces cannot read or write the global pricing settings row. This tab is isolated and will stay empty until tenant-specific settings storage is installed.',
     'Les espaces tenant partagés ne peuvent pas lire ni écrire la ligne globale des paramètres tarifaires. Cet onglet reste isolé et vide jusqu’à l’installation du stockage de paramètres par tenant.'
+  );
+
+const getSharedDepositSettingsMessage = () =>
+  tr(
+    'These damage deposit presets are saved only for this workspace.',
+    'Ces presets de dépôt de garantie sont enregistrés uniquement pour cet espace de travail.'
   );
 
 interface BasePrice {
@@ -246,7 +257,6 @@ const isPricingTabId = (tab: string | null): tab is PricingTabId => (
 const DynamicPricingManagement: React.FC = () => {
   const isFrench = isFrenchLocale();
   const { hasFeature } = useAuth();
-  console.log('PRICING_MANAGEMENT: Loading with TIERED PRICING and FUEL PRICING support');
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
 
@@ -487,32 +497,11 @@ const DynamicPricingManagement: React.FC = () => {
 
   // NEW: Fetch deposit settings from database
   const fetchDepositSettings = async () => {
-    if (isGlobalPricingSettingsBlocked()) {
-      console.warn('Shared tenant pricing isolation: skipped global app_settings deposit read.');
-      return;
-    }
-
     try {
-      console.log('📡 Loading deposit settings from app_settings...');
-      
-      const { data, error } = await supabase
-        .from('app_settings')
-        .select('damage_deposit_presets, allow_custom_deposit')
-        .eq('id', 1)
-        .limit(1);
-
-      if (error) throw error;
-
-      const row = Array.isArray(data) ? data[0] : null;
-
-      if (row) {
-        const normalized = normalizeDamageDepositSettings(
-          row.damage_deposit_presets,
-          row.allow_custom_deposit ?? true
-        );
-        setDepositSettings(normalized);
-        console.log('✅ Loaded vehicle model-based deposit settings:', normalized);
-      }
+      console.log('📡 Loading deposit settings...');
+      const normalized = await getDepositPresetSettings();
+      setDepositSettings(normalized);
+      console.log('✅ Loaded vehicle model-based deposit settings:', normalized);
     } catch (error: any) {
       console.log('🔄 Using default deposit settings:', error.message);
       // Keep default values if database fetch fails
@@ -542,7 +531,7 @@ const DynamicPricingManagement: React.FC = () => {
           ? Promise.resolve({ data: [], error: null })
           : supabase
               .from('app_settings')
-              .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
+              .select('transport_pickup_fee, transport_dropoff_fee, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
               .eq('id', 1)
               .limit(1),
       ]);
@@ -572,7 +561,6 @@ const DynamicPricingManagement: React.FC = () => {
       if (shouldBlockGlobalSettings) {
         setTransportFees({ pickup_fee: 0, dropoff_fee: 0 });
         setTransportFeeFormData({ pickup_fee: 0, dropoff_fee: 0 });
-        setDepositSettings({ vehicleModelPresets: {}, allowCustomDeposit: true });
         setTierEnforcement({
           enabled: true,
           requireTierForExtensions: true,
@@ -593,17 +581,10 @@ const DynamicPricingManagement: React.FC = () => {
             requireTierForExtensions: appSettingsRow.require_tier_for_extensions ?? true,
             fallbackToHourly: appSettingsRow.fallback_to_hourly ?? false
           });
-
-          setDepositSettings(
-            normalizeDamageDepositSettings(
-              appSettingsRow.damage_deposit_presets,
-              appSettingsRow.allow_custom_deposit ?? true
-            )
-          );
-        } else {
-          await fetchDepositSettings();
         }
-      } else {
+      }
+
+      if (appSettingsResult.status !== 'fulfilled' && !shouldBlockGlobalSettings) {
         console.log('🔄 App settings fetch failed, using local defaults and localStorage fallback');
         const stored = localStorage.getItem('mgx_transport_fees_settings');
         if (stored) {
@@ -615,8 +596,9 @@ const DynamicPricingManagement: React.FC = () => {
           setTransportFees(fees);
           setTransportFeeFormData(fees);
         }
-        await fetchDepositSettings();
       }
+
+      await fetchDepositSettings();
       setHasLoadedOnce(true);
 
       scheduleBackgroundTask(async () => {
@@ -1365,10 +1347,6 @@ const DynamicPricingManagement: React.FC = () => {
     setDepositSettingsSuccess(null);
 
     try {
-      if (isGlobalPricingSettingsBlocked()) {
-        throw new Error(getSharedSettingsBlockedMessage());
-      }
-
       // Validation for all vehicle models
       Object.entries(depositSettings.vehicleModelPresets).forEach(([vehicleId, presets]) => {
         presets.forEach((preset, index) => {
@@ -1383,18 +1361,8 @@ const DynamicPricingManagement: React.FC = () => {
         });
       });
 
-      const { error } = await supabase
-        .from('app_settings')
-        .upsert({
-          id: 1,
-          damage_deposit_presets: depositSettings.vehicleModelPresets,
-          allow_custom_deposit: depositSettings.allowCustomDeposit,
-          updated_at: new Date().toISOString()
-        }, {
-          onConflict: 'id'
-        });
-
-      if (error) throw error;
+      const savedSettings = await saveDepositPresetSettings(depositSettings);
+      setDepositSettings(savedSettings);
 
       setDepositSettingsSuccess('✅ Deposit settings saved successfully!');
       setTimeout(() => setDepositSettingsSuccess(null), 3000);
@@ -3124,7 +3092,7 @@ const DynamicPricingManagement: React.FC = () => {
               </div>
               <button
                 onClick={handleSaveDepositSettings}
-                disabled={savingDepositSettings || isGlobalPricingSettingsBlocked()}
+                disabled={savingDepositSettings}
                 className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingDepositSettings ? (
@@ -3141,9 +3109,9 @@ const DynamicPricingManagement: React.FC = () => {
               </button>
             </div>
 
-            {isGlobalPricingSettingsBlocked() && (
-              <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                {getSharedSettingsBlockedMessage()}
+            {isTenantScopedDepositSettings() && (
+              <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                {getSharedDepositSettingsMessage()}
               </div>
             )}
 

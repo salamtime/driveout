@@ -27,7 +27,7 @@ import ExtensionPricingService from '../../services/ExtensionPricingService';
 import OverageCalculationService from '../../services/OverageCalculationService';
 import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { useAuth } from '../../contexts/AuthContext';
-import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract, hasPermission } from '../../utils/permissionHelpers';
+import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canRequestRentalPriceChange, canEditExtensionHistory, canEditRentalContract, hasPermission } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
 import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator, CarFront, Shield, Trash2 } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
@@ -62,6 +62,9 @@ import { updateRentalRecordWithSchemaFallback } from '../../utils/rentalSchemaCa
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
+import { getCurrentLocationPath } from '../../utils/navigationReturn';
+import { getCurrentOrganizationId, scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
+import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -554,12 +557,24 @@ const translateRentalStatusLabel = (status) => {
 
 const getRentalAttentionState = (rental, vehicleReport) => {
   const report = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
-  if (!report) return null;
+  const reportStatus = String(report?.status || '').toLowerCase();
+  const snapshotStatus = String(rental?.linked_maintenance_status || '').toLowerCase();
+  const hasMaintenanceLink = Boolean(
+    report?.maintenance_id ||
+    report?.maintenance?.id ||
+    rental?.linked_maintenance_id
+  );
+  const isClosed = String(rental?.rental_status || '').toLowerCase() === 'completed' && (
+    reportStatus === 'maintenance_completed' ||
+    snapshotStatus === 'maintenance_completed'
+  );
+  const effectiveMaintenanceStatus = isClosed
+    ? 'maintenance_completed'
+    : (reportStatus || snapshotStatus);
 
-  if (
-    String(rental?.rental_status || '').toLowerCase() === 'completed' &&
-    report.status === 'maintenance_completed'
-  ) {
+  if (!report && !hasMaintenanceLink && !effectiveMaintenanceStatus) return null;
+
+  if (isClosed) {
     return {
       status: 'maintenance_closed',
       text: tr('Maintenance Closed', 'Maintenance clôturée'),
@@ -572,9 +587,8 @@ const getRentalAttentionState = (rental, vehicleReport) => {
   }
 
   if (
-    report.maintenance_id ||
-    rental?.vehicle?.status === 'maintenance' ||
-    ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(report.status)
+    hasMaintenanceLink ||
+    ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(effectiveMaintenanceStatus)
   ) {
     return {
       status: 'under_maintenance',
@@ -2178,6 +2192,12 @@ const isWebsiteCustomerBooking = (rentalLike = {}) => {
 };
 
 const shouldAutoExpireScheduledRental = (rentalLike = {}) => {
+  // Website reservations that have not been assigned a fleet vehicle should stay
+  // in staff workflow. An expired website hold is not the same as an expired rental.
+  if (isWebsiteCustomerBooking(rentalLike) && !rentalLike?.vehicle_id) {
+    return false;
+  }
+
   const scheduledStartRaw = rentalLike?.rental_start_date;
   const createdAtRaw = rentalLike?.created_at;
 
@@ -2381,6 +2401,21 @@ export default function RentalDetails() {
   const maintenanceReturnReport = location.state?.maintenanceReturnReport || null;
   const financeOverviewReturn = Boolean(location.state?.financeOverviewReturn);
   const financeOverviewLabel = String(location.state?.financeOverviewLabel || '');
+  const currentLocationPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const approvalDeepLinkTarget = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    const section = String(params.get('section') || '').trim().toLowerCase();
+
+    if (section !== 'approvals') {
+      return null;
+    }
+
+    return {
+      section,
+      requestId: String(params.get('request') || '').trim(),
+      type: String(params.get('type') || '').trim().toLowerCase(),
+    };
+  }, [location.search]);
   const rentalsReturnContext = useMemo(() => {
     if (location.state?.rentalsReturnContext) {
       return location.state.rentalsReturnContext;
@@ -2835,8 +2870,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
           rental?.vehicle?.vehicle_model_id ||
           rental?.vehicle_model_id ||
           null;
+        const isAssignmentMode = !currentVehicleId;
 
-        if (!currentVehicleModelId) {
+        if (!currentVehicleModelId && !isAssignmentMode) {
           if (isMounted) {
             setReplacementVehicles([]);
             setSelectedReplacementVehicleId('');
@@ -2848,28 +2884,96 @@ const openReplacementResumeWorkflow = useCallback(() => {
           .from('saharax_0u4w4d_vehicles')
           .select(`
             id,
+            organization_id,
+            owner_user_id,
             name,
+            model,
             plate_number,
             status,
             capacity,
             power_cc,
             location_id,
             vehicle_model_id,
+            sold_date,
+            sale_price_mad,
+            sold_buyer_name,
+            sale_notes,
+            sale_proof_url,
+            sale_proof_name,
             vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(id, name, model)
           `)
           .eq('status', 'available')
-          .eq('vehicle_model_id', currentVehicleModelId);
+          .not('organization_id', 'is', null)
+          .is('owner_user_id', null);
+
+        const activeOrganizationId = await getCurrentOrganizationId();
+        if (activeOrganizationId) {
+          query = query.eq('organization_id', activeOrganizationId);
+        }
+
+        if (currentVehicleModelId) {
+          query = query.eq('vehicle_model_id', currentVehicleModelId);
+        }
 
         if (currentVehicleId) {
           query = query.neq('id', currentVehicleId);
         }
 
+        query = await scopeTenantOwnedQuery(
+          query,
+          'saharax_0u4w4d_vehicles',
+          { message: 'Workspace organization context is required to assign vehicles.' }
+        );
+
         const { data, error } = await query;
 
         if (error) throw error;
+        await verifyTenantOwnedRows(
+          data || [],
+          'saharax_0u4w4d_vehicles',
+          { message: 'Vehicle assignment returned vehicles outside the active workspace.' }
+        );
         if (!isMounted) return;
 
-        const sortedVehicles = [...(data || [])].sort((a, b) =>
+        let safeVehicles = (data || []).filter((vehicle) => (
+          !shouldHideVehicleFromOperationalViews(vehicle) &&
+          !String(vehicle?.owner_user_id || '').trim()
+        ));
+
+        if (isAssignmentMode && rental?.rental_start_date && rental?.rental_end_date) {
+          let conflictsQuery = supabase
+            .from('app_4c3a7a6153_rentals')
+            .select('id, organization_id, vehicle_id, rental_start_date, rental_end_date, rental_status, status')
+            .not('vehicle_id', 'is', null)
+            .neq('id', rental.id)
+            .lte('rental_start_date', rental.rental_end_date)
+            .gte('rental_end_date', rental.rental_start_date)
+            .in('rental_status', ['scheduled', 'active', 'confirmed', 'no_show_review']);
+
+          conflictsQuery = await scopeTenantOwnedQuery(
+            conflictsQuery,
+            'app_4c3a7a6153_rentals',
+            { message: 'Workspace organization context is required to check vehicle assignment conflicts.' }
+          );
+
+          const { data: conflicts, error: conflictsError } = await conflictsQuery;
+          if (conflictsError) throw conflictsError;
+          await verifyTenantOwnedRows(
+            conflicts || [],
+            'app_4c3a7a6153_rentals',
+            { message: 'Vehicle assignment conflicts returned rentals outside the active workspace.' }
+          );
+
+          const conflictingVehicleIds = new Set(
+            (conflicts || [])
+              .map((conflict) => String(conflict.vehicle_id || '').trim())
+              .filter(Boolean)
+          );
+
+          safeVehicles = safeVehicles.filter((vehicle) => !conflictingVehicleIds.has(String(vehicle.id)));
+        }
+
+        const sortedVehicles = [...safeVehicles].sort((a, b) =>
           String(a.plate_number || '').localeCompare(String(b.plate_number || ''))
         );
 
@@ -2895,7 +2999,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     return () => {
       isMounted = false;
     };
-  }, [showReplaceVehicleDialog, rental?.vehicle_id, rental?.vehicle?.id, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id, rental?.vehicle_model_id]);
+  }, [showReplaceVehicleDialog, rental?.id, rental?.rental_start_date, rental?.rental_end_date, rental?.vehicle_id, rental?.vehicle?.id, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id, rental?.vehicle_model_id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -3503,17 +3607,38 @@ const openReplacementResumeWorkflow = useCallback(() => {
         console.warn('⚠️ Vehicle replacement Telegram dispatch failed (non-blocking):', telegramDispatchError);
       });
 
-      setRental((prev) => prev ? ({
-        ...prev,
-        ...updatedRental,
+      const optimisticAssignedRental = {
+        ...(updatedRental || {}),
         vehicle_id: replacementVehicle.id,
         rental_status: rentalUpdatePayload.rental_status,
         status: rentalUpdatePayload.status,
+        selected_vehicle_name_snapshot: rentalUpdatePayload.selected_vehicle_name_snapshot,
+        selected_vehicle_model_snapshot: rentalUpdatePayload.selected_vehicle_model_snapshot,
+        selected_vehicle_plate_snapshot: rentalUpdatePayload.selected_vehicle_plate_snapshot,
+        vehicle_name_snapshot: rentalUpdatePayload.vehicle_name_snapshot,
+        vehicle_model_snapshot: rentalUpdatePayload.vehicle_model_snapshot,
+        vehicle_plate_number: rentalUpdatePayload.vehicle_plate_number,
+        vehicle: replacementVehicle,
         replacement_pause_started_at: null,
         replacement_pause_reason: null,
         replacement_resume_context: null,
         replacement_previous_vehicle_id: currentVehicleId,
-      }) : updatedRental);
+      };
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        ...optimisticAssignedRental,
+      }) : optimisticAssignedRental);
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('driveout:rental-updated', {
+          detail: {
+            ...optimisticAssignedRental,
+            id: rental.id,
+            rental_id: updatedRental?.rental_id || rental.rental_id,
+          },
+        }));
+      }
 
       setShowReplaceVehicleDialog(false);
       setReplacementPauseStartedAt(null);
@@ -3760,6 +3885,8 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [rentalBalanceDetailsOpen, setRentalBalanceDetailsOpen] = useState(true);
   const [postReturnAdjustmentsOpen, setPostReturnAdjustmentsOpen] = useState(false);
   const openExtensionHandledRef = useRef(false);
+  const approvalPriceSectionRef = useRef(null);
+  const approvalExtensionSectionRef = useRef(null);
   const [telegramResendOpen, setTelegramResendOpen] = useState(false);
 
   // Late fee state
@@ -3955,7 +4082,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     !savingVehicleReport;
 
   const rentalAttention = getRentalAttentionState(rental, vehicleReport);
-  const reportWorkflowLocked = reportSaved;
+  const reportWorkflowLocked = reportSaved && !finishRentalSteps.showWorkflow && !vehicleReportDraft.enabled;
   const maintenanceStatus = String(vehicleReport?.maintenance?.status || '').toLowerCase();
   const vehicleStillUnderMaintenance = Boolean(
     rentalAttention?.status === 'under_maintenance' ||
@@ -4068,8 +4195,11 @@ const [packageDetails, setPackageDetails] = useState(null);
       : null);
   const canToggleRentalDetailsView = canApproveRentalExtensions(resolvedViewerUser);
   const rentalDetailsDefaultViewMode = 'light';
+  const approvalPreferredViewMode = approvalDeepLinkTarget?.type === 'extension'
+    ? 'light'
+    : null;
   const resolvedRentalDetailsViewMode = canToggleRentalDetailsView
-    ? normalizeRentalDetailsViewMode(rentalDetailsViewQueryParam || rentalDetailsDefaultViewMode)
+    ? normalizeRentalDetailsViewMode(approvalPreferredViewMode || rentalDetailsViewQueryParam || rentalDetailsDefaultViewMode)
     : 'light';
   const isLightRentalDetailsMode = resolvedRentalDetailsViewMode === 'light';
 
@@ -4738,8 +4868,7 @@ const calculateDailyTierPricingBreakdown = async () => {
     setLoadingExtensions(true);
     try {
       const data = await apiManager.request(cacheKey, async () => {
-        const { extensions } = await ExtensionPricingService.getExtensionsByRental(id);
-        return extensions || [];
+        return await ExtensionPricingService.getExtensionHistory(id);
       });
       
       setExtensions(data);
@@ -5195,16 +5324,15 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
             const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport, { rental: rentalData });
             setVehicleReport(hydratedReport);
             setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
-            setVehicleReportDraft({
-              enabled: false,
+            setVehicleReportDraft((prev) => ({
+              ...prev,
               report_type: hydratedReport.report_type || 'damage',
               severity: hydratedReport.severity || 'minor',
               description: hydratedReport.description || '',
               affected_areas: Array.isArray(hydratedReport.affected_areas) ? hydratedReport.affected_areas : [],
               customer_chargeable: Boolean(hydratedReport.customer_chargeable),
               customer_charge_amount: hydratedReport.customer_charge_amount ? String(hydratedReport.customer_charge_amount) : '',
-              send_to_maintenance: false,
-            });
+            }));
           } else {
             setVehicleReport(null);
             setRental(prev => prev ? ({ ...prev, vehicleReport: null }) : prev);
@@ -5366,10 +5494,23 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
           }
 
           const hasMeaningfulChange = [
+            'vehicle_id',
+            'vehicle_model_id',
+            'vehicle_plate_number',
+            'selected_vehicle_name_snapshot',
+            'selected_vehicle_model_snapshot',
+            'selected_vehicle_plate_snapshot',
+            'vehicle_name_snapshot',
+            'vehicle_model_snapshot',
             'rental_status',
             'payment_status',
             'deposit_amount',
             'remaining_amount',
+            'total_amount',
+            'unit_price',
+            'approval_status',
+            'pending_total_request',
+            'price_override_reason',
             'started_at',
             'started_by',
             'started_by_name',
@@ -5401,6 +5542,30 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
 
           if (!hasMeaningfulChange) {
             return;
+          }
+
+          const oldApprovalStatus = String(payload.old?.approval_status || '').toLowerCase();
+          const newApprovalStatus = String(payload.new?.approval_status || '').toLowerCase();
+          const priceApprovalResolved =
+            oldApprovalStatus === 'pending' &&
+            ['approved', 'declined', 'auto'].includes(newApprovalStatus);
+
+          if (priceApprovalResolved) {
+            if (newApprovalStatus === 'approved' || newApprovalStatus === 'auto') {
+              toast.success(
+                tr(
+                  'Price change approved. The rental total has been updated.',
+                  'Changement de prix approuvé. Le total de la location a été mis à jour.'
+                )
+              );
+            } else {
+              toast.error(
+                tr(
+                  'Price change request declined. The rental total has been recalculated.',
+                  'Demande de changement de prix refusée. Le total de la location a été recalculé.'
+                )
+              );
+            }
           }
 
           const normalizedRealtimeRental = normalizeRentalLifecycleStatus({
@@ -5438,6 +5603,51 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
           }, lifecycleChanged ? 150 : 500);
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rental_extensions',
+          filter: `rental_id=eq.${rental.id}`
+        },
+        (payload) => {
+          const oldStatus = String(payload.old?.status || '').toLowerCase();
+          const newStatus = String(payload.new?.status || '').toLowerCase();
+          const extensionWasPending = oldStatus === 'pending';
+          const extensionResolved = extensionWasPending && ['approved', 'rejected', 'declined', 'cancelled', 'canceled'].includes(newStatus);
+          const actingUserId = String(payload.new?.approved_by || payload.new?.rejected_by || '').trim();
+          const currentViewerId = String((resolvedCurrentUser || currentUser)?.id || '').trim();
+          const wasChangedByCurrentViewer = actingUserId && currentViewerId && actingUserId === currentViewerId;
+
+          if (extensionResolved && !wasChangedByCurrentViewer) {
+            if (newStatus === 'approved') {
+              toast.success(
+                tr(
+                  'Extension request approved. The rental timing has been updated.',
+                  'Demande de prolongation approuvée. L’horaire de location a été mis à jour.'
+                )
+              );
+            } else {
+              toast.error(
+                tr(
+                  'Extension request declined.',
+                  'Demande de prolongation refusée.'
+                )
+              );
+            }
+          }
+
+          if (realtimeReloadTimerRef.current) {
+            clearTimeout(realtimeReloadTimerRef.current);
+          }
+
+          realtimeReloadTimerRef.current = setTimeout(() => {
+            loadExtensions(true);
+            loadRentalData(true);
+          }, 150);
+        }
+      )
       .subscribe((status) => {
         if (RENTAL_DEBUG) console.log('📡 Subscription status:', status);
       });
@@ -5450,7 +5660,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       }
       subscription.unsubscribe();
     };
-  }, [rental?.id]); // Re-run when rental ID changes
+  }, [rental?.id, currentUser?.id, resolvedCurrentUser?.id]); // Re-run when rental ID changes
 
   useEffect(() => {
     setStartWorkflowTakeover(false);
@@ -5695,6 +5905,27 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
     )),
     [extensions, inferredShortReturnVoidedExtension]
   );
+  const pendingExtensions = useMemo(
+    () => (Array.isArray(extensions) ? extensions : []).filter((ext) => (
+      String(ext?.status || '').toLowerCase() === 'pending'
+    )),
+    [extensions]
+  );
+  const pendingExtensionHours = useMemo(
+    () => pendingExtensions.reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0),
+    [pendingExtensions]
+  );
+  const pendingExtensionAmount = useMemo(
+    () => pendingExtensions.reduce((sum, ext) => sum + (parseFloat(ext.extension_price) || 0), 0),
+    [pendingExtensions]
+  );
+  const pendingExtensionRequestLabel = useMemo(() => {
+    if (pendingExtensions.length === 0) return '';
+    return tr(
+      `${pendingExtensions.length} extension request${pendingExtensions.length > 1 ? 's' : ''} pending`,
+      `${pendingExtensions.length} demande${pendingExtensions.length > 1 ? 's' : ''} de prolongation en attente`
+    );
+  }, [pendingExtensions.length, tr]);
 
   const totalExtensionFees = useMemo(() => {
     if (approvedExtensions.length === 0) return 0;
@@ -6355,6 +6586,49 @@ Click the link above to review and approve the extension.`;
     });
   }, []);
 
+  const getApprovalActorName = (actor = null) => (
+    actor?.full_name ||
+    actor?.fullName ||
+    actor?.name ||
+    actor?.email ||
+    tr('Staff member', 'Membre du personnel')
+  );
+
+  const buildApprovalTelegramPayload = ({
+    approvalType,
+    requestId,
+    requestedBy = null,
+    currentPrice = null,
+    requestedPrice = null,
+    reason = '',
+    extension = null,
+    extensionHours = null,
+    extensionPrice = null,
+  } = {}) => ({
+    id: rental?.id,
+    reference: rental?.rental_id || '',
+    vehicle: buildRentalTelegramVehicleLabel(rental),
+    customer: rental?.customer_name || '',
+    start: rental?.rental_start_date || '',
+    end: rental?.rental_end_date || '',
+    total: rental?.total_amount || 0,
+    amountPaid: rental?.deposit_amount || 0,
+    remaining: rental?.remaining_amount || 0,
+    requestedBy: getApprovalActorName(requestedBy || resolvedCurrentUser || currentUser || userProfile),
+    currentPrice,
+    requestedPrice,
+    reason,
+    extensionHours: extensionHours ?? extension?.extension_hours,
+    extensionPrice: extensionPrice ?? extension?.extension_price,
+    approvalSection: 'approvals',
+    approvalView: approvalType === 'extension' ? 'light' : '',
+    approvalType,
+    approvalRequestId: requestId || extension?.id || rental?.id,
+    tenant_id: rental?.tenant_id || '',
+    business_account_id: rental?.business_account_id || '',
+    tenant_slug: rental?.tenant_slug || '',
+  });
+
   // ✅ MODIFIED: Remove auto-WhatsApp trigger from extension creation
   const handleExtensionCreated = async (extensionContext = null) => {
     if (RENTAL_DEBUG) console.log('🔄 Extension created, reloading data...');
@@ -6414,6 +6688,18 @@ Click the link above to review and approve the extension.`;
         extensionId: extensionContext.extension?.id || null,
         createdAt: new Date().toISOString(),
       });
+    } else if (extensionContext?.extension?.id) {
+      void notifyRentalTelegramEvent(
+        'rental_extension_requested',
+        buildApprovalTelegramPayload({
+          approvalType: 'extension',
+          requestId: extensionContext.extension.id,
+          requestedBy: resolvedCurrentUser || currentUser || userProfile,
+          extension: extensionContext.extension,
+          extensionHours: extensionContext.extensionHours,
+          extensionPrice: extensionContext.extensionPrice,
+        })
+      );
     }
     if (isLightRentalDetailsMode) {
       focusLightMoneySection();
@@ -6429,6 +6715,8 @@ Click the link above to review and approve the extension.`;
 
   // Handle extension approval
   const handleApproveExtension = async (extensionId) => {
+    if (actionLoading?.[extensionId]) return;
+
     try {
       setActionLoading(prev => ({ ...prev, [extensionId]: true }));
       
@@ -6440,6 +6728,17 @@ Click the link above to review and approve the extension.`;
         .single();
         
       if (extError) throw extError;
+
+      if (String(extension?.status || '').toLowerCase() !== 'pending') {
+        toast(
+          tr(
+            'This extension request has already been reviewed.',
+            'Cette demande de prolongation a déjà été examinée.'
+          )
+        );
+        await loadExtensions(true);
+        return;
+      }
       
       // Get current rental
       const { data: currentRental, error: rentalError } = await supabase
@@ -6468,12 +6767,6 @@ Click the link above to review and approve the extension.`;
       const currentEndDate = new Date(currentRental.rental_end_date);
       const newEndDate = new Date(currentEndDate.getTime() + (extensionHours * 60 * 60 * 1000));
       
-      console.log('Extension approval:', {
-        extensionHours,
-        currentEndDate: currentEndDate.toISOString(),
-        newEndDate: newEndDate.toISOString()
-      });
-      
       // Calculate new totals
       const newTotalAmount = (parseFloat(currentRental.total_amount) || 0) + (parseFloat(extension.extension_price) || 0);
       const newRemainingAmount = Math.max(0, newTotalAmount - (parseFloat(currentRental.deposit_amount) || 0));
@@ -6490,6 +6783,32 @@ Click the link above to review and approve the extension.`;
         const extensionDays = extensionHours / 24;
         newQuantityDays = (parseFloat(currentRental.quantity_days) || 0) + extensionDays;
         newQuantityHours = newQuantityDays * 24; // Keep in sync
+      }
+
+      const { data: claimedExtension, error: claimError } = await supabase
+        .from('rental_extensions')
+        .update({
+          status: 'approved',
+          approved_at: new Date().toISOString(),
+          approved_by: currentUser?.id
+        })
+        .eq('id', extensionId)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle();
+
+      if (claimError) throw claimError;
+
+      if (!claimedExtension?.id) {
+        toast(
+          tr(
+            'This extension request has already been reviewed.',
+            'Cette demande de prolongation a déjà été examinée.'
+          )
+        );
+        await loadRentalData(true);
+        await loadExtensions(true);
+        return;
       }
       
       // Update rental with NEW end date
@@ -6512,16 +6831,6 @@ Click the link above to review and approve the extension.`;
         .eq('id', rental.id);
         
       if (updateError) throw updateError;
-      
-      // Update extension status
-      await supabase
-        .from('rental_extensions')
-        .update({
-          status: 'approved',
-          approved_at: new Date().toISOString(),
-          approved_by: currentUser?.id
-        })
-        .eq('id', extensionId);
       
       // Force reload all data
       await loadRentalData(true);
@@ -8459,7 +8768,7 @@ const TierPricingDisplay = ({ breakdown, isMobile = false }) => {
 
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
-            <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Your Tier Rate</div>
+            <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-violet-700">Your Tier Rate</div>
             <div className={`${isMobile ? 'text-xl' : 'text-2xl'} font-bold text-green-600`}>{formatCurrency(breakdown.tierRate)}</div>
             <div className="text-green-600 text-xs">
               {breakdown.isFlatTier
@@ -14515,10 +14824,11 @@ useEffect(() => {
     setIsEditingPrice(true);
   };
 
-  const currentAmountDueForEdit = Math.max(
+  const resolvedCurrentAmountDue = Math.max(
     0,
-    Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+    Number(rentalBillingSummary?.balanceDue ?? rental?.remaining_amount ?? 0) || 0
   );
+  const currentAmountDueForEdit = resolvedCurrentAmountDue;
   const amountDuePaymentReceivedValue = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
   const amountDueCompanyDiscountValue = Math.max(0, Number(amountDueCompanyDiscount) || 0);
   const amountDueResolvedTotal = amountDuePaymentReceivedValue + amountDueCompanyDiscountValue;
@@ -14531,10 +14841,7 @@ useEffect(() => {
   };
 
   const handleEditAmountDue = () => {
-    const currentAmountDue = Math.max(
-      0,
-      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
-    );
+    const currentAmountDue = resolvedCurrentAmountDue;
     setIsEditingPrice(false);
     setIsPayingDueBalance(false);
     setManualAmountDue(currentAmountDue.toString());
@@ -14545,10 +14852,7 @@ useEffect(() => {
   };
 
   const openDueBalancePaymentEditor = () => {
-    const currentAmountDue = Math.max(
-      0,
-      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
-    );
+    const currentAmountDue = resolvedCurrentAmountDue;
 
     if (currentAmountDue <= 0) {
       toast.success(tr('No due balance remains on this contract.', 'Aucun solde restant dû sur ce contrat.'));
@@ -14834,11 +15138,6 @@ useEffect(() => {
       canApprovePriceOverrides(actingUser) ||
       canEditRentalPriceWithoutApproval(actingUser);
     const currentPaidAmount = Math.max(0, parseFloat(rental.deposit_amount || 0) || 0);
-    const currentPaymentStatus = normalizePaymentStatus(
-      rental?.payment_status,
-      rental?.remaining_amount
-    );
-    const isAlreadyPaid = currentPaymentStatus === 'paid';
     const activeDuration = rental.use_package_pricing
       ? 1
       : Math.max(1, Number(getRentalDurationUnits(rental)) || 1);
@@ -14862,17 +15161,31 @@ useEffect(() => {
       updateData.approval_status = 'auto';
       updateData.pending_total_request = null;
       updateData.price_override_reason = JSON.stringify(overrideMeta);
-      if (isAlreadyPaid) {
-        updateData.deposit_amount = newPrice;
-        updateData.remaining_amount = 0;
-        updateData.payment_status = 'paid';
-      } else {
-        updateData.remaining_amount = Math.max(0, newPrice - currentPaidAmount);
-      }
+      const nextRemainingAmount = Math.max(0, newPrice - currentPaidAmount);
+      updateData.remaining_amount = nextRemainingAmount;
+      updateData.payment_status = nextRemainingAmount <= 0
+        ? 'paid'
+        : currentPaidAmount > 0
+          ? 'partial'
+          : 'unpaid';
     } else {
+      const previousPrice = Math.max(0, parseFloat(rental.total_amount || rental.unit_price || 0) || 0);
+      const overrideMeta = buildPriceOverrideMeta({
+        existingMeta: parsePriceOverrideMeta(rental?.price_override_reason),
+        note: priceOverrideReason || '',
+        currentUser: actingUser,
+        previousPrice,
+        newPrice,
+      });
       updateData.approval_status = 'pending';
       updateData.pending_total_request = newPrice;
-      updateData.price_override_reason = priceOverrideReason || null;
+      updateData.price_override_reason = JSON.stringify({
+        ...overrideMeta,
+        requestStatus: 'pending',
+        requestedById: overrideMeta.editedById,
+        requestedByName: overrideMeta.editedByName,
+        requestedAt: overrideMeta.editedAt,
+      });
     }
 
     if (RENTAL_DEBUG) console.log('📝 Updating rental with data:', updateData);
@@ -14910,6 +15223,18 @@ useEffect(() => {
           newPrice,
         }),
       });
+    } else {
+      void notifyRentalTelegramEvent(
+        'rental_price_change_requested',
+        buildApprovalTelegramPayload({
+          approvalType: 'price',
+          requestId: rental.id,
+          requestedBy: actingUser,
+          currentPrice: rental.total_amount || 0,
+          requestedPrice: newPrice,
+          reason: priceOverrideReason || '',
+        })
+      );
     }
 
     setRental(data);
@@ -14951,10 +15276,7 @@ useEffect(() => {
 
     setIsSavingAmountDue(true);
     try {
-      const previousAmountDue = Math.max(
-        0,
-        Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
-      );
+      const previousAmountDue = resolvedCurrentAmountDue;
       const existingResolutionMeta = amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental) || null;
       const isChainedResolution =
         Boolean(existingResolutionMeta) &&
@@ -15124,10 +15446,7 @@ useEffect(() => {
   };
 
   const handlePayDueBalance = async () => {
-    const currentAmountDue = Math.max(
-      0,
-      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
-    );
+    const currentAmountDue = resolvedCurrentAmountDue;
 
     if (currentAmountDue <= 0) {
       toast.success(tr('No due balance remains on this contract.', 'Aucun solde restant dû sur ce contrat.'));
@@ -15219,19 +15538,36 @@ useEffect(() => {
     try {
       const newPrice = parseFloat(rental.pending_total_request);
       const previousPrice = Math.max(0, parseFloat(rental.total_amount || rental.unit_price || 0) || 0);
+      const currentPaidAmount = Math.max(0, parseFloat(rental.deposit_amount || 0) || 0);
+      const nextRemainingAmount = Math.max(0, newPrice - currentPaidAmount);
+      const nextPaymentStatus = nextRemainingAmount <= 0
+        ? 'paid'
+        : currentPaidAmount > 0
+          ? 'partial'
+          : 'unpaid';
+      const existingOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
+      const actingUser = resolvedCurrentUser || currentUser;
       const overrideMeta = buildPriceOverrideMeta({
-        existingMeta: parsePriceOverrideMeta(rental?.price_override_reason),
-        note: typeof rental.price_override_reason === 'string' ? rental.price_override_reason : '',
-        currentUser,
+        existingMeta: existingOverrideMeta,
+        note: existingOverrideMeta?.note || (typeof rental.price_override_reason === 'string' ? rental.price_override_reason : ''),
+        currentUser: actingUser,
         previousPrice,
         newPrice,
       });
+      overrideMeta.requestedById = existingOverrideMeta?.requestedById || existingOverrideMeta?.editedById || null;
+      overrideMeta.requestedByName = existingOverrideMeta?.requestedByName || existingOverrideMeta?.editedByName || null;
+      overrideMeta.requestedAt = existingOverrideMeta?.requestedAt || existingOverrideMeta?.editedAt || null;
+      overrideMeta.requestStatus = 'approved';
+      overrideMeta.approvedById = actingUser?.id || null;
+      overrideMeta.approvedByName = actingUser?.full_name || actingUser?.name || actingUser?.email || null;
+      overrideMeta.approvedAt = new Date().toISOString();
       // Step 1: Update the rental
       const { error: updateError } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({
           total_amount: newPrice,
-          remaining_amount: Math.max(0, newPrice - (parseFloat(rental.deposit_amount) || 0)),
+          remaining_amount: nextRemainingAmount,
+          payment_status: nextPaymentStatus,
           approval_status: 'approved',
           pending_total_request: null,
           price_override_reason: JSON.stringify(overrideMeta),
@@ -15259,7 +15595,7 @@ useEffect(() => {
 
       await recordRentalContractPriceEditActivity({
         rental,
-        currentUser,
+        currentUser: actingUser,
         overrideMeta,
       });
 
@@ -15283,6 +15619,14 @@ useEffect(() => {
 
     try {
       let autoCalculatedPrice = rental.total_amount;
+      const existingOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
+      const declinedOverrideMeta = {
+        ...(existingOverrideMeta && typeof existingOverrideMeta === 'object' ? existingOverrideMeta : {}),
+        requestStatus: 'declined',
+        declinedById: (resolvedCurrentUser || currentUser)?.id || null,
+        declinedByName: (resolvedCurrentUser || currentUser)?.full_name || (resolvedCurrentUser || currentUser)?.name || (resolvedCurrentUser || currentUser)?.email || null,
+        declinedAt: new Date().toISOString(),
+      };
       
       if (rental.vehicle?.id && rental.rental_start_date && rental.rental_end_date) {
         try {
@@ -15308,6 +15652,7 @@ useEffect(() => {
           remaining_amount: Math.max(0, autoCalculatedPrice - (parseFloat(rental.deposit_amount) || 0)),
           approval_status: 'declined',
           pending_total_request: null,
+          price_override_reason: JSON.stringify(declinedOverrideMeta),
           updated_at: new Date().toISOString()
         })
         .eq('id', rental.id);
@@ -15618,7 +15963,8 @@ useEffect(() => {
   const displayRentalStatus = hasHistoricalImpoundStatus ? 'impounded' : operationalRentalStatus;
   const isActive = operationalRentalStatus === 'active';
   const isScheduled = operationalRentalStatus === 'scheduled';
-  const isAwaitingVehicleAssignment = isScheduled && !rental?.vehicle_id;
+  const isWebsiteScheduledReservation = isScheduled && isWebsiteCustomerBooking(rental);
+  const isAwaitingVehicleAssignment = isWebsiteScheduledReservation && !rental?.vehicle_id;
   const isCompleted = operationalRentalStatus === 'completed';
   const isImpounded = Boolean(rental?.is_impounded);
   const hasImpoundRecord = hasHistoricalImpoundStatus;
@@ -15673,7 +16019,7 @@ useEffect(() => {
     if (hasHeldSecurityDocument) {
       return {
         label: tr('Secured', 'Garantie sécurisée'),
-        className: 'border border-emerald-200 bg-emerald-50 text-emerald-700',
+        className: 'border border-emerald-200 bg-emerald-50 text-violet-700',
         helper: tr('A physical security document is being held.', 'Un document physique de garantie est retenu.'),
       };
     }
@@ -15689,7 +16035,7 @@ useEffect(() => {
     if (requiredSecurityAmount > 0 && receivedSecurityAmount >= requiredSecurityAmount) {
       return {
         label: tr('Secured', 'Garantie sécurisée'),
-        className: 'border border-emerald-200 bg-emerald-50 text-emerald-700',
+        className: 'border border-emerald-200 bg-emerald-50 text-violet-700',
         helper: tr('The full required security hold has been received.', 'La garantie requise a été reçue en totalité.'),
       };
     }
@@ -15903,6 +16249,7 @@ useEffect(() => {
   const isPendingApproval = rental?.approval_status === 'pending';
   const hasAppliedManualPriceOverride = ['approved', 'auto'].includes(String(rental?.approval_status || '').toLowerCase());
   const isAdmin = canApproveRentalExtensions(resolvedCurrentUser);
+  const hasPendingStaffPriceApproval = isPendingApproval && !isAdmin;
   const canEditExtensionEntries = canEditExtensionHistory(resolvedCurrentUser);
   const canCancelImpound = ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canEditImpoundDiscount = ['owner', 'admin', 'employee'].includes(resolvedCurrentUser?.role);
@@ -15913,10 +16260,24 @@ useEffect(() => {
   const maintenanceChargeLocked = isCompleted && currentUserRole !== 'owner';
   const impoundChargeLocked = isCompleted;
   const canEditRentalPriceOverride = canEditRentalPrice(resolvedCurrentUser);
+  const canRequestRentalPriceOverride = canRequestRentalPriceChange(resolvedCurrentUser);
+  const canApplyRentalPriceDirectly =
+    canApprovePriceOverrides(resolvedCurrentUser) ||
+    canEditRentalPriceWithoutApproval(resolvedCurrentUser);
   const rentalStatusLower = String(rental?.rental_status || '').toLowerCase();
   const canEditLifecycleRentalPrice =
     currentUserRole === 'owner' ||
     (canEditRentalPriceOverride && ['active', 'completed'].includes(rentalStatusLower));
+  const canRequestLifecycleRentalPriceChange =
+    currentUserRole === 'owner' ||
+    (canRequestRentalPriceOverride && ['active', 'completed'].includes(rentalStatusLower));
+  const highlightedApprovalType = approvalDeepLinkTarget?.type || '';
+  const highlightedApprovalRequestId = approvalDeepLinkTarget?.requestId || '';
+  const shouldHighlightPriceApproval =
+    highlightedApprovalType === 'price' &&
+    isPendingApproval &&
+    (!highlightedApprovalRequestId || String(highlightedApprovalRequestId) === String(rental?.id || ''));
+  const shouldHighlightExtensionApproval = highlightedApprovalType === 'extension';
   const currentWorkflowPresenceKey = `${resolvedCurrentUser?.id || resolvedCurrentUser?.email || `anon-${id || 'rental'}`}::${workflowClientSessionKey}`;
   const canManageScheduledRental =
     isScheduled &&
@@ -15931,6 +16292,57 @@ useEffect(() => {
       currentUserRole === 'owner' ||
       canEditRentalContract(resolvedCurrentUser)
     );
+
+  useEffect(() => {
+    if (!approvalDeepLinkTarget) return;
+
+    setRentalBalanceDetailsOpen(true);
+    setExtensionChargesOpen(true);
+    setLightRentalInfoOpenSections((prev) => ({
+      ...prev,
+      money: true,
+      schedule: true,
+    }));
+
+    let attempts = 0;
+    let timeoutId = null;
+
+    const scrollToApprovalTarget = () => {
+      attempts += 1;
+      const targetElement = approvalDeepLinkTarget.type === 'extension'
+        ? (
+            highlightedApprovalRequestId
+              ? document.querySelector(`[data-extension-id="${CSS.escape(String(highlightedApprovalRequestId))}"]`)
+              : null
+          ) || approvalExtensionSectionRef.current
+        : approvalPriceSectionRef.current;
+
+      if (targetElement) {
+        targetElement.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+        return;
+      }
+
+      if (attempts < 40) {
+        timeoutId = window.setTimeout(scrollToApprovalTarget, 250);
+      }
+    };
+
+    timeoutId = window.setTimeout(scrollToApprovalTarget, 350);
+
+    return () => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
+  }, [
+    approvalDeepLinkTarget,
+    extensions.length,
+    highlightedApprovalRequestId,
+    isPendingApproval,
+    isLightRentalDetailsMode,
+  ]);
+
   const canOwnerAdjustCompletedRental =
     currentUserRole === 'owner' && (isCompleted || vehicleStillUnderMaintenance);
   const showMaintenanceStayAdjustmentAction = Boolean(
@@ -16096,7 +16508,7 @@ useEffect(() => {
         key: 'due',
         label: tr('Due now', 'À payer'),
         value: `${formatCurrency(rentalBillingSummary.balanceDue)} MAD`,
-        tone: rentalBillingSummary.balanceDue > 0 ? 'text-amber-700' : 'text-emerald-700',
+        tone: rentalBillingSummary.balanceDue > 0 ? 'text-amber-700' : 'text-violet-700',
       },
     ];
 
@@ -16125,6 +16537,191 @@ useEffect(() => {
     (rawPriceOverrideReason && !rawPriceOverrideReason.startsWith('{') && !rawPriceOverrideReason.startsWith('[')
       ? rawPriceOverrideReason
       : '');
+  const priceOverrideRequesterName =
+    effectivePriceOverrideMeta?.requestedByName ||
+    effectivePriceOverrideMeta?.editedByName ||
+    '';
+  const staffActionTimeline = useMemo(() => {
+    const events = [];
+    const addEvent = ({ key, label, actor, at, detail = '', tone = 'slate', status = '' }) => {
+      const timestamp = at ? new Date(at).getTime() : 0;
+      if (!key || !label || !timestamp || Number.isNaN(timestamp)) return;
+      events.push({
+        key,
+        label,
+        actor: actor || tr('Not recorded', 'Non renseigné'),
+        at,
+        detail,
+        tone,
+        status,
+        timestamp,
+      });
+    };
+
+    addEvent({
+      key: 'created',
+      label: tr('Created rental', 'Location créée'),
+      actor: createdByDisplay,
+      at: rental?.created_at,
+      tone: 'violet',
+    });
+    addEvent({
+      key: 'signed',
+      label: tr('Contract signed', 'Contrat signé'),
+      actor: signedByDisplay,
+      at: rental?.contract_signed_at || rental?.signed_at,
+      tone: 'blue',
+    });
+    addEvent({
+      key: 'started',
+      label: tr('Rental started', 'Location démarrée'),
+      actor: startedByDisplay,
+      at: rental?.started_at,
+      tone: 'emerald',
+    });
+    addEvent({
+      key: 'completed',
+      label: tr('Rental closed', 'Location clôturée'),
+      actor: closedByDisplay,
+      at: closedByDisplay ? (rental?.completed_at || rental?.closed_at) : null,
+      tone: 'slate',
+    });
+    addEvent({
+      key: 'cancelled',
+      label: tr('Rental cancelled', 'Location annulée'),
+      actor: cancelledByDisplay,
+      at: cancelledByDisplay ? (rental?.cancelled_at || rental?.updated_at) : null,
+      tone: 'red',
+    });
+
+    if (rental?.pending_total_request || effectivePriceOverrideMeta?.newPrice) {
+      const requestedPrice = Number(rental?.pending_total_request || effectivePriceOverrideMeta?.newPrice || 0) || 0;
+      const previousPrice = Number(effectivePriceOverrideMeta?.previousPrice || rental?.total_amount || 0) || 0;
+      const requestStatus = String(effectivePriceOverrideMeta?.requestStatus || rental?.approval_status || '').toLowerCase();
+      addEvent({
+        key: 'price-request',
+        label: tr('Price change requested', 'Changement de prix demandé'),
+        actor: priceOverrideRequesterName,
+        at: effectivePriceOverrideMeta?.requestedAt || effectivePriceOverrideMeta?.editedAt,
+        detail: `${formatCurrency(previousPrice)} MAD → ${formatCurrency(requestedPrice)} MAD`,
+        tone: requestStatus === 'pending' ? 'amber' : 'blue',
+        status: requestStatus === 'pending' ? tr('Pending', 'En attente') : '',
+      });
+      if (['approved', 'declined'].includes(requestStatus)) {
+        addEvent({
+          key: `price-${requestStatus}`,
+          label: requestStatus === 'approved'
+            ? tr('Price change approved', 'Changement de prix approuvé')
+            : tr('Price change declined', 'Changement de prix refusé'),
+          actor: requestStatus === 'approved'
+            ? effectivePriceOverrideMeta?.approvedByName || effectivePriceOverrideMeta?.editedByName
+            : effectivePriceOverrideMeta?.declinedByName,
+          at: requestStatus === 'approved'
+            ? effectivePriceOverrideMeta?.approvedAt || effectivePriceOverrideMeta?.editedAt
+            : effectivePriceOverrideMeta?.declinedAt,
+          detail: `${formatCurrency(requestedPrice)} MAD`,
+          tone: requestStatus === 'approved' ? 'emerald' : 'red',
+        });
+      }
+    }
+
+    (Array.isArray(extensions) ? extensions : []).forEach((extension) => {
+      const requesterName =
+        extension?.requester?.full_name ||
+        extension?.requester?.email ||
+        extension?.requested_by_name ||
+        (!isLikelyUuid(extension?.requested_by) ? extension?.requested_by : '') ||
+        tr('Not recorded', 'Non renseigné');
+      const reviewerName =
+        extension?.approver?.full_name ||
+        extension?.approver?.email ||
+        extension?.rejecter?.full_name ||
+        extension?.rejecter?.email ||
+        extension?.approved_by_name ||
+        extension?.rejected_by_name ||
+        (!isLikelyUuid(extension?.approved_by) ? extension?.approved_by : '') ||
+        (!isLikelyUuid(extension?.rejected_by) ? extension?.rejected_by : '') ||
+        '';
+      const extensionDetail = `+${Number(extension?.extension_hours || 0) || 0}h · ${formatCurrency(Number(extension?.extension_price || 0) || 0)} MAD`;
+      const status = String(extension?.status || '').toLowerCase();
+
+      addEvent({
+        key: `extension-request-${extension.id}`,
+        label: tr('Extension requested', 'Prolongation demandée'),
+        actor: requesterName,
+        at: extension?.requested_at || extension?.created_at,
+        detail: extensionDetail,
+        tone: status === 'pending' ? 'amber' : 'violet',
+        status: status === 'pending' ? tr('Pending', 'En attente') : '',
+      });
+
+      if (status === 'approved') {
+        addEvent({
+          key: `extension-approved-${extension.id}`,
+          label: tr('Extension approved', 'Prolongation approuvée'),
+          actor: reviewerName,
+          at: extension?.approved_at,
+          detail: extensionDetail,
+          tone: 'emerald',
+        });
+      } else if (status === 'rejected') {
+        addEvent({
+          key: `extension-rejected-${extension.id}`,
+          label: tr('Extension rejected', 'Prolongation refusée'),
+          actor: reviewerName,
+          at: extension?.rejected_at,
+          detail: extension?.rejection_reason || extensionDetail,
+          tone: 'red',
+        });
+      }
+    });
+
+    (Array.isArray(rentalHistory) ? rentalHistory : []).forEach((log, index) => {
+      const action = getActivityLogAction(log);
+      const description = log?.description || log?.payload?.description || action;
+      if (!description) return;
+      addEvent({
+        key: `activity-${log.id || index}`,
+        label: description,
+        actor: log?.user_name || log?.created_by || '',
+        at: log?.created_at,
+        tone: 'slate',
+      });
+    });
+
+    const seen = new Set();
+    return events
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .filter((event) => {
+        const dedupeKey = `${event.label}|${event.actor}|${event.timestamp}`;
+        if (seen.has(dedupeKey)) return false;
+        seen.add(dedupeKey);
+        return true;
+      })
+      .slice(0, 12);
+  }, [
+    cancelledByDisplay,
+    closedByDisplay,
+    createdByDisplay,
+    effectivePriceOverrideMeta,
+    extensions,
+    priceOverrideRequesterName,
+    rental?.approval_status,
+    rental?.cancelled_at,
+    rental?.closed_at,
+    rental?.completed_at,
+    rental?.contract_signed_at,
+    rental?.created_at,
+    rental?.pending_total_request,
+    rental?.signed_at,
+    rental?.started_at,
+    rental?.total_amount,
+    rental?.updated_at,
+    rentalHistory,
+    signedByDisplay,
+    startedByDisplay,
+    tr,
+  ]);
   const hasCustomerVerificationIdentity = Boolean(
     String(rental?.customer_licence_number || '').trim() ||
     String(rental?.customer_id_number || '').trim()
@@ -16222,13 +16819,30 @@ useEffect(() => {
   const openingMediaRequired = true;
   const hasOpeningInspectionCompleted = hasOpeningVideo || !openingMediaRequired;
   const openingMediaSkipped = !hasOpeningVideo && !openingMediaRequired;
-  const paymentSatisfied = isPaymentSufficient();
+  const normalizedStartPaymentStatus = normalizePaymentStatus(rental?.payment_status, rental?.remaining_amount);
+  const paymentSatisfied = isWebsiteScheduledReservation
+    ? normalizedStartPaymentStatus === 'paid'
+    : isPaymentSufficient();
   const rawStartWorkflowSteps = [
     {
       key: 'customer_verification',
       label: tr('Customer Verification', 'Vérification client'),
       complete: hasCustomerVerification,
       method: customerVerificationMethod,
+    },
+    ...(isAwaitingVehicleAssignment
+      ? [
+          {
+            key: 'assign_vehicle',
+            label: tr('Assign Vehicle', 'Attribuer le véhicule'),
+            complete: Boolean(rental?.vehicle_id),
+          },
+        ]
+      : []),
+    {
+      key: 'payment',
+      label: tr('Payment', 'Paiement'),
+      complete: paymentSatisfied,
     },
     {
       key: 'opening_media',
@@ -16244,11 +16858,6 @@ useEffect(() => {
       key: 'start_engine_hours',
       label: tr('Starting Engine Hours', 'Heures moteur de départ'),
       complete: hasStartEngineHoursRecorded,
-    },
-    {
-      key: 'payment',
-      label: tr('Payment', 'Paiement'),
-      complete: paymentSatisfied,
     },
     {
       key: 'start_fuel',
@@ -16276,20 +16885,33 @@ useEffect(() => {
   const pinnedStartWorkflowFirstKey = 'customer_verification';
   const pinnedStartWorkflowSecondKey = 'payment';
   const pinnedStartWorkflowLastKey = 'contract_signature';
-  const movableStartWorkflowKeys = ['opening_media', 'start_odometer', 'start_engine_hours', 'start_fuel'];
+  const movableStartWorkflowKeys = [
+    'opening_media',
+    'start_odometer',
+    'start_engine_hours',
+    'start_fuel',
+  ];
   const orderedMovableCompletedStartWorkflowKeys = movableStartWorkflowKeys.filter(
     (key) => startWorkflowStepMap[key]?.complete
   );
   const orderedMovableIncompleteStartWorkflowKeys = movableStartWorkflowKeys.filter(
     (key) => !startWorkflowStepMap[key]?.complete
   );
-  const orderedStartWorkflowStepKeys = [
-    pinnedStartWorkflowFirstKey,
-    pinnedStartWorkflowSecondKey,
-    ...orderedMovableCompletedStartWorkflowKeys,
-    ...orderedMovableIncompleteStartWorkflowKeys,
-    pinnedStartWorkflowLastKey,
-  ];
+  const orderedStartWorkflowStepKeys = isAwaitingVehicleAssignment
+    ? [
+        pinnedStartWorkflowFirstKey,
+        'assign_vehicle',
+        pinnedStartWorkflowSecondKey,
+        ...movableStartWorkflowKeys,
+        pinnedStartWorkflowLastKey,
+      ]
+    : [
+        pinnedStartWorkflowFirstKey,
+        pinnedStartWorkflowSecondKey,
+        ...orderedMovableCompletedStartWorkflowKeys,
+        ...orderedMovableIncompleteStartWorkflowKeys,
+        pinnedStartWorkflowLastKey,
+      ];
   const orderedStartWorkflowSteps = orderedStartWorkflowStepKeys
     .map((key) => startWorkflowStepMap[key])
     .filter(Boolean);
@@ -16301,6 +16923,7 @@ useEffect(() => {
     return (startWorkflowDisplayOrderMap[stepKey] ?? 0) + 1;
   };
   const openingInspectionStepComplete = Boolean(startWorkflowStepMap.opening_media?.complete);
+  const assignVehicleStepComplete = Boolean(startWorkflowStepMap.assign_vehicle?.complete);
   const startingOdometerStepComplete = Boolean(startWorkflowStepMap.start_odometer?.complete);
   const startingEngineHoursStepComplete = Boolean(startWorkflowStepMap.start_engine_hours?.complete);
   const paymentStepComplete = Boolean(startWorkflowStepMap.payment?.complete);
@@ -16332,6 +16955,8 @@ useEffect(() => {
     switch (stepKey) {
       case 'customer_verification':
         return customerVerificationStepStatusLabel;
+      case 'assign_vehicle':
+        return tr('Vehicle assigned', 'Véhicule attribué');
       case 'opening_media':
         return openingMediaSkipped
           ? tr('Vehicle media skipped (optional)', 'Médias du véhicule ignorés (optionnel)')
@@ -16357,6 +16982,8 @@ useEffect(() => {
     switch (nextStartWorkflowStep?.key) {
       case 'customer_verification':
         return tr('Customer verification is required before contract start.', 'La vérification du client est obligatoire avant le démarrage du contrat.');
+      case 'assign_vehicle':
+        return tr('Choose the exact plate for this website reservation.', 'Choisissez la plaque exacte pour cette réservation web.');
       case 'opening_media':
         return tr('Vehicle media is optional.', 'Les médias du véhicule sont optionnels.');
       case 'start_odometer':
@@ -16524,13 +17151,11 @@ useEffect(() => {
 
   // Check if workflow should be disabled (pending approval for non-admin users)
   const isWorkflowDisabled = () => {
-    return isPendingApproval && !isAdmin;
+    return false;
   };
   const startWorkflowActionHint = isStartWorkflowSoftLocked
     ? startWorkflowLockTitle
-    : isWorkflowDisabled()
-      ? tr('Rental start is locked until price override is approved by admin', 'Le démarrage de la location est bloqué jusqu’à l’approbation du prix par un administrateur')
-      : startWorkflowNextStepHint;
+    : startWorkflowNextStepHint;
   const showLightReadyToStartMobile = isLightRentalDetailsMode && showStartChecklistWorkflow;
   const showLightActiveRentalMobile = isLightRentalDetailsMode && isActive && !finishRentalSteps.showWorkflow;
   const showLightFinishRentalMobile = isLightRentalDetailsMode && isActive && finishRentalSteps.showWorkflow;
@@ -16579,12 +17204,12 @@ useEffect(() => {
     setLightRentalInfoOpenSections({
       people: false,
       vehicle: false,
-      schedule: false,
-      money: false,
+      schedule: Boolean(approvalDeepLinkTarget?.type === 'extension'),
+      money: Boolean(approvalDeepLinkTarget?.type === 'price'),
       media: false,
       signature: false,
     });
-  }, [rental?.id]);
+  }, [rental?.id, approvalDeepLinkTarget?.type]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -16834,8 +17459,22 @@ useEffect(() => {
     finishRentalSteps.endEngineHoursComplete &&
     finishRentalSteps.endFuelComplete &&
     !isFinishWorkflowSoftLocked;
+  const isAdditionalVehicleMediaRecord = (mediaRecord) => {
+    const storagePath = String(mediaRecord?.storage_path || '');
+    const originalFilename = String(mediaRecord?.original_filename || '');
+    const fileName = String(mediaRecord?.file_name || '');
+    return storagePath.includes('/vehicle/') || originalFilename.startsWith('vehicle_') || fileName.startsWith('vehicle_');
+  };
+  const openingVehicleMediaCount = openingMedia.length;
+  const additionalVehicleMediaCount = closingMedia.filter(isAdditionalVehicleMediaRecord).length;
+  const closingInspectionMediaCount = Math.max(0, closingMedia.length - additionalVehicleMediaCount);
   const completedVehicleMediaCount = closingMedia.length;
   const hasCompletedVehicleMedia = completedVehicleMediaCount > 0;
+  const vehicleMediaPreviewCountSegments = [
+    openingVehicleMediaCount > 0 ? `${tr('Opening', 'Départ')} ${openingVehicleMediaCount}` : null,
+    closingInspectionMediaCount > 0 ? `${tr('Closing', 'Retour')} ${closingInspectionMediaCount}` : null,
+    additionalVehicleMediaCount > 0 ? `${tr('Media', 'Médias')} ${additionalVehicleMediaCount}` : null,
+  ].filter(Boolean);
   const lightReadyToStartCardsByKey = {
     customer_verification: {
       key: 'customer_verification',
@@ -16852,6 +17491,21 @@ useEffect(() => {
       disabled: isStartWorkflowSoftLocked || customerVerificationStepComplete,
       icon: FileImage,
     },
+    assign_vehicle: {
+      key: 'assign_vehicle',
+      title: tr('Assign vehicle', 'Attribuer le véhicule'),
+      complete: assignVehicleStepComplete,
+      active: isStartStepActive('assign_vehicle'),
+      detail: assignVehicleStepComplete
+        ? getStartStepSummary('assign_vehicle')
+        : tr('Pick the real plate before pickup.', 'Choisissez la vraie plaque avant le départ.'),
+      actionLabel: assignVehicleStepComplete
+        ? tr('Assigned', 'Attribué')
+        : tr('Assign vehicle', 'Attribuer'),
+      onAction: openReplaceVehicleDialog,
+      disabled: isStartWorkflowSoftLocked || assignVehicleStepComplete,
+      icon: CarFront,
+    },
     payment: {
       key: 'payment',
       title: tr('Payment', 'Paiement'),
@@ -16859,14 +17513,14 @@ useEffect(() => {
       active: isStartStepActive('payment'),
       detail: paymentStepComplete
         ? tr('Payment completed', 'Paiement terminé')
-        : isPendingApproval && !isAdmin
-          ? tr('Price override pending approval.', 'Modification de prix en attente d’approbation.')
+        : hasPendingStaffPriceApproval
+          ? tr('Price change is waiting for admin. You can still mark the current approved total paid.', 'Le changement de prix attend l’admin. Vous pouvez quand même marquer le total approuvé actuel comme payé.')
           : `${tr('Remaining', 'Restant')}: ${formatCurrency(paymentStepRemainingBalance)} MAD`,
       actionLabel: paymentStepComplete
         ? tr('Completed', 'Terminé')
         : tr('Mark paid', 'Marquer payé'),
       onAction: markAsPaid,
-      disabled: isStartWorkflowSoftLocked || !isStartStepActive('payment') || paymentStepComplete || (isPendingApproval && !isAdmin),
+      disabled: isStartWorkflowSoftLocked || !isStartStepActive('payment') || paymentStepComplete,
       icon: CreditCard,
     },
     opening_media: {
@@ -16965,7 +17619,12 @@ useEffect(() => {
     <div ref={lightReadyToStartSectionRef} id="ready-to-start" className="mb-6">
       <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
         <div className="flex items-start justify-between gap-3">
-          <div>
+          <div
+            ref={approvalExtensionSectionRef}
+            className={`rounded-2xl transition-all duration-300 ${
+              shouldHighlightExtensionApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.16)]' : ''
+            }`}
+          >
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
               {isReplacementResumeFlow
                 ? tr('Ready to Resume', 'Prêt à reprendre')
@@ -17021,7 +17680,7 @@ useEffect(() => {
 	                            <button
 	                              type="button"
 	                              onClick={step.onAction}
-	                              className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-emerald-700 shadow-sm transition hover:bg-emerald-50"
+	                              className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-violet-700 shadow-sm transition hover:bg-emerald-50"
 	                              aria-label={tr('Edit starting odometer', 'Modifier le kilométrage de départ')}
 	                              title={tr('Edit starting odometer', 'Modifier le kilométrage de départ')}
 	                            >
@@ -17029,7 +17688,7 @@ useEffect(() => {
 	                            </button>
 	                          )}
 	                        </div>
-	                        <p className={`mt-1 text-xs ${step.complete ? 'text-emerald-700' : 'text-slate-500'}`}>{step.detail}</p>
+	                        <p className={`mt-1 text-xs ${step.complete ? 'text-violet-700' : 'text-slate-500'}`}>{step.detail}</p>
 	                      </div>
                       <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : step.active ? 'text-violet-600' : 'text-slate-400'}`} />
                     </div>
@@ -17040,7 +17699,7 @@ useEffect(() => {
                         disabled={step.disabled}
                         className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 ${
                           step.complete
-                            ? 'border border-emerald-200 bg-white text-emerald-700 shadow-sm'
+                            ? 'border border-emerald-200 bg-white text-violet-700 shadow-sm'
                             : 'bg-violet-600 text-white'
                         }`}
                       >
@@ -17170,7 +17829,7 @@ useEffect(() => {
           <div className={`rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${
             effectiveReplacementPauseStartedAt
               ? 'bg-amber-100 text-amber-700'
-              : 'bg-emerald-100 text-emerald-700'
+              : 'bg-emerald-100 text-violet-700'
           }`}>
             {effectiveReplacementPauseStartedAt
               ? tr('Paused', 'En pause')
@@ -17465,7 +18124,7 @@ useEffect(() => {
                   </p>
                   <span className={`inline-flex items-center self-start rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                     reportSaved && !reportHasUnsavedChanges
-                      ? 'bg-emerald-100 text-emerald-700'
+                      ? 'bg-emerald-100 text-violet-700'
                       : 'bg-amber-100 text-amber-700'
                   }`}>
                     {reportSaved && !reportHasUnsavedChanges
@@ -17480,7 +18139,6 @@ useEffect(() => {
                     onClick={async () => {
                       try {
                         await persistVehicleReport();
-                        await loadRentalData(true);
                       } catch (err) {
                         toast.error(err.message || 'Failed to save vehicle report');
                       }
@@ -17675,7 +18333,6 @@ useEffect(() => {
                           onClick={async () => {
                             try {
                               await persistVehicleReport();
-                              await loadRentalData(true);
                             } catch (err) {
                               toast.error(err.message || 'Failed to save vehicle report');
                             }
@@ -17961,7 +18618,7 @@ useEffect(() => {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-sm font-bold text-slate-900">{step.title}</p>
-                          <p className={`mt-1 text-xs ${step.complete ? 'text-emerald-700' : 'text-slate-500'}`}>
+                          <p className={`mt-1 text-xs ${step.complete ? 'text-violet-700' : 'text-slate-500'}`}>
                             {step.description}
                           </p>
                         </div>
@@ -17976,7 +18633,7 @@ useEffect(() => {
                               isFinishWorkflowSoftLocked
                                 ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
                                 : step.complete
-                                  ? 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+                                  ? 'border-emerald-200 bg-white text-violet-700 hover:bg-emerald-50'
                                   : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                             }`}
                           >
@@ -18162,6 +18819,50 @@ useEffect(() => {
     ));
   };
 
+  const openVehicleProfileFromRental = (vehicleId) => {
+    const normalizedVehicleId = String(vehicleId || '').trim();
+    if (!normalizedVehicleId) return;
+
+    navigate(`/admin/fleet/${normalizedVehicleId}`, {
+      state: {
+        from: currentLocationPath,
+        returnLabel: tr('Back to rental', 'Retour à la location'),
+      },
+    });
+  };
+
+  const renderRentalVehiclePlateLink = (plateLabel, vehicleId, className = '') => {
+    const normalizedPlateLabel = String(plateLabel || '').trim();
+    const normalizedVehicleId = String(vehicleId || '').trim();
+
+    if (!normalizedPlateLabel) {
+      return null;
+    }
+
+    if (!normalizedVehicleId) {
+      return <span className={className}>{normalizedPlateLabel}</span>;
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => openVehicleProfileFromRental(normalizedVehicleId)}
+        className={`inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-100 ${className}`.trim()}
+        title={tr('Open vehicle profile', 'Ouvrir le profil véhicule')}
+      >
+        {normalizedPlateLabel}
+      </button>
+    );
+  };
+
+  const lightSchedulePreviewParts = [
+    rental?.started_at
+      ? tr('Started live', 'Démarrée en direct')
+      : tr('Scheduled timing', 'Horaire planifié'),
+    formatRentalDurationLabel(rental, isFrench),
+    timeRemaining || null,
+  ].filter(Boolean);
+
   const lightRentalInfoPreview = {
     people: [
       createdByDisplay || startedByDisplay || signedByDisplay
@@ -18185,6 +18886,7 @@ useEffect(() => {
         : null,
     ].filter(Boolean).join(' • '),
     vehicle: [
+      rental?.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || null,
       rental?.vehicle?.name || rental?.vehicle?.model || tr('Vehicle linked', 'Véhicule lié'),
       hasVehicleReplacementHistory
         ? tr(
@@ -18193,13 +18895,16 @@ useEffect(() => {
           )
         : tr('No swaps yet', 'Aucun changement'),
     ].filter(Boolean).join(' • '),
-    schedule: [
-      rental?.started_at
-        ? tr('Started live', 'Démarrée en direct')
-        : tr('Scheduled timing', 'Horaire planifié'),
-      formatRentalDurationLabel(rental, isFrench),
-      timeRemaining || null,
-    ].filter(Boolean).join(' • '),
+    schedule: (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <span>{lightSchedulePreviewParts.join(' • ')}</span>
+        {pendingExtensions.length > 0 ? (
+          <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+            {pendingExtensionRequestLabel}
+          </span>
+        ) : null}
+      </span>
+    ),
     money: (
       <>
         <span>{dynamicPaymentState?.label || tr('Payment pending', 'Paiement en attente')}</span>
@@ -18223,17 +18928,14 @@ useEffect(() => {
         ) : null}
       </>
     ),
-    media: [
-      hasCompletedVehicleMedia
-        ? tr(
-            `${completedVehicleMediaCount} media item${completedVehicleMediaCount > 1 ? 's' : ''} saved`,
-            `${completedVehicleMediaCount} média${completedVehicleMediaCount > 1 ? 's enregistrés' : ' enregistré'}`
-          )
-        : tr('No return media saved yet', 'Aucun média de retour enregistré'),
-      String(rental?.rental_status || '').toLowerCase() === 'completed'
-        ? tr('Add final vehicle photos and videos', 'Ajoutez les photos et vidéos finales du véhicule')
-        : tr('Use this step while capturing return inspection media', 'Utilisez cette étape pendant la capture des médias de retour'),
-    ].filter(Boolean).join(' • '),
+    media: vehicleMediaPreviewCountSegments.length > 0
+      ? vehicleMediaPreviewCountSegments.join(' • ')
+      : [
+          tr('No media saved yet', 'Aucun média enregistré'),
+          String(rental?.rental_status || '').toLowerCase() === 'completed'
+            ? tr('Add final vehicle photos and videos', 'Ajoutez les photos et vidéos finales du véhicule')
+            : tr('Use this step while capturing return inspection media', 'Utilisez cette étape pendant la capture des médias de retour'),
+        ].filter(Boolean).join(' • '),
     signature: rental?.signature_url
       ? tr('Signature saved and ready for documents', 'Signature enregistrée et prête pour les documents')
       : tr('No customer signature saved yet', 'Aucune signature client enregistrée'),
@@ -18555,6 +19257,7 @@ useEffect(() => {
     children,
     sectionRef = null,
     accentTone = 'violet',
+    headerAction = null,
   }) => {
     if (!isLightRentalDetailsMode) {
       return <>{children}</>;
@@ -18589,43 +19292,50 @@ useEffect(() => {
             : idleShellClass
         }`}
       >
-        <button
-          type="button"
-          onClick={() => toggleLightRentalInfoSection(sectionKey)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left transition-colors duration-200"
-        >
-          <div className="flex min-w-0 items-start gap-3">
-            {Icon ? (
-              <div
-                className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-[border-color,background-color,box-shadow,color] duration-200 ${
-                  useActiveAccent
-                    ? activeIconClass
-                    : idleIconClass
-                }`}
-              >
-                <Icon className="h-5 w-5" />
-              </div>
-            ) : null}
-            <div className="min-w-0">
-              {eyebrow ? (
-                <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${eyebrowClass}`}>
-                  {eyebrow}
-                </p>
-              ) : null}
-              <p className="mt-1 text-base font-bold text-slate-900">{title}</p>
-              <div className="mt-1 text-xs text-slate-500">{preview}</div>
-            </div>
-          </div>
-          <div
-            className={`rounded-full p-2 transition-[background-color,color,box-shadow] duration-200 ${
-              useActiveAccent
-                ? chevronActiveClass
-                : 'bg-slate-100 text-slate-500'
-            }`}
+        <div className="flex items-start gap-3 px-4 py-4">
+          <button
+            type="button"
+            onClick={() => toggleLightRentalInfoSection(sectionKey)}
+            className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left transition-colors duration-200"
           >
-            {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </div>
-        </button>
+            <div className="flex min-w-0 items-start gap-3">
+              {Icon ? (
+                <div
+                  className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-[border-color,background-color,box-shadow,color] duration-200 ${
+                    useActiveAccent
+                      ? activeIconClass
+                      : idleIconClass
+                  }`}
+                >
+                  <Icon className="h-5 w-5" />
+                </div>
+              ) : null}
+              <div className="min-w-0">
+                {eyebrow ? (
+                  <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${eyebrowClass}`}>
+                    {eyebrow}
+                  </p>
+                ) : null}
+                <p className="mt-1 text-base font-bold text-slate-900">{title}</p>
+                <div className="mt-1 text-xs text-slate-500">{preview}</div>
+              </div>
+            </div>
+            <div
+              className={`rounded-full p-2 transition-[background-color,color,box-shadow] duration-200 ${
+                useActiveAccent
+                  ? chevronActiveClass
+                  : 'bg-slate-100 text-slate-500'
+              }`}
+            >
+              {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </div>
+          </button>
+          {headerAction ? (
+            <div className="mt-0.5 flex-shrink-0">
+              {headerAction}
+            </div>
+          ) : null}
+        </div>
         {isOpen ? (
           <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3">
             {children}
@@ -18672,6 +19382,55 @@ useEffect(() => {
     );
   };
 
+  const renderStaffActionTimeline = () => {
+    const toneClasses = {
+      amber: 'border-amber-200 bg-amber-50 text-amber-900',
+      blue: 'border-blue-200 bg-blue-50 text-blue-900',
+      emerald: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+      red: 'border-red-200 bg-red-50 text-red-900',
+      violet: 'border-violet-200 bg-violet-50 text-violet-900',
+      slate: 'border-slate-200 bg-slate-50 text-slate-800',
+    };
+
+    if (!staffActionTimeline.length) {
+      return (
+        <p className="text-xs italic text-slate-400">
+          {tr('No staff actions recorded yet.', 'Aucune action équipe enregistrée pour le moment.')}
+        </p>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {staffActionTimeline.map((event) => (
+          <div key={event.key} className="flex gap-3 rounded-2xl border border-slate-100 bg-slate-50/60 p-3">
+            <div className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-violet-500 shadow-[0_0_0_4px_rgba(139,92,246,0.12)]" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm font-semibold text-slate-900">{event.label}</p>
+                <span className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                  {new Date(event.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                {event.actor && (
+                  <span>{tr('By', 'Par')} <strong className="text-slate-800">{event.actor}</strong></span>
+                )}
+                {event.detail && <span className="text-slate-400">•</span>}
+                {event.detail && <span>{event.detail}</span>}
+                {event.status && (
+                  <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${toneClasses[event.tone] || toneClasses.slate}`}>
+                    {event.status}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderAdvancedPeopleSectionBody = () => (
     <>
       {(createdByDisplay || startedByDisplay || signedByDisplay || closedByDisplay || cancelledByDisplay) && (
@@ -18702,24 +19461,10 @@ useEffect(() => {
           </div>
           {showHistory && (
             <div className="mt-3 border-t border-violet-100 pt-3">
-              <p className="mb-2 text-xs font-semibold text-slate-500">{tr('Action History', 'Historique des actions')}</p>
-              {rentalHistory.length === 0 ? (
-                <p className="text-xs italic text-slate-400">
-                  {tr('No history yet — run SQL migration first', 'Aucun historique pour le moment — exécutez d’abord la migration SQL')}
-                </p>
-              ) : (
-                <div className="max-h-48 space-y-1 overflow-y-auto">
-                  {rentalHistory.map((log, i) => (
-                    <div key={i} className="flex gap-2 border-b border-slate-100 py-1 text-xs last:border-0">
-                      <span className="whitespace-nowrap text-slate-400">
-                        {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <span className="flex-1 text-slate-700">{log.description}</span>
-                      {log.user_name && <span className="whitespace-nowrap text-blue-600">{log.user_name}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Staff Timeline', 'Chronologie équipe')}
+              </p>
+              {renderStaffActionTimeline()}
             </div>
           )}
         </div>
@@ -18732,7 +19477,7 @@ useEffect(() => {
             <Button
               onClick={handleContactCustomerWhatsApp}
               size="sm"
-              className="rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+              className="rounded-xl border border-violet-100 bg-white text-violet-700 hover:bg-emerald-100"
             >
               <FaWhatsapp className="mr-2 h-4 w-4" />
               {tr('WhatsApp', 'WhatsApp')}
@@ -18842,7 +19587,13 @@ useEffect(() => {
         <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
           <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name || rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
           <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model || rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
-          <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || tr('Not assigned yet', 'Pas encore attribuée')}</p>
+          <p>
+            <strong>{tr('Plate:', 'Plaque :')}</strong>{' '}
+            {renderRentalVehiclePlateLink(
+              rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || '',
+              rental.vehicle?.id
+            ) || tr('Not assigned yet', 'Pas encore attribuée')}
+          </p>
           <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type || tr('N/A', 'N/D')}</p>
           {rental.start_odometer && (
             <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
@@ -19037,14 +19788,19 @@ useEffect(() => {
             <div className="absolute bottom-1 left-[11px] top-1 w-px bg-slate-200" />
             <div className="space-y-4">
               {vehicleReplacementHistory.map((entry, index) => {
-                const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot, entry.plate_number_snapshot].filter(Boolean).join(' · ');
+                const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot].filter(Boolean).join(' · ');
                 const isCurrentEntry = index === vehicleReplacementHistory.length - 1 && !entry.ended_at;
                 const entryStartLabel = index === 0 ? tr('Started rental', 'Démarrage de location') : tr('Replaced at', 'Remplacé à');
                 return (
                   <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
                     <div className={`absolute -left-[26px] top-4 h-4 w-4 rounded-full border-4 ${isCurrentEntry ? 'border-violet-500 bg-violet-100' : 'border-slate-300 bg-white'}`} />
                     <div className="flex flex-col gap-1">
-                      <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                        {entry.plate_number_snapshot
+                          ? renderRentalVehiclePlateLink(entry.plate_number_snapshot, entry.vehicle_id)
+                          : null}
+                      </div>
                       <p className="text-xs text-slate-500">{entryStartLabel} · {formatVehicleHistoryDateTime(entry.started_at, isFrench)}</p>
                       {index > 0 && entry.replacement_reason && (
                         <p className="text-xs text-slate-600">{tr('Reason:', 'Raison :')} <span className="font-medium text-slate-700">{entry.replacement_reason}</span></p>
@@ -19110,7 +19866,7 @@ useEffect(() => {
                   ) : null}
                   {kilometerPackageApplication.upgraded ? (
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
-                      <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
+                      <span className="text-violet-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
                       <span className="text-right font-extrabold text-emerald-800">
                         {appliedKilometerPackageName}
                         {Number.isFinite(kilometerPackageApplication.appliedLimit) ? ` · ${kilometerPackageApplication.appliedLimit} km` : ` · ${tr('Unlimited', 'Illimité')}`}
@@ -19149,7 +19905,7 @@ useEffect(() => {
                   )}
                 </div>
               ) : autoMatchedPackageDiffers ? (
-                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
                   {tr('Package upgrade is available from distance used.', 'Un surclassement forfait est disponible selon la distance utilisée.')}
                 </p>
               ) : simplePricingSummary.packageOverflowKm > 0 ? (
@@ -19160,12 +19916,12 @@ useEffect(() => {
                   )}
                 </p>
               ) : (
-                <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-violet-700">
                   {tr('Best package selected automatically from the distance used.', 'Le meilleur forfait a été sélectionné automatiquement selon la distance utilisée.')}
                 </p>
               )}
               {String(rental?.rental_type || '').toLowerCase() === 'hourly' && (
-                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
                   {tr(
                     `Late return rule: if a 1-hour rental goes more than ${simplePricingSummary.gracePeriodMinutes} minutes late, a second hour is charged automatically.`,
                     `Règle de retard : si une location de 1 heure dépasse la période de grâce de ${simplePricingSummary.gracePeriodMinutes} minutes, une deuxième heure est facturée automatiquement.`
@@ -19179,13 +19935,13 @@ useEffect(() => {
 
       {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
         <div className="grid gap-4">
-          <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+          <div className="rounded-xl border border-sky-200 bg-violet-50 p-4">
             <div className="mb-3 flex items-center gap-2">
-              <Calculator className="h-5 w-5 text-sky-600" />
+              <Calculator className="h-5 w-5 text-violet-600" />
               <h4 className="font-semibold text-sky-900">{tr('Base price selected', 'Tarif de base sélectionné')}</h4>
             </div>
-            <div className="rounded-2xl border border-sky-100 bg-white p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">{tr('Standard rental', 'Location standard')}</p>
+            <div className="rounded-2xl border border-violet-100 bg-white p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Standard rental', 'Location standard')}</p>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <span className="text-slate-600">
                   {tierPricingBreakdown.isDaily ? tr('Base daily price', 'Tarif journalier de base') : tr('Base hourly price', 'Tarif horaire de base')}
@@ -19200,7 +19956,7 @@ useEffect(() => {
                         : `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('hours', 'heures') : tr('hour', 'heure')}`} · {formatCurrency(tierPricingBreakdown.standardHourlyRate)} MAD
                 </span>
               </div>
-              <p className="mt-2 text-xs font-medium text-sky-700">
+              <p className="mt-2 text-xs font-medium text-violet-700">
                 {tr(
                   'This rental follows the standard model price with no kilometer package attached.',
                   "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
@@ -19217,9 +19973,9 @@ useEffect(() => {
     <>
       <div>
         <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
-        {!isEditingPrice && canEditLifecycleRentalPrice && (
+        {!isEditingPrice && canRequestLifecycleRentalPriceChange && (
           <div className="mb-4 flex flex-wrap justify-end gap-2">
-            {currentAmountDueForEdit > 0 && (
+            {canEditLifecycleRentalPrice && currentAmountDueForEdit > 0 && (
               <Button
                 type="button"
                 onClick={handlePayDueBalance}
@@ -19237,16 +19993,18 @@ useEffect(() => {
                   : `${tr('Pay Due Balance', 'Payer le solde restant dû')} · ${formatCurrency(currentAmountDueForEdit)} MAD`}
               </Button>
             )}
-            <Button
-              type="button"
-              onClick={handleEditAmountDue}
-              size="sm"
-              variant="outline"
-              className="border-violet-200 text-violet-700 transition-transform duration-150 hover:bg-violet-50 hover:scale-[1.01] active:scale-[0.97]"
-            >
-              <DollarSign className="mr-2 h-4 w-4" />
-              {tr('Adjust Balance', 'Ajuster le solde')}
-            </Button>
+            {canEditLifecycleRentalPrice && (
+              <Button
+                type="button"
+                onClick={handleEditAmountDue}
+                size="sm"
+                variant="outline"
+                className="border-violet-200 text-violet-700 transition-transform duration-150 hover:bg-violet-50 hover:scale-[1.01] active:scale-[0.97]"
+              >
+                <DollarSign className="mr-2 h-4 w-4" />
+                {tr('Adjust Balance', 'Ajuster le solde')}
+              </Button>
+            )}
             <Button
               type="button"
               onClick={handleEditPrice}
@@ -19254,7 +20012,9 @@ useEffect(() => {
               className={`${PRIMARY_ACTION_BUTTON_CLASS} transition-transform duration-150 hover:scale-[1.01] active:scale-[0.97]`}
             >
               <Edit className="mr-2 h-4 w-4" />
-              {tr('Edit Rental Cost', 'Modifier le coût de location')}
+              {canApplyRentalPriceDirectly
+                ? tr('Edit Rental Cost', 'Modifier le coût de location')
+                : tr('Request Price Change', 'Demander un changement de prix')}
             </Button>
           </div>
         )}
@@ -19347,7 +20107,7 @@ useEffect(() => {
                           href={inlineTransportFeeMeta.receiptUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 font-semibold text-sky-700 hover:bg-sky-100"
+                          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-violet-50 px-3 py-1.5 font-semibold text-violet-700 hover:bg-sky-100"
                         >
                           <FileImage className="h-3.5 w-3.5" />
                           {tr('View receipt', 'Voir le reçu')}
@@ -19362,13 +20122,21 @@ useEffect(() => {
         )}
 
         {isPendingApproval && (
-          <Alert className="mb-4 border-yellow-200 bg-yellow-50">
+          <Alert
+            ref={approvalPriceSectionRef}
+            className={`mb-4 border-yellow-200 bg-yellow-50 transition-all duration-300 ${
+              shouldHighlightPriceApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.18)]' : ''
+            }`}
+          >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-yellow-600" />
                 <AlertDescription className="text-yellow-800">
                   <strong>{tr('Pending Admin Approval', 'Approbation admin en attente')}</strong>
                   <p className="mt-1">{tr('Manual price override requested:', 'Demande de modification manuelle du prix :')} <strong>{rental.pending_total_request} MAD</strong></p>
+                  {priceOverrideRequesterName && (
+                    <p className="mt-1 text-sm">{tr('Requested by:', 'Demandé par :')} {priceOverrideRequesterName}</p>
+                  )}
                   {priceOverrideNoteText && (
                     <p className="mt-1 text-sm">{tr('Reason:', 'Raison :')} {priceOverrideNoteText}</p>
                   )}
@@ -19376,26 +20144,28 @@ useEffect(() => {
               </div>
 
               {!isAdmin && (
-                <Button
-                  onClick={handlePriceApprovalRequest}
-                  className="whitespace-nowrap bg-green-600 text-white hover:bg-green-700"
-                  size="sm"
-                  disabled={isSharing}
-                >
-                  <FaWhatsapp className="mr-2 h-4 w-4" />
-                  {isSharing ? tr('Sending...', 'Envoi...') : tr('Notify Admin via WhatsApp', 'Notifier l’admin via WhatsApp')}
-                </Button>
+                <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-sm font-semibold text-amber-900">
+                  {tr('Request sent. Admins were notified on Telegram.', 'Demande envoyée. Les admins ont été notifiés sur Telegram.')}
+                </div>
               )}
             </div>
           </Alert>
         )}
 
         {isPendingApproval && isAdmin && (
-          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div
+            ref={approvalPriceSectionRef}
+            className={`mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 transition-all duration-300 ${
+              shouldHighlightPriceApproval ? 'ring-4 ring-blue-300 shadow-[0_0_0_8px_rgba(96,165,250,0.18)]' : ''
+            }`}
+          >
             <h4 className="mb-3 font-semibold text-blue-900">{tr('Price Approval Required', 'Approbation du prix requise')}</h4>
             <div className="mb-3 space-y-2 text-sm">
               <p><strong>{tr('Current Auto Price:', 'Prix auto actuel :')}</strong> {rental.total_amount} MAD</p>
               <p><strong>{tr('Requested Manual Price:', 'Prix manuel demandé :')}</strong> {rental.pending_total_request} MAD</p>
+              {priceOverrideRequesterName && (
+                <p><strong>{tr('Requested by:', 'Demandé par :')}</strong> {priceOverrideRequesterName}</p>
+              )}
               {priceOverrideNoteText && (
                 <p><strong>{tr('Reason:', 'Raison :')}</strong> {priceOverrideNoteText}</p>
               )}
@@ -19417,15 +20187,15 @@ useEffect(() => {
           <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">{tr('Balance resolved', 'Solde résolu')}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-700">{tr('Balance resolved', 'Solde résolu')}</p>
                 <p className="mt-1 text-sm font-semibold text-emerald-950">{tr('Payment and discount recorded', 'Paiement et remise enregistrés')}</p>
                 {amountDueAuditMeta.editedByName && (
-                  <p className="mt-1 text-xs text-emerald-700">{tr('By', 'Par')} <strong>{amountDueAuditMeta.editedByName}</strong></p>
+                  <p className="mt-1 text-xs text-violet-700">{tr('By', 'Par')} <strong>{amountDueAuditMeta.editedByName}</strong></p>
                 )}
               </div>
               <div className="rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-right">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Final due', 'Solde final')}</p>
-                <p className="mt-1 text-2xl font-extrabold text-emerald-700">{formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD</p>
+                <p className="mt-1 text-2xl font-extrabold text-violet-700">{formatCurrency(amountDueAuditMeta.newAmount ?? resolvedCurrentAmountDue)} MAD</p>
               </div>
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-4">
@@ -19435,7 +20205,7 @@ useEffect(() => {
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
-                <p className="mt-1 text-lg font-bold text-emerald-700">{formatCurrency(amountDueAuditMeta.paymentReceivedNow || 0)} MAD</p>
+                <p className="mt-1 text-lg font-bold text-violet-700">{formatCurrency(amountDueAuditMeta.paymentReceivedNow || 0)} MAD</p>
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Discount', 'Remise')}</p>
@@ -19443,7 +20213,7 @@ useEffect(() => {
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Still due', 'Encore dû')}</p>
-                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.newAmount ?? resolvedCurrentAmountDue)} MAD</p>
               </div>
             </div>
             {amountDueAuditMeta.note && (
@@ -19648,7 +20418,7 @@ useEffect(() => {
                   )}
 
                   {rentalBillingSummary.transportFeeAmount > 0 && (
-                    <div className="flex justify-between text-sky-700">
+                    <div className="flex justify-between text-violet-700">
                       <span>{tr('Transport fee:', 'Frais de transport :')}</span>
                       <span className="font-medium">+{formatCurrency(rentalBillingSummary.transportFeeAmount)} MAD</span>
                     </div>
@@ -19745,7 +20515,7 @@ useEffect(() => {
                   </div>
 
                   {rentalBillingSummary.autoDepositSeizedAmount > 0 && rentalBillingSummary.autoDepositReturnAmount > 0 && (
-                    <div className="flex justify-between text-sm text-sky-700">
+                    <div className="flex justify-between text-sm text-violet-700">
                       <span>{tr('Security remaining to return:', 'Caution restante à restituer :')}</span>
                       <span className="font-medium">{formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD</span>
                     </div>
@@ -19784,7 +20554,7 @@ useEffect(() => {
                     onClick={markAsPaid}
                     size="sm"
                     className={`ml-2 h-8 px-3 text-xs ${SUCCESS_ACTION_BUTTON_CLASS}`}
-                    disabled={isUpdatingPayment || isPendingApproval}
+                    disabled={isUpdatingPayment}
                   >
                     {isUpdatingPayment ? (
                       <div className="mr-1 h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
@@ -19807,49 +20577,49 @@ useEffect(() => {
         </div>
 
         {showSecurityHoldSection && (
-          <div className="mt-4 overflow-hidden rounded-[22px] border border-sky-200 bg-sky-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
+          <div className="mt-4 overflow-hidden rounded-[22px] border border-sky-200 bg-violet-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
             <button
               type="button"
               onClick={() => setSecurityHoldOpen((prev) => !prev)}
               className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
             >
               <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-700 shadow-sm">
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-violet-700 shadow-sm">
                   <Shield className="h-4 w-4" />
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-sky-950">
                     {tr('Security', 'Garantie')}
                   </p>
-                  <p className="mt-0.5 text-xs text-sky-700">
+                  <p className="mt-0.5 text-xs text-violet-700">
                     {securityOverviewSummary}
                   </p>
                 </div>
               </div>
-              <div className="rounded-full bg-white/90 p-2 text-sky-700 shadow-sm">
+              <div className="rounded-full bg-white/90 p-2 text-violet-700 shadow-sm">
                 {securityHoldOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </div>
             </button>
 
             {securityHoldOpen ? (
-              <div className="space-y-4 border-t border-sky-100 px-4 pb-4 pt-3">
+              <div className="space-y-4 border-t border-violet-100 px-4 pb-4 pt-3">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Required Security', 'Garantie requise')}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">{tr('Required Security', 'Garantie requise')}</p>
                     <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(requiredSecurityAmount)} MAD</p>
                   </div>
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Cash Received', 'Espèces reçues')}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">{tr('Cash Received', 'Espèces reçues')}</p>
                     <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(receivedSecurityAmount)} MAD</p>
                   </div>
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Held Document', 'Document retenu')}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">{tr('Held Document', 'Document retenu')}</p>
                     <p className="mt-1 text-sm font-semibold text-slate-900" title={hasHeldSecurityDocument ? heldSecurityDocumentTitle : undefined}>
                       {hasHeldSecurityDocument ? heldSecurityDocumentLabel : tr('None recorded', 'Aucun document enregistré')}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Received Via', 'Reçu via')}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">{tr('Received Via', 'Reçu via')}</p>
                     <p className="mt-1 text-sm font-semibold text-slate-900">{securityHoldMethodLabel}</p>
                     {securityHoldReceivedMethod && (
                       <p className="mt-1 text-xs text-slate-500">
@@ -19874,7 +20644,7 @@ useEffect(() => {
                           value={securityHoldAmountInput}
                           onChange={(e) => setSecurityHoldAmountInput(normalizeMoneyInputValue(e.target.value))}
                           placeholder="0"
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-violet-100"
                         />
                       </div>
                       <div className="flex flex-col gap-2 sm:flex-row">
@@ -19912,7 +20682,7 @@ useEffect(() => {
                 )}
 
                 {(hasMonetaryDamageDeposit || hasHeldSecurityDocument || rental.deposit_returned_at) && (
-                  <div className="space-y-4 border-t border-sky-100 pt-4">
+                  <div className="space-y-4 border-t border-violet-100 pt-4">
                     {!rental.deposit_returned_at && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
                       <div className="rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-sm text-slate-700 shadow-[0_12px_30px_rgba(59,130,246,0.05)]">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -20301,6 +21071,29 @@ useEffect(() => {
     <>
       <div>
         <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Rental Period', 'Période de location')}</h3>
+        {pendingExtensions.length > 0 ? (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
+                  <AlertTriangle className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="text-sm font-extrabold text-amber-900">{pendingExtensionRequestLabel}</p>
+                  <p className="mt-1 text-sm text-amber-800">
+                    {tr(
+                      `Waiting for admin approval · +${pendingExtensionHours}h · ${formatCurrency(pendingExtensionAmount)} MAD`,
+                      `En attente d'approbation admin · +${pendingExtensionHours}h · ${formatCurrency(pendingExtensionAmount)} MAD`
+                    )}
+                  </p>
+                </div>
+              </div>
+              <span className="inline-flex w-fit items-center rounded-full bg-white px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-amber-700 shadow-sm">
+                {tr('Pending', 'En attente')}
+              </span>
+            </div>
+          </div>
+        ) : null}
         <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
           <p>
             <strong>{tr('Start:', 'Début :')}</strong>{' '}
@@ -20404,7 +21197,12 @@ useEffect(() => {
         <>
           <Separator className="bg-slate-100" />
 
-          <div>
+          <div
+            ref={approvalExtensionSectionRef}
+            className={`rounded-2xl transition-all duration-300 ${
+              shouldHighlightExtensionApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.16)]' : ''
+            }`}
+          >
             <div className="mb-3">
               <h3 className="text-lg font-semibold text-slate-900">{tr('Extension History', 'Historique des prolongations')}</h3>
               <p className="mt-1 text-sm text-slate-500">
@@ -20422,6 +21220,8 @@ useEffect(() => {
               isAdmin={isAdmin}
               onEdit={canEditExtensionEntries ? handleEditExtension : undefined}
               canEdit={canEditExtensionEntries}
+              highlightedExtensionId={shouldHighlightExtensionApproval ? highlightedApprovalRequestId : ''}
+              actionLoading={actionLoading}
             />
 
             {closingMedia.length > 0 && rental.rental_status === 'completed' && (
@@ -20546,7 +21346,7 @@ useEffect(() => {
         <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
-            <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-emerald-700' : 'text-slate-500'}`}>
+            <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-violet-700' : 'text-slate-500'}`}>
               {isLightRentalDetailsMode && hasCompletedVehicleMedia
                 ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
                 : vehicleReport?.maintenance_id
@@ -20561,10 +21361,10 @@ useEffect(() => {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {hasCompletedVehicleMedia ? (
-              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-violet-700">
                 <CheckCircle className="h-4 w-4" />
                 {tr('Done', 'Terminé')}
-                <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
+                <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-violet-700 shadow-sm">
                   {completedVehicleMediaCount}
                 </span>
               </div>
@@ -20675,21 +21475,21 @@ useEffect(() => {
   );
 
   const renderTelegramResendCompactRow = () => (
-    <div className="mb-4 overflow-hidden rounded-[22px] border border-sky-200 bg-sky-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
+    <div className="mb-4 overflow-hidden rounded-[22px] border border-sky-200 bg-violet-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
       <button
         type="button"
         onClick={() => setTelegramResendOpen((prev) => !prev)}
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
       >
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-700 shadow-sm">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-violet-700 shadow-sm">
             <Share2 className="h-4 w-4" />
           </div>
           <div className="min-w-0">
             <p className="text-sm font-semibold text-sky-950">
               {tr('Telegram alerts', 'Alertes Telegram')}
             </p>
-            <p className="mt-0.5 text-xs text-sky-700">
+            <p className="mt-0.5 text-xs text-violet-700">
               {tr(
                 `${availableTelegramResendActions.length} resend action${availableTelegramResendActions.length > 1 ? 's' : ''}`,
                 `${availableTelegramResendActions.length} action${availableTelegramResendActions.length > 1 ? 's' : ''} de renvoi`
@@ -20697,13 +21497,13 @@ useEffect(() => {
             </p>
           </div>
         </div>
-        <div className="rounded-full bg-white/90 p-2 text-sky-700 shadow-sm">
+        <div className="rounded-full bg-white/90 p-2 text-violet-700 shadow-sm">
           {telegramResendOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </div>
       </button>
 
       {telegramResendOpen ? (
-        <div className="border-t border-sky-100 px-4 pb-4 pt-3">
+        <div className="border-t border-violet-100 px-4 pb-4 pt-3">
           <div className="flex flex-wrap gap-2">
             {availableTelegramResendActions.map((action) => (
               <Button
@@ -20731,215 +21531,278 @@ useEffect(() => {
     </div>
   );
 
-  const renderAmountDueEditorBlock = (editorRef = null) => (
-    <div
-      ref={editorRef}
-      className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]"
-    >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-            {isPayingDueBalance
-              ? tr('Due Balance Payment', 'Paiement du solde restant dû')
-              : tr('Balance Resolution', 'Résolution du solde')}
-          </p>
-          <h4 className="mt-1 text-lg font-semibold text-slate-900">
-            {isPayingDueBalance
-              ? tr('Pay Due Balance', 'Payer le solde restant dû')
-              : tr('Edit Amount Due', 'Modifier le montant restant dû')}
-          </h4>
-          <p className="mt-1 text-sm text-slate-500">
-            {isPayingDueBalance
-              ? tr(
-                  'Confirm the amount collected now so the contract can be closed safely without editing the rental price.',
-                  "Confirmez le montant encaissé maintenant afin de clôturer le contrat sans modifier le prix de location."
-                )
-              : tr(
-                  'Record what the customer paid, what we discounted, and confirm the final balance.',
-                  'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
-                )}
-          </p>
-        </div>
-        <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-            {tr('Current due', 'Solde actuel')}
-          </span>
-          <span className="mt-1 block text-xl font-extrabold text-slate-900">
-            {formatCurrency(currentAmountDueForEdit)} MAD
-          </span>
-        </div>
-      </div>
+  const renderAmountDueEditorBlock = (editorRef = null) => {
+      const finalAmountDueValue = Math.max(0, Number(manualAmountDue) || 0);
+      const hasManualFinalOverride = Math.abs(finalAmountDueValue - amountDueAutoCalculatedValue) > 0.01;
 
-      <div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:items-stretch">
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-            {tr('Before', 'Avant')}
-          </span>
-          <p className="mt-3 text-sm font-medium text-slate-500">
-            {tr('Amount still due', 'Montant restant dû')}
-          </p>
-          <p className="mt-1 text-2xl font-extrabold text-slate-900">
-            {formatCurrency(currentAmountDueForEdit)} MAD
-          </p>
-        </div>
-
-        <div className="hidden items-center justify-center lg:flex">
-          <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
-            {tr('Resolve', 'Résoudre')}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
-            {tr('Customer paid', 'Client payé')}
-          </span>
-          <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
-            <label className="mb-2 block text-xs font-medium text-slate-500">
-              {isPayingDueBalance
-                ? tr('Amount collected now', 'Montant encaissé maintenant')
-                : tr('Payment received now', 'Paiement reçu maintenant')}
-            </label>
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold text-emerald-600">MAD</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={amountDuePaymentReceivedNow}
-                onChange={(e) => {
-                  const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                  const value = Math.max(0, Number(normalizedValue) || 0);
-                  setAmountDuePaymentReceivedNow(normalizedValue);
-                  setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
-                }}
-                placeholder="0"
-                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="hidden items-center justify-center lg:flex">
-          <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
-            {tr('And', 'Et')}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-violet-200 bg-violet-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(139,92,246,0.10)]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
-            {tr('We discounted', 'Nous avons remisé')}
-          </span>
-          <div className="mt-3 rounded-2xl border border-violet-200 bg-white px-3 py-3">
-            <label className="mb-2 block text-xs font-medium text-slate-500">
-              {tr('Company discount', 'Remise entreprise')}
-            </label>
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold text-violet-600">MAD</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={amountDueCompanyDiscount}
-                onChange={(e) => {
-                  const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                  const value = Math.max(0, Number(normalizedValue) || 0);
-                  setAmountDueCompanyDiscount(normalizedValue);
-                  setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
-                }}
-                placeholder="0"
-                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
-          <div className="flex items-center justify-between gap-4">
+      return (
+        <div
+          ref={editorRef}
+          className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-4 shadow-[0_20px_60px_rgba(109,40,217,0.10)] sm:p-5"
+        >
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
-                {tr('Final balance', 'Solde final')}
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+                {isPayingDueBalance
+                  ? tr('Due Balance Payment', 'Paiement du solde restant dû')
+                  : tr('Balance Resolution', 'Résolution du solde')}
+              </p>
+              <h4 className="mt-1 text-lg font-semibold text-slate-900">
+                {isPayingDueBalance
+                  ? tr('Pay Due Balance', 'Payer le solde restant dû')
+                  : tr('Adjust Balance', 'Ajuster le solde')}
+              </h4>
+              <p className="mt-1 text-sm text-slate-500">
+                {isPayingDueBalance
+                  ? tr(
+                      'Confirm what was collected now and the page will calculate the new due instantly.',
+                      'Confirmez ce qui a été encaissé maintenant et la page calculera immédiatement le nouveau solde.'
+                    )
+                  : tr(
+                      'Enter what the customer paid, add any company discount, and confirm the final due.',
+                      'Saisissez ce que le client a payé, ajoutez une remise entreprise si nécessaire, puis confirmez le solde final.'
+                    )}
+              </p>
+            </div>
+            <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
+              <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                {tr('Current due', 'Solde actuel')}
               </span>
-              <p className="mt-2 text-sm text-slate-500">
-                {tr('You can keep the auto-calculated balance or fine-tune it if needed.', 'Vous pouvez garder le solde calculé automatiquement ou l’ajuster si nécessaire.')}
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                {tr('Auto-calculated', 'Calcul automatique')}
-              </p>
-              <p className="mt-1 text-2xl font-extrabold text-blue-700">
-                {formatCurrency(amountDueAutoCalculatedValue)} MAD
-              </p>
+              <span className="mt-1 block text-xl font-extrabold text-slate-900">
+                {formatCurrency(currentAmountDueForEdit)} MAD
+              </span>
             </div>
           </div>
-          <div className="mt-4 rounded-2xl border border-blue-200 bg-white px-3 py-3">
-            <label className="mb-2 block text-xs font-medium text-slate-500">
-              {isPayingDueBalance
-                ? tr('Remaining after payment', 'Restant après paiement')
-                : tr('New amount due', 'Nouveau montant restant dû')}
-            </label>
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold text-blue-600">MAD</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={manualAmountDue}
-                onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
-                placeholder="0"
-                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-              />
+
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_340px]">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
+                    {tr('Customer paid now', 'Client payé maintenant')}
+                  </p>
+                  <p className="mt-1 text-xs text-violet-700">
+                    {tr(
+                      'Use the amount actually collected on this step.',
+                      'Utilisez le montant réellement encaissé à cette étape.'
+                    )}
+                  </p>
+                </div>
+                <div className="rounded-full bg-white px-3 py-1 text-xs font-bold text-violet-700 shadow-sm">
+                  -{formatCurrency(amountDuePaymentReceivedValue)} MAD
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {isPayingDueBalance
+                    ? tr('Amount collected now', 'Montant encaissé maintenant')
+                    : tr('Payment received now', 'Paiement reçu maintenant')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-emerald-600">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amountDuePaymentReceivedNow}
+                    onChange={(e) => {
+                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                      const value = Math.max(0, Number(normalizedValue) || 0);
+                      setAmountDuePaymentReceivedNow(normalizedValue);
+                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
+                    }}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-4 shadow-[0_16px_36px_rgba(245,158,11,0.10)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">
+                    {tr('Company discount', 'Remise entreprise')}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-700">
+                    {tr(
+                      'Only use this when we waive part of the balance.',
+                      'Utilisez ceci uniquement si nous annulons une partie du solde.'
+                    )}
+                  </p>
+                </div>
+                <div className="rounded-full bg-white px-3 py-1 text-xs font-bold text-amber-700 shadow-sm">
+                  -{formatCurrency(amountDueCompanyDiscountValue)} MAD
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {tr('Discount amount', 'Montant de la remise')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-amber-700">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amountDueCompanyDiscount}
+                    onChange={(e) => {
+                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                      const value = Math.max(0, Number(normalizedValue) || 0);
+                      setAmountDueCompanyDiscount(normalizedValue);
+                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
+                    }}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/85 p-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
+                    {tr('Final due', 'Solde final')}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {tr(
+                      'Auto-calculated from current due, payment, and discount.',
+                      'Calculé automatiquement à partir du solde actuel, du paiement et de la remise.'
+                    )}
+                  </p>
+                </div>
+                {hasManualFinalOverride ? (
+                  <button
+                    type="button"
+                    onClick={() => setManualAmountDue(amountDueAutoCalculatedValue.toString())}
+                    className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 shadow-sm transition hover:bg-blue-50"
+                  >
+                    {tr('Use auto', 'Utiliser auto')}
+                  </button>
+                ) : (
+                  <div className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 shadow-sm">
+                    {tr('Auto', 'Auto')}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-2 rounded-2xl border border-blue-200 bg-white px-3 py-3 text-sm">
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>{tr('Current due', 'Solde actuel')}</span>
+                  <span className="font-semibold text-slate-900">{formatCurrency(currentAmountDueForEdit)} MAD</span>
+                </div>
+                <div className="flex items-center justify-between text-violet-700">
+                  <span>{tr('Collected now', 'Encaissé maintenant')}</span>
+                  <span className="font-semibold">-{formatCurrency(amountDuePaymentReceivedValue)} MAD</span>
+                </div>
+                <div className="flex items-center justify-between text-amber-700">
+                  <span>{tr('Discount', 'Remise')}</span>
+                  <span className="font-semibold">-{formatCurrency(amountDueCompanyDiscountValue)} MAD</span>
+                </div>
+                <div className="border-t border-blue-100 pt-2">
+                  <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                    <span>{tr('Auto result', 'Résultat auto')}</span>
+                    <span>{formatCurrency(amountDueAutoCalculatedValue)} MAD</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-blue-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {isPayingDueBalance
+                    ? tr('Remaining after payment', 'Restant après paiement')
+                    : tr('New amount due', 'Nouveau montant restant dû')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-blue-600">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={manualAmountDue}
+                    onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+                {hasManualFinalOverride ? (
+                  <p className="mt-2 text-xs font-medium text-blue-700">
+                    {tr(
+                      'Final due was adjusted manually from the auto result.',
+                      'Le solde final a été ajusté manuellement à partir du calcul automatique.'
+                    )}
+                  </p>
+                ) : null}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-            {tr('Internal reason', 'Raison interne')}
-          </label>
-          <textarea
-            value={amountDueOverrideReason}
-            onChange={(e) => setAmountDueOverrideReason(e.target.value)}
-            placeholder={tr('Why are we changing this balance?', 'Pourquoi modifions-nous ce solde ?')}
-            className="min-h-[132px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
-            rows={5}
-          />
-        </div>
-      </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {tr('Internal reason', 'Raison interne')}
+              </label>
+              <span className="text-xs text-slate-500">
+                {tr(
+                  'Short note for staff history',
+                  'Petite note pour l’historique interne'
+                )}
+              </span>
+            </div>
+            <textarea
+              value={amountDueOverrideReason}
+              onChange={(e) => setAmountDueOverrideReason(e.target.value)}
+              placeholder={tr('Why are we changing this balance?', 'Pourquoi modifions-nous ce solde ?')}
+              className="mt-3 min-h-[92px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
+              rows={3}
+            />
+          </div>
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-        <Button
-          onClick={handleSaveAmountDue}
-          className="rounded-2xl bg-violet-700 px-5 py-2.5 text-white shadow-[0_16px_40px_rgba(109,40,217,0.24)] hover:bg-violet-800"
-          size="default"
-          disabled={isSavingAmountDue}
-        >
-          {isSavingAmountDue ? (
-            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-          ) : (
-            <Save className="w-4 h-4 mr-2" />
-          )}
-          {isSavingAmountDue
-            ? tr('Saving...', 'Enregistrement...')
-            : isPayingDueBalance
-              ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
-              : tr('Resolve Balance', 'Valider le solde')}
-        </Button>
-        <Button
-          onClick={handleCancelEditAmountDue}
-          variant="outline"
-          size="default"
-          className="rounded-2xl border-slate-200 px-5 py-2.5"
-        >
-          <X className="w-4 h-4 mr-2" />
-          {tr('Cancel', 'Annuler')}
-        </Button>
-      </div>
-    </div>
-  );
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              onClick={handleSaveAmountDue}
+              className="rounded-2xl bg-violet-700 px-5 py-2.5 text-white shadow-[0_16px_40px_rgba(109,40,217,0.24)] hover:bg-violet-800"
+              size="default"
+              disabled={isSavingAmountDue}
+            >
+              {isSavingAmountDue ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+              ) : (
+                <Save className="w-4 h-4 mr-2" />
+              )}
+              {isSavingAmountDue
+                ? tr('Saving...', 'Enregistrement...')
+                : isPayingDueBalance
+                  ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
+                  : tr('Resolve Balance', 'Valider le solde')}
+            </Button>
+            <Button
+              onClick={handleCancelEditAmountDue}
+              variant="outline"
+              size="default"
+              className="rounded-2xl border-slate-200 px-5 py-2.5"
+            >
+              <X className="w-4 h-4 mr-2" />
+              {tr('Cancel', 'Annuler')}
+            </Button>
+          </div>
+        </div>
+      );
+  };
 
   const renderPriceEditorBlock = (editorRef = null) => (
     <div ref={editorRef} className="space-y-3 rounded-[24px] border border-violet-200 bg-violet-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
-      <h4 className="font-semibold text-gray-900">{tr('Edit Price', 'Modifier le prix')}</h4>
+      <h4 className="font-semibold text-gray-900">
+        {canApplyRentalPriceDirectly
+          ? tr('Edit Price', 'Modifier le prix')
+          : tr('Request Price Change', 'Demander un changement de prix')}
+      </h4>
+      {!canApplyRentalPriceDirectly && (
+        <p className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+          {tr(
+            'This will be sent to an admin for approval before the rental price changes.',
+            "Cette demande sera envoyée à un administrateur pour approbation avant de changer le prix."
+          )}
+        </p>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
           {tr('New Price (MAD)', 'Nouveau prix (MAD)')}
@@ -20978,7 +21841,11 @@ useEffect(() => {
           ) : (
             <Save className="w-4 h-4 mr-2" />
           )}
-          {isSavingPrice ? tr('Saving...', 'Enregistrement...') : tr('Save Price', 'Enregistrer le prix')}
+          {isSavingPrice
+            ? tr('Saving...', 'Enregistrement...')
+            : canApplyRentalPriceDirectly
+              ? tr('Save Price', 'Enregistrer le prix')
+              : tr('Send Request', 'Envoyer la demande')}
         </Button>
         <Button
           onClick={handleCancelEditPrice}
@@ -21054,9 +21921,11 @@ useEffect(() => {
                   </h1>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {rental.vehicle?.plate_number && (
-                      <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-slate-700">
-                        [{rental.vehicle.plate_number}]
-                      </span>
+                      renderRentalVehiclePlateLink(
+                        `[${rental.vehicle.plate_number}]`,
+                        rental.vehicle?.id,
+                        'text-xs tracking-[0.18em]'
+                      )
                     )}
                     <Badge className={`${getStatusColor(displayRentalStatus)} border px-3 py-1 text-xs font-semibold tracking-wide`}>
                       {translateRentalStatusLabel(displayRentalStatus)}
@@ -21369,19 +22238,21 @@ useEffect(() => {
                       <Share2 className="mr-2 h-4 w-4" />
                       {tr('Share', 'Partager')}
                     </button>
-                    {canEditLifecycleRentalPrice && (
+                    {canRequestLifecycleRentalPriceChange && (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsMoreActionsOpen(false);
-                            handleEditAmountDue();
-                          }}
-                          className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50"
-                        >
-                          <DollarSign className="mr-2 h-4 w-4" />
-                          {tr('Balance adjustment', 'Ajustement du solde')}
-                        </button>
+                        {canEditLifecycleRentalPrice && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsMoreActionsOpen(false);
+                              handleEditAmountDue();
+                            }}
+                            className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50"
+                          >
+                            <DollarSign className="mr-2 h-4 w-4" />
+                            {tr('Balance adjustment', 'Ajustement du solde')}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => {
@@ -21391,7 +22262,9 @@ useEffect(() => {
                           className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50"
                         >
                           <Edit className="mr-2 h-4 w-4" />
-                          {tr('Price adjustment', 'Ajustement du prix')}
+                          {canApplyRentalPriceDirectly
+                            ? tr('Price adjustment', 'Ajustement du prix')
+                            : tr('Request price change', 'Demander un changement de prix')}
                         </button>
                       </>
                     )}
@@ -21632,7 +22505,7 @@ useEffect(() => {
                   <div className="flex items-center gap-2 self-start sm:self-auto">
                     <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                       isWorkflowOnline && !startWorkflowPendingSync
-                        ? 'bg-emerald-100 text-emerald-700'
+                        ? 'bg-emerald-100 text-violet-700'
                         : 'bg-amber-100 text-amber-700'
                     }`}>
                       {isWorkflowOnline && !startWorkflowPendingSync
@@ -21677,7 +22550,7 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Customer Verification', 'Vérification client')}</h4>
                         {customerVerificationStepComplete && !isStartStepActive('customer_verification') ? (
-                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          <p className="mt-0.5 text-xs font-medium text-violet-700">
                             ✓ {getStartStepSummary('customer_verification')}
                           </p>
                         ) : customerVerificationStepComplete ? (
@@ -21686,7 +22559,7 @@ useEffect(() => {
                               {`✓ ${customerVerificationStepStatusLabel}`}
                             </p>
                             {customerVerificationMethodLabel && (
-                              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-700/80">
+                              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-violet-700/80">
                                 {customerVerificationMethodLabel}
                               </p>
                             )}
@@ -21731,6 +22604,54 @@ useEffect(() => {
                   </div>
                 </div>
 
+                {isAwaitingVehicleAssignment && (
+                  <div
+                    ref={(node) => { startStepRefs.current.assign_vehicle = node; }}
+                    style={{ order: startWorkflowDisplayOrderMap.assign_vehicle ?? 1 }}
+                    onClick={() => {
+                      if (isStartStepLocked('assign_vehicle')) notifyLockedStartStep();
+                    }}
+                    className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
+                      getStartStepContainerClass('assign_vehicle', assignVehicleStepComplete)
+                    }`}
+                  >
+                    <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
+                      assignVehicleStepComplete ? 'bg-green-500' : isStartStepActive('assign_vehicle') ? 'bg-violet-600' : 'bg-gray-300'
+                    }`}>
+                      {assignVehicleStepComplete ? (
+                        <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
+                      ) : (
+                        <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('assign_vehicle')}</span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-medium text-xs sm:text-sm text-gray-900">
+                            {tr('Assign Vehicle', 'Attribuer le véhicule')}
+                          </h4>
+                          <p className="mt-0.5 text-xs text-gray-600">
+                            {tr('Choose the exact plate for this website reservation before payment and pickup.', 'Choisissez la plaque exacte pour cette réservation web avant le paiement et le départ.')}
+                          </p>
+                        </div>
+                        {isStartStepActive('assign_vehicle') && (
+                          <Button
+                            type="button"
+                            onClick={openReplaceVehicleDialog}
+                            size="sm"
+                            disabled={isStartWorkflowSoftLocked}
+                            className="mt-2 h-7 w-full bg-amber-500 px-2.5 text-xs text-white hover:bg-amber-600 sm:mt-0 sm:w-auto sm:px-3"
+                            title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : undefined}
+                          >
+                            <CarFront className="mr-1.5 h-3 w-3" />
+                            <span className="whitespace-nowrap">{tr('Assign vehicle', 'Attribuer')}</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Step 2: Vehicle Inspection */}
                 <div
                   ref={(node) => { startStepRefs.current.opening_media = node; }}
@@ -21760,7 +22681,7 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle & Documents inspection', 'Inspection véhicule et documents')}</h4>
                         {openingInspectionStepComplete && !isStartStepActive('opening_media') ? (
-                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          <p className="mt-0.5 text-xs font-medium text-violet-700">
                             ✓ {getStartStepSummary('opening_media')}
                           </p>
                         ) : (
@@ -21902,7 +22823,7 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Starting Odometer', 'Kilométrage de départ')}</h4>
                         {startingOdometerStepComplete && !isStartStepActive('start_odometer') ? (
-                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          <p className="mt-0.5 text-xs font-medium text-violet-700">
                             ✓ {getStartStepSummary('start_odometer')}
                           </p>
                         ) : displayedStartingOdometer > 0 && (
@@ -22024,7 +22945,7 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Starting Engine Hours', 'Heures moteur de départ')}</h4>
                         {startingEngineHoursStepComplete && !isStartStepActive('start_engine_hours') ? (
-                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          <p className="mt-0.5 text-xs font-medium text-violet-700">
                             ✓ {getStartStepSummary('start_engine_hours')}
                           </p>
                         ) : displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined ? (
@@ -22131,15 +23052,15 @@ useEffect(() => {
                   }}
                   className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
                   paymentStepComplete ? 'border border-emerald-200 bg-emerald-50/80' : 
-                  isPendingApproval && !isAdmin ? 'border border-amber-200 bg-amber-50/80' : getStartStepContainerClass('payment', false)
+                  hasPendingStaffPriceApproval ? 'border border-amber-200 bg-amber-50/80' : getStartStepContainerClass('payment', false)
                 } ${paymentStepComplete && !isStartStepActive('payment') ? 'min-h-[46px] items-center' : ''}`}>
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
                     paymentStepComplete ? 'bg-green-500' : 
-                    isPendingApproval && !isAdmin ? 'bg-yellow-500' : isStartStepActive('payment') ? 'bg-violet-600' : 'bg-gray-300'
+                    hasPendingStaffPriceApproval ? 'bg-yellow-500' : isStartStepActive('payment') ? 'bg-violet-600' : 'bg-gray-300'
                   }`}>
                     {paymentStepComplete ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
-                    ) : isPendingApproval && !isAdmin ? (
+                    ) : hasPendingStaffPriceApproval ? (
                       <Clock className="w-3 h-3 text-white" />
                     ) : (
                       <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('payment')}</span>
@@ -22150,19 +23071,19 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Payment', 'Paiement')}</h4>
                         {paymentStepComplete && !isStartStepActive('payment') ? (
-                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          <p className="mt-0.5 text-xs font-medium text-violet-700">
                             ✓ {getStartStepSummary('payment')}
                           </p>
-                        ) : (isPendingApproval && !isAdmin) || (isPaymentSufficient() && isStartStepActive('payment')) ? (
+                        ) : hasPendingStaffPriceApproval || (paymentStepComplete && isStartStepActive('payment')) ? (
                           <p className="text-xs text-gray-600 mt-0.5 break-words">
-                            {isPendingApproval && !isAdmin ? (
-                              <span className="text-yellow-600">⏳ {tr('Price override pending approval', 'Modification de prix en attente d’approbation')}</span>
+                            {hasPendingStaffPriceApproval ? (
+                              <span className="text-yellow-700">⏳ {tr('Price change pending. Mark paid applies to the current approved total.', 'Changement de prix en attente. Marquer payé applique le total approuvé actuel.')}</span>
                             ) : (
                               `✓ ${tr('Payment received', 'Paiement reçu')}`
                             )}
                           </p>
                         ) : null}
-                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && isStartStepActive('payment') && (
+                        {!paymentStepComplete && isStartStepActive('payment') && (
                           <div className="mt-2 inline-flex flex-col rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                             <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
                               {tr('Remaining Balance', 'Solde restant')}
@@ -22182,7 +23103,7 @@ useEffect(() => {
                         )}
                       </div>
                       <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
-                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && isStartStepActive('payment') && (
+                        {!paymentStepComplete && isStartStepActive('payment') && (
                           <Button 
                             onClick={markAsPaid}
                             size="sm"
@@ -22239,7 +23160,7 @@ useEffect(() => {
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Fuel Level', 'Niveau de carburant')}</h4>
                           {startFuelStepComplete && !isStartStepActive('start_fuel') ? (
-                            <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            <p className="mt-0.5 text-xs font-medium text-violet-700">
                               ✓ {getStartStepSummary('start_fuel')}
                             </p>
                           ) : hasStartFuelRecorded && (
@@ -22426,7 +23347,7 @@ useEffect(() => {
                       <span>✅</span>
                       <div>
                         <p className="text-sm font-semibold text-emerald-800">{tr('Arrival window active', 'Fenêtre d’arrivée active')}</p>
-                        <p className="text-xs text-emerald-700">
+                        <p className="text-xs text-violet-700">
                           {autoExpireAllowed
                             ? `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${Math.max(0, graceMinutes - minutesLate)} ${tr('min before review', 'min avant contrôle')}`
                             : `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${tr('staff can start it normally', 'le personnel peut la démarrer normalement')}`}
@@ -23028,7 +23949,6 @@ useEffect(() => {
                                       onClick={async () => {
                                         try {
                                           await persistVehicleReport();
-                                          await loadRentalData(true);
                                         } catch (err) {
                                           toast.error(err.message || 'Failed to save vehicle report');
                                         }
@@ -23824,7 +24744,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
       {/* Extension History Section */}
       {!isLightRentalDetailsMode && extensions.length > 0 && (
-  <div className="mb-6">
+  <div
+    ref={approvalExtensionSectionRef}
+    className={`mb-6 rounded-2xl transition-all duration-300 ${
+      shouldHighlightExtensionApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.16)]' : ''
+    }`}
+  >
     <ExtensionHistory 
       extensions={extensions}
       onApprove={isAdmin ? handleApproveExtension : undefined} // Only pass if admin
@@ -23832,6 +24757,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       isAdmin={isAdmin}
       onEdit={canEditExtensionEntries ? handleEditExtension : undefined}
       canEdit={canEditExtensionEntries}
+      highlightedExtensionId={shouldHighlightExtensionApproval ? highlightedApprovalRequestId : ''}
+      actionLoading={actionLoading}
     />
 
           {/* Completed Rental Message */}
@@ -23937,22 +24864,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
               {showHistory && (
                 <div className="mt-3 border-t border-violet-100 pt-3">
-                  <p className="mb-2 text-xs font-semibold text-slate-500">{tr('Action History', 'Historique des actions')}</p>
-                  {rentalHistory.length === 0 ? (
-                    <p className="text-xs italic text-slate-400">{tr('No history yet — run SQL migration first', 'Aucun historique pour le moment — exécutez d’abord la migration SQL')}</p>
-                  ) : (
-                    <div className="max-h-48 space-y-1 overflow-y-auto">
-                      {rentalHistory.map((log, i) => (
-                        <div key={i} className="flex gap-2 border-b border-slate-100 py-1 text-xs last:border-0">
-                          <span className="whitespace-nowrap text-slate-400">
-                            {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                          <span className="flex-1 text-slate-700">{log.description}</span>
-                          {log.user_name && <span className="whitespace-nowrap text-blue-600">{log.user_name}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {tr('Staff Timeline', 'Chronologie équipe')}
+                  </p>
+                  {renderStaffActionTimeline()}
                 </div>
               )}
             </div>
@@ -23964,7 +24879,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Button
                     onClick={handleContactCustomerWhatsApp}
                     size="sm"
-                    className="rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    className="rounded-xl border border-violet-100 bg-white text-violet-700 hover:bg-emerald-100"
                   >
                     <FaWhatsapp className="mr-2 h-4 w-4" />
                     {tr('WhatsApp', 'WhatsApp')}
@@ -24052,7 +24967,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
               <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name || rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
               <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model || rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
-              <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || tr('Not assigned yet', 'Pas encore attribuée')}</p>
+              <p>
+                <strong>{tr('Plate:', 'Plaque :')}</strong>{' '}
+                {renderRentalVehiclePlateLink(
+                  rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || '',
+                  rental.vehicle?.id
+                ) || tr('Not assigned yet', 'Pas encore attribuée')}
+              </p>
               <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type || tr('N/A', 'N/D')}</p>
               {rental.start_odometer && (
                 <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
@@ -24290,7 +25211,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 <div className="absolute left-[11px] top-1 bottom-1 w-px bg-slate-200" />
                 <div className="space-y-4">
                   {vehicleReplacementHistory.map((entry, index) => {
-                    const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot, entry.plate_number_snapshot]
+                    const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot]
                       .filter(Boolean)
                       .join(' · ');
                     const isCurrentEntry = index === vehicleReplacementHistory.length - 1 && !entry.ended_at;
@@ -24302,7 +25223,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
                         <div className={`absolute -left-[26px] top-4 h-4 w-4 rounded-full border-4 ${isCurrentEntry ? 'border-violet-500 bg-violet-100' : 'border-slate-300 bg-white'}`} />
                         <div className="flex flex-col gap-1">
-                          <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                            {entry.plate_number_snapshot
+                              ? renderRentalVehiclePlateLink(entry.plate_number_snapshot, entry.vehicle_id)
+                              : null}
+                          </div>
                           <p className="text-xs text-slate-500">
                             {entryStartLabel} · {formatVehicleHistoryDateTime(entry.started_at, isFrench)}
                           </p>
@@ -24382,7 +25308,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         ) : null}
                         {kilometerPackageApplication.upgraded ? (
                           <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
-                            <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
+                            <span className="text-violet-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
                             <span className="text-right font-extrabold text-emerald-800">
                               {appliedKilometerPackageName}
                               {Number.isFinite(kilometerPackageApplication.appliedLimit)
@@ -24423,7 +25349,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         )}
                       </div>
                     ) : autoMatchedPackageDiffers ? (
-                      <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                      <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
                         {tr('Package upgrade is available from distance used.', 'Un surclassement forfait est disponible selon la distance utilisée.')}
                       </p>
                     ) : simplePricingSummary.packageOverflowKm > 0 ? (
@@ -24434,12 +25360,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         )}
                       </p>
                     ) : (
-                      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-violet-700">
                         {tr('Best package selected automatically from the distance used.', 'Le meilleur forfait a été sélectionné automatiquement selon la distance utilisée.')}
                       </p>
                     )}
                     {String(rental?.rental_type || '').toLowerCase() === 'hourly' && (
-                      <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                      <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
                         {tr(
                           `Late return rule: if a 1-hour rental goes more than ${simplePricingSummary.gracePeriodMinutes} minutes late, a second hour is charged automatically.`,
                           `Règle de retard : si une location de 1 heure dépasse la période de grâce de ${simplePricingSummary.gracePeriodMinutes} minutes, une deuxième heure est facturée automatiquement.`
@@ -24452,13 +25378,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             )}
             {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
               <div className="mt-4 grid gap-4">
-                <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+                <div className="rounded-xl border border-sky-200 bg-violet-50 p-4">
                   <div className="mb-3 flex items-center gap-2">
-                    <Calculator className="h-5 w-5 text-sky-600" />
+                    <Calculator className="h-5 w-5 text-violet-600" />
                     <h4 className="font-semibold text-sky-900">{tr('Base price selected', 'Tarif de base sélectionné')}</h4>
                   </div>
-                  <div className="rounded-2xl border border-sky-100 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">
+                  <div className="rounded-2xl border border-violet-100 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                       {tr('Standard rental', 'Location standard')}
                     </p>
                     <div className="mt-3 flex items-center justify-between gap-3">
@@ -24477,7 +25403,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                               : `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('hours', 'heures') : tr('hour', 'heure')}`} · {formatCurrency(tierPricingBreakdown.standardHourlyRate)} MAD
                       </span>
                     </div>
-                    <p className="mt-2 text-xs font-medium text-sky-700">
+                    <p className="mt-2 text-xs font-medium text-violet-700">
                       {tr(
                         'This rental follows the standard model price with no kilometer package attached.',
                         "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
@@ -24563,9 +25489,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <Separator className="bg-slate-100" />
           <div>
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
-            {!isEditingPrice && canEditLifecycleRentalPrice && (
+            {!isEditingPrice && canRequestLifecycleRentalPriceChange && (
               <div className="mb-4 flex flex-wrap justify-end gap-2">
-                {currentAmountDueForEdit > 0 && (
+                {canEditLifecycleRentalPrice && currentAmountDueForEdit > 0 && (
                   <Button
                     type="button"
                     onClick={handlePayDueBalance}
@@ -24583,16 +25509,18 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       : `${tr('Pay Due Balance', 'Payer le solde restant dû')} · ${formatCurrency(currentAmountDueForEdit)} MAD`}
                   </Button>
                 )}
-                <Button
-                  type="button"
-                  onClick={handleEditAmountDue}
-                  size="sm"
-                  variant="outline"
-                  className="border-violet-200 text-violet-700 hover:bg-violet-50"
-                >
-                  <DollarSign className="mr-2 h-4 w-4" />
-                  {tr('Adjust Balance', 'Ajuster le solde')}
-                </Button>
+                {canEditLifecycleRentalPrice && (
+                  <Button
+                    type="button"
+                    onClick={handleEditAmountDue}
+                    size="sm"
+                    variant="outline"
+                    className="border-violet-200 text-violet-700 hover:bg-violet-50"
+                  >
+                    <DollarSign className="mr-2 h-4 w-4" />
+                    {tr('Adjust Balance', 'Ajuster le solde')}
+                  </Button>
+                )}
                 <Button
                   type="button"
                   onClick={handleEditPrice}
@@ -24600,7 +25528,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   className={PRIMARY_ACTION_BUTTON_CLASS}
                 >
                   <Edit className="mr-2 h-4 w-4" />
-                  {tr('Edit Rental Cost', 'Modifier le coût de location')}
+                  {canApplyRentalPriceDirectly
+                    ? tr('Edit Rental Cost', 'Modifier le coût de location')
+                    : tr('Request Price Change', 'Demander un changement de prix')}
                 </Button>
               </div>
             )}
@@ -24701,7 +25631,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           href={inlineTransportFeeMeta.receiptUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 font-semibold text-sky-700 hover:bg-sky-100"
+                          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-violet-50 px-3 py-1.5 font-semibold text-violet-700 hover:bg-sky-100"
                         >
                           <FileImage className="h-3.5 w-3.5" />
                           {tr('View receipt', 'Voir le reçu')}
@@ -24716,13 +25646,21 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             )}
   
   {isPendingApproval && (
-    <Alert className="mb-4 bg-yellow-50 border-yellow-200">
+    <Alert
+      ref={approvalPriceSectionRef}
+      className={`mb-4 bg-yellow-50 border-yellow-200 transition-all duration-300 ${
+        shouldHighlightPriceApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.18)]' : ''
+      }`}
+    >
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 text-yellow-600 mt-0.5 flex-shrink-0" />
           <AlertDescription className="text-yellow-800">
             <strong>{tr('Pending Admin Approval', 'Approbation admin en attente')}</strong>
             <p className="mt-1">{tr('Manual price override requested:', 'Demande de modification manuelle du prix :')} <strong>{rental.pending_total_request} MAD</strong></p>
+            {priceOverrideRequesterName && (
+              <p className="mt-1 text-sm">{tr('Requested by:', 'Demandé par :')} {priceOverrideRequesterName}</p>
+            )}
             {priceOverrideNoteText && (
               <p className="mt-1 text-sm">{tr('Reason:', 'Raison :')} {priceOverrideNoteText}</p>
             )}
@@ -24730,26 +25668,28 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </div>
         
         {!isAdmin && (
-          <Button
-            onClick={handlePriceApprovalRequest}
-            className="bg-green-600 hover:bg-green-700 text-white whitespace-nowrap"
-            size="sm"
-            disabled={isSharing}
-          >
-            <FaWhatsapp className="w-4 h-4 mr-2" />
-            {isSharing ? tr('Sending...', 'Envoi...') : tr('Notify Admin via WhatsApp', 'Notifier l’admin via WhatsApp')}
-          </Button>
+          <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-sm font-semibold text-amber-900">
+            {tr('Request sent. Admins were notified on Telegram.', 'Demande envoyée. Les admins ont été notifiés sur Telegram.')}
+          </div>
         )}
       </div>
     </Alert>
   )}
 
   {isPendingApproval && isAdmin && (
-    <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+    <div
+      ref={approvalPriceSectionRef}
+      className={`mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg transition-all duration-300 ${
+        shouldHighlightPriceApproval ? 'ring-4 ring-blue-300 shadow-[0_0_0_8px_rgba(96,165,250,0.18)]' : ''
+      }`}
+    >
       <h4 className="font-semibold text-blue-900 mb-3">{tr('Price Approval Required', 'Approbation du prix requise')}</h4>
       <div className="space-y-2 mb-3 text-sm">
         <p><strong>{tr('Current Auto Price:', 'Prix auto actuel :')}</strong> {rental.total_amount} MAD</p>
         <p><strong>{tr('Requested Manual Price:', 'Prix manuel demandé :')}</strong> {rental.pending_total_request} MAD</p>
+        {priceOverrideRequesterName && (
+          <p><strong>{tr('Requested by:', 'Demandé par :')}</strong> {priceOverrideRequesterName}</p>
+        )}
         {priceOverrideNoteText && (
           <p><strong>{tr('Reason:', 'Raison :')}</strong> {priceOverrideNoteText}</p>
         )}
@@ -24779,14 +25719,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-700">
             {tr('Balance resolved', 'Solde résolu')}
           </p>
           <p className="mt-1 text-sm font-semibold text-emerald-950">
             {tr('Payment and discount recorded', 'Paiement et remise enregistrés')}
           </p>
           {amountDueAuditMeta.editedByName && (
-            <p className="mt-1 text-xs text-emerald-700">
+            <p className="mt-1 text-xs text-violet-700">
               {tr('By', 'Par')} <strong>{amountDueAuditMeta.editedByName}</strong>
             </p>
           )}
@@ -24795,8 +25735,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
             {tr('Final due', 'Solde final')}
           </p>
-          <p className="mt-1 text-2xl font-extrabold text-emerald-700">
-            {formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD
+          <p className="mt-1 text-2xl font-extrabold text-violet-700">
+            {formatCurrency(amountDueAuditMeta.newAmount ?? resolvedCurrentAmountDue)} MAD
           </p>
         </div>
       </div>
@@ -24808,7 +25748,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </div>
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
           <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
-          <p className="mt-1 text-lg font-bold text-emerald-700">
+          <p className="mt-1 text-lg font-bold text-violet-700">
             {formatCurrency(amountDueAuditMeta.paymentReceivedNow || 0)} MAD
           </p>
         </div>
@@ -24821,7 +25761,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
           <p className="text-xs font-medium text-slate-500">{tr('Still due', 'Encore dû')}</p>
           <p className="mt-1 text-lg font-bold text-slate-900">
-            {formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD
+            {formatCurrency(amountDueAuditMeta.newAmount ?? resolvedCurrentAmountDue)} MAD
           </p>
         </div>
       </div>
@@ -24897,7 +25837,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </span>
         </div>
             {packageApplication.upgraded && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-violet-700">
                 <div>
                   {tr(
                     `Auto-upgraded from ${getKilometerPackageName(packageApplication.originalPackage, 'original package')} to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')}.`,
@@ -25145,7 +26085,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         )}
 
         {rentalBillingSummary.transportFeeAmount > 0 && (
-          <div className="flex justify-between text-sky-700">
+          <div className="flex justify-between text-violet-700">
             <span>{tr('Transport fee:', 'Frais de transport :')}</span>
             <span className="font-medium">+{formatCurrency(rentalBillingSummary.transportFeeAmount)} MAD</span>
           </div>
@@ -25350,7 +26290,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             </div>
 
             {rentalBillingSummary.autoDepositSeizedAmount > 0 && rentalBillingSummary.autoDepositReturnAmount > 0 && (
-              <div className="flex justify-between text-sm text-sky-700">
+              <div className="flex justify-between text-sm text-violet-700">
                 <span>{tr('Security remaining to return:', 'Caution restante à restituer :')}</span>
                 <span className="font-medium">{formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD</span>
               </div>
@@ -25362,10 +26302,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
         {/* Security Hold - separate from rental payment and always visible */}
         {showSecurityHoldSection && (
-            <div className="mt-4 space-y-4 rounded-[24px] border border-sky-200 bg-sky-50/70 p-4 shadow-[0_12px_30px_rgba(14,165,233,0.08)]">
+            <div className="mt-4 space-y-4 rounded-[24px] border border-sky-200 bg-violet-50/70 p-4 shadow-[0_12px_30px_rgba(14,165,233,0.08)]">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
                   {tr('Required Security', 'Garantie requise')}
                 </p>
                 <p className="mt-1 text-lg font-bold text-slate-900">
@@ -25374,7 +26314,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
 
               <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
                   {tr('Cash Received', 'Espèces reçues')}
                 </p>
                 <p className="mt-1 text-lg font-bold text-slate-900">
@@ -25383,7 +26323,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
 
               <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
                   {tr('Held Document', 'Document retenu')}
                 </p>
                 <p className="mt-1 text-sm font-semibold text-slate-900" title={hasHeldSecurityDocument ? heldSecurityDocumentTitle : undefined}>
@@ -25394,7 +26334,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
 
               <div className="rounded-2xl border border-sky-200 bg-white p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
                   {tr('Received Via', 'Reçu via')}
                 </p>
                 <p className="mt-1 text-sm font-semibold text-slate-900">
@@ -25423,7 +26363,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       value={securityHoldAmountInput}
                       onChange={(e) => setSecurityHoldAmountInput(normalizeMoneyInputValue(e.target.value))}
                       placeholder="0"
-                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-violet-100"
                     />
                   </div>
 
@@ -25628,7 +26568,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         )}
       </div>
     </div>
-  ) : canEditRentalPriceOverride ? (
+  ) : canRequestRentalPriceOverride ? (
     <div className="space-y-3">
       {!isLightRentalDetailsMode && isEditingAmountDue && renderAmountDueEditorBlock(amountDueEditorRef)}
 
@@ -25682,7 +26622,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               onClick={markAsPaid}
               size="sm"
               className={`ml-2 h-8 px-3 text-xs ${SUCCESS_ACTION_BUTTON_CLASS}`}
-              disabled={isUpdatingPayment || isPendingApproval}
+              disabled={isUpdatingPayment}
             >
               {isUpdatingPayment ? (
                 <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin mr-1" />
@@ -27495,7 +28435,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </DialogHeader>
           
           <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
-            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-violet-50/70 p-4"}>
               <div className="flex items-start gap-3">
                 <Info className={isLightRentalDetailsMode ? "mt-0.5 h-5 w-5 flex-shrink-0 text-violet-600" : "h-4 w-4 text-blue-600"} />
                 <div>
@@ -27580,7 +28520,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </DialogHeader>
 
           <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
-            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-violet-50/70 p-4"}>
               <div className="flex items-start gap-3">
                 <Info className={isLightRentalDetailsMode ? "mt-0.5 h-5 w-5 flex-shrink-0 text-violet-600" : "h-4 w-4 text-blue-600"} />
                 <div>
@@ -27859,7 +28799,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   }}
                   className={`col-span-2 inline-flex items-center justify-center rounded-lg border px-2 py-2 text-xs font-semibold transition-colors sm:col-span-2 ${
                     waiveImpoundExtraDailyCharge
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                      ? 'border-emerald-300 bg-emerald-50 text-violet-700 hover:bg-emerald-100'
                       : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
                   }`}
                 >
@@ -28153,10 +29093,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           }
         }}
       >
-        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden rounded-[28px] border border-sky-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
-          <DialogHeader className="border-b border-sky-100 bg-gradient-to-r from-white via-sky-50/50 to-slate-50 px-6 py-5 text-left">
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+          <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-sky-50/50 to-slate-50 px-6 py-5 text-left">
             <DialogTitle className="flex items-center gap-3 text-xl font-semibold text-slate-900">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-violet-700">
                 <Receipt className="h-5 w-5" />
               </span>
               {inlineTransportFeeMeta?.amount > 0
@@ -28178,7 +29118,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   {tr('Current due balance', 'Solde dû actuel')}
                 </p>
                 <p className="mt-2 text-3xl font-extrabold text-slate-950">
-                  {formatCurrency(rental?.remaining_amount || 0)} MAD
+                  {formatCurrency(resolvedCurrentAmountDue)} MAD
                 </p>
                 <p className="mt-2 text-xs text-slate-500">
                   {tr(
@@ -28187,14 +29127,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   )}
                 </p>
               </div>
-              <div className="rounded-2xl border border-sky-200 bg-sky-50/80 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
+              <div className="rounded-2xl border border-sky-200 bg-violet-50/80 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">
                   {tr('Saved fee', 'Frais enregistrés')}
                 </p>
                 <p className="mt-2 text-3xl font-extrabold text-sky-900">
                   {formatCurrency(inlineTransportFeeMeta?.amount || 0)} MAD
                 </p>
-                <p className="mt-2 text-xs text-sky-700">
+                <p className="mt-2 text-xs text-violet-700">
                   {tr(
                     'Edit or replace the amount any time while closing maintenance-related costs.',
                     'Modifiez ou remplacez le montant à tout moment pendant la clôture des coûts de maintenance.'
@@ -28214,7 +29154,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   step="0.01"
                   value={transportFeeForm.amount}
                   onChange={(event) => setTransportFeeForm((prev) => ({ ...prev, amount: event.target.value }))}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-base font-semibold text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-base font-semibold text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-violet-100"
                   placeholder={tr('Enter amount', 'Saisir le montant')}
                 />
               </div>
@@ -28283,7 +29223,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 rows={4}
                 value={transportFeeForm.note}
                 onChange={(event) => setTransportFeeForm((prev) => ({ ...prev, note: event.target.value }))}
-                className="w-full resize-none rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                className="w-full resize-none rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-violet-100"
                 placeholder={tr(
                   'Explain why the transport fee was added. This note stays only in rental details.',
                   "Expliquez pourquoi les frais de transport ont été ajoutés. Cette note reste uniquement dans les détails de location."
@@ -29099,8 +30039,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </DialogHeader>
 
           <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
-            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
-              <p className={isLightRentalDetailsMode ? "text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500" : "text-xs font-semibold uppercase tracking-wide text-sky-700"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-violet-50/70 p-4"}>
+              <p className={isLightRentalDetailsMode ? "text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500" : "text-xs font-semibold uppercase tracking-wide text-violet-700"}>
                 {tr('Suggested amount', 'Montant suggéré')}
               </p>
               <input
@@ -29109,7 +30049,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 value={securityHoldAmountInput}
                 onChange={(e) => setSecurityHoldAmountInput(normalizeMoneyInputValue(e.target.value))}
                 placeholder={String(requiredSecurityAmount || 0)}
-                className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"}
+                className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-violet-100"}
               />
               <p className={isLightRentalDetailsMode ? "mt-3 text-sm font-medium text-slate-600" : "mt-2 text-xs text-slate-500"}>
                 {tr(
@@ -29440,10 +30380,18 @@ Breakdown:
       />
 
       <Dialog open={showReplaceVehicleDialog} onOpenChange={(open) => { if (!open) closeReplaceVehicleDialog(); }}>
-        <DialogContent className="max-h-[92vh] w-[calc(100vw-1.5rem)] max-w-lg overflow-y-auto rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(76,29,149,0.16)]">
-          <DialogHeader className="border-b border-violet-100 px-6 py-5 text-left">
+        <DialogContent className={`flex max-h-[92vh] w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-[28px] bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)] ${
+          isAwaitingVehicleAssignment ? 'max-w-2xl border border-violet-100' : 'max-w-lg border border-violet-100'
+        }`}>
+          <DialogHeader className={`border-b px-6 py-5 text-left ${
+            isAwaitingVehicleAssignment ? 'border-violet-100 bg-gradient-to-br from-violet-50 via-white to-purple-50' : 'border-violet-100'
+          }`}>
             <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
-              <Wrench className="h-5 w-5 text-amber-500" />
+              {isAwaitingVehicleAssignment ? (
+                <CarFront className="h-5 w-5 text-violet-600" />
+              ) : (
+                <Wrench className="h-5 w-5 text-amber-500" />
+              )}
               {isAwaitingVehicleAssignment
                 ? tr('Assign vehicle', 'Attribuer un véhicule')
                 : tr('Replace vehicle', 'Remplacer le véhicule')}
@@ -29461,160 +30409,242 @@ Breakdown:
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 px-6 py-5">
-            <div className="rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                {isAwaitingVehicleAssignment
-                  ? tr('Scheduled booking', 'Réservation planifiée')
-                  : tr('Current rental', 'Location en cours')}
-              </p>
-              <div className="mt-2 flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-base font-semibold text-slate-900">
-                    {isAwaitingVehicleAssignment
-                      ? [rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot, rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot].filter(Boolean).join(' ') || tr('Model reserved', 'Modèle réservé')
-                      : getVehicleDisplayName(rental?.vehicle)}
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            {isAwaitingVehicleAssignment ? (
+              <div className="space-y-5">
+                <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-violet-50/70 to-purple-50/70 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-600">
+                    {tr('Available vehicles', 'Véhicules disponibles')}
                   </p>
-                  <p className="text-sm text-slate-500">
-                    {isAwaitingVehicleAssignment
-                      ? tr('This booking is waiting for staff to choose the exact vehicle before pickup.', 'Cette réservation attend que le personnel choisisse le véhicule exact avant le départ.')
-                      : tr('Timer paused while this replacement is in progress.', 'Le minuteur est en pause pendant ce remplacement.')}
-                  </p>
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <p className="text-lg font-bold text-slate-950">
+                        {tr('Choose the plate for this reservation', 'Choisissez la plaque pour cette réservation')}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {replacementVehicles.length > 0
+                          ? tr('Tap one vehicle, then confirm assignment.', 'Touchez un véhicule, puis confirmez l’attribution.')
+                          : isLoadingReplacementVehicles
+                            ? tr('Loading available vehicles...', 'Chargement des véhicules disponibles...')
+                            : tr('No available vehicles are ready right now.', 'Aucun véhicule disponible pour le moment.')}
+                      </p>
+                    </div>
+                    <span className="inline-flex w-fit items-center rounded-full border border-violet-100 bg-white px-3 py-1 text-xs font-semibold text-violet-700">
+                      {replacementVehicles.length} {tr('available', 'disponible(s)')}
+                    </span>
+                  </div>
                 </div>
-                <Badge className="border border-amber-200 bg-amber-100 text-amber-800">
-                  {isAwaitingVehicleAssignment ? tr('Pending assignment', 'En attente d’attribution') : tr('Paused', 'En pause')}
-                </Badge>
+
+                <div className="grid gap-3 pr-1 sm:grid-cols-2">
+                  {isLoadingReplacementVehicles ? (
+                    <div className="col-span-full rounded-[24px] border border-slate-200 bg-slate-50 p-6 text-center text-sm font-semibold text-slate-500">
+                      <Loader className="mx-auto mb-3 h-5 w-5 animate-spin text-violet-600" />
+                      {tr('Finding available vehicles...', 'Recherche des véhicules disponibles...')}
+                    </div>
+                  ) : replacementVehicles.length === 0 ? (
+                    <div className="col-span-full rounded-[24px] border border-slate-200 bg-slate-50 p-6 text-center text-sm font-semibold text-slate-500">
+                      {tr('No available vehicles found.', 'Aucun véhicule disponible trouvé.')}
+                    </div>
+                  ) : (
+                    replacementVehicles.map((vehicle, index) => {
+                      const selected = String(selectedReplacementVehicleId) === String(vehicle.id);
+                      const locationName = fleetLocations.find((location) => String(location.id) === String(vehicle.location_id))?.name;
+                      const modelLabel = vehicle.vehicle_model?.model || vehicle.name || tr('Vehicle', 'Véhicule');
+                      const capacityLabel = vehicle.capacity || vehicle.vehicle_model?.capacity;
+                      const powerLabel = vehicle.power_cc || vehicle.vehicle_model?.power_cc;
+
+                      return (
+                        <button
+                          key={vehicle.id}
+                          type="button"
+                          onClick={() => setSelectedReplacementVehicleId(String(vehicle.id))}
+                          className={`group rounded-[24px] border p-4 text-left transition-all duration-200 ${
+                            selected
+                              ? 'border-violet-500 bg-violet-50 shadow-[0_18px_40px_rgba(124,58,237,0.16)] ring-4 ring-violet-100'
+                              : 'border-slate-200 bg-white shadow-sm hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-[0_16px_36px_rgba(15,23,42,0.10)]'
+                          }`}
+                          style={{ transitionDelay: `${Math.min(index, 8) * 18}ms` }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-lg font-black tracking-tight text-slate-950">
+                                {vehicle.plate_number || modelLabel}
+                              </p>
+                              <p className="mt-1 truncate text-sm font-semibold text-slate-600">
+                                {modelLabel}
+                              </p>
+                            </div>
+                            <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition ${
+                              selected
+                                ? 'border-violet-600 bg-violet-600 text-white'
+                                : 'border-slate-200 bg-slate-50 text-slate-400 group-hover:border-violet-200 group-hover:text-violet-500'
+                            }`}>
+                              {selected ? <CheckCircle className="h-5 w-5" /> : <CarFront className="h-5 w-5" />}
+                            </span>
+                          </div>
+                          <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
+                            {locationName && (
+                              <span className="rounded-full bg-slate-100 px-2.5 py-1">
+                                {locationName}
+                              </span>
+                            )}
+                            {capacityLabel && (
+                              <span className="rounded-full bg-violet-50 px-2.5 py-1 text-violet-700">
+                                {capacityLabel} {tr('riders', 'places')}
+                              </span>
+                            )}
+                            {powerLabel && (
+                              <span className="rounded-full bg-violet-50 px-2.5 py-1 text-violet-700">
+                                {powerLabel}cc
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
               </div>
-            </div>
-
-            {!isAwaitingVehicleAssignment && (
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">
-                  {tr('Reason', 'Raison')}
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {VEHICLE_REPLACEMENT_REASON_OPTIONS.map((option) => {
-                    const selected = replacementReason === option.key;
-                    const isBreakdown = option.tone === 'breakdown';
-
-                    return (
-                      <button
-                        key={option.key}
-                        type="button"
-                        onClick={() => setReplacementReason(option.key)}
-                        className={`rounded-2xl border px-3 py-3 text-left transition ${
-                          selected
-                            ? isBreakdown
-                              ? 'border-rose-300 bg-rose-50 shadow-[0_12px_30px_rgba(225,29,72,0.10)]'
-                              : 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(139,92,246,0.10)]'
-                            : isBreakdown
-                              ? 'border-rose-200 bg-white hover:border-rose-300 hover:bg-rose-50/70'
-                              : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
-                        }`}
-                      >
-                        <div className={`text-sm font-semibold ${
-                          selected
-                            ? isBreakdown ? 'text-rose-700' : 'text-violet-700'
-                            : 'text-slate-900'
-                        }`}>
-                          {isFrench ? option.label.fr : option.label.en}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {isFrench ? option.description.fr : option.description.en}
-                        </div>
-                      </button>
-                    );
-                  })}
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+                    {tr('Current rental', 'Location en cours')}
+                  </p>
+                  <div className="mt-2 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-base font-semibold text-slate-900">
+                        {getVehicleDisplayName(rental?.vehicle)}
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        {tr('Timer paused while this replacement is in progress.', 'Le minuteur est en pause pendant ce remplacement.')}
+                      </p>
+                    </div>
+                    <Badge className="border border-amber-200 bg-amber-100 text-amber-800">
+                      {tr('Paused', 'En pause')}
+                    </Badge>
+                  </div>
                 </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">
+                    {tr('Reason', 'Raison')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {VEHICLE_REPLACEMENT_REASON_OPTIONS.map((option) => {
+                      const selected = replacementReason === option.key;
+                      const isBreakdown = option.tone === 'breakdown';
+
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => setReplacementReason(option.key)}
+                          className={`rounded-2xl border px-3 py-3 text-left transition ${
+                            selected
+                              ? isBreakdown
+                                ? 'border-rose-300 bg-rose-50 shadow-[0_12px_30px_rgba(225,29,72,0.10)]'
+                                : 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(139,92,246,0.10)]'
+                              : isBreakdown
+                                ? 'border-rose-200 bg-white hover:border-rose-300 hover:bg-rose-50/70'
+                                : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                          }`}
+                        >
+                          <div className={`text-sm font-semibold ${
+                            selected
+                              ? isBreakdown ? 'text-rose-700' : 'text-violet-700'
+                              : 'text-slate-900'
+                          }`}>
+                            {isFrench ? option.label.fr : option.label.en}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {isFrench ? option.description.fr : option.description.en}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">
+                    {tr('Replacement vehicle', 'Véhicule de remplacement')}
+                  </label>
+                  <select
+                    value={selectedReplacementVehicleId}
+                    onChange={(event) => setSelectedReplacementVehicleId(event.target.value)}
+                    disabled={isLoadingReplacementVehicles || replacementVehicles.length === 0}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                  >
+                    {replacementVehicles.length === 0 ? (
+                      <option value="">{isLoadingReplacementVehicles ? tr('Loading vehicles...', 'Chargement des véhicules...') : tr('No available replacement vehicles', 'Aucun véhicule de remplacement disponible')}</option>
+                    ) : (
+                      replacementVehicles.map((vehicle) => {
+                        const locationName = fleetLocations.find((location) => String(location.id) === String(vehicle.location_id))?.name;
+                        const modelLabel = vehicle.vehicle_model?.model || vehicle.name || tr('Vehicle', 'Véhicule');
+                        const optionLabel = vehicle.plate_number
+                          ? `${vehicle.plate_number} · ${modelLabel}`
+                          : modelLabel;
+                        return (
+                          <option key={vehicle.id} value={vehicle.id}>
+                            {`${optionLabel}${locationName ? ` · ${locationName}` : ''}`}
+                          </option>
+                        );
+                      })
+                    )}
+                  </select>
+                  {selectedReplacementVehicle ? (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                      <p className="font-semibold text-slate-900">
+                        {selectedReplacementVehicle.plate_number
+                          ? `${selectedReplacementVehicle.plate_number} · ${selectedReplacementVehicle.vehicle_model?.model || selectedReplacementVehicle.name || tr('Vehicle', 'Véhicule')}`
+                          : getVehicleDisplayName(selectedReplacementVehicle)}
+                      </p>
+                      <p className="mt-1">
+                        {(selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity)
+                          ? `${selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity} ${tr('riders', 'places')}`
+                          : tr('Available now', 'Disponible maintenant')}
+                        {' · '}
+                        {(selectedReplacementVehicle.power_cc || selectedReplacementVehicle.vehicle_model?.power_cc || '?')}cc
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">
+                    {tr('Quick note (optional)', 'Note rapide (facultative)')}
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={replacementNote}
+                    onChange={(event) => setReplacementNote(event.target.value)}
+                    placeholder={tr('What happened?', 'Que s’est-il passé ?')}
+                    className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
+                  />
+                </div>
+
+                <Alert className="rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  <AlertDescription className="text-sm leading-6">
+                    {replacementReason === 'breakdown'
+                      ? tr(
+                          'This vehicle will move to maintenance. The replacement keeps this rental moving.',
+                          'Ce véhicule passera en maintenance. Le véhicule de remplacement continue cette location.'
+                        )
+                      : tr(
+                          'This vehicle will return to available. The replacement keeps this rental moving.',
+                          'Ce véhicule redeviendra disponible. Le véhicule de remplacement continue cette location.'
+                        )}
+                  </AlertDescription>
+                </Alert>
               </div>
             )}
-
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700">
-                {isAwaitingVehicleAssignment
-                  ? tr('Assign vehicle', 'Attribuer le véhicule')
-                  : tr('Replacement vehicle', 'Véhicule de remplacement')}
-              </label>
-              <select
-                value={selectedReplacementVehicleId}
-                onChange={(event) => setSelectedReplacementVehicleId(event.target.value)}
-                disabled={isLoadingReplacementVehicles || replacementVehicles.length === 0}
-                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
-              >
-                {replacementVehicles.length === 0 ? (
-                  <option value="">{isLoadingReplacementVehicles ? tr('Loading vehicles...', 'Chargement des véhicules...') : tr('No available replacement vehicles', 'Aucun véhicule de remplacement disponible')}</option>
-                ) : (
-                  replacementVehicles.map((vehicle) => {
-                    const locationName = fleetLocations.find((location) => String(location.id) === String(vehicle.location_id))?.name;
-                    const modelLabel = vehicle.vehicle_model?.model || vehicle.name || tr('Vehicle', 'Véhicule');
-                    const optionLabel = vehicle.plate_number
-                      ? `${vehicle.plate_number} · ${modelLabel}`
-                      : modelLabel;
-                    return (
-                      <option key={vehicle.id} value={vehicle.id}>
-                        {`${optionLabel}${locationName ? ` · ${locationName}` : ''}`}
-                      </option>
-                    );
-                  })
-                )}
-              </select>
-              {selectedReplacementVehicle ? (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  <p className="font-semibold text-slate-900">
-                    {selectedReplacementVehicle.plate_number
-                      ? `${selectedReplacementVehicle.plate_number} · ${selectedReplacementVehicle.vehicle_model?.model || selectedReplacementVehicle.name || tr('Vehicle', 'Véhicule')}`
-                      : getVehicleDisplayName(selectedReplacementVehicle)}
-                  </p>
-                  <p className="mt-1">
-                    {(selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity)
-                      ? `${selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity} ${tr('riders', 'places')}`
-                      : tr('Available now', 'Disponible maintenant')}
-                    {' · '}
-                    {(selectedReplacementVehicle.power_cc || selectedReplacementVehicle.vehicle_model?.power_cc || '?')}cc
-                  </p>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700">
-                {isAwaitingVehicleAssignment
-                  ? tr('Staff note (optional)', 'Note interne (facultative)')
-                  : tr('Quick note (optional)', 'Note rapide (facultative)')}
-              </label>
-              <textarea
-                rows={3}
-                value={replacementNote}
-                onChange={(event) => setReplacementNote(event.target.value)}
-                placeholder={isAwaitingVehicleAssignment
-                  ? tr('Optional assignment note', 'Note facultative sur l’attribution')
-                  : tr('What happened?', 'Que s’est-il passé ?')}
-                className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
-              />
-            </div>
-
-            <Alert className="rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
-              <AlertTriangle className="h-4 w-4 text-amber-600" />
-              <AlertDescription className="text-sm leading-6">
-                {isAwaitingVehicleAssignment
-                  ? tr(
-                      'This keeps the website reservation model-based until staff intentionally chooses the real plate.',
-                      'Cela garde la réservation web basée sur le modèle jusqu’à ce que le personnel choisisse volontairement la plaque réelle.'
-                    )
-                  : replacementReason === 'breakdown'
-                  ? tr(
-                      'This vehicle will move to maintenance. The replacement keeps this rental moving.',
-                      'Ce véhicule passera en maintenance. Le véhicule de remplacement continue cette location.'
-                    )
-                  : tr(
-                      'This vehicle will return to available. The replacement keeps this rental moving.',
-                      'Ce véhicule redeviendra disponible. Le véhicule de remplacement continue cette location.'
-                    )}
-              </AlertDescription>
-            </Alert>
           </div>
 
-          <div className="flex flex-col gap-3 border-t border-violet-100 px-6 py-5 sm:flex-row sm:justify-end">
+          <div className={`flex flex-col gap-3 border-t px-6 py-5 sm:flex-row sm:justify-end ${
+            isAwaitingVehicleAssignment ? 'border-violet-100 bg-white shadow-[0_-18px_34px_rgba(76,29,149,0.08)]' : 'border-violet-100'
+          }`}>
             <Button
               type="button"
               variant="outline"
@@ -29628,7 +30658,11 @@ Breakdown:
               type="button"
               onClick={handleReplaceVehicle}
               disabled={isReplacingVehicle || !selectedReplacementVehicleId}
-              className="rounded-2xl bg-amber-500 text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60"
+              className={`rounded-2xl text-white disabled:cursor-not-allowed disabled:opacity-60 ${
+                isAwaitingVehicleAssignment
+                  ? 'bg-violet-600 hover:bg-violet-700'
+                  : 'bg-amber-500 hover:bg-amber-600'
+              }`}
             >
               {isReplacingVehicle ? (
                 <>
@@ -29639,7 +30673,11 @@ Breakdown:
                 </>
               ) : (
                 <>
-                  <Wrench className="mr-2 h-4 w-4" />
+                  {isAwaitingVehicleAssignment ? (
+                    <CarFront className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Wrench className="mr-2 h-4 w-4" />
+                  )}
                   {isAwaitingVehicleAssignment
                     ? tr('Confirm assignment', 'Confirmer l’attribution')
                     : tr('Confirm replacement', 'Confirmer le remplacement')}

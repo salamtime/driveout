@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Bell, Camera, ChevronRight, Globe2, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Wallet } from 'lucide-react';
+import { Bell, Camera, ChevronRight, Globe2, ShieldCheck, SlidersHorizontal, Star, Trash2, UserRound, Wallet } from 'lucide-react';
 import i18n from '../../i18n';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import {
@@ -132,7 +132,7 @@ const AccountSettings = () => {
     () => (
       isVerifiedAccount
         ? tr('Verified', 'Vérifié')
-        : tr('Review documents', 'Vérifier les documents')
+        : tr('Open trust center', 'Ouvrir le centre de confiance')
     ),
     [isFrench, isVerifiedAccount]
   );
@@ -141,7 +141,7 @@ const AccountSettings = () => {
     {
       icon: UserRound,
       title: tr('Account', 'Compte'),
-      description: tr('Manage your profile and verification.', 'Gérez votre profil et votre vérification.'),
+      description: tr('Manage your profile, trust status, and owner identity setup.', 'Gérez votre profil, votre statut de confiance et votre identité propriétaire.'),
       items: [
         {
           href: '/customer/profile',
@@ -150,8 +150,13 @@ const AccountSettings = () => {
         },
         {
           href: '/account/verification',
-          label: tr('Verification', 'Vérification'),
+          label: tr('Trust center', 'Centre de confiance'),
           cta: verificationCta,
+        },
+        {
+          href: '/account/reviews',
+          label: tr('Reputation', 'Reputation'),
+          cta: tr('Open reputation', 'Ouvrir la reputation'),
         },
       ],
     },
@@ -203,6 +208,10 @@ const AccountSettings = () => {
     {
       icon: Bell,
       label: tr('Notifications', 'Notifications'),
+    },
+    {
+      icon: Star,
+      label: tr('Reputation', 'Reputation'),
     },
     {
       icon: Globe2,
@@ -487,9 +496,9 @@ const AccountSettings = () => {
             <Bell className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-lg font-bold text-slate-950">{tr('Message notifications', 'Notifications de messages')}</h2>
+            <h2 className="text-lg font-bold text-slate-950">{tr('Inbox notifications', "Notifications d'Inbox")}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              {tr('Support updates always reach you. Customer conversation alerts can be turned on or off here.', 'Les mises à jour du support vous parviennent toujours. Les alertes de conversation client peuvent être activées ou désactivées ici.')}
+              {tr('Support updates always reach you. Customer Inbox alerts can be turned on or off here.', "Les mises à jour du support vous parviennent toujours. Les alertes de l'Inbox client peuvent être activées ou désactivées ici.")}
             </p>
           </div>
         </div>
@@ -497,9 +506,9 @@ const AccountSettings = () => {
         <div className={`mt-5 space-y-3 ${workspaceInsetPanelClass} bg-slate-50/70 p-4`}>
           <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900">{tr('Support messages', 'Messages support')}</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('Support Inbox', 'Inbox support')}</p>
               <p className="mt-1 text-xs text-slate-500">
-                {tr('Always on so account and support updates are never missed.', 'Toujours activés pour ne jamais manquer les mises à jour du compte et du support.')}
+                {tr('Always on so account and support updates are never missed.', 'Toujours activé pour ne jamais manquer les mises à jour du compte et du support.')}
               </p>
             </div>
             <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
@@ -509,9 +518,9 @@ const AccountSettings = () => {
 
           <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900">{tr('Customer messages', 'Messages clients')}</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('Customer Inbox', 'Inbox client')}</p>
               <p className="mt-1 text-xs text-slate-500">
-                {tr('Show or hide floating chat alerts for incoming customer or renter conversations.', 'Afficher ou masquer les alertes du chat flottant pour les conversations entrantes des clients ou locataires.')}
+                {tr('Show or hide floating Inbox alerts for incoming customer or renter conversations.', "Afficher ou masquer les alertes flottantes d'Inbox pour les conversations entrantes des clients ou locataires.")}
               </p>
             </div>
             <button

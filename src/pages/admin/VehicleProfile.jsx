@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, MoreHorizontal, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
@@ -12,6 +12,7 @@ import MaintenanceTrackingService from '../../services/MaintenanceTrackingServic
 import VehicleReportService from '../../services/VehicleReportService';
 import VehicleDispositionService from '../../services/VehicleDispositionService';
 import VehicleAnnualTaxService from '../../services/VehicleAnnualTaxService';
+import VehicleModelService from '../../services/VehicleModelService';
 import { financeApiV2 } from '../../services/financeApiV2';
 import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
@@ -22,6 +23,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { canAdjustVehicleFuelLevel } from '../../utils/permissionHelpers';
 import i18n from '../../i18n';
 import useFuelRealtimeSync from '../../hooks/useFuelRealtimeSync';
+import { resolveReturnPath } from '../../utils/navigationReturn';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -315,7 +317,18 @@ const buildVehicleFuelHistory = (fuelTransactions, rentalData, vehicleId) => {
 const VehicleProfile = () => {
   const { vehicleId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { userProfile } = useAuth();
+  const returnPath = useMemo(() => resolveReturnPath(location, '/admin/fleet'), [location]);
+  const returnLabel = useMemo(() => {
+    if (String(location.state?.returnLabel || '').trim()) {
+      return String(location.state.returnLabel).trim();
+    }
+
+    return returnPath.startsWith('/admin/rentals/')
+      ? tr('Back to rental', 'Retour à la location')
+      : tr('Back to Fleet', 'Retour à la flotte');
+  }, [location.state, returnPath]);
   const [vehicle, setVehicle] = useState(null);
   const [maintenanceHistory, setMaintenanceHistory] = useState([]);
   const [fuelHistory, setFuelHistory] = useState([]);
@@ -324,6 +337,7 @@ const VehicleProfile = () => {
   const [rentalHistory, setRentalHistory] = useState([]);
   const [vehicleFuelSummary, setVehicleFuelSummary] = useState(null);
   const [vehicleImageUrl, setVehicleImageUrl] = useState('');
+  const [vehicleModelImageUrl, setVehicleModelImageUrl] = useState('');
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
   const [annualTaxRecords, setAnnualTaxRecords] = useState([]);
   const [vehicleFinanceOverview, setVehicleFinanceOverview] = useState(null);
@@ -393,6 +407,30 @@ const VehicleProfile = () => {
     notes: '',
   });
   const canEditVehicleFuel = canAdjustVehicleFuelLevel(userProfile);
+
+  const loadVehicleModelImageUrl = useCallback(async (vehicleData) => {
+    const modelId = vehicleData?.vehicle_model_id;
+    if (!modelId) {
+      setVehicleModelImageUrl('');
+      return '';
+    }
+
+    try {
+      const modelData = await VehicleModelService.getModelById(modelId);
+      const nextModelImageUrl = normalizeVehicleImageUrl(modelData?.image_url || '');
+      setVehicleModelImageUrl(nextModelImageUrl);
+      return nextModelImageUrl;
+    } catch (modelImageError) {
+      console.error('Failed to load vehicle model image for vehicle profile:', modelImageError);
+      setVehicleModelImageUrl('');
+      return '';
+    }
+  }, []);
+
+  const vehicleDisplayImageUrl = useMemo(
+    () => vehicleModelImageUrl || vehicleImageUrl || '',
+    [vehicleImageUrl, vehicleModelImageUrl]
+  );
 
   const syncFormData = (vehicleData) => {
     setVehicleImageUrl(normalizeVehicleImageUrl(vehicleData?.image_url || ''));
@@ -489,6 +527,7 @@ const VehicleProfile = () => {
           if (cachedVehicleProfile && isTransientSupabaseFailure(vehicleError)) {
             setVehicle(cachedVehicleProfile);
             syncFormData(cachedVehicleProfile);
+            void loadVehicleModelImageUrl(cachedVehicleProfile);
             setVehicleDocuments(cachedVehicleProfile?.documents || []);
             syncDispositionForm(await VehicleDispositionService.getVehicleDisposition(vehicleId));
             setAnnualTaxRecords([]);
@@ -519,6 +558,7 @@ const VehicleProfile = () => {
         setVehicle(enrichedVehicleData);
         writeCachedVehicleProfile(vehicleId, enrichedVehicleData);
         syncFormData(enrichedVehicleData);
+        await loadVehicleModelImageUrl(enrichedVehicleData);
         setVehicleDocuments(enrichedVehicleData?.documents || []);
         syncDispositionForm(await VehicleDispositionService.getVehicleDisposition(vehicleId));
         try {
@@ -574,11 +614,7 @@ const VehicleProfile = () => {
               vehicleFuelStateResult,
               financeOverviewResult,
             ] = await Promise.allSettled([
-              supabase
-                .from(MaintenanceTrackingService.MAINTENANCE_RECORDS_TABLE)
-                .select('id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
-                .eq('vehicle_id', vehicleId)
-                .order('updated_at', { ascending: false }),
+              MaintenanceTrackingService.getAllMaintenanceRecords({ vehicle_id: vehicleId }),
               FuelTransactionService.getAllTransactions({ limit: 200, offset: 0, vehicleId }),
               FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: false }),
               VehicleReportService.getReportsForVehicle(vehicleId),
@@ -591,10 +627,10 @@ const VehicleProfile = () => {
               financeApiV2.getVehicleFinanceData([vehicleId], {}),
             ]);
 
-            const maintenanceRecords = Array.isArray(maintenanceResult.value?.data)
-              ? maintenanceResult.value.data
-              : Array.isArray(maintenanceResult.value)
-                ? maintenanceResult.value
+            const maintenanceRecords = Array.isArray(maintenanceResult.value)
+              ? maintenanceResult.value
+              : Array.isArray(maintenanceResult.value?.data)
+                ? maintenanceResult.value.data
                 : [];
             const rentalData = Array.isArray(rentalRowsResult.value?.data) ? rentalRowsResult.value.data : earlyRentalData;
             const hasActiveImpoundRental = rentalData.some((record) =>
@@ -674,6 +710,7 @@ const VehicleProfile = () => {
         if (cachedVehicleProfile && isTransientSupabaseFailure(loadError)) {
           setVehicle(cachedVehicleProfile);
           syncFormData(cachedVehicleProfile);
+          void loadVehicleModelImageUrl(cachedVehicleProfile);
           setVehicleDocuments(cachedVehicleProfile?.documents || []);
           setError(null);
           toast.error(
@@ -970,6 +1007,7 @@ const VehicleProfile = () => {
 
       setVehicle(enrichedVehicleData);
       syncFormData(enrichedVehicleData);
+      await loadVehicleModelImageUrl(enrichedVehicleData);
       setIsEditing(false);
     } catch (saveError) {
       console.error('Failed to save vehicle profile:', saveError);
@@ -1298,11 +1336,11 @@ const VehicleProfile = () => {
           </div>
           <button
             type="button"
-            onClick={() => navigate('/admin/fleet')}
+            onClick={() => navigate(returnPath)}
             className="mt-4 inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700 transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
-            {tr('Back to Fleet', 'Retour à la flotte')}
+            {returnLabel}
           </button>
         </div>
       </div>
@@ -1325,9 +1363,9 @@ const VehicleProfile = () => {
           <div className="flex items-start gap-4">
             <button
               type="button"
-              onClick={() => navigate('/admin/fleet')}
+              onClick={() => navigate(returnPath)}
               className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
-              title={tr('Back to fleet', 'Retour à la flotte')}
+              title={returnLabel}
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -1465,8 +1503,8 @@ const VehicleProfile = () => {
           >
             <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
               <div className="aspect-square overflow-hidden rounded-2xl border border-violet-100 bg-slate-50">
-                {vehicleImageUrl ? (
-                  <img src={vehicleImageUrl} alt={vehicle.name} className="h-full w-full object-cover" />
+                {vehicleDisplayImageUrl ? (
+                  <img src={vehicleDisplayImageUrl} alt={vehicle.name} className="h-full w-full object-cover" />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-slate-400">
                     <Car className="w-16 h-16" />

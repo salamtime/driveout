@@ -3,30 +3,70 @@ import RentalService from './RentalService';
 import MaintenanceService from './MaintenanceService';
 import { deriveEffectiveRentalStatus } from '../utils/rentalLifecycle';
 
+const UPCOMING_RENTAL_STATUSES = new Set(['scheduled', 'reserved', 'confirmed']);
+
 const formatVehicleName = (vehicle = {}) =>
   vehicle?.model || vehicle?.name || 'Vehicle';
 
+const composeRentalDateTime = (dateValue, timeValue, fallbackTime = '00:00') => {
+  if (!dateValue) return null;
+
+  const source = String(dateValue);
+  if (source.includes('T')) {
+    const parsed = new Date(source);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const composed = new Date(`${source}T${timeValue || fallbackTime}:00`);
+  return Number.isNaN(composed.getTime()) ? null : composed;
+};
+
 const mapUpcomingRentals = (rentals = []) =>
   (rentals || [])
-    .filter((rental) => {
-      const status = String(rental?.rental_status || '').toLowerCase();
-      const startTime = new Date(rental?.rental_start_date || '').getTime();
-      return Number.isFinite(startTime) && startTime >= Date.now() && !['active', 'completed', 'cancelled'].includes(status);
+    .map((rental) => {
+      const effectiveStatus = String(
+        deriveEffectiveRentalStatus(rental) || rental?.rental_status || rental?.status || ''
+      ).toLowerCase();
+      const startAt = composeRentalDateTime(
+        rental?.rental_start_date,
+        rental?.rental_start_time,
+        '00:00'
+      );
+      const endAt = composeRentalDateTime(
+        rental?.rental_end_date,
+        rental?.rental_end_time,
+        '23:59'
+      );
+
+      return {
+        id: rental.id,
+        customerName: rental.customer_name || 'Guest',
+        startAt: startAt?.toISOString() || rental?.rental_start_date || '',
+        endAt: endAt?.toISOString() || rental?.rental_end_date || '',
+        vehicleName: formatVehicleName(rental.vehicle),
+        plateNumber: rental.vehicle_plate_number || rental.vehicle?.plate_number || '',
+        rentalTypeLabel: rental.rental_type
+          ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}`
+          : 'Rental',
+        pickupLocation: rental.pickup_location || '',
+        effectiveStatus,
+        sortStartTime: startAt?.getTime() ?? Number.POSITIVE_INFINITY,
+        sortEndTime: endAt?.getTime() ?? Number.NaN,
+      };
     })
-    .map((rental) => ({
-      id: rental.id,
-      customerName: rental.customer_name || 'Guest',
-      startAt: rental.rental_start_date,
-      endAt: rental.rental_end_date,
-      vehicleName: formatVehicleName(rental.vehicle),
-      plateNumber: rental.vehicle_plate_number || rental.vehicle?.plate_number || '',
-      rentalTypeLabel: rental.rental_type
-        ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}`
-        : 'Rental',
-      pickupLocation: rental.pickup_location || '',
-    }))
-    .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
-    .slice(0, 5);
+    .filter((rental) => {
+      if (!UPCOMING_RENTAL_STATUSES.has(rental.effectiveStatus)) {
+        return false;
+      }
+
+      if (Number.isFinite(rental.sortEndTime)) {
+        return rental.sortEndTime >= Date.now();
+      }
+
+      return Number.isFinite(rental.sortStartTime) && rental.sortStartTime >= Date.now();
+    })
+    .sort((a, b) => a.sortStartTime - b.sortStartTime)
+    .map(({ effectiveStatus, sortStartTime, sortEndTime, ...rental }) => rental);
 
 class DashboardWorkspaceService {
   async getCoreSnapshot() {
@@ -49,6 +89,7 @@ class DashboardWorkspaceService {
     const vehicles = Array.isArray(allVehicles) ? allVehicles : [];
     const maintenanceRecords = Array.isArray(maintenanceRows) ? maintenanceRows : [];
     const detailedRentals = Array.isArray(allRentalsDetailed) ? allRentalsDetailed : [];
+    const upcomingRentalEntries = mapUpcomingRentals(detailedRentals);
     const activeRentalsCount = detailedRentals.filter((rental) =>
       String(deriveEffectiveRentalStatus(rental) || rental?.rental_status || rental?.status || '').toLowerCase() === 'active'
     ).length;
@@ -75,6 +116,7 @@ class DashboardWorkspaceService {
       stats: {
         vehicles: vehicles.length,
         rentals: activeRentalsCount || 0,
+        scheduledRentals: upcomingRentalEntries.length,
         maintenance: maintenanceCount || 0,
         revenue: totalRevenue || 0,
       },
@@ -97,7 +139,7 @@ class DashboardWorkspaceService {
           .reduce((sum, row) => sum + Number(row?.cost || 0), 0),
       },
       recentBookings: Array.isArray(recentBookings) ? recentBookings : [],
-      upcomingRentals: mapUpcomingRentals(detailedRentals),
+      upcomingRentals: upcomingRentalEntries,
     };
   }
 

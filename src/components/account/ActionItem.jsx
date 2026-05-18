@@ -44,13 +44,13 @@ const ActionItem = ({
 
   if (href) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className={baseClass}>
+      <a href={href} target="_blank" rel="noreferrer" onClick={onClick} className={baseClass}>
         {content}
       </a>
     );
   }
 
-  if (onClick) {
+  if (onClick && !to) {
     return (
       <button type="button" onClick={onClick} className={`${baseClass} w-full text-left`}>
         {content}
@@ -59,7 +59,7 @@ const ActionItem = ({
   }
 
   return (
-    <Link to={to} state={state} className={baseClass}>
+    <Link to={to} state={state} onClick={onClick} className={baseClass}>
       {content}
     </Link>
   );

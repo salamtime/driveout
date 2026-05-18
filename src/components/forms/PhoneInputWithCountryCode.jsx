@@ -4,7 +4,7 @@ import { PHONE_COUNTRY_CODES } from '../../constants/phoneCountryCodes';
 
 const defaultTr = (en) => en;
 
-const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'Phone', autoFocus = false, disabled = false }) => {
+const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'Phone', autoFocus = false, disabled = false, required = false }) => {
   const [countryCode, setCountryCode] = useState('+212');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -225,6 +225,7 @@ const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'P
             onChange={handlePhoneChange}
             autoFocus={autoFocus}
             disabled={disabled}
+            required={required}
             placeholder={selectedCountry.code === '+212' ? '6XX XXX XXX' : translate('Phone number', 'Numéro de téléphone')}
             className="block w-full rounded-r-2xl bg-transparent py-3.5 pl-10 pr-4 text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:text-slate-600"
           />

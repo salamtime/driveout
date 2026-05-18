@@ -31,6 +31,16 @@ const REQUIRED_PHOTO_TYPES = [
   },
 ];
 
+const VEHICLE_IMAGE_UPLOAD_TIMEOUT_MS = 30000;
+
+const withTimeout = (promise, timeoutMs, message) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+
 const getLabel = (entry, isFrench) => (isFrench ? entry.fr : entry.en);
 
 const inferShotType = (item = {}, index = 0) => {
@@ -178,8 +188,10 @@ const VehicleImageUpload = ({
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [uploading, setUploading] = useState(false);
+  const [uploadingShotType, setUploadingShotType] = useState(null);
   const [uploadProgress, setUploadProgress] = useState({});
   const [error, setError] = useState(null);
+  const [qualityNotice, setQualityNotice] = useState(null);
   const fileInputRef = useRef(null);
   const pendingShotTypeRef = useRef(null);
   const isStructuredMode = typeof onImagesChange === 'function';
@@ -199,7 +211,7 @@ const VehicleImageUpload = ({
   const missingPhotoTypes = REQUIRED_PHOTO_TYPES.filter((entry) => !currentShotMap[entry.key]);
   const displayImageUrl = normalizeVehicleImageUrl(currentImageUrl);
 
-  const describeQualityError = (quality) => {
+  const describeQualityFeedback = (quality) => {
     if (quality.tooDark && quality.tooBlurry) {
       return tr('Use a brighter and sharper photo.', 'Utilisez une photo plus lumineuse et plus nette.');
     }
@@ -210,6 +222,48 @@ const VehicleImageUpload = ({
       return tr('Use a sharper photo. The image looks blurry.', "Utilisez une photo plus nette. L'image semble floue.");
     }
     return tr('This photo could not be approved.', 'Cette photo ne peut pas être approuvée.');
+  };
+
+  const getQualityStatus = (quality) => {
+    if (!quality || quality.ok) return 'approved';
+    if (quality.tooDark && quality.tooBlurry) return 'warning_dark_blurry';
+    if (quality.tooDark) return 'warning_dark';
+    if (quality.tooBlurry) return 'warning_blurry';
+    return 'warning_review';
+  };
+
+  const getQualityStatusMeta = (qualityStatus) => {
+    const normalizedStatus = String(qualityStatus || '').trim().toLowerCase();
+
+    if (normalizedStatus === 'warning_dark_blurry') {
+      return {
+        label: tr('Needs brighter, sharper retake', 'Photo à refaire, plus nette et lumineuse'),
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+
+    if (normalizedStatus === 'warning_dark') {
+      return {
+        label: tr('Needs brighter retake', 'Photo à refaire, plus lumineuse'),
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+
+    if (normalizedStatus === 'warning_blurry') {
+      return {
+        label: tr('Needs sharper retake', 'Photo à refaire, plus nette'),
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+
+    if (normalizedStatus === 'warning_review') {
+      return {
+        label: tr('Photo may need review', 'La photo peut demander une revue'),
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+
+    return null;
   };
 
   const updateStructuredImages = (nextImages) => {
@@ -250,19 +304,28 @@ const VehicleImageUpload = ({
       return;
     }
 
+    const activeShotType = shotType || 'primary';
     setUploading(true);
+    setUploadingShotType(activeShotType);
     setError(null);
+    setQualityNotice(null);
 
     const fileId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     try {
-      const quality = await inspectImageQuality(file);
-      if (!quality.ok) {
-        setUploadProgress({
-          [fileId]: { progress: 0, status: 'error', error: describeQualityError(quality) },
+      const quality = await withTimeout(
+        inspectImageQuality(file),
+        8000,
+        tr('Photo quality check took too long. Please try a smaller or clearer image.', 'Le contrôle qualité a pris trop de temps. Essayez une image plus petite ou plus nette.')
+      );
+      const qualityStatus = getQualityStatus(quality);
+      const qualityMessage = !quality.ok ? describeQualityFeedback(quality) : '';
+
+      if (qualityMessage) {
+        setQualityNotice({
+          message: qualityMessage,
+          status: qualityStatus,
         });
-        setError(describeQualityError(quality));
-        return;
       }
 
       setUploadProgress({
@@ -270,11 +333,15 @@ const VehicleImageUpload = ({
       });
       const fileExtension = file.name.split('.').pop();
       const storagePrefix = shotType ? `${shotType}__` : '';
-      const uploadResult = await uploadFile(file, {
-        bucket: BUCKET_NAME,
-        pathPrefix: `vehicles/${vehicleId}`,
-        fileName: `${storagePrefix}${fileId}.${fileExtension}`,
-      });
+      const uploadResult = await withTimeout(
+        uploadFile(file, {
+          bucket: BUCKET_NAME,
+          pathPrefix: `vehicles/${vehicleId}`,
+          fileName: `${storagePrefix}${fileId}.${fileExtension}`,
+        }),
+        VEHICLE_IMAGE_UPLOAD_TIMEOUT_MS,
+        tr('Upload timed out. Please try again.', 'Le téléversement a expiré. Veuillez réessayer.')
+      );
 
       if (!uploadResult?.success) {
         throw new Error(uploadResult?.error || 'Vehicle image upload failed');
@@ -297,7 +364,7 @@ const VehicleImageUpload = ({
             storagePath: uploadResult.path,
             is_cover: shotType === 'hero',
             shot_type: shotType || null,
-            quality_status: 'approved',
+            quality_status: qualityStatus,
           },
         ];
         updateStructuredImages(nextImages);
@@ -315,6 +382,7 @@ const VehicleImageUpload = ({
       });
     } finally {
       setUploading(false);
+      setUploadingShotType(null);
     }
   };
 
@@ -394,11 +462,16 @@ const VehicleImageUpload = ({
           <div className="mt-4 grid gap-3 md:grid-cols-3">
             {REQUIRED_PHOTO_TYPES.map((entry) => {
               const image = currentShotMap[entry.key];
+              const isThisSlotUploading = uploadingShotType === entry.key;
               return (
                 <article
                   key={entry.key}
                   className={`rounded-[1.35rem] border p-4 ${
-                    image ? 'border-emerald-200 bg-emerald-50/60' : 'border-slate-200 bg-slate-50/70'
+                    image?.quality_status && image.quality_status !== 'approved'
+                      ? 'border-amber-200 bg-amber-50/60'
+                      : image
+                        ? 'border-emerald-200 bg-emerald-50/60'
+                        : 'border-slate-200 bg-slate-50/70'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -409,6 +482,11 @@ const VehicleImageUpload = ({
                       <p className="mt-2 text-sm font-semibold text-slate-900">
                         {image ? tr('Uploaded', 'Téléversée') : tr('Missing', 'Manquante')}
                       </p>
+                      {image?.quality_status && image.quality_status !== 'approved' ? (
+                        <span className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getQualityStatusMeta(image.quality_status)?.tone || 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                          {getQualityStatusMeta(image.quality_status)?.label || tr('Needs review', 'À revoir')}
+                        </span>
+                      ) : null}
                     </div>
                     {image ? (
                       <CheckCircle2 className="h-5 w-5 text-emerald-600" />
@@ -436,8 +514,12 @@ const VehicleImageUpload = ({
                       onClick={() => triggerInput(entry.key)}
                       className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                      {image ? tr('Replace', 'Remplacer') : tr('Upload', 'Téléverser')}
+                      {isThisSlotUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                      {isThisSlotUploading
+                        ? tr('Uploading...', 'Téléversement...')
+                        : image
+                          ? tr('Replace', 'Remplacer')
+                          : tr('Upload', 'Téléverser')}
                     </button>
                     {image?.url ? (
                       <>
@@ -478,7 +560,7 @@ const VehicleImageUpload = ({
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div className="rounded-[1rem] border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
               <p className="font-semibold text-slate-900">{tr('Use bright, sharp photos', 'Utilisez des photos nettes et lumineuses')}</p>
-              <p className="mt-1">{tr('Dark or blurry images are blocked before upload.', 'Les images sombres ou floues sont bloquées avant le téléversement.')}</p>
+              <p className="mt-1">{tr('Dark or blurry images trigger a warning so you can replace them before review.', 'Les images sombres ou floues déclenchent un avertissement afin que vous puissiez les remplacer avant la revue.')}</p>
             </div>
             <div className="rounded-[1rem] border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
               <p className="font-semibold text-slate-900">{tr('Build trust fast', 'Créez la confiance rapidement')}</p>
@@ -491,6 +573,16 @@ const VehicleImageUpload = ({
           <div className="rounded-[1rem] border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
             <p className="font-semibold">{tr('Upload error', 'Erreur de téléversement')}</p>
             <p className="mt-1">{error}</p>
+          </div>
+        ) : null}
+
+        {qualityNotice ? (
+          <div className="rounded-[1rem] border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <p className="font-semibold">{tr('Photo quality warning', 'Avertissement qualité photo')}</p>
+            <p className="mt-1">{qualityNotice.message}</p>
+            <p className="mt-1 text-xs font-medium text-amber-700">
+              {tr('The upload still counts for setup, but replace it with a clearer photo before sending the listing for review.', "Le téléversement compte quand même pour la configuration, mais remplacez-le par une photo plus nette avant d'envoyer l'annonce en revue.")}
+            </p>
           </div>
         ) : null}
 

@@ -64,6 +64,7 @@ const formatReservationWindow = (date, locale = 'en-GB') => {
 };
 
 const normalizeWhatsAppNumber = (value = '') => String(value || '').replace(/[^\d]/g, '');
+const hasValidBookingPhone = (value = '') => String(value || '').replace(/[^\d]/g, '').length >= 8;
 
 const getOrCreateBookingSessionKey = (listingId) => {
   if (typeof window === 'undefined') return `website-${listingId || 'booking'}`;
@@ -450,6 +451,34 @@ const PublicInstantBooking = () => {
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!listing) return;
+
+    if (!hasValidBookingPhone(form.customerPhone)) {
+      setShowLicenseSection(false);
+      setError(tr('Enter a valid phone number before confirming.', 'Entrez un numéro de téléphone valide avant de confirmer.'));
+      return;
+    }
+
+    if (!String(form.customerName || '').trim()) {
+      setError(tr('Enter your full name before confirming.', 'Entrez votre nom complet avant de confirmer.'));
+      return;
+    }
+
+    if (
+      bookingSecurityOption === 'scan_hold' &&
+      !form.licenseDocumentUrl &&
+      !form.customerLicenseNumber
+    ) {
+      setShowLicenseSection(true);
+      setScanModalOpen(true);
+      setError('');
+      setLicenseStatusMessage(
+        tr(
+          'Scan or import the driver license first, then confirm the reservation.',
+          'Scannez ou importez d’abord le permis, puis confirmez la réservation.'
+        )
+      );
+      return;
+    }
 
     setSaving(true);
     setError('');
@@ -841,6 +870,7 @@ const PublicInstantBooking = () => {
                   onChange={(value) => updateField('customerPhone', value)}
                   label={tr('Phone', 'Téléphone')}
                   autoFocus
+                  required
                 />
                 <label className="space-y-2">
                   <span className="block text-sm font-medium text-slate-700">{tr('Full name', 'Nom complet')}</span>

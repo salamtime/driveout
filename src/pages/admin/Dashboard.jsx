@@ -90,6 +90,12 @@ let dashboardCoreCache = null;
 let dashboardCoreCacheAt = 0;
 let dashboardCorePromise = null;
 
+const resetDashboardCoreCache = () => {
+  dashboardCoreCache = null;
+  dashboardCoreCacheAt = 0;
+  dashboardCorePromise = null;
+};
+
 const fetchVehiclesByIds = async (vehicleIds = []) => {
   const uniqueIds = [...new Set(vehicleIds.filter(Boolean))];
   if (uniqueIds.length === 0) {
@@ -435,6 +441,29 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
     badgeClass: danger ? 'border border-red-200 bg-red-50 text-red-700' : 'border border-orange-200 bg-orange-50 text-orange-700',
     isExpired: false,
     isDigital: false,
+  };
+};
+
+const calculateDashboardRentalTimerStable = (rental, currentTime = Date.now()) => {
+  const timerState = calculateDashboardRentalTimer(rental, currentTime);
+
+  if (!timerState.isDigital || timerState.isExpired) {
+    return timerState;
+  }
+
+  const endDate = rental?.actual_end_time ? new Date(rental.actual_end_time) : null;
+  const diffMs = endDate && !Number.isNaN(endDate.getTime())
+    ? Math.max(0, endDate.getTime() - currentTime)
+    : 0;
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  return {
+    ...timerState,
+    text: hours > 0
+      ? `${hours}h ${String(minutes).padStart(2, '0')}m`
+      : `${minutes}m`,
   };
 };
 
@@ -2735,7 +2764,7 @@ const ModuleShortcutGrid = ({ cards, loading }) => {
 const AdminDashboard = () => {
   const location = useLocation();
   const [currentTime, setCurrentTime] = useState(Date.now());
-  const [stats, setStats] = useState({ vehicles: 0, rentals: 0, maintenance: 0, revenue: 0, tours: 0, toursToday: 0 });
+  const [stats, setStats] = useState({ vehicles: 0, rentals: 0, scheduledRentals: 0, maintenance: 0, revenue: 0, tours: 0, toursToday: 0 });
   const [revenueData, setRevenueData] = useState([]);
   const [utilizationData, setUtilizationData] = useState([]);
   const [recentBookings, setRecentBookings] = useState([]);
@@ -2775,6 +2804,7 @@ const AdminDashboard = () => {
   const todayRevenue = revenueData.length > 0
     ? Number(revenueData[revenueData.length - 1]?.revenue || 0)
     : 0;
+  const scheduledRentalCount = Number(stats.scheduledRentals || upcomingRentals.length || 0);
   const canOpenRecordFunds = canRecordReceiveFunds(userProfile);
   const canSeeMyPurchaseExpenses = Boolean(userProfile?.id || user?.id);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
@@ -2879,13 +2909,6 @@ const AdminDashboard = () => {
         if (rental.rental_end_time) {
           const [hours, minutes, seconds] = rental.rental_end_time.split(':').map(Number);
           endDate.setHours(hours, minutes, seconds || 0);
-        }
-
-        // Add extension hours
-        if (rental.extensions && rental.extensions.length > 0) {
-          const approvedExtensions = rental.extensions.filter(ext => ext.status === "approved");
-          const totalExtensionHours = approvedExtensions.reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0);
-          endDate.setHours(endDate.getHours() + totalExtensionHours);
         }
 
         return endDate;
@@ -3048,15 +3071,19 @@ const AdminDashboard = () => {
     }
   }, [session?.access_token]);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async ({ force = false } = {}) => {
     if (!hasLoadedOnce) {
       setLoading(true);
     }
     try {
       const now = Date.now();
-      if (dashboardCoreCache && now - dashboardCoreCacheAt < DASHBOARD_CACHE_TTL_MS) {
+      const hasWarmCache = dashboardCoreCache && now - dashboardCoreCacheAt < DASHBOARD_CACHE_TTL_MS;
+
+      if (hasWarmCache) {
         applyDashboardCoreData(dashboardCoreCache);
-      } else {
+      }
+
+      if (force || !hasWarmCache || !hasLoadedOnce) {
         if (!dashboardCorePromise) {
           const coreFetchPromise = (async () => {
             return dashboardWorkspaceService.getCoreSnapshot();
@@ -3097,7 +3124,8 @@ const AdminDashboard = () => {
   const handleRecordFundsSaved = useCallback(async () => {
     setRecordFundsRefreshing(true);
     try {
-      await fetchData();
+      resetDashboardCoreCache();
+      await fetchData({ force: true });
     } finally {
       setRecordFundsRefreshing(false);
     }
@@ -3107,16 +3135,17 @@ const AdminDashboard = () => {
 
   // Real-time updates for urgent rentals
   useEffect(() => {
-    const scheduleDashboardRealtimeRefresh = () => {
-      if (dashboardRealtimeRefreshTimerRef.current) {
-        window.clearTimeout(dashboardRealtimeRefreshTimerRef.current);
-      }
+      const scheduleDashboardRealtimeRefresh = () => {
+        if (dashboardRealtimeRefreshTimerRef.current) {
+          window.clearTimeout(dashboardRealtimeRefreshTimerRef.current);
+        }
 
-      dashboardRealtimeRefreshTimerRef.current = window.setTimeout(() => {
-        fetchUrgentRentals();
-        fetchData();
-      }, 120);
-    };
+        dashboardRealtimeRefreshTimerRef.current = window.setTimeout(() => {
+          resetDashboardCoreCache();
+          fetchUrgentRentals();
+          fetchData({ force: true });
+        }, 120);
+      };
 
     const channel = supabase
       .channel('dashboard-urgent-updates')
@@ -3196,12 +3225,20 @@ const AdminDashboard = () => {
       value: stats.rentals,
       caption: urgentStats.overdue > 0
         ? tr(`${urgentStats.overdue} overdue right now`, `${urgentStats.overdue} en retard maintenant`)
-        : tr(`${urgentStats.expiringSoon} ending soon`, `${urgentStats.expiringSoon} se terminent bientôt`),
+        : urgentStats.expiringSoon > 0
+          ? tr(`${urgentStats.expiringSoon} ending soon`, `${urgentStats.expiringSoon} se terminent bientôt`)
+          : scheduledRentalCount > 0
+            ? tr(`${scheduledRentalCount} scheduled next`, `${scheduledRentalCount} programmées ensuite`)
+            : tr('No active or scheduled rentals', 'Aucune location active ou programmée'),
       href: '/admin/rentals',
       icon: <Users className="h-5 w-5 text-blue-700" />,
       iconTone: 'bg-blue-50',
-      badge: urgentStats.overdue > 0 ? tr('Urgent', 'Urgent') : null,
-      badgeTone: 'bg-rose-50 text-rose-600',
+      badge: urgentStats.overdue > 0
+        ? tr('Urgent', 'Urgent')
+        : stats.rentals === 0 && scheduledRentalCount > 0
+          ? tr('Upcoming', 'À venir')
+          : null,
+      badgeTone: urgentStats.overdue > 0 ? 'bg-rose-50 text-rose-600' : 'bg-violet-50 text-violet-700',
     },
     {
       label: tr('Active Tours', 'Tours actifs'),
@@ -3251,7 +3288,7 @@ const AdminDashboard = () => {
 
   const urgentActionItems = [
     ...urgentRentals.slice(0, 3).map((rental) => {
-      const timerState = calculateDashboardRentalTimer(rental, currentTime);
+      const timerState = calculateDashboardRentalTimerStable(rental, currentTime);
       const isImpounded = Boolean(rental.is_impounded);
       return {
       id: `rental-${rental.id}`,
@@ -3307,6 +3344,19 @@ const AdminDashboard = () => {
   ];
 
   const liveOperationsCards = [
+    {
+      kicker: tr('Rental Queue', 'File des locations'),
+      title: tr('Rentals', 'Locations'),
+      description: tr('Keep active contracts and the next scheduled handoffs visible from one place.', 'Gardez visibles les contrats actifs et les prochaines remises depuis un seul endroit.'),
+      href: '/admin/rentals',
+      icon: <Users className="h-5 w-5 text-blue-700" />,
+      iconTone: 'bg-blue-50',
+      lines: [
+        { label: tr('Active now', 'Actives maintenant'), value: stats.rentals },
+        { label: tr('Scheduled next', 'Prochaines programmées'), value: scheduledRentalCount },
+        { label: tr('Ending soon', 'Fin imminente'), value: urgentStats.expiringSoon },
+      ],
+    },
     {
       kicker: tr('Live Operations', 'Opérations en direct'),
       title: tr('Tours', 'Tours'),

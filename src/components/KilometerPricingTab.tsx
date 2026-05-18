@@ -6,6 +6,7 @@ import KilometerPricingHelpModal from './KilometerPricingHelpModal';
 import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { getDepositPresetSettings } from '../services/DepositPresetSettingsService';
 import { scopeTenantOwnedQuery, shouldScopeSharedTenantData, verifyTenantOwnedRows } from '../services/OrganizationService';
 
 interface RentalPackage {
@@ -254,24 +255,21 @@ const KilometerPricingTab: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [packagesData, rateTypesData, vehicleModelsData, appSettingsResult] = await Promise.all([
+      const [packagesData, rateTypesData, vehicleModelsData, depositSettings] = await Promise.all([
         PackageService.getPackages(),
         PackageService.getRateTypes(),
         PackageService.getVehicleModels(),
-        shouldScopeSharedTenantData()
-          ? Promise.resolve({ data: [], error: null })
-          : supabase
-              .from('app_settings')
-              .select('damage_deposit_presets')
-              .eq('id', 1)
-              .limit(1)
+        getDepositPresetSettings().catch(() => ({
+          vehicleModelPresets: {},
+          allowCustomDeposit: true,
+        })),
       ]);
       setPackages(packagesData);
       setFilteredPackages(packagesData);
       setRateTypes(rateTypesData);
       setVehicleModels(vehicleModelsData);
       setDamageDepositPresetsByModelId(
-        normalizeDamageDepositPresets(appSettingsResult?.data?.[0]?.damage_deposit_presets)
+        normalizeDamageDepositPresets(depositSettings?.vehicleModelPresets)
       );
     } catch (err: any) {
       console.error('Error loading kilometer pricing data:', err);
