@@ -2021,6 +2021,11 @@ const AccountMarketplaceVehicleProfile = () => {
     }
   }, [isOperationsWorkspaceRoute]);
 
+  const requestedOperationalRequestId = useMemo(
+    () => String(new URLSearchParams(location.search).get('requestId') || '').trim(),
+    [location.search]
+  );
+
   const loadVehicleProfile = useCallback(
     async ({ silent = false } = {}) => {
       if (!user?.id) {
@@ -2329,10 +2334,6 @@ const AccountMarketplaceVehicleProfile = () => {
       declined: rows.filter((row) => String(row?.requestStatus || '').toLowerCase() === 'declined').length,
     };
   }, [vehicleRequests]);
-  const requestedOperationalRequestId = useMemo(
-    () => String(new URLSearchParams(location.search).get('requestId') || '').trim(),
-    [location.search]
-  );
   const operationalRequest = useMemo(() => {
     const rows = Array.isArray(vehicleRequests) ? vehicleRequests : [];
     if (isOperationsWorkspaceRoute && requestedOperationalRequestId) {
