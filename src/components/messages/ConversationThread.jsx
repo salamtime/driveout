@@ -128,6 +128,7 @@ const ConversationThread = ({
   onDeleteThread,
   threadContextData = null,
   listingSetupProgress = null,
+  forceFloatingComposer = false,
 }) => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -181,6 +182,7 @@ const ConversationThread = ({
   const messageListRef = useRef(null);
   const bottomAnchorRef = useRef(null);
   const bookingActionRef = useRef(null);
+  const composerTextareaRef = useRef(null);
   const messageRefs = useRef(new Map());
   const typingTimeoutRef = useRef(null);
   const typingSubscriptionRef = useRef(null);
@@ -195,6 +197,7 @@ const ConversationThread = ({
     messageId: '',
     createdAt: '',
   });
+  const initialThreadScrollKeyRef = useRef('');
 
   const selectedThread = thread;
   const isThreadArchived = Boolean(
@@ -3383,7 +3386,7 @@ const ConversationThread = ({
       : workspaceActiveUsers.length > 0
         ? tr('Available to reply', 'Disponible pour répondre')
         : tr('Will reply when available', 'Répondra dès disponibilité');
-  const shouldUseFloatingFooter = useFloatingTouchFooter || (compactMode && isMobileComposer);
+  const shouldUseFloatingFooter = forceFloatingComposer || useFloatingTouchFooter || (compactMode && isMobileComposer);
   const canSendPhotos = Boolean(
     threadCapabilities.supportsPhotos &&
     messagingPolicy.messagingPhotoSharingEnabled !== false
@@ -3392,9 +3395,13 @@ const ConversationThread = ({
   const headerBlockSpacingClass = showBookingContextCard ? 'mt-2' : 'mt-2.5';
   const threadVerticalSpacingClass = showBookingContextCard ? 'space-y-2.5' : 'space-y-3';
   const messageListPaddingClass = shouldUseFloatingFooter
-    ? compactMode
-      ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
-      : 'px-4 py-5 pb-80 sm:px-5 sm:pb-84 lg:px-6'
+    ? forceFloatingComposer
+      ? compactMode
+        ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
+        : 'px-4 py-5 pb-44 sm:px-5 sm:pb-48 lg:px-6'
+      : compactMode
+        ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
+        : 'px-4 py-5 pb-80 sm:px-5 sm:pb-84 lg:px-6'
     : compactMode
       ? 'px-4 py-4 pb-4 sm:px-5'
       : 'px-4 py-5 pb-5 sm:px-5 lg:px-6';
@@ -3408,9 +3415,9 @@ const ConversationThread = ({
     : `relative z-10 shrink-0 border-t border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(250,247,255,0.99))] backdrop-blur-xl ${compactMode ? 'px-4 py-2.5 pb-[max(0.9rem,env(safe-area-inset-bottom,0px))]' : 'px-4 py-2.5 sm:px-5 lg:px-6'}`;
 
   const focusComposer = () => {
-    const textarea = document.querySelector('textarea');
+    const textarea = composerTextareaRef.current;
     if (textarea instanceof HTMLTextAreaElement) {
-      textarea.focus();
+      textarea.focus({ preventScroll: true });
     }
   };
 
@@ -3578,6 +3585,7 @@ const ConversationThread = ({
   useEffect(() => {
     setRecentIncomingMessageIds([]);
     setUnseenLatestCount(0);
+    initialThreadScrollKeyRef.current = '';
     previousMessageIdsRef.current = new Set(
       visibleMessages
         .map((message) => String(message?.id || '').trim())
@@ -3691,6 +3699,15 @@ const ConversationThread = ({
       scheduleScrollToLatest('auto');
     }
   }, [currentUserId, resolvedThreadKey, visibleMessages]);
+
+  useEffect(() => {
+    const normalizedThreadKey = String(resolvedThreadKey || '').trim();
+    if (!normalizedThreadKey || !visibleMessages.length) return;
+    if (initialThreadScrollKeyRef.current === normalizedThreadKey) return;
+
+    initialThreadScrollKeyRef.current = normalizedThreadKey;
+    scheduleScrollToLatest('auto');
+  }, [resolvedThreadKey, visibleMessages.length]);
 
   useEffect(() => {
     const container = messageListRef.current;
@@ -6365,6 +6382,7 @@ const ConversationThread = ({
                       ) : null}
                     </div>
                     <textarea
+                      ref={composerTextareaRef}
                       value={composerText}
                       onChange={(event) => setComposerText(event.target.value)}
                       onKeyDown={handleComposerKeyDown}

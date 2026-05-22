@@ -186,6 +186,7 @@ const SharedInboxWorkspace = ({
   groupThreads = true,
   threadGroupingMode = 'default',
   laneModel: laneModelProp = '',
+  directThreadMode = false,
 }) => {
   const laneModel = laneModelProp || (
     workspaceContext === 'support' || workspaceContext === 'staff'
@@ -1181,18 +1182,27 @@ const SharedInboxWorkspace = ({
       setHasExplicitThreadSelection(false);
       return;
     }
+    if (directThreadMode && !selectedThreadKey) return;
     if (!selectedThreadKey || !filteredVisibleThreads.some((thread) => String(thread.thread_key || thread.id) === String(selectedThreadKey))) {
       setSelectedThreadKey(String(filteredVisibleThreads[0].thread_key || filteredVisibleThreads[0].id));
     }
-  }, [filteredVisibleThreads, selectedThreadKey]);
+  }, [directThreadMode, filteredVisibleThreads, selectedThreadKey]);
 
   useEffect(() => {
+    if (directThreadMode && selectedThreadKey && isCompactViewport) {
+      setImmersiveMode(true);
+      return;
+    }
+    if (directThreadMode) {
+      setImmersiveMode(false);
+      return;
+    }
     if (isCompactViewport && selectedThreadKey && hasExplicitThreadSelection) {
       setImmersiveMode(true);
       return;
     }
     setImmersiveMode(false);
-  }, [selectedThreadKey, isCompactViewport, hasExplicitThreadSelection]);
+  }, [directThreadMode, selectedThreadKey, isCompactViewport, hasExplicitThreadSelection]);
 
   useEffect(() => {
     if (typeof onMobileConversationStateChange !== 'function') return;
@@ -1372,19 +1382,22 @@ const SharedInboxWorkspace = ({
   }, [onMarkThreadRead, resolvedRenderedThread]);
 
   const isMobileThreadOpen = Boolean(isCompactViewport && immersiveMode && hasExplicitThreadSelection && renderedThreadWithContext);
-  const shouldShowMobileList = !isCompactViewport || !isMobileThreadOpen;
-  const shouldShowMobileThread = !isCompactViewport || isMobileThreadOpen;
+  const shouldShowMobileList = !directThreadMode && (!isCompactViewport || !isMobileThreadOpen);
+  const shouldShowMobileThread = directThreadMode || !isCompactViewport || isMobileThreadOpen;
   const mobileVisibleThreadCount = filteredVisibleThreads.length;
+  const workspaceGridClass = directThreadMode
+    ? 'mt-0 grid h-[calc(100dvh-4rem)] min-h-[36rem] gap-2'
+    : `${immersiveMode ? 'mt-0' : 'mt-1'} grid gap-2 ${immersiveMode ? 'h-[calc(100dvh-7.5rem)] min-h-[40rem]' : 'lg:h-[min(84vh,68rem)] lg:grid-cols-[328px_minmax(0,1fr)] lg:items-stretch lg:[grid-auto-rows:minmax(0,1fr)] xl:grid-cols-[356px_minmax(0,1fr)] 2xl:grid-cols-[372px_minmax(0,1fr)]'}`;
 
   return (
-    <section className="space-y-3">
+    <section className={directThreadMode ? 'space-y-0' : 'space-y-3'}>
       {error ? (
         <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
           {error}
         </div>
       ) : null}
 
-      <div className={`${immersiveMode ? 'mt-0' : 'mt-1'} grid gap-2 ${immersiveMode ? 'h-[calc(100dvh-7.5rem)] min-h-[40rem]' : 'lg:h-[min(84vh,68rem)] lg:grid-cols-[328px_minmax(0,1fr)] lg:items-stretch lg:[grid-auto-rows:minmax(0,1fr)] xl:grid-cols-[356px_minmax(0,1fr)] 2xl:grid-cols-[372px_minmax(0,1fr)]'}`}>
+      <div className={workspaceGridClass}>
         <div className={`${!shouldShowMobileList ? 'hidden' : ''} ${immersiveMode ? 'hidden' : `rounded-[28px] border border-slate-200 ${listSurfaceClass} p-3.5 shadow-[0_12px_30px_rgba(15,23,42,0.05)] lg:flex lg:min-h-0 lg:flex-col`}`}>
           {isCompactViewport ? (
             <div className="mb-2 rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
@@ -1753,12 +1766,14 @@ const SharedInboxWorkspace = ({
           </div>
         </div>
 
-        <div className={`${!shouldShowMobileThread ? 'hidden' : ''} overflow-hidden rounded-[32px] border border-violet-200/70 bg-white shadow-[0_16px_36px_rgba(15,23,42,0.06)] ${
-          isCompactViewport
-            ? 'min-h-[calc(100dvh-9rem)]'
-            : immersiveMode
-              ? 'h-[min(84vh,72rem)]'
-              : 'h-[min(76vh,52rem)] lg:min-h-0 lg:h-full'
+        <div className={`${!shouldShowMobileThread ? 'hidden' : ''} overflow-hidden ${directThreadMode ? 'rounded-none border-0 bg-white shadow-none sm:rounded-[32px] sm:border sm:border-violet-200/70 sm:shadow-[0_16px_36px_rgba(15,23,42,0.06)]' : 'rounded-[32px] border border-violet-200/70 bg-white shadow-[0_16px_36px_rgba(15,23,42,0.06)]'} ${
+          directThreadMode
+            ? 'h-full min-h-0'
+            : isCompactViewport
+              ? 'min-h-[calc(100dvh-9rem)]'
+              : immersiveMode
+                ? 'h-[min(84vh,72rem)]'
+                : 'h-[min(76vh,52rem)] lg:min-h-0 lg:h-full'
         }`}>
           {renderedThreadWithContext ? (
             <ConversationThread
@@ -1781,6 +1796,7 @@ const SharedInboxWorkspace = ({
               allowInternalNotes={allowInternalNotes}
               allowThreadStateControls={allowThreadStateControls}
               immersiveMode={immersiveMode}
+              forceFloatingComposer={directThreadMode}
               onExitReadingMode={() => {
                 setImmersiveMode(false);
                 setHasExplicitThreadSelection(false);
@@ -1803,6 +1819,22 @@ const SharedInboxWorkspace = ({
               }}
               floatingBackLabel={tr('Message list', 'Liste des messages')}
             />
+          ) : directThreadMode ? (
+            <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-violet-50 text-violet-700">
+                {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <MessageSquareText className="h-7 w-7" />}
+              </div>
+              <p className="mt-5 text-xl font-black text-slate-950">
+                {loading
+                  ? tr('Opening conversation', 'Ouverture de la conversation')
+                  : tr('Conversation not found', 'Conversation introuvable')}
+              </p>
+              <p className="mt-2 max-w-md text-sm text-slate-500">
+                {loading
+                  ? tr('We are loading the latest customer thread now.', 'Nous chargeons le dernier fil client.')
+                  : tr('This request does not have a customer thread yet.', "Cette demande n’a pas encore de fil client.")}
+              </p>
+            </div>
           ) : !isCompactViewport ? (
             <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
               <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-violet-50 text-violet-700">

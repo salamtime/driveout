@@ -589,6 +589,7 @@ const AccountMessages = () => {
     const params = new URLSearchParams(location.search);
     return String(params.get('requestId') || '').trim();
   }, [location.search]);
+  const directConversationMode = Boolean(requestedThreadKey || requestedBookingId);
   const initialSelectedThreadKey = useMemo(() => {
     const requestedThread = requestedThreadKey
       ? threads.find((thread) => String(thread?.thread_key || thread?.id || '').trim() === requestedThreadKey)
@@ -1173,8 +1174,9 @@ const AccountMessages = () => {
 
   return (
     <div className="min-h-full bg-[linear-gradient(180deg,#f5f3ff_0%,#eef2ff_45%,#ffffff_100%)]">
-      <main className={`mx-auto max-w-7xl px-3 py-6 sm:px-6 lg:px-8 ${mobileConversationOpen ? 'space-y-3' : 'space-y-6'}`}>
-        <section className={mobileConversationOpen ? 'space-y-3' : 'space-y-6'}>
+      <main className={`mx-auto ${directConversationMode ? 'max-w-5xl px-0 py-0 sm:px-4 sm:py-4 lg:px-6' : 'max-w-7xl px-3 py-6 sm:px-6 lg:px-8'} ${mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-6'}`}>
+        <section className={mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-6'}>
+          {!directConversationMode ? (
           <header className="space-y-5 px-1">
             {location.state?.from ? (
               <button
@@ -1250,6 +1252,7 @@ const AccountMessages = () => {
               </div>
             </div>
           </header>
+          ) : null}
 
           <div>
             <SharedInboxWorkspace
@@ -1269,11 +1272,12 @@ const AccountMessages = () => {
               isFrench={isFrench}
               tr={tr}
               showContextTabs={false}
-              showSearch
-              showListFilters
-              groupThreads
+              showSearch={!directConversationMode}
+              showListFilters={!directConversationMode}
+              groupThreads={!directConversationMode}
               threadGroupingMode="transaction_hub"
               laneModel="account"
+              directThreadMode={directConversationMode}
               workspaceContext={effectiveSenderRole === 'owner' ? 'owner' : 'customer'}
               onMobileConversationStateChange={setMobileConversationOpen}
               onRefresh={() => loadThreads()}
