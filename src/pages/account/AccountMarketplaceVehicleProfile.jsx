@@ -1798,6 +1798,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const [formData, setFormData] = useState(() => buildFormData(null));
   const [fieldErrors, setFieldErrors] = useState({});
   const [vehicleRequests, setVehicleRequests] = useState(() => (routeOwnerOperationRequest ? [routeOwnerOperationRequest] : []));
+  const loadVehicleProfileRunRef = useRef(0);
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
   const [vehicleFuelState, setVehicleFuelState] = useState(null);
   const [annualTaxRecords, setAnnualTaxRecords] = useState([]);
@@ -2007,6 +2008,19 @@ const AccountMarketplaceVehicleProfile = () => {
     [userProfile, user]
   );
 
+  const cacheOwnerOperationRequest = useCallback((request) => {
+    if (!isOperationsWorkspaceRoute || !request?.id || typeof window === 'undefined') return;
+
+    try {
+      window.sessionStorage.setItem(
+        `driveout_owner_operation_request:${String(request.id)}`,
+        JSON.stringify(request)
+      );
+    } catch {
+      // Best-effort route acceleration only.
+    }
+  }, [isOperationsWorkspaceRoute]);
+
   const loadVehicleProfile = useCallback(
     async ({ silent = false } = {}) => {
       if (!user?.id) {
@@ -2034,6 +2048,9 @@ const AccountMarketplaceVehicleProfile = () => {
       if (!silent) {
         setLoading(true);
       }
+      const loadRunId = loadVehicleProfileRunRef.current + 1;
+      loadVehicleProfileRunRef.current = loadRunId;
+      const isCurrentLoad = () => loadVehicleProfileRunRef.current === loadRunId;
       setError((current) => (silent ? current : ''));
       const [result, ownerVerificationResult] = await Promise.all([
         BusinessMarketplaceService.getOwnerVehicle(user.id, vehicleId),
@@ -2044,6 +2061,9 @@ const AccountMarketplaceVehicleProfile = () => {
       }
       const nextVehicle = result?.vehicle || null;
       const nextLinkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(nextVehicle?.rawProfile, nextVehicle);
+      const ownerRequestsPromise = nextVehicle?.id
+        ? BusinessMarketplaceService.getOwnerRequests(user.id, 'all')
+        : Promise.resolve({ requests: [] });
       const nextVehicleVerificationEntityIds = buildVehicleVerificationEntityIds(nextLinkedFleetVehicleId, nextVehicle?.id || vehicleId);
       const verificationFileResults = nextVehicleVerificationEntityIds.length > 0
         ? await Promise.all(
@@ -2071,18 +2091,32 @@ const AccountMarketplaceVehicleProfile = () => {
       setFocusedSectionId(resumeFocusedSectionId || '');
       storeOwnerVehicleId(user?.id, nextVehicle?.id);
       if (nextLinkedFleetVehicleId) {
-        try {
-          const [nextFuelState, nextAnnualTaxes, nextFinanceOverview] = await Promise.all([
-            FuelTransactionService.getVehicleFuelState(nextLinkedFleetVehicleId),
-            VehicleAnnualTaxService.listForVehicle(nextLinkedFleetVehicleId),
-            financeApiV2.getVehicleFinanceData([nextLinkedFleetVehicleId], {}),
-          ]);
-          setVehicleFuelState(nextFuelState || null);
-          setAnnualTaxRecords(Array.isArray(nextAnnualTaxes) ? nextAnnualTaxes : []);
-          setVehicleFinanceOverview(nextFinanceOverview || null);
-        } catch (_fuelError) {
-          setVehicleFuelState(null);
-          setAnnualTaxRecords([]);
+        void Promise.all([
+          FuelTransactionService.getVehicleFuelState(nextLinkedFleetVehicleId),
+          VehicleAnnualTaxService.listForVehicle(nextLinkedFleetVehicleId),
+        ])
+          .then(([nextFuelState, nextAnnualTaxes]) => {
+            if (!isCurrentLoad()) return;
+            setVehicleFuelState(nextFuelState || null);
+            setAnnualTaxRecords(Array.isArray(nextAnnualTaxes) ? nextAnnualTaxes : []);
+          })
+          .catch(() => {
+            if (!isCurrentLoad()) return;
+            setVehicleFuelState(null);
+            setAnnualTaxRecords([]);
+          });
+
+        if (!isOperationsWorkspaceRoute) {
+          void financeApiV2.getVehicleFinanceData([nextLinkedFleetVehicleId], {})
+            .then((nextFinanceOverview) => {
+              if (!isCurrentLoad()) return;
+              setVehicleFinanceOverview(nextFinanceOverview || null);
+            })
+            .catch(() => {
+              if (!isCurrentLoad()) return;
+              setVehicleFinanceOverview(null);
+            });
+        } else {
           setVehicleFinanceOverview(null);
         }
       } else {
@@ -2091,19 +2125,33 @@ const AccountMarketplaceVehicleProfile = () => {
         setVehicleFinanceOverview(null);
       }
       if (nextVehicle?.id) {
-        const ownerRequestsResult = await BusinessMarketplaceService.getOwnerRequests(user.id, 'all');
+        const ownerRequestsResult = await ownerRequestsPromise;
         const nextRequests = Array.isArray(ownerRequestsResult?.requests) ? ownerRequestsResult.requests : [];
-        setVehicleRequests(
-          nextRequests.filter((request) =>
-            String(request?.vehiclePublicProfileId || '') === String(vehicleId || '') ||
-            String(request?.listingId || '') === String(nextVehicle?.listingId || '')
-          )
+        const nextVehicleRequests = nextRequests.filter((request) =>
+          String(request?.vehiclePublicProfileId || '') === String(vehicleId || '') ||
+          String(request?.listingId || '') === String(nextVehicle?.listingId || '')
         );
+        setVehicleRequests(nextVehicleRequests);
+        if (requestedOperationalRequestId) {
+          const requestedRequest = nextVehicleRequests.find(
+            (request) => String(request?.id || '') === requestedOperationalRequestId
+          );
+          cacheOwnerOperationRequest(requestedRequest);
+        }
       } else {
         setVehicleRequests([]);
       }
     },
-    [isNewVehicle, resumeEditingAfterLoad, resumeFocusedSectionId, user?.id, vehicleId]
+    [
+      cacheOwnerOperationRequest,
+      isNewVehicle,
+      isOperationsWorkspaceRoute,
+      requestedOperationalRequestId,
+      resumeEditingAfterLoad,
+      resumeFocusedSectionId,
+      user?.id,
+      vehicleId,
+    ]
   );
 
   useEffect(() => {
@@ -3271,7 +3319,7 @@ const AccountMarketplaceVehicleProfile = () => {
                   ? 'completed'
                   : request?.rawRequest?.request_status ||
                     request?.requestStatus);
-            return {
+            const nextRequest = {
               ...request,
               requestStatus: normalizeMarketplaceRequestLifecycleStatus(nextStatus),
               ownerExecution: normalizedDraft,
@@ -3288,6 +3336,8 @@ const AccountMarketplaceVehicleProfile = () => {
                 },
               },
             };
+            cacheOwnerOperationRequest(nextRequest);
+            return nextRequest;
           })
         );
         return true;
@@ -3298,7 +3348,7 @@ const AccountMarketplaceVehicleProfile = () => {
         setOwnerExecutionSaving(false);
       }
     },
-    [operationalRequest?.id, user?.id]
+    [cacheOwnerOperationRequest, operationalRequest?.id, user?.id]
   );
 
   const createOwnerExecutionDocumentShareRecord = useCallback(
@@ -9119,7 +9169,7 @@ const AccountMarketplaceVehicleProfile = () => {
         />
       ) : null}
 
-      {!shouldCondenseReviewPublishChrome && typeof document !== 'undefined'
+      {!isOperationsWorkspaceRoute && !shouldCondenseReviewPublishChrome && typeof document !== 'undefined'
         ? createPortal(
             <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[95] px-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:px-6">
               <div className="pointer-events-auto mx-auto w-full max-w-6xl rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
