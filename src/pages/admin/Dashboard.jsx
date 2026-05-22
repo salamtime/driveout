@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2, Receipt, Tag, Pencil } from 'lucide-react';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2, Receipt, Tag, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
@@ -19,6 +19,7 @@ import { uploadFile } from '../../utils/storageUpload';
 import { normalizeAdminRecipients } from '../../utils/receiveFundsUi';
 import { buildExpenseNote, loadExpenseLabelPresets, saveExpenseLabelPresets, uniqueLabels } from '../../utils/expenseLabels';
 import PhotoCapture from '../../components/video/PhotoCapture';
+import AddFuelTransactionModal from '../../components/fuel/AddFuelTransactionModal';
 import i18n from '../../i18n';
 import { isBusinessOwnerAccountType, isPlatformAdminEmail, isPlatformOwnerEmail } from '../../utils/accountType';
 import { canAccessOwnerBankMethods, canRecordReceiveFunds, canUseBankDepositMethod } from '../../utils/permissionHelpers';
@@ -1500,6 +1501,7 @@ const DashboardReceiveFundsDrawer = ({
   const [receiptFile, setReceiptFile] = useState(null);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState('');
   const [showReceiptCapture, setShowReceiptCapture] = useState(false);
+  const [showFuelTankTopUpModal, setShowFuelTankTopUpModal] = useState(false);
   const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
   const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
   const [newExpenseLabel, setNewExpenseLabel] = useState('');
@@ -1843,6 +1845,10 @@ const DashboardReceiveFundsDrawer = ({
 
   const expenseNotePreview = buildExpenseNote(form.note, selectedExpenseLabels);
 
+  const handleFuelTankTopUpSuccess = () => {
+    onRecorded?.();
+  };
+
   return (
     <div className="fixed inset-0 z-[90] flex justify-end">
       <button
@@ -1933,6 +1939,19 @@ const DashboardReceiveFundsDrawer = ({
               );
             })}
           </div>
+          ) : null}
+
+          {isExpenseMode ? (
+            <div className="mt-6">
+              <button
+                type="button"
+                onClick={() => setShowFuelTankTopUpModal(true)}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.24)] transition hover:scale-[1.01]"
+              >
+                <Fuel className="h-4 w-4" />
+                {tr('Open Add to Tank', 'Ouvrir Ajouter au réservoir')}
+              </button>
+            </div>
           ) : null}
 
           <div className="mt-6 rounded-[28px] border border-violet-100 bg-[#faf7ff] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
@@ -2219,6 +2238,14 @@ const DashboardReceiveFundsDrawer = ({
           </div>
         </div>
       </aside>
+      {showFuelTankTopUpModal ? (
+        <AddFuelTransactionModal
+          isOpen={showFuelTankTopUpModal}
+          onClose={() => setShowFuelTankTopUpModal(false)}
+          onSuccess={handleFuelTankTopUpSuccess}
+          transactionType="tank_refill"
+        />
+      ) : null}
     </div>
   );
 };
@@ -3219,6 +3246,11 @@ const AdminDashboard = () => {
     });
   };
 
+  const nextScheduledRental = upcomingRentals[0] || null;
+  const nextScheduledRentalLabel = nextScheduledRental?.startAt
+    ? formatDashboardDateTime(nextScheduledRental.startAt)
+    : '';
+
   const operationsCards = [
     {
       label: tr('Active Rentals', 'Locations actives'),
@@ -3241,6 +3273,20 @@ const AdminDashboard = () => {
       badgeTone: urgentStats.overdue > 0 ? 'bg-rose-50 text-rose-600' : 'bg-violet-50 text-violet-700',
     },
     {
+      label: tr('Scheduled Rentals', 'Locations programmées'),
+      value: scheduledRentalCount,
+      caption: scheduledRentalCount > 0
+        ? nextScheduledRentalLabel
+          ? tr(`Next handoff ${nextScheduledRentalLabel}`, `Prochaine remise ${nextScheduledRentalLabel}`)
+          : tr('Upcoming handoffs ready to prepare', 'Remises à venir à préparer')
+        : tr('No upcoming handoffs scheduled', 'Aucune remise programmée'),
+      href: '/admin/rentals?status=scheduled',
+      icon: <Calendar className="h-5 w-5 text-violet-700" />,
+      iconTone: 'bg-violet-50',
+      badge: scheduledRentalCount > 0 ? tr('Queue', 'File') : null,
+      badgeTone: 'bg-violet-50 text-violet-700',
+    },
+    {
       label: tr('Active Tours', 'Tours actifs'),
       value: tourSnapshot.active,
       caption: tr(`${tourSnapshot.scheduled} more queued after live departures`, `${tourSnapshot.scheduled} autres en file après les départs en direct`),
@@ -3257,14 +3303,6 @@ const AdminDashboard = () => {
       href: '/admin/maintenance',
       icon: <Wrench className="h-5 w-5 text-amber-700" />,
       iconTone: 'bg-amber-50',
-    },
-    {
-      label: tr('Out of Service', 'Hors service'),
-      value: fleetSnapshot.outOfService,
-      caption: tr('Units blocked from booking and tours', 'Unités bloquées pour les réservations et les tours'),
-      href: '/admin/fleet',
-      icon: <ShieldAlert className="h-5 w-5 text-rose-700" />,
-      iconTone: 'bg-rose-50',
     },
     {
       label: tr('Tours Today', 'Tours aujourd’hui'),

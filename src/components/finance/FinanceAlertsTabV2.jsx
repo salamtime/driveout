@@ -12,8 +12,10 @@ import {
   Landmark,
   BadgeCheck
 } from 'lucide-react';
+import ProofPreviewModal from '../common/ProofPreviewModal';
 import { financeApiV2 } from '../../services/financeApiV2';
 import walletTopupApi from '../../services/walletTopupApi';
+import { syncWalletTopupReviewMessage } from '../../services/paymentProofReviewMessages';
 import i18n from '../../i18n';
 
 const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
@@ -23,6 +25,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
   const [alertsData, setAlertsData] = useState(null);
   const [trustData, setTrustData] = useState(null);
   const [reviewingTopupId, setReviewingTopupId] = useState('');
+  const [proofPreview, setProofPreview] = useState(null);
 
   useEffect(() => {
     const loadAlerts = async () => {
@@ -74,9 +77,16 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
         return;
       }
 
-      await walletTopupApi.reviewTopup(row.id, {
+      const reviewResponse = await walletTopupApi.reviewTopup(row.id, {
         status: nextStatus,
         reviewNote,
+      });
+      const messageSync = await syncWalletTopupReviewMessage({
+        row,
+        topup: reviewResponse?.topup || {},
+        nextStatus,
+        reviewNote,
+        language: isFrench ? 'fr' : 'en',
       });
 
       toast.success(
@@ -84,6 +94,9 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
           ? tr('Wallet top-up approved and credited.', 'Recharge portefeuille approuvée et créditée.')
           : tr('Wallet top-up rejected.', 'Recharge portefeuille rejetée.')
       );
+      if (messageSync.status === 'failed') {
+        toast.error(tr('Top-up reviewed, but the inbox update could not be sent.', "Recharge révisée, mais la mise à jour inbox n'a pas pu être envoyée."));
+      }
 
       await reloadAlerts();
     } catch (error) {
@@ -115,10 +128,15 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
 
   if (loading) {
     return (
-      <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+      <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-16 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-          <div className="text-5xl leading-none animate-pulse">⏳</div>
+          <div className="rounded-2xl bg-violet-50 p-3">
+            <WalletCards className="h-6 w-6 animate-pulse text-violet-700" />
+          </div>
           <h3 className="text-xl font-semibold text-slate-900">{tr('Loading finance controls...', 'Chargement des contrôles finance...')}</h3>
+          <p className="text-sm text-slate-500">
+            {tr('We are collecting review queues, wallet signals, and finance alerts for this workspace.', 'Nous récupérons les files de revue, les signaux portefeuille et les alertes finance pour cet espace.')}
+          </p>
         </div>
       </div>
     );
@@ -132,14 +150,19 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[2rem] border border-violet-100/80 bg-white p-5 shadow-[0_20px_55px_rgba(76,29,149,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Finance Alerts', 'Alertes finance')}</p>
-            <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Operating controls and money risk signals', 'Contrôles opérationnels et signaux de risque financier')}</h3>
-            <p className="mt-2 max-w-3xl text-sm text-slate-600">
-              {tr('Use this page to act on the money problems hiding across Rentals, Maintenance, Security, and Vehicle performance.', 'Utilisez cette page pour agir sur les problèmes financiers cachés à travers Locations, Maintenance, Garantie et performance véhicule.')}
-            </p>
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+              <AlertTriangle className="h-6 w-6 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Finance controls & proof review', 'Contrôles finance & revue des preuves')}</p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Wallet deposits, receipts, and money risk signals', 'Dépôts portefeuille, reçus et signaux de risque financier')}</h3>
+              <p className="mt-2 max-w-3xl text-sm text-slate-500">
+              {tr('Customer bank-transfer receipts land here. Open the receipt, read the customer message, then approve to credit the wallet or reject with a note.', 'Les reçus de virement client arrivent ici. Ouvrez le reçu, lisez le message client, puis approuvez pour créditer le portefeuille ou rejetez avec une note.')}
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -212,7 +235,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
             </div>
             <div>
               <h3 className="text-lg font-semibold text-slate-900">{tr('Payment proof review queue', 'File de revue des preuves')}</h3>
-              <p className="text-sm text-slate-600">{tr('Booking proofs and wallet top-up proofs are grouped together here so finance can review the live queue in one place.', 'Les preuves de réservation et de recharge portefeuille sont regroupées ici pour que la finance révise la file en direct en un seul endroit.')}</p>
+              <p className="text-sm text-slate-600">{tr('Booking proofs and wallet deposit receipts are grouped together here so finance can review the live queue in one place.', 'Les preuves de réservation et les reçus de dépôt portefeuille sont regroupés ici pour que la finance révise la file en direct en un seul endroit.')}</p>
             </div>
           </div>
 
@@ -238,7 +261,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`rounded-full px-3 py-1 text-xs font-semibold ${typeTone}`}>
-                          {row.proofType === 'wallet' ? tr('Wallet proof', 'Preuve portefeuille') : tr('Booking proof', 'Preuve réservation')}
+                          {row.proofType === 'wallet' ? tr('Wallet deposit', 'Dépôt portefeuille') : tr('Booking proof', 'Preuve réservation')}
                         </span>
                         <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusTone}`}>{row.status}</span>
                       </div>
@@ -251,8 +274,17 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                         {row.ownerLabel} • {row.methodLabel}
                         {row.submittedAt ? ` • ${new Date(row.submittedAt).toLocaleString(isFrench ? 'fr-FR' : 'en-US')}` : ''}
                       </p>
+                      {row.customerNote ? (
+                        <div className="mt-3 rounded-2xl border border-sky-100 bg-white px-4 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-700">{tr('Customer message', 'Message client')}</p>
+                          <p className="mt-1 text-sm leading-6 text-slate-700">{row.customerNote}</p>
+                        </div>
+                      ) : null}
                       {row.reviewNote ? (
-                        <p className="mt-2 text-sm text-slate-500">{row.reviewNote}</p>
+                        <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Admin review note', 'Note de revue admin')}</p>
+                          <p className="mt-1 text-sm leading-6 text-slate-600">{row.reviewNote}</p>
+                        </div>
                       ) : null}
                     </div>
 
@@ -262,15 +294,20 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                         <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(row.amount)}</p>
                       </div>
                       {row.proofUrl ? (
-                        <a
-                          href={row.proofUrl}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => setProofPreview({
+                            url: row.proofUrl,
+                            title: row.proofType === 'wallet' ? tr('Wallet deposit receipt', 'Reçu dépôt portefeuille') : tr('Booking payment proof', 'Preuve paiement réservation'),
+                            subtitle: row.bookingReference
+                              ? `${row.bookingReference} • ${row.customerName}`
+                              : row.customerName,
+                          })}
                           className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
                         >
-                          <ExternalLink className="h-4 w-4" />
-                          {tr('Open proof', 'Ouvrir la preuve')}
-                        </a>
+                          <ReceiptText className="h-4 w-4" />
+                          {row.proofType === 'wallet' ? tr('Open receipt', 'Ouvrir le reçu') : tr('Open proof', 'Ouvrir la preuve')}
+                        </button>
                       ) : null}
                       {row.href && row.proofType !== 'wallet' ? (
                         <button
@@ -291,7 +328,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                             className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300"
                           >
                             <BadgeCheck className="h-4 w-4" />
-                            {tr('Approve', 'Approuver')}
+                            {tr('Approve deposit', 'Approuver le dépôt')}
                           </button>
                           <button
                             type="button"
@@ -300,7 +337,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                             className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 shadow-sm transition hover:border-rose-300"
                           >
                             <AlertTriangle className="h-4 w-4" />
-                            {tr('Reject', 'Rejeter')}
+                            {tr('Reject deposit', 'Rejeter le dépôt')}
                           </button>
                         </>
                       ) : null}
@@ -451,6 +488,14 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
           )}
         </div>
       </div>
+      <ProofPreviewModal
+        open={Boolean(proofPreview?.url)}
+        url={proofPreview?.url || ''}
+        title={proofPreview?.title || tr('Payment proof', 'Preuve de paiement')}
+        subtitle={proofPreview?.subtitle || ''}
+        onClose={() => setProofPreview(null)}
+        tr={tr}
+      />
     </div>
   );
 };

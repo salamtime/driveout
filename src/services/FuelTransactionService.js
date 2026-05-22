@@ -2381,13 +2381,18 @@ class FuelTransactionService {
         'Workspace organization context is required to update vehicle odometer.',
       ),
     );
-    const { data, error } = await query.maybeSingle();
+    const { data, error } = await query.limit(1);
 
     if (error) {
       return { success: false, error: error.message };
     }
 
-    return { success: true, vehicle: data || { id: vehicleId, current_odometer: normalizedValue } };
+    const updatedVehicle = Array.isArray(data) ? data[0] : data;
+    if (!updatedVehicle) {
+      return { success: false, error: 'Vehicle not found or not accessible in this workspace.' };
+    }
+
+    return { success: true, vehicle: updatedVehicle };
   }
 
   calculateAverageFuelUnitCost(refills = []) {

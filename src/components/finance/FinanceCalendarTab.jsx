@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, DollarSign, Zap, X, ExternalLink, Receipt, Wrench, Fuel, Package, Car, AlertCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, DollarSign, Zap, X, ExternalLink, Receipt, Wrench, Fuel, Package, Car, AlertCircle, Loader2 } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
 import i18n from '../../i18n';
 
@@ -383,11 +383,17 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
 
   const handleOpenDetailPage = async (periodType) => {
     const meta = buildDetailMeta(periodType);
+    const detailFilters = {
+      ...filters,
+      startDate: meta.dates[0],
+      endDate: meta.dates[meta.dates.length - 1],
+    };
     setDetailPageLoading(true);
     setDetailPageError('');
     setIsDayDrawerOpen(false);
     setDetailPage({
       ...meta,
+      collectedTotal: 0,
       incomingTotal: 0,
       outgoingTotal: 0,
       taxesTotal: 0,
@@ -397,7 +403,10 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
     });
 
     try {
-      const breakdowns = await Promise.all(meta.dates.map((date) => financeApiV2.getDayBreakdown(date, filters)));
+      const [breakdowns, detailKpi] = await Promise.all([
+        Promise.all(meta.dates.map((date) => financeApiV2.getDayBreakdown(date, filters))),
+        financeApiV2.getKPIData(detailFilters),
+      ]);
       const rows = breakdowns
         .flatMap((breakdown) => (breakdown.rows || []).map((row) => ({ ...row, date: row.date || breakdown.date })))
         .sort((a, b) => {
@@ -414,6 +423,7 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
 
       setDetailPage({
         ...meta,
+        collectedTotal: detailKpi?.totalCollected || 0,
         incomingTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.incomingTotal || 0), 0),
         outgoingTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.outgoingTotal || 0), 0),
         taxesTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.taxesTotal || 0), 0),
@@ -483,8 +493,8 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
               <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Incoming', 'Entrées')}</p>
-                <p className="mt-2 text-2xl font-bold text-emerald-700">{fmtFull(detailPage.incomingTotal)} MAD</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Collected', 'Collecté')}</p>
+                <p className="mt-2 text-2xl font-bold text-emerald-700">{fmtFull(detailPage.collectedTotal || 0)} MAD</p>
               </div>
               <div className="rounded-[1.5rem] border border-rose-100 bg-rose-50/80 p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-700">{tr('Outgoing', 'Sorties')}</p>
@@ -627,12 +637,12 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
           {/* Header bar */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         {/* View mode switcher */}
-        <div className="flex rounded-2xl border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-1 shadow-sm shrink-0">
+        <div className="flex w-full flex-wrap rounded-2xl border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-1 shadow-sm sm:w-auto sm:flex-nowrap sm:shrink-0">
           {VIEW_MODES.map((mode) => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
+              className={`flex-1 rounded-xl px-4 py-2 text-sm font-semibold transition-all sm:flex-none ${
                 viewMode === mode
                   ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_12px_26px_rgba(79,70,229,0.22)]'
                   : 'text-slate-600 hover:bg-white hover:text-slate-900'
@@ -644,14 +654,14 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
         </div>
 
         {/* Period navigation */}
-        <div className="flex items-center gap-3 justify-center xl:flex-1 xl:justify-start">
+        <div className="flex flex-wrap items-center justify-center gap-3 xl:flex-1 xl:justify-start">
           <button
             onClick={() => navigate(-1)}
             className="rounded-2xl border border-violet-100 bg-white p-2.5 text-violet-600 shadow-sm transition-all hover:bg-violet-50"
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <span className="min-w-[180px] text-center text-base font-bold tracking-tight text-slate-900">{periodLabel}</span>
+          <span className="order-first w-full min-w-0 text-center text-sm font-bold tracking-tight text-slate-900 sm:order-none sm:min-w-[180px] sm:text-base">{periodLabel}</span>
           <button
             onClick={() => navigate(1)}
             className="rounded-2xl border border-violet-100 bg-white p-2.5 text-violet-600 shadow-sm transition-all hover:bg-violet-50"
@@ -668,7 +678,7 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
 
         {/* Month totals pill */}
         {viewMode !== 'Year' && (
-          <div className="flex items-center gap-3 rounded-2xl border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 px-4 py-2.5 text-xs font-semibold shadow-sm">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 px-4 py-2.5 text-xs font-semibold shadow-sm sm:w-auto sm:justify-start">
             <span className="text-emerald-700">Rev {fmt(monthTotals.rev)}</span>
             <span className="text-rose-600">Exp {fmt(monthTotals.exp)}</span>
             <span className={monthTotals.profit >= 0 ? 'text-emerald-700' : 'text-rose-600'}>
@@ -683,7 +693,9 @@ export default function FinanceCalendarTab({ filters, refreshTrigger }) {
       {loading ? (
         <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
           <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-            <div className="text-5xl leading-none animate-pulse">⏳</div>
+            <div className="rounded-2xl bg-violet-50 p-3 text-violet-700 shadow-sm">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
             <h3 className="text-xl font-semibold text-slate-900">{tr('Loading finance calendar...', 'Chargement du calendrier finance...')}</h3>
           </div>
         </div>

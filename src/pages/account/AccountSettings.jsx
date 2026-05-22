@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Bell, Camera, ChevronRight, Globe2, ShieldCheck, SlidersHorizontal, Star, Trash2, UserRound, Wallet } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Bell, Camera, ChevronRight, Globe2, ShieldCheck, SlidersHorizontal, Star, Trash2, UserRound, Wallet } from 'lucide-react';
 import i18n from '../../i18n';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import {
@@ -11,6 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import VerificationService from '../../services/VerificationService';
 import UserProfileService from '../../services/UserProfileService';
 import { getMessageNotificationPreferences } from '../../utils/messageNotificationPreferences';
+import { resolveReturnPath } from '../../utils/navigationReturn';
 
 const SettingsSectionCard = ({ icon: Icon, title, description, items }) => (
   <section className={workspacePanelClass}>
@@ -50,6 +51,8 @@ const buildInitials = (fullName = '', email = '') => {
 };
 
 const AccountSettings = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const { user, userProfile, session, updateCurrentUserProfile } = useAuth();
@@ -247,6 +250,7 @@ const AccountSettings = () => {
     ''
   ).trim();
   const profileInitials = buildInitials(profileFullName, profileEmail);
+  const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
 
   const applyProfilePictureUpdate = (url) => {
     setProfilePictureUrl(String(url || '').trim());
@@ -359,6 +363,17 @@ const AccountSettings = () => {
 
   return (
     <div className="space-y-6">
+      {location.state?.from ? (
+        <button
+          type="button"
+          onClick={() => navigate(backLink)}
+          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {tr('Back', 'Retour')}
+        </button>
+      ) : null}
+
       <AccountWorkspaceHero
         eyebrow={tr('Settings', 'Paramètres')}
         title={tr('Settings', 'Paramètres')}

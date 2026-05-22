@@ -7,6 +7,7 @@ import MessageService from '../../services/MessageService';
 import VerificationService from '../../services/VerificationService';
 import { adminApiRequest } from '../../services/adminApi';
 import i18n from '../../i18n';
+import { resolveThreadContextTarget } from '../../utils/messageCenter';
 
 const MESSAGE_CENTER_SECTIONS = {
   support: 'support',
@@ -53,6 +54,14 @@ const normalizeAdminMessageSection = (value) => {
   if (normalized === 'staff') return MESSAGE_CENTER_SECTIONS.support;
   if (normalized === MESSAGE_CENTER_SECTIONS.support) return MESSAGE_CENTER_SECTIONS.support;
   return MESSAGE_CENTER_SECTIONS.customer;
+};
+
+const normalizeInboxLaneParam = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['conversations', 'reviews', 'support', 'updates', 'internal'].includes(normalized)) {
+    return normalized;
+  }
+  return '';
 };
 
 const getUserDisplayName = (user = {}) =>
@@ -314,6 +323,14 @@ const AdminMessages = () => {
     const params = new URLSearchParams(location.search);
     return String(params.get('threadKey') || '').trim();
   }, [location.search]);
+  const initialSelectedRequestId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return String(params.get('requestId') || '').trim();
+  }, [location.search]);
+  const initialInboxLane = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return normalizeInboxLaneParam(params.get('lane'));
+  }, [location.search]);
   const requestedReference = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return String(params.get('requestRef') || '').trim().toUpperCase();
@@ -538,10 +555,13 @@ const AdminMessages = () => {
     () =>
       buildMergedVerificationThreads(
         threads.filter((thread) => {
+        const family = String(thread?.family || '').trim().toLowerCase();
+        if (family === 'verification') return true;
+
         const participantRole = getParticipantRoleFromThread(thread, user?.id);
         if (INTERNAL_STAFF_ROLES.has(participantRole)) return false;
 
-        if (String(thread?.family || '').trim().toLowerCase() !== 'marketplace') {
+        if (family !== 'marketplace') {
           return true;
         }
 
@@ -596,18 +616,18 @@ const AdminMessages = () => {
   const activeSectionMeta = useMemo(() => {
     if (selectedSection === MESSAGE_CENTER_SECTIONS.support) {
       return {
-        label: tr('Support', 'Support'),
+        label: tr('Team inbox', "Boîte d’équipe"),
         description: tr(
-          'Internal helpdesk and staff-side conversations in one workspace.',
-          'Le support interne et les conversations d’équipe dans un seul espace.'
+          'Internal team conversations and staff-side coordination.',
+          "Conversations internes de l’équipe et coordination côté personnel."
         ),
       };
     }
     return {
-      label: tr('Customer', 'Client'),
+      label: tr('Customer inbox', 'Boîte client'),
       description: tr(
-        'Marketplace, verification, and customer-facing conversations.',
-        'Marketplace, vérification et conversations côté client.'
+        'Customer-facing conversations, workflow reviews, and support cases in one admin workspace.',
+        'Conversations côté client, revues workflow et cas support dans un seul espace admin.'
       ),
     };
   }, [selectedSection, tr]);
@@ -662,15 +682,15 @@ const AdminMessages = () => {
               {tr('Messages', 'Messages')}
             </h1>
             <p className="mt-2 max-w-2xl text-sm text-slate-600">
-              {tr('One inbox system, split into customer and support views.', 'Un seul système de messagerie, séparé entre les vues client et support.')}
+              {tr('One messaging system, split into customer inbox and internal team inbox.', 'Un seul système de messagerie, séparé entre la boîte client et la boîte interne de l’équipe.')}
             </p>
           </header>
 
           <div className="rounded-[28px] border border-slate-200 bg-white/90 p-3 shadow-[0_16px_40px_rgba(15,23,42,0.06)] backdrop-blur">
             <div className="flex flex-wrap gap-2">
               {[
-                [MESSAGE_CENTER_SECTIONS.customer, tr('Customer', 'Client'), summary.customerThreadCount],
-                [MESSAGE_CENTER_SECTIONS.support, tr('Support', 'Support'), summary.staffThreadCount],
+                [MESSAGE_CENTER_SECTIONS.customer, tr('Customer inbox', 'Boîte client'), summary.customerThreadCount],
+                [MESSAGE_CENTER_SECTIONS.support, tr('Team inbox', "Boîte d’équipe"), summary.staffThreadCount],
               ].map(([sectionKey, label, count]) => (
                 <button
                   key={sectionKey}
@@ -759,6 +779,7 @@ const AdminMessages = () => {
               loading={staffLoading}
               error={staffError}
               showContextTabs={false}
+              laneModel="team"
               workspaceContext="support"
               busyThreadKey={busyThreadKey}
               currentUserId={user?.id}
@@ -847,6 +868,8 @@ const AdminMessages = () => {
               error={error}
               busyThreadKey={busyThreadKey}
               initialSelectedThreadKey={resolvedCustomerThreadKey}
+              initialSelectedRequestId={initialSelectedRequestId}
+              initialInboxLane={initialInboxLane}
               currentUserId={user?.id}
               currentUserLabel={adminLabel}
               currentUserAvatarUrl={adminAvatarUrl}
@@ -855,13 +878,17 @@ const AdminMessages = () => {
               tr={tr}
               contextCounts={{ verification: verificationCount }}
               showContextTabs={false}
+              laneModel="admin"
               workspaceContext="customer"
               onMobileConversationStateChange={setMobileConversationOpen}
               onRefresh={loadThreads}
               onOpenContext={(thread) => {
-                const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
-                const href = metadata.adminHref || metadata.href || '';
-                if (href) navigate(href);
+                const target = resolveThreadContextTarget(thread, {
+                  workspace: 'admin',
+                  senderRole: 'admin',
+                  fallbackHref: '/admin/messages',
+                });
+                if (target?.href) navigate(target.href);
               }}
               onMarkThreadRead={async (thread) => {
                 const threadKey = String(thread?.thread_key || '').trim();

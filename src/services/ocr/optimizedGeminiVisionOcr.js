@@ -614,20 +614,54 @@ Rules:
       return null;
     };
 
+    const registrationNumber =
+      rawData?.registration_number ? String(rawData.registration_number).trim() : null;
+    const registrationDate = normalizeLooseDate(rawData?.registration_date);
+    const registrationExpiryDate = normalizeLooseDate(rawData?.registration_expiry_date);
+    const insurancePolicyNumber =
+      rawData?.insurance_policy_number || rawData?.policy_number
+        ? String(rawData.insurance_policy_number || rawData.policy_number).trim()
+        : null;
+    const insuranceProvider =
+      rawData?.insurance_provider || rawData?.provider || rawData?.insurer
+        ? String(rawData.insurance_provider || rawData.provider || rawData.insurer).trim()
+        : null;
+    const insuranceExpiryDate = normalizeLooseDate(rawData?.insurance_expiry_date || rawData?.expiry_date);
+
+    const rawDocumentType = String(rawData?.document_type || '').trim().toLowerCase();
+    const normalizedRawDocumentType =
+      rawDocumentType.includes('insur') || rawDocumentType.includes('assur')
+        ? 'insurance'
+        : rawDocumentType.includes('regist') || rawDocumentType.includes('immat')
+          ? 'registration'
+          : '';
+
+    const registrationSignalCount = [
+      registrationNumber,
+      registrationDate,
+      registrationExpiryDate,
+    ].filter(Boolean).length;
+    const insuranceSignalCount = [
+      insurancePolicyNumber,
+      insuranceProvider,
+      insuranceExpiryDate,
+    ].filter(Boolean).length;
+
+    const resolvedDocumentCategory =
+      registrationSignalCount > insuranceSignalCount
+        ? 'registration'
+        : insuranceSignalCount > registrationSignalCount
+          ? 'insurance'
+          : normalizedRawDocumentType || documentCategory;
+
     const cleaned = {
-      document_type: documentCategory,
-      registration_number: rawData?.registration_number ? String(rawData.registration_number).trim() : null,
-      registration_date: normalizeLooseDate(rawData?.registration_date),
-      registration_expiry_date: normalizeLooseDate(rawData?.registration_expiry_date),
-      insurance_policy_number:
-        rawData?.insurance_policy_number || rawData?.policy_number
-          ? String(rawData.insurance_policy_number || rawData.policy_number).trim()
-          : null,
-      insurance_provider:
-        rawData?.insurance_provider || rawData?.provider || rawData?.insurer
-          ? String(rawData.insurance_provider || rawData.provider || rawData.insurer).trim()
-          : null,
-      insurance_expiry_date: normalizeLooseDate(rawData?.insurance_expiry_date || rawData?.expiry_date),
+      document_type: resolvedDocumentCategory,
+      registration_number: registrationNumber,
+      registration_date: registrationDate,
+      registration_expiry_date: registrationExpiryDate,
+      insurance_policy_number: insurancePolicyNumber,
+      insurance_provider: insuranceProvider,
+      insurance_expiry_date: insuranceExpiryDate,
       missing_fields: Array.isArray(rawData?.missing_fields)
         ? rawData.missing_fields.map((field) => String(field || '').trim()).filter(Boolean)
         : [],
@@ -637,7 +671,7 @@ Rules:
           : Number(rawData.confidence_estimate),
     };
 
-    const requiredByCategory = documentCategory === 'insurance'
+    const requiredByCategory = resolvedDocumentCategory === 'insurance'
       ? ['insurance_policy_number', 'insurance_provider', 'insurance_expiry_date']
       : ['registration_number', 'registration_date', 'registration_expiry_date'];
 

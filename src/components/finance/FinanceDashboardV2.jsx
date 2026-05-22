@@ -21,6 +21,7 @@ import { financeApiV2 } from '../../services/financeApiV2';
 import appWarmupService from '../../services/AppWarmupService';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
+import { getHostContext } from '../../utils/hostContext';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -102,6 +103,11 @@ const isDateWithinInclusiveRange = (date, start, end) => {
   return current >= rangeStart && current <= rangeEnd;
 };
 
+const SHELL_CARD_CLASS = 'rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5';
+const SHELL_PRIMARY_BUTTON_CLASS = 'inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.25)] transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50';
+const SHELL_SUCCESS_BUTTON_CLASS = 'inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.22)] transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50';
+const SHELL_SECONDARY_BUTTON_CLASS = 'inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50';
+
 /**
  * Enhanced Finance Dashboard v2 with Modern UI and Data Context Indicators
  * 
@@ -116,8 +122,22 @@ const isDateWithinInclusiveRange = (date, start, end) => {
  */
 const FinanceDashboardV2 = () => {
   const isFrench = isFrenchLocale();
-  const { hasFeature } = useAuth();
+  const { hasFeature, initialized, loading: authLoading, session, tenantSession, userProfile } = useAuth();
   const canUseAdvancedReporting = hasFeature('advanced_reporting');
+  const hostContext = getHostContext();
+  const financeDataReady =
+    initialized &&
+    !authLoading &&
+    Boolean(session?.user?.id) &&
+    (
+      hostContext.kind !== 'tenant' ||
+      Boolean(
+        tenantSession?.organization_id ||
+        tenantSession?.organizationId ||
+        userProfile?.organizationId ||
+        userProfile?.organization_id
+      )
+    );
   const warmFinanceSnapshot = appWarmupService.getWarmFinanceSnapshot();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') || 'overview';
@@ -159,6 +179,8 @@ const FinanceDashboardV2 = () => {
   const quickDayBounceTimeoutRef = useRef(null);
   const dateFocusLauncherBounceTimeoutRef = useRef(null);
   const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
+  const latestDashboardRequestRef = useRef(0);
+  const hasResetFinanceForReadyStateRef = useRef(false);
 
   const endDateObject = fromDateInputValue(filters.endDate);
   const weekStart = startOfWeek(endDateObject);
@@ -292,11 +314,11 @@ const FinanceDashboardV2 = () => {
     },
     {
       id: 'alerts',
-      label: tr('Controls', 'Contrôles'),
+      label: tr('Controls & proofs', 'Contrôles & preuves'),
       icon: ShieldAlert,
       color: 'from-rose-500 to-orange-500',
-      description: tr('Operating alerts for unpaid money, missing security, and unhealthy vehicles', 'Alertes opérationnelles pour argent impayé, garantie manquante et véhicules non sains'),
-      dataScope: tr('Shows the items the team should act on next, based on current finance and rental state.', 'Affiche les éléments sur lesquels l’équipe doit agir ensuite selon l’état finance et location.')
+      description: tr('Review wallet deposit receipts, unpaid money, missing security, and unhealthy vehicles', 'Revoir les reçus de dépôt portefeuille, argent impayé, garantie manquante et véhicules non sains'),
+      dataScope: tr('Shows wallet top-up proofs, payment proof reviews, and the items the team should act on next.', 'Affiche les preuves de recharge portefeuille, les revues de paiement et les éléments sur lesquels l’équipe doit agir ensuite.')
     },
     {
       id: 'reports',
@@ -319,12 +341,36 @@ const FinanceDashboardV2 = () => {
     }
   }, [activeTab, canUseAdvancedReporting]);
 
+  useEffect(() => {
+    if (!financeDataReady || hasResetFinanceForReadyStateRef.current) {
+      return;
+    }
+
+    hasResetFinanceForReadyStateRef.current = true;
+    appWarmupService.invalidateModule('finance', { rewarm: false });
+    setHasLoadedOnce(false);
+    setLoading(true);
+    setTrendLoading(true);
+    setDirectoryLoading(true);
+    setError(null);
+  }, [financeDataReady]);
+
   // Load initial data
   useEffect(() => {
+    if (!financeDataReady) {
+      return;
+    }
     loadDashboardData();
-  }, [filters]);
+  }, [financeDataReady, filters]);
 
   const loadDashboardData = async () => {
+    if (!financeDataReady) {
+      return;
+    }
+
+    const requestId = latestDashboardRequestRef.current + 1;
+    latestDashboardRequestRef.current = requestId;
+
     try {
       if (!hasLoadedOnce && !kpiData) {
         setLoading(true);
@@ -332,6 +378,9 @@ const FinanceDashboardV2 = () => {
       setError(null);
 
       const overviewSummary = await financeApiV2.getOverviewSummaryData(filters);
+      if (latestDashboardRequestRef.current !== requestId) {
+        return;
+      }
       setKpiData(overviewSummary.kpiData);
       setTrendData(Array.isArray(overviewSummary.trendData) ? overviewSummary.trendData : []);
       setPulseRows(Array.isArray(overviewSummary.pulseRows) ? overviewSummary.pulseRows : []);
@@ -346,6 +395,10 @@ const FinanceDashboardV2 = () => {
             financeApiV2.getVehicles(filters.orgId),
             financeApiV2.getCustomers(filters.orgId)
           ]);
+
+          if (latestDashboardRequestRef.current !== requestId) {
+            return;
+          }
 
           if (vehiclesResult.status === 'fulfilled') {
             const vehicleData = Array.isArray(vehiclesResult.value) ? vehiclesResult.value : [];
@@ -378,6 +431,9 @@ const FinanceDashboardV2 = () => {
       });
       
     } catch (err) {
+      if (latestDashboardRequestRef.current !== requestId) {
+        return;
+      }
       setError(err.message || tr('Failed to load dashboard data', 'Échec du chargement du tableau financier'));
       setKpiData(null);
       setTrendData([]);
@@ -386,7 +442,9 @@ const FinanceDashboardV2 = () => {
       setCustomers([]);
       
     } finally {
-      setLoading(false);
+      if (latestDashboardRequestRef.current === requestId) {
+        setLoading(false);
+      }
     }
   };
 
@@ -590,6 +648,10 @@ const FinanceDashboardV2 = () => {
   }, [endDateObject, filters.endDate, filters.startDate, isFrench]);
 
   const handleRefresh = async () => {
+    if (!financeDataReady) {
+      return;
+    }
+
     setIsRefreshing(true);
     try {
       appWarmupService.invalidateModule('finance', { rewarm: false });
@@ -632,10 +694,10 @@ const FinanceDashboardV2 = () => {
           const kpiData = await financeApiV2.getKPIData(filters);
           const csvContent = [
             'Metric,Amount (MAD),Change (%)',
-            `Total Revenue,${kpiData.totalRevenue},${kpiData.revenueChange}`,
+            `Collected,${kpiData.totalCollected},${kpiData.collectedChange}`,
             `Total Expenses,${kpiData.totalExpenses},${kpiData.expensesChange}`,
-            `Taxes,${kpiData.taxes},${kpiData.taxesChange}`,
-            `Gross Profit,${kpiData.grossProfit},${kpiData.profitChange}`
+            `Outstanding,${kpiData.totalOutstanding},${kpiData.outstandingChange}`,
+            `Net Cash,${kpiData.netCash},${kpiData.netCashChange}`
           ].join('\n');
           
           const blob = new Blob([csvContent], { type: 'text/csv' });
@@ -695,6 +757,10 @@ const FinanceDashboardV2 = () => {
   };
 
   const activeTabConfig = availableTabs.find(tab => tab.id === activeTab) || availableTabs[0];
+  const financePageDescription = tr(
+    'Financial analytics, KPI tracking, and performance reporting for your workspace.',
+    'Analyses financières, suivi des KPI et rapports de performance pour votre espace.'
+  );
   const showActiveTabMeta = false;
   const formatPreviewDate = (value) => {
     if (!value) return '';
@@ -717,6 +783,25 @@ const FinanceDashboardV2 = () => {
       : `${formatPreviewDate(filters.startDate)} → ${formatPreviewDate(filters.endDate)}`;
 
   const renderTabContent = () => {
+    if (!financeDataReady) {
+      return (
+        <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+          <div className="mx-auto flex max-w-xl flex-col items-center gap-3">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-violet-500" />
+            <h3 className="text-xl font-semibold text-slate-900">
+              {tr('Loading workspace finance data...', 'Chargement des donnees finance de l espace...')}
+            </h3>
+            <p className="text-sm text-slate-500">
+              {tr(
+                'We are waiting for the active workspace context before calculating the dashboard.',
+                "Nous attendons le contexte de l'espace actif avant de calculer le tableau de bord."
+              )}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     const tabProps = { 
       filters, 
       refreshTrigger: lastRefresh.getTime(),
@@ -809,6 +894,11 @@ const FinanceDashboardV2 = () => {
               openComposerRequest={receiveFundsComposerRequest}
               openExpenseComposerRequest={expenseComposerRequest}
               openEditComposerRequest={editComposerRequest}
+              onFinanceRefresh={() => {
+                appWarmupService.invalidateModule('finance', { rewarm: false });
+                setLastRefresh(new Date());
+                void loadDashboardData();
+              }}
             />
           </div>
         );
@@ -943,7 +1033,7 @@ const FinanceDashboardV2 = () => {
         ) : null}
 
         <div className="mt-3 rounded-[18px] border border-slate-200 bg-white p-2.5">
-          <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
               onClick={() => shiftWeek(-1)}
@@ -952,7 +1042,7 @@ const FinanceDashboardV2 = () => {
               <ChevronLeft className="h-3.5 w-3.5" />
               {tr('Prev Week', 'Semaine préc.')}
             </button>
-            <p className="text-xs font-semibold text-slate-900 sm:text-sm">
+            <p className="order-first w-full text-center text-xs font-semibold text-slate-900 sm:order-none sm:w-auto sm:text-sm">
               {weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - {weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}
             </p>
             <button
@@ -980,7 +1070,7 @@ const FinanceDashboardV2 = () => {
                     key={dayValue}
                     type="button"
                     onClick={() => handleQuickDayPress(day)}
-                    className={`min-w-[76px] rounded-[1rem] border px-2.5 py-2 text-left transition active:scale-[0.985] xl:min-w-0 ${bouncingWeekDayKey === dayValue ? 'quick-date-tap-bounce' : ''} ${
+                    className={`min-w-[72px] rounded-[1rem] border px-2.5 py-2 text-left transition active:scale-[0.985] sm:min-w-[76px] xl:min-w-0 ${bouncingWeekDayKey === dayValue ? 'quick-date-tap-bounce' : ''} ${
                       isCustomBoundary
                         ? 'border-violet-400 bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]'
                         : isInsideCustomRange
@@ -1028,32 +1118,42 @@ const FinanceDashboardV2 = () => {
     <>
     <div className="space-y-6 px-4 py-6 sm:space-y-8 sm:px-6 lg:px-8">
       <section className="space-y-4">
-        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
+        <div className={SHELL_CARD_CLASS}>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="flex items-center gap-3">
               <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
                 <BarChart3 className="h-6 w-6 text-violet-700" />
               </div>
-              <h1 className="text-[2rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[2.5rem]">
-                {tr('Finance', 'Finance')}
-              </h1>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Finance', 'Finance')}
+                </p>
+                <h1 className="mt-2 text-[2rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[2.5rem]">
+                  {tr('Finance', 'Finance')}
+                </h1>
+                <p className="mt-2 text-sm text-slate-500">
+                  {financePageDescription}
+                </p>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
               <button
+                type="button"
                 onClick={() => {
                   setActiveTab('receive-funds');
                 }}
-                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.22)] transition-all hover:scale-[1.01]"
+                className={SHELL_SUCCESS_BUTTON_CLASS}
               >
                 <DollarSign className="h-4 w-4" />
                 {tr('Record Funds', 'Enregistrer des fonds')}
               </button>
 
               <button
+                type="button"
                 onClick={handleRefresh}
                 disabled={isRefreshing}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700 disabled:opacity-50"
+                className={SHELL_SECONDARY_BUTTON_CLASS}
               >
                 <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 {tr('Refresh', 'Actualiser')}
@@ -1061,8 +1161,9 @@ const FinanceDashboardV2 = () => {
 
               {canUseAdvancedReporting ? (
                 <button
+                  type="button"
                   onClick={handleExport}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.25)] transition-all hover:scale-[1.01]"
+                  className={SHELL_PRIMARY_BUTTON_CLASS}
                 >
                   <Download className="h-4 w-4" />
                   {tr('Export', 'Exporter')}
@@ -1070,8 +1171,9 @@ const FinanceDashboardV2 = () => {
               ) : null}
 
               <button
+                type="button"
                 onClick={handleResetFilters}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:border-slate-300 hover:bg-white"
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
                 {tr('Reset', 'Réinitialiser')}
@@ -1079,8 +1181,9 @@ const FinanceDashboardV2 = () => {
 
               {canUseAdvancedReporting ? (
                 <button
+                  type="button"
                   onClick={() => setActiveTab('reports')}
-                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+                  className={SHELL_SECONDARY_BUTTON_CLASS}
                 >
                   <FileText className="h-4 w-4" />
                   {tr('Reports', 'Rapports')}
@@ -1092,50 +1195,83 @@ const FinanceDashboardV2 = () => {
       </section>
 
       <section id="finance-tabs" className="space-y-4">
-        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
-          <nav className="flex space-x-2 overflow-x-auto pb-1" aria-label="Tabs">
-            {availableTabs.map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`
-                    group relative flex items-center rounded-2xl px-4 py-3 text-sm font-semibold transition-all duration-200 whitespace-nowrap
-                    ${isActive
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_16px_36px_rgba(79,70,229,0.24)]'
-                      : 'border border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900'
-                    }
-                  `}
-                  title={tab.description}
-                >
-                  <Icon className={`mr-2 h-5 w-5 transition-transform duration-200 ${isActive ? 'scale-110' : 'group-hover:scale-105'}`} />
-                  <span>{tab.label}</span>
-                  
-                  {/* Active tab indicator */}
-                  {isActive && (
-                    <div className="absolute inset-0 rounded-2xl bg-white/10 animate-pulse" />
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+        <div className={SHELL_CARD_CLASS}>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Finance workspace', 'Espace finance')}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-950">
+                  {tr('Sections and filters', 'Sections et filtres')}
+                </h2>
+              </div>
+              <p className="text-sm text-slate-500">
+                {tr('Switch sections and keep the same admin workspace rhythm used across the platform.', "Naviguez entre les sections avec le même rythme visuel que le reste de l'admin.")}
+              </p>
+            </div>
 
-          {renderDateFocusControls()}
+            <nav className="-mx-1 flex space-x-2 overflow-x-auto px-1 pb-1" aria-label="Tabs">
+              {availableTabs.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`
+                      group relative flex items-center rounded-2xl px-4 py-3 text-sm font-semibold whitespace-nowrap transition-all duration-200
+                      ${isActive
+                        ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_16px_36px_rgba(79,70,229,0.24)]'
+                        : 'border border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900'
+                      }
+                    `}
+                    title={tab.description}
+                  >
+                    <Icon className={`mr-2 h-5 w-5 transition-transform duration-200 ${isActive ? 'scale-110' : 'group-hover:scale-105'}`} />
+                    <span>{tab.label}</span>
+
+                    {isActive && (
+                      <div className="absolute inset-0 rounded-2xl bg-white/10 animate-pulse" />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {renderDateFocusControls()}
+          </div>
         </div>
 
-        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="rounded-2xl bg-violet-50 p-2.5">
-              {React.createElement(activeTabConfig?.icon || BarChart3, {
-                className: "h-5 w-5 text-violet-700"
-              })}
+        <div className={`${SHELL_CARD_CLASS} sm:p-6`}>
+          <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-violet-50 p-2.5">
+                {React.createElement(activeTabConfig?.icon || BarChart3, {
+                  className: 'h-5 w-5 text-violet-700'
+                })}
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Active section', 'Section active')}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                  {activeTabConfig?.label}
+                </h2>
+                {activeTabConfig?.description ? (
+                  <p className="mt-2 text-sm text-slate-500">
+                    {activeTabConfig.description}
+                  </p>
+                ) : null}
+              </div>
             </div>
-            <h2 className="text-lg font-semibold text-slate-900">
-              {activeTabConfig?.label}
-            </h2>
+            {activeTabConfig?.dataScope ? (
+              <div className="max-w-2xl rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3 text-sm text-slate-600 shadow-[0_10px_26px_rgba(79,70,229,0.06)]">
+                {activeTabConfig.dataScope}
+              </div>
+            ) : null}
           </div>
 
           <div className="min-h-[520px]">
@@ -1144,7 +1280,7 @@ const FinanceDashboardV2 = () => {
         </div>
       </section>
 
-      <section className="rounded-[24px] border border-slate-200 bg-white px-4 py-4 shadow-sm sm:px-6">
+      <section className="rounded-[28px] border border-slate-200 bg-white px-4 py-4 shadow-sm sm:px-6">
         <div className="flex flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-4">
             <span>{tr('Last updated:', 'Dernière mise à jour :')} {lastRefresh.toLocaleTimeString(isFrench ? 'fr-FR' : 'en-US')}</span>

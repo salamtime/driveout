@@ -242,6 +242,12 @@
       "notifications": "Notifications",
       "notificationsDescription": "Choisissez comment recevoir les mises à jour du compte."
     },
+    "telegram": {
+      "events": {
+        "rental_extension_requested": "Demande d'approbation d'extension",
+        "rental_price_change_requested": "Demande d'approbation de changement de prix"
+      }
+    },
     "subscription": {
       "title": "Abonnement",
       "heading": "Activation du propriétaire d'entreprise",

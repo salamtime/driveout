@@ -96,6 +96,75 @@ const resolveDistanceValue = (rental = {}) => {
   return 0;
 };
 
+const hasOwnValue = (value) => value !== undefined && value !== null && value !== '';
+
+const firstOwnValue = (...values) => values.find((value) => hasOwnValue(value));
+
+export const buildRentalCreatedTelegramPricingSnapshot = (rental = {}, fallback = {}) => ({
+  total: firstOwnValue(
+    rental?.total_amount,
+    rental?.total,
+    fallback?.total_amount,
+    fallback?.total,
+    0
+  ),
+  use_package_pricing: Boolean(firstOwnValue(
+    rental?.use_package_pricing,
+    rental?.usePackagePricing,
+    fallback?.use_package_pricing,
+    fallback?.usePackagePricing,
+    false
+  )),
+  selected_package_id: firstOwnValue(
+    rental?.selected_package_id,
+    rental?.package_id,
+    rental?.packageId,
+    fallback?.selected_package_id,
+    fallback?.package_id,
+    fallback?.packageId,
+    ''
+  ),
+  selected_package_name: firstOwnValue(
+    rental?.selected_package_name,
+    rental?.package_name,
+    rental?.packageName,
+    rental?.package?.name,
+    fallback?.selected_package_name,
+    fallback?.package_name,
+    fallback?.packageName,
+    ''
+  ),
+  selected_package_fixed_amount: firstOwnValue(
+    rental?.selected_package_fixed_amount,
+    rental?.selectedPackageFixedAmount,
+    fallback?.selected_package_fixed_amount,
+    fallback?.selectedPackageFixedAmount,
+    0
+  ),
+  selected_package_rate_per_unit: firstOwnValue(
+    rental?.selected_package_rate_per_unit,
+    rental?.package_rate_per_unit,
+    rental?.selectedPackageRatePerUnit,
+    rental?.packageRatePerUnit,
+    fallback?.selected_package_rate_per_unit,
+    fallback?.package_rate_per_unit,
+    fallback?.selectedPackageRatePerUnit,
+    fallback?.packageRatePerUnit,
+    0
+  ),
+  selected_package_total_included_km: firstOwnValue(
+    rental?.selected_package_total_included_km,
+    rental?.package_total_included_km,
+    rental?.selectedPackageTotalIncludedKm,
+    rental?.packageTotalIncludedKm,
+    fallback?.selected_package_total_included_km,
+    fallback?.package_total_included_km,
+    fallback?.selectedPackageTotalIncludedKm,
+    fallback?.packageTotalIncludedKm,
+    null
+  ),
+});
+
 export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
   const normalizedEventType = normalizeEventType(eventType);
   const rentalId = safeText(rental?.id);

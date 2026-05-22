@@ -205,6 +205,7 @@ const MessageWidget = ({
   seedThread = null,
   threadContextData = null,
   replyTarget = null,
+  listingSetupProgress = null,
   onPerformMarketplaceAction = null,
   openRequestSignal = 0,
   forceLauncherVisible = false,
@@ -788,6 +789,7 @@ const MessageWidget = ({
                 contextSubtitle={isDirectStaffWidget ? (widgetOtherParty?.email || contextSubtitle) : contextSubtitle}
                 contextStatus={isDirectStaffWidget ? getRoleLabel(widgetOtherParty?.role || replyTarget?.role, tr) : contextStatus}
                 threadContextData={threadContextData}
+                listingSetupProgress={listingSetupProgress}
                 hideDirectStaffIdentity={isDirectStaffWidget}
                 onExitReadingMode={() => setOpen(false)}
                 onClose={() => setOpen(false)}

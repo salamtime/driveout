@@ -1,7 +1,11 @@
 import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
 import WebsiteBookingLifecycleService from './WebsiteBookingLifecycleService.js';
-import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService.js';
+import {
+  buildRentalCreatedTelegramPricingSnapshot,
+  countRentalDocuments,
+  dispatchRentalLifecycleTelegramEvent,
+} from './RentalLifecycleDispatchService.js';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram.js';
 import { applyOrganizationMatch, applyOrganizationScope, getCurrentOrganizationId } from './OrganizationService.js';
 import {
@@ -16,6 +20,8 @@ const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
 const CUSTOMERS_TABLE = 'app_4c3a7a6153_customers';
 const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
+
+const RENTAL_REFERENCE_RANDOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const isPermissionDeniedError = (error) => {
   const code = String(error?.code || '').trim().toUpperCase();
@@ -60,6 +66,58 @@ const isPermissionDeniedError = (error) => {
  * - CRITICAL BOOKING FIX: Vehicle status check is now informational only - allows multiple bookings as long as dates don't overlap
  */
 class TransactionalRentalService {
+  static buildRentalReferenceCandidate() {
+    const year = new Date().getFullYear();
+    const timestampPart = Date.now().toString(36).toUpperCase().slice(-5);
+    let randomPart = '';
+
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const bytes = new Uint8Array(4);
+      crypto.getRandomValues(bytes);
+      randomPart = Array.from(bytes)
+        .map((byte) => RENTAL_REFERENCE_RANDOM_ALPHABET[byte % RENTAL_REFERENCE_RANDOM_ALPHABET.length])
+        .join('');
+    } else {
+      randomPart = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+    }
+
+    return `RNT-${year}-${timestampPart}${randomPart}`;
+  }
+
+  static async rentalReferenceExists(reference) {
+    const normalizedReference = String(reference || '').trim();
+    if (!normalizedReference) return false;
+
+    const { data, error } = await supabase
+      .from(RENTALS_TABLE)
+      .select('id')
+      .eq('rental_id', normalizedReference)
+      .limit(1);
+
+    if (error) {
+      throw new Error(`Failed to verify rental reference uniqueness: ${error.message}`);
+    }
+
+    return Array.isArray(data) && data.length > 0;
+  }
+
+  static async resolveUniqueRentalReference(preferredReference = '') {
+    const normalizedPreferred = String(preferredReference || '').trim();
+
+    if (normalizedPreferred && !(await this.rentalReferenceExists(normalizedPreferred))) {
+      return normalizedPreferred;
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const candidate = this.buildRentalReferenceCandidate();
+      if (!(await this.rentalReferenceExists(candidate))) {
+        return candidate;
+      }
+    }
+
+    throw new Error('Unable to generate a unique rental contract reference. Please try again.');
+  }
+
   static parseStorageTargetFromUrl(url) {
     const rawUrl = String(url || '').trim();
     if (!rawUrl) return null;
@@ -1187,6 +1245,14 @@ class TransactionalRentalService {
         delete finalSanitizedData.status;
       }
 
+      finalSanitizedData.rental_id = await this.resolveUniqueRentalReference(finalSanitizedData.rental_id);
+
+      const finalPaymentStatus = String(finalSanitizedData.payment_status || '').trim().toLowerCase();
+      const finalTotalAmount = Math.max(0, Number(finalSanitizedData.total_amount) || 0);
+      if ((finalPaymentStatus === 'paid' || finalPaymentStatus === 'partial') && finalTotalAmount <= 0) {
+        throw new Error('Cannot create a paid rental with 0 MAD total. Select a package or set a rental price first.');
+      }
+
       console.log('🧼 FINAL SANITIZED DATA:', JSON.stringify(finalSanitizedData, null, 2));
 
       const { data: rental, error: insertError } = await supabase
@@ -1286,6 +1352,7 @@ class TransactionalRentalService {
           ? rental.extra_images
           : (Array.isArray(existingCustomer?.extra_images) ? existingCustomer.extra_images : []),
       };
+      const telegramPricingSnapshot = buildRentalCreatedTelegramPricingSnapshot(rental, finalSanitizedData);
 
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
@@ -1297,12 +1364,12 @@ class TransactionalRentalService {
           customer: rental.customer_name || finalSanitizedData.customer_name,
           start: rental.rental_start_date || finalSanitizedData.rental_start_date,
           end: rental.rental_end_date || finalSanitizedData.rental_end_date,
-          total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
           createdBy: finalSanitizedData.created_by_name || rental.created_by_name || '',
           id_scan_url: telegramRentalPayload.id_scan_url,
           customer_id_image: telegramRentalPayload.customer_id_image,
           customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
           documentCount: countRentalDocuments(telegramRentalPayload),
+          ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

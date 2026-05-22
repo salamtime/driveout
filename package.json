@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:master": "vite --port 5173 --strictPort",
     "dev:owner1": "vite --port 5174 --strictPort",
+    "dev:admin": "vite --port 5175 --strictPort",
     "dev:offroad": "vite --port 5174 --strictPort",
     "build": "vite build",
     "schema:release:current": "node -e \"import('./api/_lib/tenantSchemaRelease.js').then(({ CURRENT_TENANT_SCHEMA_RELEASE }) => console.log(JSON.stringify(CURRENT_TENANT_SCHEMA_RELEASE, null, 2)))\"",

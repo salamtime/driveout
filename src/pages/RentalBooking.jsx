@@ -2,6 +2,11 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { useTranslation } from 'react-i18next';
+import { fetchSystemSettings } from '../services/systemSettingsApi';
+import {
+  addConfiguredRentalDuration,
+  normalizeDailyReturnPolicy,
+} from '../utils/dailyReturnPolicy';
 
 // Redux actions
 import { setNotification } from '../store/slices/appSlice';
@@ -29,6 +34,7 @@ const RentalBooking = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [paymentStatus, setPaymentStatus] = useState(null); // null, 'processing', 'success', 'failed'
   const [paymentResult, setPaymentResult] = useState(null);
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
   const [bookingData, setBookingData] = useState({
     rental_type: 'hourly', // hourly, daily, weekly
     city_id: null,
@@ -96,6 +102,26 @@ const RentalBooking = () => {
       }
     }
   }, [preSelectedVehicleId]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadSettings = async () => {
+      try {
+        const settings = await fetchSystemSettings();
+        if (!active) return;
+        setDailyReturnPolicy(normalizeDailyReturnPolicy(settings));
+      } catch {
+        if (!active) return;
+        setDailyReturnPolicy(normalizeDailyReturnPolicy());
+      }
+    };
+
+    void loadSettings();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     // Redirect to login if not authenticated and trying to complete booking
@@ -251,9 +277,16 @@ const RentalBooking = () => {
       payment_status: 'pending',
       // Format dates and times correctly
       start_datetime: `${bookingData.start_date}T${bookingData.start_time}:00`,
-      end_datetime: bookingData.rental_type === 'hourly'
-        ? new Date(new Date(`${bookingData.start_date}T${bookingData.start_time}:00`).getTime() + bookingData.duration * 60 * 60 * 1000).toISOString()
-        : `${bookingData.end_date}T${bookingData.start_time}:00`
+      end_datetime: (() => {
+        const startDateTime = new Date(`${bookingData.start_date}T${bookingData.start_time}:00`);
+        const endDateTime = addConfiguredRentalDuration(
+          startDateTime,
+          bookingData.duration,
+          bookingData.rental_type,
+          dailyReturnPolicy
+        );
+        return endDateTime ? endDateTime.toISOString() : `${bookingData.end_date}T${bookingData.start_time}:00`;
+      })()
     };
     
     try {
@@ -662,11 +695,11 @@ const RentalBooking = () => {
       const startDate = new Date(`${bookingData.start_date}T${bookingData.start_time}`);
       
       if (bookingData.rental_type === 'hourly') {
-        endDateTime = new Date(startDate.getTime() + bookingData.duration * 60 * 60 * 1000);
+        endDateTime = addConfiguredRentalDuration(startDate, bookingData.duration, 'hourly', dailyReturnPolicy);
       } else if (bookingData.rental_type === 'daily') {
-        endDateTime = new Date(startDate.getTime() + bookingData.duration * 24 * 60 * 60 * 1000);
+        endDateTime = addConfiguredRentalDuration(startDate, bookingData.duration, 'daily', dailyReturnPolicy);
       } else { // weekly
-        endDateTime = new Date(startDate.getTime() + bookingData.duration * 7 * 24 * 60 * 60 * 1000);
+        endDateTime = addConfiguredRentalDuration(startDate, bookingData.duration, 'weekly', dailyReturnPolicy);
       }
     }
     

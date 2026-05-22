@@ -1,6 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
-import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import {
+  buildRentalCreatedTelegramPricingSnapshot,
+  countRentalDocuments,
+  dispatchRentalLifecycleTelegramEvent,
+} from './RentalLifecycleDispatchService';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 
 /**
@@ -300,6 +304,7 @@ class OptimizedRentalService {
         }
       }
 
+      const telegramPricingSnapshot = buildRentalCreatedTelegramPricingSnapshot(rental);
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
         actor: 'admin',
@@ -310,7 +315,6 @@ class OptimizedRentalService {
           customer: rental.customer_name,
           start: rental.rental_start_date || rental.start_date,
           end: rental.rental_end_date || rental.end_date,
-          total: rental.total_amount ?? 0,
           createdBy: rental.created_by_name || rental.created_by || '',
           id_scan_url: telegramRentalPayload.id_scan_url || null,
           customer_id_image: telegramRentalPayload.customer_id_image || null,
@@ -318,6 +322,7 @@ class OptimizedRentalService {
             ? telegramRentalPayload.customer_id_scan_history
             : [],
           documentCount: countRentalDocuments(telegramRentalPayload),
+          ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

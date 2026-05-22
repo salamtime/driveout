@@ -17,7 +17,7 @@ export const BUSINESS_TENANT_TABLES = Object.freeze([
   'app_4c3a7a6153_task_comments',
   'app_4c3a7a6153_task_notifications',
   'app_4c3a7a6153_vehicle_reports',
-  'rental_extensions',
+  'app_4c3a7a6153_rental_execution_records',
   'app_b30c02e74da644baad4668e3587d86b1_tours',
   'app_687f658e98_maintenance',
   'app_687f658e98_maintenance_parts',
@@ -29,13 +29,6 @@ export const BUSINESS_TENANT_TABLES = Object.freeze([
   'saharax_0u4w4d_inventory_movements',
   'saharax_0u4w4d_inventory_purchases',
   'saharax_0u4w4d_inventory_purchase_lines',
-  'fuel_tank',
-  'fuel_refills',
-  'vehicle_fuel_refills',
-  'fuel_withdrawals',
-  'vehicle_fuel_state',
-  'fuel_operation_logs',
-  'fuel_transactions_default_feed',
   'finance_expenses',
   'app_wallet_accounts',
   'app_wallet_transactions',
@@ -44,6 +37,21 @@ export const BUSINESS_TENANT_TABLES = Object.freeze([
 ]);
 
 const BUSINESS_TENANT_TABLE_SET = new Set(BUSINESS_TENANT_TABLES);
+const FIRST_PARTY_LEGACY_NULL_ORG_TABLES = new Set([
+  'app_4c3a7a6153_base_prices',
+  'app_4c3a7a6153_rentals',
+  'app_4c3a7a6153_rental_km_packages',
+  'fuel_pricing',
+  'pricing_tiers',
+  'saharax_0u4w4d_vehicles',
+  'saharax_0u4w4d_vehicle_models',
+  'app_687f658e98_maintenance',
+  'app_687f658e98_maintenance_parts',
+]);
+
+export const canReadFirstPartyLegacyNullOrgRows = (tableName = '', hostContext = getHostContext()) =>
+  isFirstPartyTenantHost(hostContext) &&
+  FIRST_PARTY_LEGACY_NULL_ORG_TABLES.has(String(tableName || '').trim());
 
 export const getScopedOrganizationId = (userProfile) =>
   String(userProfile?.organizationId || userProfile?.organization_id || '').trim() || null;
@@ -94,8 +102,15 @@ export const clearOrganizationContextCache = () => {
 
 export const getCurrentOrganizationContext = async () => {
   const now = Date.now();
+  const hostContext = getHostContext();
+  const shouldUseTenantSession = shouldScopeSharedTenantData(hostContext);
+  const cachedContext = organizationContextCache.value;
+  const canReuseCachedContext =
+    Boolean(cachedContext) &&
+    (!shouldUseTenantSession || Boolean(cachedContext.organizationId));
+
   if (
-    organizationContextCache.value &&
+    canReuseCachedContext &&
     now - organizationContextCache.timestamp < ORGANIZATION_CONTEXT_CACHE_TTL
   ) {
     return organizationContextCache.value;
@@ -106,9 +121,6 @@ export const getCurrentOrganizationContext = async () => {
   }
 
   organizationContextCache.promise = (async () => {
-    const hostContext = getHostContext();
-    const shouldUseTenantSession = shouldScopeSharedTenantData(hostContext);
-
     const [profileResponse, tenantSessionResponse] = await Promise.all([
       adminApiRequest('/api/me/profile'),
       shouldUseTenantSession
@@ -121,7 +133,7 @@ export const getCurrentOrganizationContext = async () => {
 
     if (!profile) {
       organizationContextCache.value = null;
-      organizationContextCache.timestamp = Date.now();
+      organizationContextCache.timestamp = 0;
       return null;
     }
 
@@ -144,7 +156,10 @@ export const getCurrentOrganizationContext = async () => {
           : Boolean(profile.is_platform_organization || profile.isPlatformOrganization),
     };
     organizationContextCache.value = context;
-    organizationContextCache.timestamp = Date.now();
+    organizationContextCache.timestamp =
+      !shouldUseTenantSession || context.organizationId
+        ? Date.now()
+        : 0;
     return context;
   })();
 
@@ -177,13 +192,19 @@ export const scopeTenantOwnedQuery = async (
     message = null,
   } = {},
 ) => {
-  if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+  const hostContext = getHostContext();
+
+  if (!shouldScopeSharedTenantData(hostContext) || !isTenantOwnedSharedTable(tableName)) {
     return query;
   }
 
   const resolvedOrganizationId = organizationId || await requireCurrentOrganizationId(
     message || `Workspace organization context is required for ${tableName}.`
   );
+
+  if (canReadFirstPartyLegacyNullOrgRows(tableName, hostContext)) {
+    return query.or(`${columnName}.is.null,${columnName}.eq.${resolvedOrganizationId}`);
+  }
 
   return applyOrganizationScope(query, resolvedOrganizationId, columnName);
 };
@@ -219,7 +240,9 @@ export const verifyTenantOwnedRows = async (
     message = null,
   } = {},
 ) => {
-  if (!shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
+  const hostContext = getHostContext();
+
+  if (!shouldScopeSharedTenantData(hostContext) || !isTenantOwnedSharedTable(tableName)) {
     return rows;
   }
 
@@ -246,7 +269,12 @@ export const verifyTenantOwnedRows = async (
       );
     }
 
-    if (normalizeOrganizationValue(record[columnName]) !== resolvedOrganizationId) {
+    const recordOrganizationId = normalizeOrganizationValue(record[columnName]);
+    const allowLegacyFirstPartyNullOrgRow =
+      !recordOrganizationId &&
+      canReadFirstPartyLegacyNullOrgRows(tableName, hostContext);
+
+    if (!allowLegacyFirstPartyNullOrgRow && recordOrganizationId !== resolvedOrganizationId) {
       throw new Error(
         message || `${tableName} returned data outside the active workspace organization.`
       );

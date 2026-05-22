@@ -17,6 +17,7 @@ const getPackageDurationRank = (pkg = {}) => {
   const durationUnits = Number(pkg.durationUnits || 0);
   if (name.includes('half hour') || name.includes('30 min') || durationUnits === 0.5) return 0;
   if (name.includes('hour') || durationUnits === 1) return 1;
+  if (durationUnits > 1 && durationUnits < 4) return 2;
   if (name.includes('half day') || durationUnits === 4) return 2;
   if (name.includes('day')) return 3;
   return 9;

@@ -22,6 +22,7 @@ import { defaultSystemSettings, fetchSystemSettings, saveSystemSettings } from '
 import { getTenantSession } from '../../services/TenantRegistryService';
 import { listBusinessOwnersFromRegistry } from '../../services/TenantProvisioningAdminService';
 import { sendTelegramTestAlert } from '../../services/TelegramAlertService';
+import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
 import { updateTenantControls } from '../../services/TenantProvisioningService';
 import { buildTenantWorkspaceBootstrap } from '../../services/TenantWorkspaceService';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
@@ -30,6 +31,10 @@ import i18n from '../../i18n';
 import { supabase } from '../../lib/supabase';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
+import {
+  TELEGRAM_ALERT_EVENT_KEYS,
+  normalizeTelegramDeliveryRoutes,
+} from '../../utils/telegramAlertPreferences';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 const SAHARAX_DEFAULT_STAMP_URL = '/assets/stamp.png';
@@ -136,6 +141,9 @@ const buildTenantTelegramDraft = (tenantSession = null) => {
     telegram_chat_ids: Array.isArray(tenantSettings.telegram_chat_ids)
       ? tenantSettings.telegram_chat_ids.join(', ')
       : String(tenantSettings.telegram_chat_ids || '').trim(),
+    telegram_website_reservation_chat_ids: Array.isArray(tenantSettings.telegram_website_reservation_chat_ids)
+      ? tenantSettings.telegram_website_reservation_chat_ids.join(', ')
+      : String(tenantSettings.telegram_website_reservation_chat_ids || '').trim(),
     telegram_base_url: fallbackBaseUrl,
     telegram_overdue_repeat_minutes: Number(tenantSettings.telegram_overdue_repeat_minutes) >= 0
       ? Number(tenantSettings.telegram_overdue_repeat_minutes)
@@ -151,7 +159,10 @@ const buildTenantTelegramDraft = (tenantSession = null) => {
       rental_overdue: eventTypes.rental_overdue !== false,
       rental_cancelled: eventTypes.rental_cancelled !== false,
       deposit_returned: eventTypes.deposit_returned !== false,
+      rental_extension_requested: eventTypes.rental_extension_requested !== false,
+      rental_price_change_requested: eventTypes.rental_price_change_requested !== false,
     },
+    telegram_delivery_routes: normalizeTelegramDeliveryRoutes(tenantSettings.telegram_delivery_routes),
   };
 };
 
@@ -368,6 +379,11 @@ const mergeTenantTelegramDraft = (session = null, cachedDraft = null) => {
         ? (cachedDraft.telegram_chat_ids || baseDraft.telegram_chat_ids || '')
         : (baseDraft.telegram_chat_ids || cachedDraft.telegram_chat_ids || '')
     ).trim(),
+    telegram_website_reservation_chat_ids: String(
+      shouldCacheOverrideSession
+        ? (cachedDraft.telegram_website_reservation_chat_ids || baseDraft.telegram_website_reservation_chat_ids || '')
+        : (baseDraft.telegram_website_reservation_chat_ids || cachedDraft.telegram_website_reservation_chat_ids || '')
+    ).trim(),
     telegram_base_url: String(
       shouldCacheOverrideSession
         ? (cachedDraft.telegram_base_url || baseDraft.telegram_base_url || '')
@@ -381,6 +397,11 @@ const mergeTenantTelegramDraft = (session = null, cachedDraft = null) => {
       ...baseDraft.telegram_event_types,
       ...(shouldCacheOverrideSession ? cachedEventTypes : {}),
     },
+    telegram_delivery_routes: normalizeTelegramDeliveryRoutes(
+      shouldCacheOverrideSession
+        ? (cachedDraft.telegram_delivery_routes || baseDraft.telegram_delivery_routes || {})
+        : (baseDraft.telegram_delivery_routes || cachedDraft.telegram_delivery_routes || {})
+    ),
   };
 };
 
@@ -434,6 +455,57 @@ const ToggleCard = ({ title, description, checked, onChange, disabled }) => (
       />
     </button>
   </div>
+);
+
+const getTelegramEventLabel = (key, isFrench = false) => {
+  const labels = {
+    rental_created: isFrench ? 'Location créée' : 'Rental created',
+    website_reservation_created: isFrench ? 'Réservation site web' : 'Website reservation',
+    rental_started: isFrench ? 'Location démarrée' : 'Rental started',
+    rental_vehicle_assigned: isFrench ? 'Véhicule assigné' : 'Vehicle assigned',
+    rental_vehicle_replaced: isFrench ? 'Véhicule remplacé' : 'Vehicle replaced',
+    rental_completed: isFrench ? 'Location terminée' : 'Rental completed',
+    payment_received: isFrench ? 'Paiement reçu' : 'Payment received',
+    rental_overdue: isFrench ? 'Location en retard' : 'Rental overdue',
+    rental_cancelled: isFrench ? 'Location annulée' : 'Rental cancelled',
+    deposit_returned: isFrench ? 'Caution retournée' : 'Deposit returned',
+    rental_extension_requested: isFrench ? 'Demande extension' : 'Extension request',
+    rental_price_change_requested: isFrench ? 'Demande changement prix' : 'Price change request',
+  };
+  return labels[key] || key.replace(/_/g, ' ');
+};
+
+const getTelegramEventDescription = (key, isFrench = false) => {
+  const descriptions = {
+    rental_created: isFrench ? "Lorsqu'un nouveau contrat est créé." : 'When a new rental contract is created.',
+    website_reservation_created: isFrench ? 'Lorsqu’une réservation arrive depuis le site web.' : 'When a reservation arrives from the public website.',
+    rental_started: isFrench ? 'Lorsque la location devient active.' : 'When a rental becomes active.',
+    rental_vehicle_assigned: isFrench ? 'Lorsqu’un véhicule est assigné à une réservation web.' : 'When a vehicle is assigned to a website reservation.',
+    rental_vehicle_replaced: isFrench ? 'Lorsqu’un véhicule est remplacé pendant une location.' : 'When a rental vehicle is replaced.',
+    rental_completed: isFrench ? 'Lorsque la location est terminée.' : 'When a rental is completed.',
+    payment_received: isFrench ? 'Lorsqu’un paiement est enregistré.' : 'When a payment is recorded.',
+    rental_overdue: isFrench ? 'Lorsque la location dépasse son horaire de retour.' : 'When a rental passes its expected return time.',
+    rental_cancelled: isFrench ? 'Lorsqu’une location est annulée.' : 'When a rental is cancelled.',
+    deposit_returned: isFrench ? 'Lorsque la caution est retournée.' : 'When a deposit is returned.',
+    rental_extension_requested: isFrench ? 'Lorsqu’une extension attend une approbation.' : 'When an extension needs approval.',
+    rental_price_change_requested: isFrench ? 'Lorsqu’un changement de prix attend une approbation.' : 'When a price change needs approval.',
+  };
+  return descriptions[key] || '';
+};
+
+const TelegramRoutePill = ({ label, active, disabled, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    disabled={disabled}
+    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+      active
+        ? 'border-violet-300 bg-violet-600 text-white shadow-sm'
+        : 'border-slate-200 bg-white text-slate-500 hover:border-violet-200 hover:text-violet-700'
+    } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+  >
+    {label}
+  </button>
 );
 
 const formatTelegramAuditTime = (value) => {
@@ -531,6 +603,9 @@ const SettingsPage = () => {
     defaultRentalDuration: 4,
     minRentalDuration: 1,
     maxRentalDuration: 24,
+    dailyReturnFixedTime: '14:00',
+    dailyLateReturnHourlyPenaltyMad: 200,
+    dailyLateReturnFullDayThresholdHours: 4,
     maintenanceMode: false,
     onlineBooking: true,
     realTimeTracking: true,
@@ -576,7 +651,7 @@ const SettingsPage = () => {
   const normalizedRole = String(userProfile?.role || userProfile?.user_role || '').trim().toLowerCase();
   const canEditTenantLifecycle = canEdit && normalizedRole === 'owner';
   const brandingBucket = settings.storageBucket || defaultSystemSettings.storageBucket || 'rental-documents';
-  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !brandingContext.isSaharaXTenant;
+  const isIsolatedTenantWorkspace = shouldScopeSharedTenantData(hostContext);
 
   const overviewCards = useMemo(
     () => [
@@ -644,6 +719,18 @@ const SettingsPage = () => {
     () => Object.values(tenantTelegramForm.telegram_event_types || {}).filter(Boolean).length,
     [tenantTelegramForm.telegram_event_types]
   );
+  const telegramDeliverySummary = useMemo(() => {
+    const routes = normalizeTelegramDeliveryRoutes(tenantTelegramForm.telegram_delivery_routes);
+    return TELEGRAM_ALERT_EVENT_KEYS.reduce((summary, eventKey) => {
+      if (tenantTelegramForm.telegram_event_types?.[eventKey] !== true) {
+        return summary;
+      }
+      const route = routes[eventKey] || {};
+      if (route.workspace === true || route.website === true) summary.teamGroup += 1;
+      if (route.personal === true) summary.directStaff += 1;
+      return summary;
+    }, { teamGroup: 0, directStaff: 0 });
+  }, [tenantTelegramForm.telegram_delivery_routes, tenantTelegramForm.telegram_event_types]);
 
   const getTelegramSetupValidationMessage = useCallback((options = {}) => {
     const hasTenantSession = options.hasTenantSession ?? tenantIdentityReady;
@@ -721,6 +808,7 @@ const SettingsPage = () => {
         ...buildTenantTelegramDraft(resolvedWorkspace),
         telegram_bot_token: current.telegram_bot_token,
         telegram_chat_ids: current.telegram_chat_ids,
+        telegram_website_reservation_chat_ids: current.telegram_website_reservation_chat_ids,
         telegram_base_url: current.telegram_base_url || buildTenantTelegramDraft(resolvedWorkspace).telegram_base_url,
         telegram_overdue_repeat_minutes: current.telegram_overdue_repeat_minutes,
         telegram_enabled: current.telegram_enabled,
@@ -800,8 +888,12 @@ const SettingsPage = () => {
 
     setTelegramTesting(true);
     try {
+      const teamGroupChatIds = String(tenantTelegramForm.telegram_chat_ids || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
       await sendTelegramTestAlert({
-        scope: 'workspace',
+        scope: 'workspace_group',
         tenantName: resolvedWorkspace?.tenantName || resolvedWorkspace?.tenantSlug || 'Tenant',
         actorName: userProfile?.full_name || userProfile?.name || userProfile?.email || '',
         tenantId: resolvedWorkspace?.tenantId || '',
@@ -811,15 +903,14 @@ const SettingsPage = () => {
         telegramConfigOverride: {
           telegram_enabled: Boolean(tenantTelegramForm.telegram_enabled),
           telegram_bot_token: String(tenantTelegramForm.telegram_bot_token || '').trim(),
-          telegram_chat_ids: String(tenantTelegramForm.telegram_chat_ids || '')
-            .split(',')
-            .map((value) => value.trim())
-            .filter(Boolean),
+          telegram_chat_ids: teamGroupChatIds,
+          telegram_website_reservation_chat_ids: teamGroupChatIds,
           telegram_base_url: String(tenantTelegramForm.telegram_base_url || '').trim(),
           telegram_overdue_repeat_minutes: Math.max(0, Number(tenantTelegramForm.telegram_overdue_repeat_minutes || 0) || 0),
           telegram_event_types: {
             ...(tenantTelegramForm.telegram_event_types || {}),
           },
+          telegram_delivery_routes: normalizeTelegramDeliveryRoutes(tenantTelegramForm.telegram_delivery_routes),
         },
       });
       toast.success(isFrench ? 'Message test Telegram envoyé' : 'Telegram test message sent');
@@ -902,6 +993,12 @@ const SettingsPage = () => {
         defaultRentalDuration: Number(mergedSettings.defaultRentalDuration) || 4,
         minRentalDuration: Number(mergedSettings.minRentalDuration) || 1,
         maxRentalDuration: Number(mergedSettings.maxRentalDuration) || 24,
+        dailyReturnFixedTime:
+          /^\d{2}:\d{2}$/.test(String(mergedSettings.dailyReturnFixedTime || ''))
+            ? String(mergedSettings.dailyReturnFixedTime)
+            : '14:00',
+        dailyLateReturnHourlyPenaltyMad: Math.max(0, Number(mergedSettings.dailyLateReturnHourlyPenaltyMad) || 200),
+        dailyLateReturnFullDayThresholdHours: Math.max(1, Number(mergedSettings.dailyLateReturnFullDayThresholdHours) || 4),
         maintenanceMode: Boolean(mergedSettings.maintenanceMode),
         onlineBooking: mergedSettings.onlineBooking !== false,
         realTimeTracking: mergedSettings.realTimeTracking !== false,
@@ -1280,29 +1377,35 @@ const SettingsPage = () => {
       .map((value) => value.trim())
       .filter(Boolean)
       .join(', ');
+    const normalizedWebsiteReservationChatIds = normalizedChatIds;
 
     const nextTelegramSettings = {
       telegram_enabled: Boolean(tenantTelegramForm.telegram_enabled),
       telegram_bot_token: String(tenantTelegramForm.telegram_bot_token || '').trim(),
       telegram_chat_ids: normalizedChatIds,
+      telegram_website_reservation_chat_ids: normalizedWebsiteReservationChatIds,
       telegram_base_url: String(tenantTelegramForm.telegram_base_url || '').trim(),
       telegram_overdue_repeat_minutes: Math.max(0, Number(tenantTelegramForm.telegram_overdue_repeat_minutes || 0) || 0),
       telegram_event_types: {
         rental_created: Boolean(tenantTelegramForm.telegram_event_types?.rental_created),
         website_reservation_created: Boolean(tenantTelegramForm.telegram_event_types?.website_reservation_created),
         rental_started: Boolean(tenantTelegramForm.telegram_event_types?.rental_started),
+        rental_vehicle_assigned: Boolean(tenantTelegramForm.telegram_event_types?.rental_vehicle_assigned),
         rental_vehicle_replaced: Boolean(tenantTelegramForm.telegram_event_types?.rental_vehicle_replaced),
         rental_completed: Boolean(tenantTelegramForm.telegram_event_types?.rental_completed),
         payment_received: Boolean(tenantTelegramForm.telegram_event_types?.payment_received),
         rental_overdue: Boolean(tenantTelegramForm.telegram_event_types?.rental_overdue),
         rental_cancelled: Boolean(tenantTelegramForm.telegram_event_types?.rental_cancelled),
         deposit_returned: Boolean(tenantTelegramForm.telegram_event_types?.deposit_returned),
+        rental_extension_requested: Boolean(tenantTelegramForm.telegram_event_types?.rental_extension_requested),
+        rental_price_change_requested: Boolean(tenantTelegramForm.telegram_event_types?.rental_price_change_requested),
       },
+      telegram_delivery_routes: normalizeTelegramDeliveryRoutes(tenantTelegramForm.telegram_delivery_routes),
     };
 
     setSavingSection('Tenant telegram');
     try {
-      await updateTenantControls({
+      const controlsResponse = await updateTenantControls({
         businessAccountId: resolvedWorkspace.businessAccountId,
         tenantId: resolvedWorkspace.tenantId,
         tenantPatch: {
@@ -1312,24 +1415,48 @@ const SettingsPage = () => {
 
       writeTenantTelegramDraftCache(resolvedWorkspace, nextTelegramSettings);
 
-      const refreshedWorkspace = await getTenantSession().catch(() => null);
-      const confirmedWorkspace = pickRicherTenantSession(refreshedWorkspace, resolvedWorkspace);
+      const persistedTenantSettings =
+        controlsResponse?.tenant_metadata?.tenant_settings &&
+        typeof controlsResponse.tenant_metadata.tenant_settings === 'object'
+          ? controlsResponse.tenant_metadata.tenant_settings
+          : nextTelegramSettings;
+      const confirmedWorkspaceBase = resolvedWorkspace;
+      const confirmedWorkspace = confirmedWorkspaceBase
+        ? {
+            ...confirmedWorkspaceBase,
+            tenantSettings: {
+              ...(confirmedWorkspaceBase.tenantSettings || {}),
+              ...persistedTenantSettings,
+            },
+            tenant: confirmedWorkspaceBase.tenant
+              ? {
+                  ...confirmedWorkspaceBase.tenant,
+                  metadata: {
+                    ...(confirmedWorkspaceBase.tenant.metadata || {}),
+                    tenant_settings: {
+                      ...((confirmedWorkspaceBase.tenant.metadata && confirmedWorkspaceBase.tenant.metadata.tenant_settings) || {}),
+                      ...persistedTenantSettings,
+                    },
+                  },
+                }
+              : confirmedWorkspaceBase.tenant,
+          }
+        : null;
       if (confirmedWorkspace?.tenantId && confirmedWorkspace?.businessAccountId) {
         setTenantWorkspaceSession(confirmedWorkspace);
-        writeTenantTelegramDraftCache(
-          confirmedWorkspace,
-          mergeTenantTelegramDraft(confirmedWorkspace, readTenantTelegramDraftCache(confirmedWorkspace))
-        );
+        writeTenantTelegramDraftCache(confirmedWorkspace, nextTelegramSettings);
       }
 
       setTenantTelegramForm((current) => ({
         ...current,
         telegram_chat_ids: normalizedChatIds,
+        telegram_website_reservation_chat_ids: normalizedWebsiteReservationChatIds,
         telegram_bot_token: nextTelegramSettings.telegram_bot_token,
         telegram_base_url: nextTelegramSettings.telegram_base_url,
         telegram_enabled: nextTelegramSettings.telegram_enabled,
         telegram_overdue_repeat_minutes: nextTelegramSettings.telegram_overdue_repeat_minutes,
         telegram_event_types: nextTelegramSettings.telegram_event_types,
+        telegram_delivery_routes: nextTelegramSettings.telegram_delivery_routes,
       }));
 
       setTenantWorkspaceSession((current) => {
@@ -1376,6 +1503,12 @@ const SettingsPage = () => {
       defaultRentalDuration: Number(operationsForm.defaultRentalDuration) || 0,
       minRentalDuration: Number(operationsForm.minRentalDuration) || 0,
       maxRentalDuration: Number(operationsForm.maxRentalDuration) || 0,
+      dailyReturnFixedTime:
+        /^\d{2}:\d{2}$/.test(String(operationsForm.dailyReturnFixedTime || ''))
+          ? String(operationsForm.dailyReturnFixedTime)
+          : '14:00',
+      dailyLateReturnHourlyPenaltyMad: Math.max(0, Number(operationsForm.dailyLateReturnHourlyPenaltyMad) || 0),
+      dailyLateReturnFullDayThresholdHours: Math.max(1, Number(operationsForm.dailyLateReturnFullDayThresholdHours) || 1),
       maintenanceMode: operationsForm.maintenanceMode,
       onlineBooking: operationsForm.onlineBooking,
       realTimeTracking: operationsForm.realTimeTracking,
@@ -1995,6 +2128,57 @@ const SettingsPage = () => {
                 onChange={(e) => setOperationsForm((current) => ({ ...current, maxRentalDuration: e.target.value }))}
               />
             </div>
+            <div className="md:col-span-2 rounded-3xl border border-violet-100 bg-violet-50/70 p-4">
+              <div className="mb-3">
+                <h4 className="text-sm font-semibold uppercase tracking-[0.24em] text-violet-700">
+                  {isFrench ? 'Règle de retour journalier' : 'Daily Return Rule'}
+                </h4>
+                <p className="mt-2 text-sm text-slate-600">
+                  {isFrench
+                    ? 'Définissez l’heure fixe de retour pour les forfaits journaliers et la règle de retard utilisée ensuite dans les reçus et les flux de location.'
+                    : 'Set the fixed return time for daily packages and the late-return rule that rentals, receipts, and pricing will reuse next.'}
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Retour journalier à' : 'Daily Return Time'}</label>
+                  <input
+                    type="time"
+                    className={FIELD_CLASS}
+                    value={operationsForm.dailyReturnFixedTime}
+                    disabled={!canEdit}
+                    onChange={(e) => setOperationsForm((current) => ({ ...current, dailyReturnFixedTime: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Pénalité par heure (MAD)' : 'Hourly Late Fee (MAD)'}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className={FIELD_CLASS}
+                    value={operationsForm.dailyLateReturnHourlyPenaltyMad}
+                    disabled={!canEdit}
+                    onChange={(e) => setOperationsForm((current) => ({ ...current, dailyLateReturnHourlyPenaltyMad: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Après combien d’heures = jour complet' : 'Full Extra Day After (Hours)'}</label>
+                  <input
+                    type="number"
+                    min="1"
+                    className={FIELD_CLASS}
+                    value={operationsForm.dailyLateReturnFullDayThresholdHours}
+                    disabled={!canEdit}
+                    onChange={(e) => setOperationsForm((current) => ({ ...current, dailyLateReturnFullDayThresholdHours: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="mt-3 rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm">
+                {isFrench
+                  ? `Aperçu : retour avant ${operationsForm.dailyReturnFixedTime || '14:00'} ; ${operationsForm.dailyLateReturnHourlyPenaltyMad || 0} MAD par heure supplémentaire ; après ${operationsForm.dailyLateReturnFullDayThresholdHours || 1} heure(s), une journée complète supplémentaire s’applique.`
+                  : `Preview: return before ${operationsForm.dailyReturnFixedTime || '14:00'}; ${operationsForm.dailyLateReturnHourlyPenaltyMad || 0} MAD per extra hour; after ${operationsForm.dailyLateReturnFullDayThresholdHours || 1} hour(s), charge a full extra day.`}
+              </div>
+            </div>
             <div className="md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Mode par défaut des détails de location' : 'Default Rental Details Mode'}</label>
               <select
@@ -2438,16 +2622,22 @@ const SettingsPage = () => {
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Chat ID(s) de livraison partagée / groupe' : 'Shared / Group Chat ID(s)'}</label>
+                <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? "Chat ID(s) du groupe d'equipe" : 'Team group Chat ID(s)'}</label>
                 <input
                   className={FIELD_CLASS}
-                  placeholder="232312491, 998877665"
+                  placeholder="-5110682571"
                   value={tenantTelegramForm.telegram_chat_ids}
                   disabled={!canEdit}
-                  onChange={(e) => setTenantTelegramForm((current) => ({ ...current, telegram_chat_ids: e.target.value }))}
+                  onChange={(e) => setTenantTelegramForm((current) => ({
+                    ...current,
+                    telegram_chat_ids: e.target.value,
+                    telegram_website_reservation_chat_ids: e.target.value,
+                  }))}
                 />
                 <p className="mt-2 text-xs text-slate-500">
-                  {isFrench ? 'Utilisez ce champ pour un groupe Telegram, un chat d’équipe ou le chat principal du propriétaire. Séparez plusieurs chats par des virgules.' : 'Use this for a Telegram group, a team chat, or the main owner chat. Separate multiple chat IDs with commas.'}
+                  {isFrench
+                    ? "Un seul groupe simple pour les reservations web et les alertes operations. Separez plusieurs chats par des virgules si necessaire."
+                    : 'One simple group for website reservations and operations alerts. Separate multiple chat IDs with commas if needed.'}
                 </p>
               </div>
               <div className="md:col-span-2">
@@ -2484,115 +2674,142 @@ const SettingsPage = () => {
             <div className="space-y-4">
               <div className="rounded-[1.75rem] border border-white/70 bg-white/75 p-5 shadow-sm">
                 <p className="text-sm font-semibold text-slate-900">
-                  {isFrench ? 'Événements par défaut du tenant' : 'Tenant default event types'}
+                  {isFrench ? 'Événements et destinations Telegram' : 'Telegram Events and Delivery'}
                 </p>
                 <p className="mt-2 text-sm text-slate-500">
                   {isFrench
-                    ? "Définissez ici ce que ce tenant considère comme alertes Telegram actives par défaut. Les choix staff viendront après."
-                    : 'Choose which Telegram alerts this tenant wants on by default. Staff choices will come after this.'}
+                    ? "L'admin choisit quels événements sont actifs, puis s'ils vont au groupe d'equipe ou aux chats directs staff."
+                    : 'Admin chooses which events are active, then whether they go to the team group or direct staff chats.'}
                 </p>
               </div>
 
-              <ToggleCard
-                title={isFrench ? 'Location créée' : 'Rental created'}
-                description={isFrench ? "Alerte envoyée lorsqu'un nouveau contrat est créé." : 'Send an alert when a new rental contract is created.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_created}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_created: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Réservation site web' : 'Website reservation'}
-                description={isFrench ? "Alerte envoyée lorsqu'une réservation est créée depuis le site web." : 'Send an alert when a reservation is created from the public website.'}
-                checked={tenantTelegramForm.telegram_event_types.website_reservation_created}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, website_reservation_created: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Location démarrée' : 'Rental started'}
-                description={isFrench ? "Alerte envoyée lorsque la location passe en active." : 'Send an alert when a rental is started and becomes active.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_started}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_started: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Véhicule remplacé' : 'Vehicle replaced'}
-                description={isFrench ? "Alerte envoyée lorsqu'un véhicule est remplacé pendant la location." : 'Send an alert when a rental vehicle is replaced.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_vehicle_replaced}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_vehicle_replaced: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Véhicule assigné' : 'Vehicle assigned'}
-                description={isFrench ? "Alerte envoyée lorsqu'un véhicule est assigné à une réservation web." : 'Send an alert when a vehicle is assigned to a website reservation.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_vehicle_assigned}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_vehicle_assigned: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Location terminée' : 'Rental completed'}
-                description={isFrench ? "Alerte envoyée lorsque la location passe en terminée." : 'Send an alert when a rental is completed.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_completed}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_completed: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Paiement reçu' : 'Payment received'}
-                description={isFrench ? "Alerte envoyée lorsqu'un paiement manuel est enregistré." : 'Send an alert when a manual payment is recorded.'}
-                checked={tenantTelegramForm.telegram_event_types.payment_received}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, payment_received: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Location en retard' : 'Rental overdue'}
-                description={isFrench ? "Alerte envoyée lorsqu'une location dépasse son horaire de retour." : 'Send an alert when a rental passes its expected return time.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_overdue}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_overdue: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Location annulée' : 'Rental cancelled'}
-                description={isFrench ? "Alerte envoyée lorsqu'une location est annulée ou marquée comme absence." : 'Send an alert when a rental is cancelled or marked as a no-show.'}
-                checked={tenantTelegramForm.telegram_event_types.rental_cancelled}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, rental_cancelled: value },
-                }))}
-              />
-              <ToggleCard
-                title={isFrench ? 'Caution restituée' : 'Deposit returned'}
-                description={isFrench ? "Alerte envoyée lorsque la restitution de caution est enregistrée." : 'Send an alert when a deposit return is recorded.'}
-                checked={tenantTelegramForm.telegram_event_types.deposit_returned}
-                disabled={!canEdit}
-                onChange={(value) => setTenantTelegramForm((current) => ({
-                  ...current,
-                  telegram_event_types: { ...current.telegram_event_types, deposit_returned: value },
-                }))}
-              />
+              <div className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
+                      {isFrench ? 'Matrice de livraison' : 'Delivery matrix'}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-500">
+                      {isFrench
+                        ? "Le profil utilisateur contrôle seulement les alertes directes personnelles. Le groupe d'equipe est contrôlé ici."
+                        : 'User profile preferences control direct personal alerts only. The team group is controlled here.'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                      {enabledTelegramEventsCount} / {TELEGRAM_ALERT_EVENT_KEYS.length} {isFrench ? 'actifs' : 'active'}
+                    </span>
+                    <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
+                      {isFrench ? "Groupe d'equipe" : 'Team group'}: {telegramDeliverySummary.teamGroup}
+                    </span>
+                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                      {isFrench ? 'Staff direct' : 'Direct staff'}: {telegramDeliverySummary.directStaff}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {TELEGRAM_ALERT_EVENT_KEYS.map((eventKey) => {
+                    const eventEnabled = tenantTelegramForm.telegram_event_types?.[eventKey] === true;
+                    const currentRoute = normalizeTelegramDeliveryRoutes(tenantTelegramForm.telegram_delivery_routes)[eventKey] || {};
+                    const teamGroupActive = currentRoute.workspace === true || currentRoute.website === true;
+                    const enabledLaneCount = (teamGroupActive ? 1 : 0) + (currentRoute.personal === true ? 1 : 0);
+                    const setEventEnabled = (nextValue) => {
+                      setTenantTelegramForm((current) => ({
+                        ...current,
+                        telegram_event_types: {
+                          ...current.telegram_event_types,
+                          [eventKey]: nextValue,
+                        },
+                      }));
+                    };
+                    const setRouteLane = (lane, nextValue) => {
+                      setTenantTelegramForm((current) => {
+                        const normalizedRoutes = normalizeTelegramDeliveryRoutes(current.telegram_delivery_routes);
+                        return {
+                          ...current,
+                          telegram_delivery_routes: {
+                            ...normalizedRoutes,
+                            [eventKey]: {
+                              ...normalizedRoutes[eventKey],
+                              [lane]: nextValue,
+                            },
+                          },
+                        };
+                      });
+                    };
+                    const setTeamGroupRoute = (nextValue) => {
+                      setTenantTelegramForm((current) => {
+                        const normalizedRoutes = normalizeTelegramDeliveryRoutes(current.telegram_delivery_routes);
+                        return {
+                          ...current,
+                          telegram_delivery_routes: {
+                            ...normalizedRoutes,
+                            [eventKey]: {
+                              ...normalizedRoutes[eventKey],
+                              workspace: nextValue,
+                              website: nextValue,
+                            },
+                          },
+                        };
+                      });
+                    };
+
+                    return (
+                      <div
+                        key={eventKey}
+                        className={`rounded-2xl border p-3 transition ${
+                          eventEnabled
+                            ? 'border-violet-100 bg-violet-50/40'
+                            : 'border-slate-200 bg-slate-50 opacity-75'
+                        }`}
+                      >
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold text-slate-900">
+                                {getTelegramEventLabel(eventKey, isFrench)}
+                              </p>
+                              <button
+                                type="button"
+                                disabled={!canEdit}
+                                onClick={() => setEventEnabled(!eventEnabled)}
+                                className={`rounded-full px-2 py-0.5 text-[11px] font-bold transition ${
+                                eventEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'
+                                } ${canEdit ? 'hover:ring-2 hover:ring-violet-100' : 'cursor-not-allowed opacity-70'}`}
+                              >
+                                {eventEnabled ? (isFrench ? 'Actif' : 'Enabled') : (isFrench ? 'Désactivé' : 'Off')}
+                              </button>
+                              {eventEnabled && enabledLaneCount === 0 && (
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+                                  {isFrench ? 'Aucune destination' : 'No destination'}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {getTelegramEventDescription(eventKey, isFrench)}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <TelegramRoutePill
+                              label={isFrench ? "Groupe d'equipe" : 'Team group'}
+                              active={teamGroupActive}
+                              disabled={!canEdit || !eventEnabled}
+                              onClick={() => setTeamGroupRoute(!teamGroupActive)}
+                            />
+                            <TelegramRoutePill
+                              label={isFrench ? 'Chats staff directs' : 'Direct staff'}
+                              active={currentRoute.personal === true}
+                              disabled={!canEdit || !eventEnabled}
+                              onClick={() => setRouteLane('personal', currentRoute.personal !== true)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
 

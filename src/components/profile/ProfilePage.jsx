@@ -8,6 +8,7 @@ import { getTenantSession } from '../../services/TenantRegistryService';
 import { sendTelegramTestAlert } from '../../services/TelegramAlertService';
 import { listBusinessOwnersFromRegistry } from '../../services/TenantProvisioningAdminService';
 import { buildTenantWorkspaceBootstrap } from '../../services/TenantWorkspaceService';
+import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
 import UserProfileService from '../../services/UserProfileService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../services/systemSettingsApi';
 import { isBusinessOwnerAccountType } from '../../utils/accountType';
@@ -48,6 +49,8 @@ const TELEGRAM_ALERT_EVENT_LABELS = {
   rental_overdue: 'Rental overdue',
   rental_cancelled: 'Rental cancelled',
   deposit_returned: 'Deposit returned',
+  rental_extension_requested: 'Extension approval request',
+  rental_price_change_requested: 'Price change approval request',
 };
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
@@ -411,7 +414,7 @@ const ProfilePage = () => {
   const [tenantLogoUrl, setTenantLogoUrl] = useState('');
   const inheritedTenantLogoUrl = getTenantLogoFallback();
   const hostContext = useMemo(() => getHostContext(), []);
-  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !isSaharaXBrandingHost(hostContext);
+  const isIsolatedTenantWorkspace = shouldScopeSharedTenantData(hostContext);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading && !profile,

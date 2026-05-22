@@ -19,6 +19,27 @@ export const buildDefaultTelegramEventTypes = (defaultValue = false) =>
     return acc;
   }, {});
 
+const getDefaultTelegramDeliveryRoute = (eventKey) => {
+  if (eventKey === 'website_reservation_created') {
+    return { workspace: false, website: true, personal: false };
+  }
+
+  if (
+    eventKey === 'rental_extension_requested' ||
+    eventKey === 'rental_price_change_requested'
+  ) {
+    return { workspace: false, website: false, personal: true };
+  }
+
+  return { workspace: false, website: false, personal: true };
+};
+
+export const buildDefaultTelegramDeliveryRoutes = () =>
+  TELEGRAM_ALERT_EVENT_KEYS.reduce((acc, key) => {
+    acc[key] = getDefaultTelegramDeliveryRoute(key);
+    return acc;
+  }, {});
+
 export const normalizeTelegramEventTypes = (value, defaultValue = false) => {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const normalized = buildDefaultTelegramEventTypes(defaultValue);
@@ -31,6 +52,29 @@ export const normalizeTelegramEventTypes = (value, defaultValue = false) => {
 
   return normalized;
 };
+
+export const normalizeTelegramDeliveryRoutes = (value) => {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const normalized = buildDefaultTelegramDeliveryRoutes();
+
+  TELEGRAM_ALERT_EVENT_KEYS.forEach((key) => {
+    const route = source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
+      ? source[key]
+      : null;
+    if (!route) return;
+
+    normalized[key] = {
+      workspace: route.workspace === true,
+      website: route.website === true,
+      personal: route.personal === true,
+    };
+  });
+
+  return normalized;
+};
+
+export const countEnabledTelegramDeliveryLanes = (route = {}) =>
+  ['workspace', 'website', 'personal'].reduce((count, key) => count + (route?.[key] === true ? 1 : 0), 0);
 
 export const getTelegramAlertSettingsFromPreferences = (preferences) => {
   const source = preferences && typeof preferences === 'object' && !Array.isArray(preferences)

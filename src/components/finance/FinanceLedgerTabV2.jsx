@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Receipt, Wrench, Fuel, Package, Car, AlertCircle, ExternalLink, ArrowUpRight, ArrowDownRight, Filter } from 'lucide-react';
+import { Search, Receipt, Wrench, Fuel, Package, Car, AlertCircle, ExternalLink, ArrowUpRight, ArrowDownRight, Filter, Loader2 } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
 import i18n from '../../i18n';
 
@@ -101,10 +101,15 @@ const FinanceLedgerTabV2 = ({ filters, refreshTrigger }) => {
 
   if (loading) {
     return (
-      <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+      <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-16 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-          <div className="text-5xl leading-none animate-pulse">⏳</div>
+          <div className="rounded-2xl bg-violet-50 p-3">
+            <Loader2 className="h-6 w-6 animate-spin text-violet-700" />
+          </div>
           <h3 className="text-xl font-semibold text-slate-900">{tr('Loading finance ledger...', 'Chargement du journal finance...')}</h3>
+          <p className="text-sm text-slate-500">
+            {tr('We are preparing the unified finance timeline for the current workspace filters.', 'Nous préparons la timeline finance unifiée pour les filtres actuels de l’espace.')}
+          </p>
         </div>
       </div>
     );
@@ -120,17 +125,22 @@ const FinanceLedgerTabV2 = ({ filters, refreshTrigger }) => {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[2rem] border border-violet-100/80 bg-white p-5 shadow-[0_20px_55px_rgba(76,29,149,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Unified Finance Ledger', 'Journal finance unifié')}</p>
-            <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('One master finance timeline', 'Une timeline finance maître')}</h3>
-            <p className="mt-2 max-w-3xl text-sm text-slate-600">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+              <Receipt className="h-6 w-6 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Unified Finance Ledger', 'Journal finance unifié')}</p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('One master finance timeline', 'Une timeline finance maître')}</h3>
+              <p className="mt-2 max-w-3xl text-sm text-slate-500">
               {tr('Track every finance row from rentals, tours, maintenance, fuel, inventory, purchases, sales, and taxes in one timeline.', 'Suivez chaque ligne finance issue des locations, tours, maintenance, carburant, inventaire, achats, ventes et taxes dans une seule timeline.')}
-            </p>
+              </p>
+            </div>
           </div>
 
-          <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 px-4 py-3">
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 px-4 py-4 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Rows Visible', 'Lignes visibles')}</p>
             <p className="mt-1 text-lg font-semibold text-slate-900">{filteredRows.length}</p>
           </div>
@@ -138,27 +148,27 @@ const FinanceLedgerTabV2 = ({ filters, refreshTrigger }) => {
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Incoming', 'Entrées')}</p>
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Incoming', 'Entrées')}</p>
           <p className="mt-2 text-2xl font-bold text-emerald-700">{financeApiV2.formatCompactDisplay(visibleTotals.incoming)} MAD</p>
         </div>
-        <div className="rounded-[1.5rem] border border-rose-100 bg-rose-50/80 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-700">{tr('Outgoing', 'Sorties')}</p>
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Outgoing', 'Sorties')}</p>
           <p className="mt-2 text-2xl font-bold text-rose-700">{financeApiV2.formatCompactDisplay(visibleTotals.outgoing)} MAD</p>
         </div>
-        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/80 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Taxes', 'Taxes')}</p>
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Taxes', 'Taxes')}</p>
           <p className="mt-2 text-2xl font-bold text-amber-700">{financeApiV2.formatCompactDisplay(visibleTotals.taxes)} MAD</p>
         </div>
-        <div className="rounded-[1.5rem] border border-violet-100 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Net', 'Net')}</p>
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Net', 'Net')}</p>
           <p className={`mt-2 text-2xl font-bold ${visibleTotals.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
             {visibleTotals.net >= 0 ? '+' : ''}{financeApiV2.formatCompactDisplay(visibleTotals.net)} MAD
           </p>
         </div>
       </div>
 
-      <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -193,7 +203,7 @@ const FinanceLedgerTabV2 = ({ filters, refreshTrigger }) => {
         </div>
       </div>
 
-      <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
         <div className="space-y-3">
           {filteredRows.length === 0 ? (
             <div className="rounded-[1.25rem] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">

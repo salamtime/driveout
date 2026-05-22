@@ -12,7 +12,11 @@
 
 import { supabase } from '../lib/supabase';
 import TransactionalRentalService from './TransactionalRentalService';
-import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import {
+  buildRentalCreatedTelegramPricingSnapshot,
+  countRentalDocuments,
+  dispatchRentalLifecycleTelegramEvent,
+} from './RentalLifecycleDispatchService';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 import { adminApiRequest } from './adminApi';
 import { getCurrentOrganizationId } from './OrganizationService';
@@ -511,6 +515,11 @@ class EnhancedTransactionalRentalService {
       };
 
       const finalSanitizedData = this._sanitizeDataForDB(rentalPayload);
+      const finalPaymentStatus = String(finalSanitizedData.payment_status || '').trim().toLowerCase();
+      const finalTotalAmount = Math.max(0, Number(finalSanitizedData.total_amount) || 0);
+      if ((finalPaymentStatus === 'paid' || finalPaymentStatus === 'partial') && finalTotalAmount <= 0) {
+        throw new Error('Cannot create a paid rental with 0 MAD total. Select a package or set a rental price first.');
+      }
 
       const { data: newRental, error: insertError } = await supabase
         .from(this.tableName)
@@ -547,6 +556,7 @@ class EnhancedTransactionalRentalService {
           ? newRental.extra_images
           : (Array.isArray(existingCustomer?.extra_images) ? existingCustomer.extra_images : []),
       };
+      const telegramPricingSnapshot = buildRentalCreatedTelegramPricingSnapshot(newRental, finalSanitizedData);
 
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
@@ -558,12 +568,12 @@ class EnhancedTransactionalRentalService {
           customer: newRental.customer_name || finalSanitizedData.customer_name,
           start: newRental.rental_start_date || finalSanitizedData.rental_start_date || sanitizedData.start_date,
           end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
-          total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
           createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
           id_scan_url: telegramRentalPayload.id_scan_url,
           customer_id_image: telegramRentalPayload.customer_id_image,
           customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
           documentCount: countRentalDocuments(telegramRentalPayload),
+          ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

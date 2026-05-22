@@ -18,6 +18,7 @@ const getPort = () => {
 };
 
 const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5173': 'saharax',
   '5174': 'offroad',
 });
 

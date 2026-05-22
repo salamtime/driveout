@@ -277,8 +277,8 @@ const SHARE_ITEM_META = {
   },
   receipt: {
     icon: Receipt,
-    title: { en: 'Receipt', fr: 'Recu' },
-    subtitle: { en: 'View the payment receipt and final booking record.', fr: 'Voir le reçu de paiement et le récapitulatif final.' },
+    title: { en: 'Receipt', fr: 'Reçu' },
+    subtitle: { en: 'View the payment receipt and booking record.', fr: 'Voir le reçu de paiement et le récapitulatif de réservation.' },
     accent: {
       tint: 'linear-gradient(135deg, rgba(124,58,237,0.14), rgba(16,185,129,0.08))',
       border: 'rgba(167,139,250,0.34)',
@@ -535,8 +535,28 @@ export default function PublicDocumentShare() {
   const payload = share?.payload || {};
   const rental = payload?.rental || null;
   const normalizedSettings = normalizePublicDocumentSettings(payload?.settings || {});
-  const logoUrl = normalizedSettings.logoUrl || '/assets/logo.jpg';
-  const stampUrl = normalizedSettings.stampUrl || '/assets/stamp.png';
+  const isDriveOutMarketplaceDocument = Boolean(
+    rental?.is_driveout_marketplace_document ||
+    rental?.source_type === 'driveout_marketplace' ||
+    rental?.source_context === 'driveout_marketplace_request' ||
+    rental?.contract_document_mode === 'driveout_marketplace_no_pricing' ||
+    rental?.marketplace_request_id ||
+    rental?.marketplace_request_reference ||
+    payload?.source?.type === 'driveout_marketplace' ||
+    String(rental?.document_brand || rental?.company_name || rental?.company_legal_name || '').trim().toLowerCase().includes('driveout') ||
+    String(normalizedSettings.logoUrl || '').trim().toLowerCase().includes('driveout')
+  );
+  const normalizedLogoUrl = String(normalizedSettings.logoUrl || '').trim();
+  const normalizedLogoKey = normalizedLogoUrl.toLowerCase();
+  const isLegacySaharaXLogo =
+    normalizedLogoKey.includes('saharax') ||
+    (normalizedLogoKey.includes('/assets/logo.jpg') && !normalizedLogoKey.includes('driveout')) ||
+    normalizedLogoKey === 'logo.jpg';
+  const logoUrl = isDriveOutMarketplaceDocument
+    ? (normalizedLogoUrl && !isLegacySaharaXLogo ? normalizedLogoUrl : '/assets/driveout-mark.svg')
+    : (normalizedLogoUrl || '/assets/logo.jpg');
+  const stampUrl = isDriveOutMarketplaceDocument ? '' : (normalizedSettings.stampUrl || '/assets/stamp.png');
+  const documentBrandName = isDriveOutMarketplaceDocument ? 'DriveOut' : 'SaharaX';
   const printablePdfUrl = payload?.pdfUrl || null;
   const accountPrompt = (
     <div style={inlinePromptStyle} className="no-print public-share-account-prompt">
@@ -611,8 +631,8 @@ export default function PublicDocumentShare() {
               <div className="public-share-hero-main" style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0, flex: 1 }}>
                 <img
                   className="public-share-logo"
-                  src={logoUrl || '/assets/logo.jpg'}
-                  alt="SaharaX"
+                  src={logoUrl || (isDriveOutMarketplaceDocument ? '/assets/driveout-mark.svg' : '/assets/logo.jpg')}
+                  alt={documentBrandName}
                   style={{ width: 72, height: 72, objectFit: 'contain', borderRadius: 20, background: '#fff', border: '1px solid rgba(226,232,240,0.9)', padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,0.06)' }}
                   onError={(e) => { e.target.style.display = 'none'; }}
                 />

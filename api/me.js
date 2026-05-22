@@ -18,6 +18,12 @@ import { authenticateRequest } from './_lib/auth.js';
 import { resolveRequestTenantScope, stampTenantPayload } from './_lib/sharedTenantIsolation.js';
 import { getTenantPlanLimits } from '../src/config/tenantPlans.js';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus } from '../src/utils/rentalLifecycle.js';
+import { normalizeMarketplaceRequestLifecycleStatus } from '../src/utils/marketplaceRequestState.js';
+import {
+  buildRentalExecutionRecordPayload,
+  normalizeRentalExecutionDraft,
+  RENTAL_EXECUTION_RECORDS_TABLE,
+} from '../src/utils/rentalExecutionFlow.js';
 import { buildDefaultPermissionsForRole, buildBusinessOwnerPermissionMap } from '../src/utils/permissionCatalog.js';
 import { EMAIL_SENDERS, sendResendEmail } from './_lib/email.js';
 import { insertRentalEvent } from './_lib/rentalEvents.js';
@@ -73,7 +79,10 @@ const isMarketplaceRequestValidationMessage = (message) => {
     normalized.includes('damage deposit') ||
     normalized.includes('booking hold expired') ||
     normalized.includes('request again to continue') ||
-    normalized.includes('not ready for final approval yet')
+    normalized.includes('not ready for final approval yet') ||
+    normalized.includes('not ready for that action') ||
+    normalized.includes('handoff checklist') ||
+    normalized.includes('return review')
   );
 };
 
@@ -902,23 +911,33 @@ const seedMarketplaceApprovalMessages = async ({
       threadType: 'marketplace_owner_request',
       roleContext: 'owner',
       href: `/account/vehicles?requestId=${encodeURIComponent(requestId)}#requests`,
+      threadKey: buildThreadKey({
+        family: 'marketplace',
+        threadType: 'marketplace_owner_request',
+        entityType: 'marketplace_request',
+        entityId: requestId,
+        recipientUserId: customerUserId,
+        senderUserId: ownerUserId,
+      }),
     },
     {
       threadType: 'marketplace_customer_request',
       roleContext: 'customer',
       href: `/account/rentals/requests/${encodeURIComponent(requestId)}`,
+      threadKey: String(requestRow?.thread_key || '').trim() || buildThreadKey({
+        family: 'marketplace',
+        threadType: 'marketplace_customer_request',
+        entityType: 'marketplace_request',
+        entityId: requestId,
+        recipientUserId: ownerUserId,
+        senderUserId: customerUserId,
+      }),
     },
   ];
 
   for (const threadDefinition of threadDefinitions) {
-    const threadKey = buildThreadKey({
-      family: 'marketplace',
-      threadType: threadDefinition.threadType,
-      entityType: 'marketplace_request',
-      entityId: requestId,
-      recipientUserId: customerUserId,
-      senderUserId: ownerUserId,
-    });
+    const threadKey = String(threadDefinition.threadKey || '').trim();
+    if (!threadKey) continue;
 
     await upsertMarketplaceThreadState(adminClient, {
       thread_key: threadKey,
@@ -1316,6 +1335,229 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
     customerWalletBalance: depositAmount > 0 ? customerWalletBalanceAfter : customerWalletBalance,
     chatUnlockedAt: approvedAt,
     chatGraceExpiresAt,
+  };
+};
+
+const hasExecutionNumberValue = (value) => {
+  if (value === null || value === undefined || value === '') return false;
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0;
+};
+
+const getMissingBookingRequestPayloadColumnName = (error) => {
+  const message = String(error?.message || error?.details || '');
+  const qualifiedColumnMatch = message.match(/column\s+["']?[\w.]*\.([a-zA-Z0-9_]+)["']?\s+does not exist/i);
+  if (qualifiedColumnMatch?.[1]) return qualifiedColumnMatch[1];
+
+  const directMatch = message.match(/column\s+[\w."]*\.?("?)([a-zA-Z0-9_]+)\1\s+does not exist/i);
+  if (directMatch?.[2]) return directMatch[2];
+
+  const schemaMatch = message.match(/'([a-zA-Z0-9_]+)' column/i);
+  if (schemaMatch?.[1]) return schemaMatch[1];
+
+  return null;
+};
+
+const updateBookingRequestWithCompatiblePayload = async (adminClient, requestId, payload = {}) => {
+  const safeRequestId = String(requestId || '').trim();
+  if (!safeRequestId) return null;
+
+  let compatiblePayload = { ...payload };
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (!Object.keys(compatiblePayload).length) return null;
+
+    const { data, error } = await adminClient
+      .from(BOOKING_REQUESTS_TABLE)
+      .update(compatiblePayload)
+      .eq('id', safeRequestId)
+      .select('*')
+      .maybeSingle();
+
+    if (!error) return data || null;
+
+    const missingColumn = getMissingBookingRequestPayloadColumnName(error);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(compatiblePayload, missingColumn)) {
+      const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+      compatiblePayload = nextPayload;
+      continue;
+    }
+
+    throw error;
+  }
+
+  return null;
+};
+
+const upsertMarketplaceOwnerExecutionRecord = async ({
+  adminClient,
+  requestRow,
+  ownerUserId,
+  requestStatus,
+  executionDraft,
+}) => {
+  const normalizedRequestId = String(requestRow?.id || '').trim();
+  if (!normalizedRequestId) return null;
+
+  const payload = buildRentalExecutionRecordPayload({
+    organizationId: requestRow?.organization_id || null,
+    requestId: normalizedRequestId,
+    ownerUserId,
+    customerUserId: requestRow?.customer_id || requestRow?.customer_ext_id || null,
+    vehicleId: requestRow?.vehicle_public_profile_id || null,
+    requestStatus,
+    executionDraft,
+  });
+
+  const { data, error } = await adminClient
+    .from(RENTAL_EXECUTION_RECORDS_TABLE)
+    .upsert([payload], { onConflict: 'marketplace_request_id' })
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTableError(error) || isSchemaCompatibilityError(error)) {
+      return null;
+    }
+    throw error;
+  }
+
+  return data || payload;
+};
+
+const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, executionDraft = {}, requestStatus = null) => {
+  const ownerUserId = String(user?.id || '').trim();
+  const normalizedRequestId = String(requestId || '').trim();
+
+  if (!ownerUserId) {
+    throw new Error('Missing owner session');
+  }
+  if (!normalizedRequestId) {
+    throw new Error('Booking reference missing');
+  }
+
+  const { data: requestRow, error: requestError } = await adminClient
+    .from(BOOKING_REQUESTS_TABLE)
+    .select('*')
+    .eq('id', normalizedRequestId)
+    .eq('owner_id', ownerUserId)
+    .maybeSingle();
+
+  if (requestError) throw requestError;
+  if (!requestRow) {
+    throw new Error('Marketplace request not found');
+  }
+
+  const existingCounterOffer =
+    requestRow?.counter_offer && typeof requestRow.counter_offer === 'object'
+      ? requestRow.counter_offer
+      : {};
+  const currentRequestStatus = normalizeMarketplaceRequestLifecycleStatus({
+    request_status: requestRow?.request_status || 'pending',
+    counter_offer: existingCounterOffer,
+  });
+  const normalizedExecutionDraft = normalizeRentalExecutionDraft(executionDraft);
+
+  const updates = {
+    counter_offer: {
+      ...existingCounterOffer,
+      owner_execution: normalizedExecutionDraft,
+    },
+    updated_at: new Date().toISOString(),
+  };
+
+  if (requestStatus) {
+    const normalizedNextStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
+    const validTransition =
+      normalizedNextStatus === currentRequestStatus ||
+      (normalizedNextStatus === 'active' && currentRequestStatus === 'approved') ||
+      (normalizedNextStatus === 'completed' && currentRequestStatus === 'active');
+
+    if (!validTransition) {
+      throw new Error('This rental is not ready for that action yet.');
+    }
+
+    const hasCompleteHandoff =
+      Boolean(normalizedExecutionDraft.handoffMediaReady) &&
+      hasExecutionNumberValue(normalizedExecutionDraft.startOdometer) &&
+      hasExecutionNumberValue(normalizedExecutionDraft.startFuelLevel) &&
+      Boolean(normalizedExecutionDraft.legalDocsChecked) &&
+      Boolean(normalizedExecutionDraft.depositConfirmed) &&
+      Boolean(normalizedExecutionDraft.contractSigned) &&
+      Boolean(normalizedExecutionDraft.startReadyAt);
+
+    const hasCompleteReturn =
+      Boolean(normalizedExecutionDraft.returnPendingAt) &&
+      Boolean(normalizedExecutionDraft.returnMediaReady) &&
+      hasExecutionNumberValue(normalizedExecutionDraft.returnOdometer) &&
+      (
+        !hasExecutionNumberValue(normalizedExecutionDraft.startOdometer) ||
+        Number(normalizedExecutionDraft.returnOdometer) >= Number(normalizedExecutionDraft.startOdometer)
+      ) &&
+      hasExecutionNumberValue(normalizedExecutionDraft.returnFuelLevel) &&
+      Boolean(normalizedExecutionDraft.issueReviewed);
+
+    if (normalizedNextStatus === 'active' && !hasCompleteHandoff) {
+      throw new Error('Finish the handoff checklist before starting this rental.');
+    }
+
+    if (normalizedNextStatus === 'completed' && !hasCompleteReturn) {
+      throw new Error('Finish the return review before ending this rental.');
+    }
+
+    updates.request_status = normalizedNextStatus;
+    if (normalizedNextStatus === 'active') {
+      updates.closed_at = null;
+    }
+    if (normalizedNextStatus === 'completed') {
+      updates.closed_at = new Date().toISOString();
+    }
+  }
+
+  const updatedRequest = await updateBookingRequestWithCompatiblePayload(adminClient, normalizedRequestId, updates);
+  const effectiveRequestStatus = requestStatus || updatedRequest?.request_status || currentRequestStatus;
+
+  await upsertMarketplaceOwnerExecutionRecord({
+    adminClient,
+    requestRow: updatedRequest || requestRow,
+    ownerUserId,
+    requestStatus: effectiveRequestStatus,
+    executionDraft: normalizedExecutionDraft,
+  }).catch((executionRecordError) => {
+    console.warn('Failed to sync marketplace owner execution record:', executionRecordError);
+  });
+
+  if (requestStatus === 'active') {
+    await insertRentalEvent(adminClient, {
+      rentalId: normalizedRequestId,
+      eventType: 'started',
+      actor: 'owner',
+      metadata: {
+        ownerId: ownerUserId,
+        startedAt: normalizedExecutionDraft.startedAt || new Date().toISOString(),
+      },
+    });
+  }
+
+  if (requestStatus === 'completed') {
+    await insertRentalEvent(adminClient, {
+      rentalId: normalizedRequestId,
+      eventType: 'ended',
+      actor: 'owner',
+      metadata: {
+        ownerId: ownerUserId,
+        endedAt: normalizedExecutionDraft.returnSavedAt || new Date().toISOString(),
+        issueReported: Boolean(normalizedExecutionDraft.issueReported),
+      },
+    });
+  }
+
+  return {
+    ok: true,
+    request: updatedRequest || {
+      ...requestRow,
+      ...updates,
+    },
   };
 };
 
@@ -2622,6 +2864,42 @@ export default async function handler(req, res) {
         res.status(200).json(result);
       } catch (error) {
         const message = String(error?.message || '').trim() || 'Failed to approve booking';
+        if (message === 'Marketplace request not found') {
+          res.status(404).json({ error: message });
+          return;
+        }
+        if (isMarketplaceRequestValidationMessage(message)) {
+          res.status(400).json({ error: message });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && resource === 'owner-marketplace-execution') {
+      const requestId = String(req.body?.requestId || '').trim();
+      const executionDraft =
+        req.body?.executionDraft && typeof req.body.executionDraft === 'object'
+          ? req.body.executionDraft
+          : {};
+      const requestStatus = String(req.body?.requestStatus || '').trim() || null;
+      if (!requestId) {
+        res.status(400).json({ error: 'Booking reference missing' });
+        return;
+      }
+
+      try {
+        const result = await saveOwnerMarketplaceExecution(
+          adminClient,
+          user,
+          requestId,
+          executionDraft,
+          requestStatus
+        );
+        res.status(200).json(result);
+      } catch (error) {
+        const message = String(error?.message || '').trim() || 'Failed to save rental execution';
         if (message === 'Marketplace request not found') {
           res.status(404).json({ error: message });
           return;

@@ -1,9 +1,8 @@
 import { authenticateRequest } from './auth.js';
 import { insertTenantAuditLog } from './tenantAuditLog.js';
 import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, PLATFORM_TENANT_AUDIT_LOG_TABLE } from './supabase.js';
+import { getTenantSlugFromHostname, isLocalHostname, normalizeHostname } from './tenantHostResolution.js';
 
-const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
-const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
 const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const TELEGRAM_TIMEZONE = 'Africa/Casablanca';
 const TELEGRAM_EVENT_KEYS = [
@@ -45,17 +44,6 @@ const resolveRentalDocumentCount = (data = {}) => {
   return 0;
 };
 
-const normalizeHostname = (value = '') => {
-  const trimmed = String(value || '').trim().toLowerCase();
-  if (!trimmed) return '';
-
-  try {
-    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
-  } catch {
-    return trimmed.split('/')[0].split(':')[0].toLowerCase();
-  }
-};
-
 const normalizeUrl = (value = '') => {
   const trimmed = String(value || '').trim();
   if (!trimmed) return '';
@@ -68,22 +56,6 @@ const getUrlHostname = (value = '') => {
   } catch {
     return '';
   }
-};
-
-const isLocalHostname = (value = '') => {
-  const normalized = normalizeHostname(value);
-  return normalized === 'localhost' || normalized === '127.0.0.1';
-};
-
-const getTenantSlugFromHostname = (hostname = '') => {
-  const normalizedHostname = normalizeHostname(hostname);
-  if (normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') {
-    return 'saharax';
-  }
-  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
-
-  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
-  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
 };
 
 const formatDateTime = (value) => {
@@ -252,6 +224,74 @@ const buildDistanceLine = (value) => {
   return `Distance: ${formatted} km`;
 };
 
+const resolveBookedPackageName = (data = {}) => safeText(
+  data.packageName ||
+  data.package_name ||
+  data.selected_package_name ||
+  ''
+);
+
+const resolveBookedPackagePrice = (data = {}) => {
+  const candidates = [
+    data.packagePrice,
+    data.package_price,
+    data.bookedPackagePrice,
+    data.booked_package_price,
+    data.selected_package_fixed_amount,
+    data.selectedPackageFixedAmount,
+    data.selected_package_rate_per_unit,
+    data.selectedPackageRatePerUnit,
+    data.package_rate_per_unit,
+    data.packageRatePerUnit,
+  ];
+
+  for (const candidate of candidates) {
+    const amount = Number(candidate);
+    if (Number.isFinite(amount) && amount > 0) {
+      return amount;
+    }
+  }
+
+  return 0;
+};
+
+const hasBookedPackageSnapshot = (data = {}) => {
+  const hasExplicitPackageFlag = data?.use_package_pricing === true || data?.usePackagePricing === true;
+  const hasPackageIdentity = Boolean(
+    safeText(data?.selected_package_id || data?.package_id || data?.packageId || '') ||
+    resolveBookedPackageName(data)
+  );
+
+  return hasExplicitPackageFlag || hasPackageIdentity;
+};
+
+const buildRentalCreatedPriceLines = (data = {}) => {
+  const totalAmount = Number(data?.total);
+  const total = Number.isFinite(totalAmount) && totalAmount > 0
+    ? safeText(formatMoney(totalAmount))
+    : '';
+  const packagePriceAmount = resolveBookedPackagePrice(data);
+  const packagePrice = packagePriceAmount > 0 ? safeText(formatMoney(packagePriceAmount)) : '';
+  const packageName = resolveBookedPackageName(data);
+  const shouldShowPackage = hasBookedPackageSnapshot(data) && packagePrice;
+
+  if (!shouldShowPackage) {
+    return total ? [`${total} MAD`] : [];
+  }
+
+  const lines = [];
+  if (packageName) {
+    lines.push(`Package: ${packageName}`);
+  }
+  lines.push(`Package price: ${packagePrice} MAD`);
+
+  if (total && total !== packagePrice) {
+    lines.push(`Rental total: ${total} MAD`);
+  }
+
+  return lines;
+};
+
 const resolveDistanceValue = (data = {}) => {
   const directDistance =
     data.total_kilometers_driven ??
@@ -291,6 +331,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
   const paymentReceivedNow = safeText(formatMoney(data.paymentReceivedNow));
   const discountApplied = safeText(formatMoney(data.companyDiscount));
   const total = safeText(formatMoney(data.total));
+  const rentalCreatedPriceLines = buildRentalCreatedPriceLines(data);
   const rentalDocumentCount = resolveRentalDocumentCount(data);
   const reference = safeText(data.reference || data.rental_reference || '');
   const rentalIdentityLine = reference ? `Ref: ${reference}` : '';
@@ -545,6 +586,8 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         safeText(data.tenantName || vehicle || 'Workspace test'),
         ...(safeText(data.testScope) === 'profile'
           ? ['Profile preference test']
+          : safeText(data.testScope) === 'website_group'
+            ? ['Website reservation group test']
           : ['Workspace connection test']),
         ...(customerLine ? [customerLine] : []),
         '',
@@ -563,6 +606,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...windowLines,
         ...(openedByLine ? [openedByLine] : []),
         ...(rentalDocumentCount > 0 ? [`Documents: ${rentalDocumentCount}`] : []),
+        ...rentalCreatedPriceLines,
         '',
         linkLine,
       ].join('\n');
@@ -575,7 +619,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
       ...windowLines,
       ...(openedByLine ? [openedByLine] : []),
       ...(rentalDocumentCount > 0 ? [`Documents: ${rentalDocumentCount}`] : []),
-      `${total} MAD`,
+      ...rentalCreatedPriceLines,
       ...(rentalIdentityLine ? [rentalIdentityLine] : []),
       '',
       linkLine,
@@ -591,6 +635,46 @@ const normalizeTelegramEventTypes = (value, defaultValue = false) => {
       : defaultValue === true;
     return acc;
   }, {});
+};
+
+const getDefaultTelegramDeliveryRoute = (eventType) => {
+  if (eventType === 'website_reservation_created') {
+    return { workspace: false, website: true, personal: false };
+  }
+
+  if (
+    eventType === 'rental_extension_requested' ||
+    eventType === 'rental_price_change_requested'
+  ) {
+    return { workspace: false, website: false, personal: true };
+  }
+
+  return { workspace: false, website: false, personal: true };
+};
+
+const normalizeTelegramDeliveryRoutes = (value) => {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return TELEGRAM_EVENT_KEYS.reduce((acc, key) => {
+    const route = source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
+      ? source[key]
+      : {};
+    const fallback = getDefaultTelegramDeliveryRoute(key);
+    acc[key] = {
+      workspace: Object.prototype.hasOwnProperty.call(route, 'workspace') ? route.workspace === true : fallback.workspace,
+      website: Object.prototype.hasOwnProperty.call(route, 'website') ? route.website === true : fallback.website,
+      personal: Object.prototype.hasOwnProperty.call(route, 'personal') ? route.personal === true : fallback.personal,
+    };
+    return acc;
+  }, {});
+};
+
+const resolveTelegramDeliveryRoute = (config, eventType, { websiteGroupTest = false, workspaceGroupTest = false, profileTest = false } = {}) => {
+  if (profileTest) return { workspace: false, website: false, personal: true };
+  if (websiteGroupTest) return { workspace: false, website: true, personal: false };
+  if (workspaceGroupTest) return { workspace: true, website: false, personal: false };
+
+  const normalizedEventType = String(eventType || '').trim().toLowerCase();
+  return normalizeTelegramDeliveryRoutes(config?.deliveryRoutes)[normalizedEventType] || getDefaultTelegramDeliveryRoute(normalizedEventType);
 };
 
 const toSafeAuditMetadata = (value) => {
@@ -623,6 +707,33 @@ const writeTelegramAuditLog = async ({
   });
 };
 
+const normalizeTelegramChatIds = (value, fallbackValue = '') => {
+  const chatIds = Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : String(value || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+  if (chatIds.length > 0) {
+    return chatIds;
+  }
+
+  return String(fallbackValue || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const normalizeTelegramBotToken = (value, fallbackValue = '') => {
+  const configuredToken = String(value || '').trim();
+  if (configuredToken && configuredToken !== 'YOUR_NEW_TOKEN') {
+    return configuredToken;
+  }
+
+  return String(fallbackValue || '').trim();
+};
+
 const getTelegramSettingsFromTenant = (tenant = {}) => {
   const tenantSettings = tenant?.metadata?.tenant_settings && typeof tenant.metadata.tenant_settings === 'object'
     ? tenant.metadata.tenant_settings
@@ -633,20 +744,21 @@ const getTelegramSettingsFromTenant = (tenant = {}) => {
     process.env.APP_BASE_URL ||
     ''
   ).trim().replace(/\/$/, '');
-  const chatIds = Array.isArray(tenantSettings.telegram_chat_ids)
-    ? tenantSettings.telegram_chat_ids.map((value) => String(value || '').trim()).filter(Boolean)
-    : String(tenantSettings.telegram_chat_ids || process.env.TELEGRAM_CHAT_IDS || '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean);
+  const chatIds = normalizeTelegramChatIds(tenantSettings.telegram_chat_ids, process.env.TELEGRAM_CHAT_IDS);
+  const websiteReservationChatIds = normalizeTelegramChatIds(tenantSettings.telegram_website_reservation_chat_ids);
 
   return {
     enabled: Boolean(tenantSettings.telegram_enabled),
-    botToken: String(tenantSettings.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+    botToken: normalizeTelegramBotToken(
+      tenantSettings.telegram_bot_token,
+      process.env.TELEGRAM_BOT_TOKEN
+    ),
     chatIds,
+    websiteReservationChatIds,
     baseUrl: normalizedBaseUrl,
     overdueRepeatMinutes: Math.max(0, Number(tenantSettings.telegram_overdue_repeat_minutes || 0) || 0),
     eventTypes: normalizeTelegramEventTypes(tenantSettings.telegram_event_types, true),
+    deliveryRoutes: normalizeTelegramDeliveryRoutes(tenantSettings.telegram_delivery_routes),
   };
 };
 
@@ -658,14 +770,22 @@ const getTelegramSettingsFromOverride = (value = {}) => {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
+  const websiteReservationChatIds = Array.isArray(source.telegram_website_reservation_chat_ids)
+    ? source.telegram_website_reservation_chat_ids.map((item) => String(item || '').trim()).filter(Boolean)
+    : String(source.telegram_website_reservation_chat_ids || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
 
   return {
     enabled: Boolean(source.telegram_enabled),
-    botToken: String(source.telegram_bot_token || '').trim(),
+    botToken: normalizeTelegramBotToken(source.telegram_bot_token),
     chatIds,
+    websiteReservationChatIds,
     baseUrl: String(source.telegram_base_url || '').trim().replace(/\/$/, ''),
     overdueRepeatMinutes: Math.max(0, Number(source.telegram_overdue_repeat_minutes || 0) || 0),
     eventTypes: normalizeTelegramEventTypes(source.telegram_event_types, true),
+    deliveryRoutes: normalizeTelegramDeliveryRoutes(source.telegram_delivery_routes),
   };
 };
 
@@ -814,6 +934,8 @@ const resolveTenantByPayload = async (adminClient, payload = {}) => {
 };
 
 const loadActorWorkspaceContext = async (adminClient, userId) => {
+  if (!adminClient || !userId) return null;
+
   const { data, error } = await adminClient
     .from(APP_USERS_TABLE)
     .select('id, role, primary_organization_id')
@@ -861,9 +983,15 @@ const findEligibleTelegramUsers = async (adminClient, eventType, organizationId 
   });
 };
 
-const buildTelegramRecipients = (config, eligibleUsers = []) => {
+const buildTelegramRecipients = (config, eligibleUsers = [], deliveryRoute = {}) => {
   const recipients = [];
   const seenByChatId = new Map();
+  const configuredGroupChatIds = new Set([
+    ...(Array.isArray(config?.chatIds) ? config.chatIds : []),
+    ...(Array.isArray(config?.websiteReservationChatIds) ? config.websiteReservationChatIds : []),
+  ]
+    .map((chatId) => String(chatId || '').trim())
+    .filter(Boolean));
 
   const pushRecipient = (chatId, type, role = null, user = null) => {
     const normalizedChatId = String(chatId || '').trim();
@@ -898,16 +1026,38 @@ const buildTelegramRecipients = (config, eligibleUsers = []) => {
     recipients.push(nextRecipient);
   };
 
-  (Array.isArray(config?.chatIds) ? config.chatIds : []).forEach((chatId) => {
-    pushRecipient(chatId, 'workspace', null, null);
-  });
-
-  eligibleUsers.forEach((user) => {
-    const prefs = getUserTelegramPreferences(user?.preferences || {});
-    prefs.personalChatIds.forEach((chatId) => {
-      pushRecipient(chatId, 'personal', String(user?.role || '').trim().toLowerCase(), user);
+  if (deliveryRoute.workspace === true) {
+    (Array.isArray(config?.chatIds) ? config.chatIds : []).forEach((chatId) => {
+      pushRecipient(chatId, 'workspace', null, null);
     });
-  });
+  }
+
+  if (deliveryRoute.website === true) {
+    const websiteChats = Array.isArray(config?.websiteReservationChatIds) && config.websiteReservationChatIds.length > 0
+      ? config.websiteReservationChatIds
+      : (Array.isArray(config?.chatIds) ? config.chatIds : []);
+    websiteChats.forEach((chatId) => {
+      pushRecipient(chatId, 'website_group', null, null);
+    });
+  }
+
+  if (deliveryRoute.personal === true) {
+    eligibleUsers.forEach((user) => {
+      const prefs = getUserTelegramPreferences(user?.preferences || {});
+      prefs.personalChatIds.forEach((chatId) => {
+        const normalizedChatId = String(chatId || '').trim();
+        if (configuredGroupChatIds.has(normalizedChatId)) {
+          console.warn('Telegram direct staff recipient skipped because it matches a configured team group chat ID.', {
+            userId: user?.id || null,
+            email: user?.email || null,
+            chatId: normalizedChatId,
+          });
+          return;
+        }
+        pushRecipient(chatId, 'personal', String(user?.role || '').trim().toLowerCase(), user);
+      });
+    });
+  }
 
   return recipients;
 };
@@ -1104,12 +1254,35 @@ async function sendTelegramRentalAlert({ config, data }) {
   const token = String(config?.botToken || '').trim();
   const baseUrl = String(config?.baseUrl || process.env.APP_BASE_URL || '').trim().replace(/\/$/, '');
   const recipients = Array.isArray(data?.recipients) ? data.recipients : [];
-  const activeRecipients = recipients.length > 0
-    ? recipients
-    : (Array.isArray(config?.chatIds) ? config.chatIds.map((chatId) => ({ chatId, type: 'workspace', layout: 'owner' })) : []);
+  const deliveryRoute = data?.deliveryRoute && typeof data.deliveryRoute === 'object' && !Array.isArray(data.deliveryRoute)
+    ? data.deliveryRoute
+    : resolveTelegramDeliveryRoute(config, data?.eventType);
+  const configuredGroupChatIds = new Set([
+    ...(Array.isArray(config?.chatIds) ? config.chatIds : []),
+    ...(Array.isArray(config?.websiteReservationChatIds) ? config.websiteReservationChatIds : []),
+  ]
+    .map((chatId) => String(chatId || '').trim())
+    .filter(Boolean));
+  const activeRecipients = deliveryRoute
+    ? recipients.filter((recipient) => {
+        const recipientType = String(recipient?.type || '').trim().toLowerCase();
+        const chatId = String(recipient?.chatId || '').trim();
+        if (!chatId) return false;
+        if (recipientType === 'workspace') return deliveryRoute.workspace === true;
+        if (recipientType === 'website_group') return deliveryRoute.website === true;
+        if (recipientType === 'personal') {
+          return deliveryRoute.personal === true && !configuredGroupChatIds.has(chatId);
+        }
+        return false;
+      })
+    : recipients;
 
-  if (!token || token === 'YOUR_NEW_TOKEN' || activeRecipients.length === 0) {
-    return { skipped: true, reason: 'Telegram tenant configuration is incomplete' };
+  if (!token || token === 'YOUR_NEW_TOKEN') {
+    return { skipped: true, reason: 'Telegram bot token is not configured' };
+  }
+
+  if (activeRecipients.length === 0) {
+    return { skipped: true, reason: 'Telegram recipient route has no active recipients' };
   }
   const rentalId = encodeURIComponent(String(data.id || ''));
 
@@ -1336,11 +1509,18 @@ export async function processTelegramRentalAlert({
     }
 
     const isProfileTestEvent = isTestEvent && String(payload?.testScope || '').trim().toLowerCase() === 'profile';
+    const isWebsiteReservationGroupTest = isTestEvent && String(payload?.testScope || '').trim().toLowerCase() === 'website_group';
+    const isWorkspaceGroupTest = isTestEvent && String(payload?.testScope || '').trim().toLowerCase() === 'workspace_group';
+    const deliveryRoute = resolveTelegramDeliveryRoute(telegramConfig, eventType, {
+      profileTest: isProfileTestEvent,
+      websiteGroupTest: isWebsiteReservationGroupTest,
+      workspaceGroupTest: isWorkspaceGroupTest,
+    });
     const actorTelegramProfile = isProfileTestEvent
       ? await loadActorTelegramProfile(adminClient, actorUser?.id)
       : null;
 
-    const eligibleUsers = isProfileTestEvent
+    const eligibleUsers = isProfileTestEvent || deliveryRoute.personal !== true
       ? []
       : await findEligibleTelegramUsers(
           adminClient,
@@ -1348,9 +1528,11 @@ export async function processTelegramRentalAlert({
           workspaceContext?.primary_organization_id || null
         );
 
-    const recipients = isProfileTestEvent
+    let effectiveDeliveryRoute = deliveryRoute;
+    let recipients = isProfileTestEvent
       ? buildProfileTestRecipients(actorTelegramProfile)
-      : buildTelegramRecipients(telegramConfig, eligibleUsers);
+      : buildTelegramRecipients(telegramConfig, eligibleUsers, deliveryRoute);
+
     if (recipients.length === 0) {
       await writeTelegramAuditLog({
         adminClient,
@@ -1362,7 +1544,9 @@ export async function processTelegramRentalAlert({
           reason: 'no_chat_recipients',
           rental_id: payload.id || null,
           rental_reference: payload.reference || payload.rental_reference || null,
-          workspace_chat_count: isProfileTestEvent ? 0 : (Array.isArray(telegramConfig.chatIds) ? telegramConfig.chatIds.length : 0),
+          workspace_chat_count: deliveryRoute.workspace === true ? (Array.isArray(telegramConfig.chatIds) ? telegramConfig.chatIds.length : 0) : 0,
+          website_reservation_chat_count: Array.isArray(telegramConfig.websiteReservationChatIds) ? telegramConfig.websiteReservationChatIds.length : 0,
+          delivery_route: deliveryRoute,
           eligible_user_count: eligibleUsers.length,
         },
       });
@@ -1434,6 +1618,7 @@ export async function processTelegramRentalAlert({
         ...payload,
         eventType,
         tenantName: tenant.tenant_name || tenant.tenant_slug || 'Tenant',
+        deliveryRoute: effectiveDeliveryRoute,
         recipients,
       },
     });
@@ -1449,6 +1634,8 @@ export async function processTelegramRentalAlert({
         rental_reference: payload.reference || payload.rental_reference || null,
         event_dedupe_key: dedupeKey || null,
         eligible_user_count: eligibleUsers.length,
+        delivery_route: effectiveDeliveryRoute,
+        website_reservation_chat_count: Array.isArray(telegramConfig.websiteReservationChatIds) ? telegramConfig.websiteReservationChatIds.length : 0,
         sent_count: result.sent || 0,
         failed_count: result.failed || 0,
         duration_ms: Date.now() - startedAt,

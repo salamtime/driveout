@@ -49,16 +49,67 @@ const renderPowerValue = (listing, tr) => {
   return tr('On request', 'Sur demande');
 };
 
-const isHalfDayPackage = (pkg) => /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
-const isHalfHourPackage = (pkg) =>
-  /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
-  /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
-const listingHasHalfHourPackage = (listing, rentalType = 'hourly') => {
-  if (!listing) return false;
-  const packages = Array.isArray(listing?.packageCatalog?.[rentalType]) ? listing.packageCatalog[rentalType] : [];
-  return packages.some((pkg) => isHalfHourPackage(pkg));
+const getExplicitDurationUnits = (pkg) => Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+
+const isHalfDayPackage = (pkg) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (explicitUnits > 0 && explicitUnits !== 4) return false;
+  return /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
 };
 
+const isHalfHourPackage = (pkg) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (explicitUnits > 0 && explicitUnits !== 0.5) return false;
+  return /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
+    /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
+};
+
+const getPackageDurationUnits = (pkg, fallbackDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) return explicitUnits;
+  if (isHalfHourPackage(pkg)) return 0.5;
+  if (isHalfDayPackage(pkg)) return 4;
+  return Math.max(1, Number(fallbackDurationUnits || 1) || 1);
+};
+
+const isBaseHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  return Number(requestedDurationUnits || 1) === 2 && explicitUnits === 1 && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg);
+};
+
+const getEffectivePackageDurationUnits = (pkg, fallbackDurationUnits = 1, rentalType = 'hourly') => {
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)) return 2;
+  return getPackageDurationUnits(pkg, fallbackDurationUnits);
+};
+
+const packageMatchesDuration = (pkg, requestedDurationUnits = 1, rentalType = 'hourly') => {
+  const requestedUnits = Number(requestedDurationUnits || 1) || 1;
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, requestedUnits)) return true;
+  return Math.abs(getPackageDurationUnits(pkg, requestedUnits) - requestedUnits) < 0.001;
+};
+
+const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  return (
+    ((!Number.isFinite(explicitUnits) || explicitUnits <= 0) && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg)) ||
+    isBaseHourlyPackageForDuration(pkg, requestedDurationUnits)
+  );
+};
+
+const getDurationOptionsForPackages = (packages = [], rentalType = 'hourly') => {
+  const sortedOptions = Array.from(
+    new Set(
+      [
+        ...packages.map((pkg) => getPackageDurationUnits(pkg, rentalType === 'hourly' ? 1 : 1)),
+        ...(rentalType === 'hourly' ? [2] : []),
+      ]
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  ).sort((left, right) => left - right);
+
+  if (sortedOptions.length > 0) return sortedOptions;
+  return rentalType === 'hourly' ? [1] : [1];
+};
 const PACKAGE_QUERY_KEYS = [
   'packageId',
   'packageName',
@@ -72,8 +123,20 @@ const clearPackageSearchParams = (params) => {
   PACKAGE_QUERY_KEYS.forEach((key) => params.delete(key));
 };
 
-const formatPackageDisplayName = (pkg, rentalType, tr) => {
-  return formatRentalPackageAllowanceLabel(pkg, { rentalType, tr });
+const setCanonicalDurationAndPackageParams = (params, durationUnits, packageId = null) => {
+  params.delete('durationUnits');
+  clearPackageSearchParams(params);
+  params.set('durationUnits', String(durationUnits));
+  if (packageId !== null && packageId !== undefined && packageId !== '') {
+    params.set('packageId', String(packageId));
+  }
+};
+
+const formatPackageDisplayName = (pkg, rentalType, tr, fallbackDurationUnits = 1) => {
+  const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)
+    ? { ...pkg, durationUnits: fallbackDurationUnits, duration_units: fallbackDurationUnits }
+    : pkg;
+  return formatRentalPackageAllowanceLabel(displayPackage, { rentalType, tr, fallbackDurationUnits });
 };
 
 const formatTripDurationLabel = (units, rentalType, tr) => {
@@ -399,7 +462,7 @@ const PublicVehicleDetail = () => {
       selectedDurationUnits,
       hasInteractedWithDuration
     );
-  }, [currentListing, hasInteractedWithDuration, rentalType, selectedDurationUnits, tr]);
+  }, [currentListing, hasInteractedWithDuration, rentalType, selectedDurationUnits]);
 
   useEffect(() => {
     let cancelled = false;
@@ -448,19 +511,10 @@ const PublicVehicleDetail = () => {
     () => packageCards.find((pkg) => String(pkg.id) === String(selectedPackageId)) || null,
     [packageCards, selectedPackageId]
   );
-  const halfHourPackage = useMemo(
-    () => packageCards.find((pkg) => isHalfHourPackage(pkg)) || null,
-    [packageCards]
+  const durationOptions = useMemo(
+    () => getDurationOptionsForPackages(packageCards, rentalType),
+    [packageCards, rentalType]
   );
-  const halfDayPackage = useMemo(
-    () => packageCards.find((pkg) => isHalfDayPackage(pkg)) || null,
-    [packageCards]
-  );
-  const standardDurationPackage = useMemo(
-    () => packageCards.find((pkg) => !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg)) || null,
-    [packageCards]
-  );
-  const durationOptions = rentalType === 'hourly' ? [0.5, 1, 2, 3, 4] : [1, 2, 3];
   const replaceSearchParamsIfChanged = (nextParams) => {
     const nextString = nextParams.toString();
     if (!nextString || nextString === currentSearchString) return;
@@ -476,75 +530,54 @@ const PublicVehicleDetail = () => {
   }, [currentSearchString]);
 
   const normalizedSelectedDurationUnits = useMemo(() => {
-    const rawUnits = Number(selectedDurationUnits || 1);
+    const rawUnits = durationUnitsParam
+      ? (Number(durationUnitsParam || 1) || 1)
+      : (
+          selectedPackage
+            ? getPackageDurationUnits(selectedPackage, Number(selectedDurationUnits || 1) || 1)
+            : (Number(selectedDurationUnits || 1) || 1)
+        );
 
-    if (selectedPackage && isHalfHourPackage(selectedPackage)) return 0.5;
-    if (selectedPackage && isHalfDayPackage(selectedPackage)) return 4;
     if (durationOptions.includes(rawUnits)) return rawUnits;
-
-    return 1;
-  }, [durationOptions, selectedDurationUnits, selectedPackage]);
+    if (durationOptions.length > 0) return durationOptions[0];
+    return rawUnits === 0.5 ? 0.5 : Math.max(1, rawUnits);
+  }, [durationOptions, durationUnitsParam, selectedDurationUnits, selectedPackage]);
 
   useEffect(() => {
-    const requestedUnits = Number(durationUnitsParam || 1) || 1;
-    const nextUnits = selectedPackage
-      ? (
-          isHalfHourPackage(selectedPackage)
-            ? 0.5
-            : isHalfDayPackage(selectedPackage)
-              ? 4
-              : Math.max(1, requestedUnits)
-        )
-      : (requestedUnits === 0.5 ? 0.5 : Math.max(1, requestedUnits));
-
-    if (Number(selectedDurationUnits || 1) === nextUnits) return;
-    setSelectedDurationUnits(nextUnits);
-  }, [durationUnitsParam, selectedDurationUnits, selectedPackage]);
+    if (Math.abs(Number(selectedDurationUnits || 1) - normalizedSelectedDurationUnits) < 0.001) return;
+    if (durationOptions.length > 0 && !durationOptions.includes(Number(selectedDurationUnits || 1))) {
+      setHasInteractedWithDuration(false);
+    }
+    setSelectedDurationUnits(normalizedSelectedDurationUnits);
+  }, [durationOptions, normalizedSelectedDurationUnits, selectedDurationUnits]);
 
   useEffect(() => {
     if (!packageCards.length) return;
 
-    const hasValidSelectedPackage = packageCards.some((pkg) => String(pkg.id) === String(selectedPackageId));
+    const hasValidSelectedPackage = packageCards.some(
+      (pkg) =>
+        String(pkg.id) === String(selectedPackageId) &&
+        packageMatchesDuration(pkg, normalizedSelectedDurationUnits, rentalType)
+    );
     if (selectedPackageId && hasValidSelectedPackage) return;
 
-    const defaultPackage = getDefaultInstantBookingPackage(currentListing, rentalType);
-    if (!defaultPackage) return;
-
-    const next = new URLSearchParams(searchParams);
-    clearPackageSearchParams(next);
-    next.set('packageId', String(defaultPackage.id));
-    next.set('durationUnits', String(
-      isHalfHourPackage(defaultPackage)
-        ? 0.5
-        : isHalfDayPackage(defaultPackage)
-          ? 4
-          : Math.max(1, Number(defaultPackage.durationUnits || 1) || 1)
-    ));
+    const next = new URLSearchParams(currentSearchString);
+    const defaultPackage = getDefaultInstantBookingPackage(currentListing, rentalType, normalizedSelectedDurationUnits);
+    if (!defaultPackage) {
+      setCanonicalDurationAndPackageParams(next, normalizedSelectedDurationUnits);
+      replaceSearchParamsIfChanged(next);
+      return;
+    }
+    setCanonicalDurationAndPackageParams(
+      next,
+      getEffectivePackageDurationUnits(defaultPackage, normalizedSelectedDurationUnits, rentalType),
+      defaultPackage.id
+    );
     replaceSearchParamsIfChanged(next);
-  }, [currentListing, currentSearchString, packageCards, rentalType, searchParams, selectedPackageId]);
-
-  useEffect(() => {
-    if (!selectedPackage) return;
-
-    const lockedUnits = isHalfHourPackage(selectedPackage)
-      ? '0.5'
-      : isHalfDayPackage(selectedPackage)
-        ? '4'
-        : null;
-
-    if (!lockedUnits || durationUnitsParam === lockedUnits) return;
-
-    const next = new URLSearchParams(searchParams);
-    next.set('durationUnits', lockedUnits);
-    replaceSearchParamsIfChanged(next);
-  }, [durationUnitsParam, searchParams, selectedPackage]);
+  }, [currentListing, currentSearchString, normalizedSelectedDurationUnits, packageCards, rentalType, selectedPackageId]);
 
   const getSelectedDurationForPackage = (pkg) =>
-    isHalfHourPackage(pkg)
-      ? 0.5
-      : isHalfDayPackage(pkg)
-        ? 4
-        : Math.max(1, Number(normalizedSelectedDurationUnits || pkg.durationUnits || 1) || 1);
+    getEffectivePackageDurationUnits(pkg, normalizedSelectedDurationUnits, rentalType);
 
   const getEffectivePackagePrice = (pkg) => {
     const basePackagePrice = Number(pkg?.fixedAmount || 0);
@@ -559,7 +592,7 @@ const PublicVehicleDetail = () => {
 
     const duration = getSelectedDurationForPackage(pkg);
     if (pkg.kind === 'unlimited' && basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice * duration);
+      return normalizePackageDisplayPrice(basePackagePrice);
     }
 
     if (pkg.kind === 'unlimited') {
@@ -568,10 +601,15 @@ const PublicVehicleDetail = () => {
         ? Number(currentListing?.dailyPrice || 0)
         : Number(currentListing?.hourlyPrice || 0);
       const resolvedUnitPrice = unitPrice > 0 ? unitPrice : fallbackUnitPrice;
-      return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice * duration) : 0;
+      return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice) : 0;
     }
 
-    return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice * duration) : 0;
+    if (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration)) {
+      const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
+      return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
+    }
+
+    return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
   };
 
   const getDisplayedIncludedKilometers = (pkg) => {
@@ -580,11 +618,6 @@ const PublicVehicleDetail = () => {
     }
 
     const baseKilometers = Number(pkg?.includedKilometers || 0);
-    if (!isHalfDayPackage(pkg) && !isHalfHourPackage(pkg)) {
-      const totalKilometers = baseKilometers * getSelectedDurationForPackage(pkg);
-      return `${totalKilometers} km`;
-    }
-
     return `${baseKilometers} km`;
   };
 
@@ -599,44 +632,30 @@ const PublicVehicleDetail = () => {
   const powerSummary = renderPowerValue(currentListing, tr);
   const vehicleSummaryLine = `${riderSummary} • ${powerSummary} • ${tr('Certified', 'Certifié')}`;
 
-  const primaryPackageCards = useMemo(() => {
-    if (rentalType === 'hourly') {
-      return packageCards
-        .filter((pkg) => !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg) && pkg.kind !== 'unlimited')
-        .slice(0, 3);
-    }
+  const durationScopedPackageCards = useMemo(
+    () => packageCards.filter((pkg) => packageMatchesDuration(pkg, normalizedSelectedDurationUnits, rentalType)),
+    [normalizedSelectedDurationUnits, packageCards, rentalType]
+  );
 
-    return packageCards
-      .filter((pkg) => pkg.kind !== 'unlimited')
-      .slice(0, 3);
-  }, [packageCards, rentalType]);
+  const primaryPackageCards = useMemo(() => {
+    const standardPackages = durationScopedPackageCards.filter((pkg) => pkg.kind !== 'unlimited');
+    const preferredPackages = standardPackages.length > 0 ? standardPackages : durationScopedPackageCards;
+    return preferredPackages.slice(0, 3);
+  }, [durationScopedPackageCards]);
 
   const hiddenPackageCards = useMemo(() => {
     const excludedIds = new Set();
 
-    if (rentalType === 'hourly' && halfHourPackage) {
-      excludedIds.add(String(halfHourPackage.id));
-    }
-    if (rentalType === 'hourly' && halfDayPackage) {
-      excludedIds.add(String(halfDayPackage.id));
-    }
-
     const primaryIds = new Set(primaryPackageCards.map((pkg) => String(pkg.id)));
-    return packageCards.filter((pkg) => {
+    return durationScopedPackageCards.filter((pkg) => {
       const packageId = String(pkg.id);
       if (primaryIds.has(packageId)) return false;
       if (excludedIds.has(packageId)) return false;
       return true;
     });
-  }, [halfDayPackage, halfHourPackage, packageCards, primaryPackageCards, rentalType]);
+  }, [durationScopedPackageCards, primaryPackageCards]);
 
   const visiblePackageCards = useMemo(() => {
-    if (rentalType === 'hourly' && normalizedSelectedDurationUnits === 0.5 && halfHourPackage) {
-      return [halfHourPackage];
-    }
-    if (rentalType === 'hourly' && normalizedSelectedDurationUnits === 4 && halfDayPackage) {
-      return [halfDayPackage];
-    }
     if (showMorePackages) {
       return [...primaryPackageCards, ...hiddenPackageCards];
     }
@@ -646,7 +665,7 @@ const PublicVehicleDetail = () => {
     }
 
     return primaryPackageCards;
-  }, [halfDayPackage, halfHourPackage, hiddenPackageCards, normalizedSelectedDurationUnits, primaryPackageCards, rentalType, selectedPackage, showMorePackages]);
+  }, [hiddenPackageCards, primaryPackageCards, selectedPackage, showMorePackages]);
 
   const activeTripDetails = useMemo(
     () => packageCards.find((pkg) => String(pkg.id) === String(activeTripDetailsId)) || null,
@@ -670,7 +689,9 @@ const PublicVehicleDetail = () => {
   const switchVehicle = (nextVehicleId) => {
     if (!nextVehicleId || String(nextVehicleId) === String(activeVehicleId)) return;
     const nextListing = vehicleChoices.find((item) => String(item.id) === String(nextVehicleId));
-    const keepHalfHour = rentalType === 'hourly' && Number(selectedDurationUnits || 1) === 0.5 && listingHasHalfHourPackage(nextListing, rentalType);
+    const nextPackages = Array.isArray(nextListing?.packageCatalog?.[rentalType]) ? nextListing.packageCatalog[rentalType] : [];
+    const nextDurationOptions = getDurationOptionsForPackages(nextPackages, rentalType);
+    const keepCurrentDuration = nextDurationOptions.includes(Number(selectedDurationUnits || 1));
     const currentIndex = vehicleChoices.findIndex((item) => String(item.id) === String(activeVehicleId));
     const nextIndex = vehicleChoices.findIndex((item) => String(item.id) === String(nextVehicleId));
     setVehicleDirection(nextIndex > currentIndex ? 1 : -1);
@@ -681,12 +702,14 @@ const PublicVehicleDetail = () => {
     setExpandedPackageId(null);
     setFocusedPackageId(null);
     setActiveTripDetailsId(null);
-    const nextSearch = new URLSearchParams(searchParams);
-    clearPackageSearchParams(nextSearch);
-    if (!keepHalfHour && rentalType === 'hourly' && Number(selectedDurationUnits || 1) === 0.5) {
-      nextSearch.set('durationUnits', '1');
-      setSelectedDurationUnits(1);
+    const nextSearch = new URLSearchParams(currentSearchString);
+    if (!keepCurrentDuration) {
+      const fallbackUnits = nextDurationOptions[0] || 1;
+      setCanonicalDurationAndPackageParams(nextSearch, fallbackUnits);
+      setSelectedDurationUnits(fallbackUnits);
       setHasInteractedWithDuration(false);
+    } else {
+      clearPackageSearchParams(nextSearch);
     }
     if (nextSearch.toString() !== currentSearchString) {
       setSearchParams(nextSearch, { replace: true });
@@ -708,10 +731,22 @@ const PublicVehicleDetail = () => {
   const canGoNextVehicle = activeVehicleIndex >= 0 && activeVehicleIndex < vehicleChoices.length - 1;
 
   const updateRentalType = (value) => {
-    const next = new URLSearchParams(searchParams);
+    if (value === rentalType) return;
+
+    const nextPackages = Array.isArray(currentListing?.packageCatalog?.[value])
+      ? currentListing.packageCatalog[value]
+      : [];
+    const nextDurationOptions = getDurationOptionsForPackages(nextPackages, value);
+    const currentUnits = Number(selectedDurationUnits || 1) || 1;
+    const fallbackUnits = nextDurationOptions.includes(currentUnits)
+      ? currentUnits
+      : (nextDurationOptions[0] || 1);
+
+    const next = new URLSearchParams(currentSearchString);
     next.set('rentalType', value);
-    clearPackageSearchParams(next);
+    setCanonicalDurationAndPackageParams(next, fallbackUnits);
     setHasInteractedWithDuration(false);
+    setSelectedDurationUnits(fallbackUnits);
     if (next.toString() !== currentSearchString) {
       setSearchParams(next, { replace: true });
     }
@@ -720,11 +755,9 @@ const PublicVehicleDetail = () => {
   const handleSelectPackage = (pkg) => {
     setFocusedPackageId(null);
     setActiveTripDetailsId(pkg.id);
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(currentSearchString);
     next.set('rentalType', rentalType);
-    clearPackageSearchParams(next);
-    next.set('packageId', pkg.id);
-    next.set('durationUnits', String(getSelectedDurationForPackage(pkg)));
+    setCanonicalDurationAndPackageParams(next, getSelectedDurationForPackage(pkg), pkg.id);
     if (next.toString() !== currentSearchString) {
       setSearchParams(next, { replace: true });
     }
@@ -734,23 +767,10 @@ const PublicVehicleDetail = () => {
     const safeUnits = Math.max(units === 0.5 ? 0.5 : 1, Number(units || 1));
     setHasInteractedWithDuration(true);
     setSelectedDurationUnits(safeUnits);
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(currentSearchString);
     next.set('rentalType', rentalType);
-    next.set('durationUnits', String(safeUnits));
-    if (rentalType === 'hourly' && safeUnits === 0.5 && halfHourPackage) {
-      clearPackageSearchParams(next);
-      next.set('packageId', String(halfHourPackage.id));
-    } else if (rentalType === 'hourly' && safeUnits === 4 && halfDayPackage) {
-      clearPackageSearchParams(next);
-      next.set('packageId', String(halfDayPackage.id));
-    } else if (selectedPackage && (isHalfHourPackage(selectedPackage) || isHalfDayPackage(selectedPackage))) {
-      if (standardDurationPackage) {
-        clearPackageSearchParams(next);
-        next.set('packageId', String(standardDurationPackage.id));
-      } else {
-        clearPackageSearchParams(next);
-      }
-    }
+    const nextDurationPackage = packageCards.find((pkg) => packageMatchesDuration(pkg, safeUnits, rentalType)) || null;
+    setCanonicalDurationAndPackageParams(next, safeUnits, nextDurationPackage?.id || null);
     if (next.toString() !== currentSearchString) {
       setSearchParams(next, { replace: true });
     }
@@ -761,7 +781,7 @@ const PublicVehicleDetail = () => {
     const next = new URLSearchParams();
     next.set('rentalType', rentalType);
     next.set('packageId', selectedPackage.id);
-    next.set('packageName', formatPackageDisplayName(selectedPackage, rentalType, tr));
+    next.set('packageName', formatPackageDisplayName(selectedPackage, rentalType, tr, getSelectedDurationForPackage(selectedPackage)));
     next.set('packageAmount', String(getEffectivePackagePrice(selectedPackage)));
     next.set('packageKind', selectedPackage.kind || '');
     next.set('durationUnits', String(getSelectedDurationForPackage(selectedPackage)));
@@ -797,7 +817,7 @@ const PublicVehicleDetail = () => {
 
       if (selectedPackage) {
         shareParams.set('packageId', String(selectedPackage.id));
-        shareParams.set('packageName', formatPackageDisplayName(selectedPackage, rentalType, tr));
+        shareParams.set('packageName', formatPackageDisplayName(selectedPackage, rentalType, tr, getSelectedDurationForPackage(selectedPackage)));
         shareParams.set('packageAmount', String(getEffectivePackagePrice(selectedPackage)));
         shareParams.set('packageKind', selectedPackage.kind || '');
 
@@ -1311,6 +1331,15 @@ const PublicVehicleDetail = () => {
             ) : null}
 
             <div className="space-y-3">
+              {visiblePackageCards.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-600">
+                  {rentalType === 'hourly'
+                    ? (normalizedSelectedDurationUnits === 0.5
+                        ? tr('No 30-minute packages are configured for this vehicle yet.', 'Aucun forfait de 30 minutes n’est encore configuré pour ce véhicule.')
+                        : tr(`No ${normalizedSelectedDurationUnits}-hour packages are configured for this vehicle yet.`, `Aucun forfait de ${normalizedSelectedDurationUnits} heures n’est encore configuré pour ce véhicule.`))
+                    : tr(`No ${normalizedSelectedDurationUnits}-day packages are configured for this vehicle yet.`, `Aucun forfait de ${normalizedSelectedDurationUnits} jours n’est encore configuré pour ce véhicule.`)}
+                </div>
+              ) : null}
               {visiblePackageCards.map((pkg) => {
                 const isSelected = selectedPackage?.id === pkg.id;
                 const badge = getTripBadge(pkg, rentalType, tr);
@@ -1334,7 +1363,7 @@ const PublicVehicleDetail = () => {
               })}
             </div>
 
-            {hiddenPackageCards.length > 0 && !(rentalType === 'hourly' && [0.5, 4].includes(normalizedSelectedDurationUnits)) ? (
+            {hiddenPackageCards.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setShowMorePackages((current) => !current)}
@@ -1399,7 +1428,7 @@ const PublicVehicleDetail = () => {
                   {getTripDurationLabel(selectedPackage)} • {getDisplayedIncludedKilometers(selectedPackage)}
                 </p>
                 <p className="mt-1 text-xs font-medium text-slate-500">
-                  {formatPackageDisplayName(selectedPackage, rentalType, tr)}
+                  {formatPackageDisplayName(selectedPackage, rentalType, tr, getSelectedDurationForPackage(selectedPackage))}
                 </p>
               </div>
               <p className="shrink-0 text-2xl font-black tracking-tight text-slate-950">

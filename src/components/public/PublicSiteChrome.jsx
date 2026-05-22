@@ -7,8 +7,8 @@ import { useLanguageContext } from '../../contexts/LanguageContext';
 import i18n from '../../i18n';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
 import { useTenantWorkspaceContext } from '../../contexts/TenantWorkspaceContext';
+import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
 
-const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
 const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
 const ACCOUNT_RETURN_PATH_KEY = 'saharax_account_return_path';
 
@@ -27,13 +27,40 @@ const PublicSiteChrome = ({ current = 'home' }) => {
   useTranslation();
   const { user, userProfile, signOut, getBusinessOwnerHomePath } = useAuth();
   const { currentLanguage, setLanguage } = useLanguageContext();
-  const { publicFeatures } = useTenantWorkspaceContext();
+  const { tenant, tenantSettings, publicFeatures } = useTenantWorkspaceContext();
   const multilingualStorefrontEnabled = publicFeatures?.multilingual_storefront !== false;
   const isFrench = i18n.resolvedLanguage === 'fr';
   const activeLanguage = multilingualStorefrontEnabled
     ? (i18n.resolvedLanguage === 'fr' ? 'fr' : 'en')
     : 'en';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const hostContext = getHostContext();
+  const normalizedHostname = String(hostContext?.hostname || '').toLowerCase();
+  const isDriveoutWebsiteHost =
+    hostContext?.kind === 'public' &&
+    (normalizedHostname === 'driveout.io' || normalizedHostname === 'www.driveout.io' || normalizedHostname === '');
+  const resolvedTenantSettings =
+    tenantSettings && typeof tenantSettings === 'object'
+      ? tenantSettings
+      : {};
+  const tenantBrandLabel = String(
+    resolvedTenantSettings.public_display_name ||
+    resolvedTenantSettings.brand_name ||
+    tenant?.name ||
+    tenant?.tenant_name ||
+    ''
+  ).trim();
+  const isSaharaXBrand = isSaharaXBrandingHost(hostContext);
+  const publicBrandName = isDriveoutWebsiteHost
+    ? 'Driveout'
+    : tenantBrandLabel || (isSaharaXBrand ? 'SaharaX' : 'Driveout');
+  const publicBrandLogoSrc = isDriveoutWebsiteHost
+    ? '/assets/driveout-mark.svg'
+    : String(resolvedTenantSettings.logo_url || '').trim() || (isSaharaXBrand ? '/assets/logo.jpg' : '/assets/driveout-mark.svg');
+  const publicBrandAlt = `${publicBrandName} logo`;
+  const publicBrandTagline = isDriveoutWebsiteHost
+    ? tr('Marketplace, rentals, tours, and more', 'Marketplace, locations, excursions et plus')
+    : tr('Rentals, tours, and more', 'Locations, excursions et plus');
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
@@ -160,14 +187,14 @@ const PublicSiteChrome = ({ current = 'home' }) => {
             <Link to="/website" className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
                 <img
-                  src={SAHARAX_LOGO_SRC}
-                  alt="SaharaX"
+                  src={publicBrandLogoSrc}
+                  alt={publicBrandAlt}
                   className="h-full w-full object-contain"
                 />
               </div>
               <div>
-                <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
-                <p className="text-sm text-slate-500">{tr('Rentals, tours, and more', 'Locations, excursions et plus')}</p>
+                <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">{publicBrandName}</p>
+                <p className="text-sm text-slate-500">{publicBrandTagline}</p>
               </div>
             </Link>
 
@@ -204,14 +231,14 @@ const PublicSiteChrome = ({ current = 'home' }) => {
                   <div className="flex items-center gap-3">
                     <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
                       <img
-                        src={SAHARAX_LOGO_SRC}
-                        alt="SaharaX"
+                        src={publicBrandLogoSrc}
+                        alt={publicBrandAlt}
                         className="h-full w-full object-contain"
                       />
                     </div>
                     <div>
-                      <div className="text-base font-semibold text-slate-900">SaharaX Website</div>
-                      <div className="mt-0.5 text-xs font-medium text-slate-500">{tr('Public workspace', 'Espace public')}</div>
+                      <div className="text-base font-semibold text-slate-900">{publicBrandName} Website</div>
+                      <div className="mt-0.5 text-xs font-medium text-slate-500">{tr('Public website', 'Site public')}</div>
                     </div>
                   </div>
                   <button

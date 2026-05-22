@@ -22,7 +22,12 @@ import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
-import { getScopedOrganizationId, applyOrganizationScope, verifyTenantOwnedRows } from '../../services/OrganizationService';
+import {
+  getScopedOrganizationId,
+  applyOrganizationScope,
+  shouldScopeSharedTenantData as shouldScopeSharedTenantDataForHost,
+  verifyTenantOwnedRows,
+} from '../../services/OrganizationService';
 import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext';
 import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
 import {
@@ -38,6 +43,7 @@ import {
   markRentalsAuditColumnsUnsupported as persistRentalsAuditColumnsUnsupported,
   markRentalsVehicleSnapshotColumnsUnsupported as persistRentalsVehicleSnapshotColumnsUnsupported,
 } from '../../utils/rentalSchemaCapabilities';
+import { buildRentalFlowSessionSnapshotKey } from '../../utils/rentalFlowStorage';
 import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
@@ -317,7 +323,7 @@ const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
   vehicle_label_snapshot
 `;
 
-const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
+const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = buildRentalFlowSessionSnapshotKey({ scope: 'return-context' });
 
 let rentalsAuditColumnsSupported = readRentalsSchemaCapability('audit-columns');
 let rentalsVehicleSnapshotColumnsSupported = readRentalsSchemaCapability('vehicle-snapshot-columns');
@@ -785,8 +791,10 @@ const getRentalFinancialSnapshot = (rental) => {
   const fallbackGrandTotal = Math.max(0, grossTotal - companyDiscount);
   const customerPaidAmount = Math.max(0, Number(getRentalCustomerPaidAmountShared(rental) || 0) || 0);
   const storedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-  const securityAppliedAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0) || 0);
-  const settlementGrandTotal = Math.max(0, customerPaidAmount + storedRemainingAmount + securityAppliedAmount);
+  // A seized deposit helps settle the balance, but it is not an extra contract charge.
+  // The rentals list must never inflate the contract total by adding the deduction on top
+  // of what the customer already paid plus what is still due.
+  const settlementGrandTotal = Math.max(0, customerPaidAmount + storedRemainingAmount);
   const balanceDue = storedRemainingAmount;
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,
@@ -797,7 +805,6 @@ const getRentalFinancialSnapshot = (rental) => {
     (
       customerPaidAmount > 0 ||
       storedRemainingAmount > 0 ||
-      securityAppliedAmount > 0 ||
       companyDiscount > 0 ||
       Boolean(rental?.amount_due_override_reason) ||
       ['paid', 'partial', 'refunded'].includes(normalizedPaymentStatus)
@@ -840,6 +847,11 @@ const getApprovedExtensionHours = (rental) =>
   (rental?.extensions || [])
     .filter((ext) => ext.status === 'approved')
     .reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0);
+
+const getPendingExtensionCount = (rental) =>
+  (rental?.extensions || [])
+    .filter((ext) => String(ext?.status || '').toLowerCase() === 'pending')
+    .length;
 
 const shouldUseCompletedActualEndDate = (rental) =>
   String(rental?.rental_status || '').toLowerCase() === 'completed' ||
@@ -1137,8 +1149,10 @@ const Rentals = () => {
   const { user, hasFeature } = useAuth();
   const hostContext = useMemo(() => getHostContext(), []);
   const organizationId = useMemo(() => getScopedOrganizationId(user), [user]);
-  const isTenantWorkspace = hostContext.kind === 'tenant';
-  const shouldScopeSharedTenantData = isTenantWorkspace && !isFirstPartyTenantHost(hostContext);
+  const shouldScopeSharedTenantData = useMemo(
+    () => shouldScopeSharedTenantDataForHost(hostContext),
+    [hostContext]
+  );
   const isFrench = isFrenchLocale();
   const canUseWhatsAppTools = hasFeature('whatsapp_tools');
   const warmRentalsSnapshot = useMemo(() => appWarmupService.getWarmRentalsSnapshot(), []);
@@ -1253,6 +1267,13 @@ const Rentals = () => {
   const dateFocusLauncherBounceTimeoutRef = useRef(null);
   const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
   const deletingRentalIdsRef = useRef(new Set());
+  const locallyDeletedRentalIdsRef = useRef(new Set());
+
+  const filterLocallyDeletedRentals = useCallback((rows = []) => {
+    const deletedIds = locallyDeletedRentalIdsRef.current;
+    if (!deletedIds?.size) return Array.isArray(rows) ? rows : [];
+    return (Array.isArray(rows) ? rows : []).filter((rental) => !deletedIds.has(rental?.id));
+  }, []);
 
   const dateFocusAnchorDate = useMemo(() => fromDateInputValue(dateFocusAnchor), [dateFocusAnchor]);
   const weekStart = useMemo(() => startOfWeek(dateFocusAnchorDate), [dateFocusAnchorDate]);
@@ -1598,11 +1619,14 @@ const Rentals = () => {
 
   const applyRentalSummarySnapshot = useCallback((snapshot) => {
     if (!snapshot) return;
-    const normalizedSnapshotRentals = (snapshot.rentals || []).map(normalizeRentalLifecycle);
+    const snapshotRows = (snapshot.rentals || []).map(normalizeRentalLifecycle);
+    const normalizedSnapshotRentals = filterLocallyDeletedRentals(snapshotRows);
+    const removedVisibleRows = Math.max(0, snapshotRows.length - normalizedSnapshotRentals.length);
     setRentals((prev) => preserveRentalExtensions(normalizedSnapshotRentals, prev));
     setRentalReportMap(snapshot.rentalReportMap || {});
-    setTotalCount(snapshot.totalCount || 0);
-    setTotalPages(snapshot.totalPages || 0);
+    const nextTotalCount = Math.max(0, Number(snapshot.totalCount || 0) - removedVisibleRows);
+    setTotalCount(nextTotalCount);
+    setTotalPages(Math.ceil(nextTotalCount / (snapshot.itemsPerPage || 10)));
     setCurrentPage(snapshot.currentPage || 1);
     setItemsPerPage(snapshot.itemsPerPage || 10);
     setDateFocusCounts(snapshot.dateFocusCounts || { day: 0, week: 0 });
@@ -1612,7 +1636,7 @@ const Rentals = () => {
       activeVehicleIds: [],
       scheduledVehicleIds: [],
     });
-  }, []);
+  }, [filterLocallyDeletedRentals]);
 
   const hydrateRentalExtensions = useCallback(async (rentalIds = []) => {
     const normalizedIds = [...new Set((rentalIds || []).filter(Boolean))];
@@ -1670,7 +1694,12 @@ const Rentals = () => {
             .select(buildRentalsSelect({ includeAuditColumns, includeVehicleSnapshots }));
 
           if (shouldScopeSharedTenantData) {
-            query = applyOrganizationScope(query, organizationId);
+            if (!organizationId) {
+              throw new Error('Workspace organization context is required to load rentals.');
+            }
+            query = isFirstPartyTenantHost(hostContext)
+              ? query.or(`organization_id.is.null,organization_id.eq.${organizationId}`)
+              : applyOrganizationScope(query, organizationId);
           }
           query = query.order('created_at', { ascending: false });
           return query;
@@ -1728,10 +1757,10 @@ const Rentals = () => {
           message: 'Rentals list returned linked maintenance rows outside the active workspace.',
         });
 
-        let normalizedRentals = sortRentalsForDisplay(
+        let normalizedRentals = filterLocallyDeletedRentals(sortRentalsForDisplay(
           (data || []).map(normalizeRentalLifecycle),
           getEffectiveRentalStatus
-        );
+        ));
         setRentalUniverse((prev) => preserveRentalExtensions(normalizedRentals, prev));
 
         let nextRentals = normalizedRentals;
@@ -2094,12 +2123,18 @@ const Rentals = () => {
       let vehiclesQuery = supabase
         .from('saharax_0u4w4d_vehicles')
         .select('id,organization_id,owner_user_id,status')
-        .not('organization_id', 'is', null)
-        .is('owner_user_id', null)
-        .order('id', { ascending: true });
+        .is('owner_user_id', null);
       if (shouldScopeSharedTenantData) {
-        vehiclesQuery = applyOrganizationScope(vehiclesQuery, organizationId);
+        if (!organizationId) {
+          throw new Error('Workspace organization context is required to load vehicles.');
+        }
+        vehiclesQuery = isFirstPartyTenantHost(hostContext)
+          ? vehiclesQuery.or(`organization_id.is.null,organization_id.eq.${organizationId}`)
+          : applyOrganizationScope(vehiclesQuery, organizationId);
+      } else if (!isFirstPartyTenantHost(hostContext)) {
+        vehiclesQuery = vehiclesQuery.not('organization_id', 'is', null);
       }
+      vehiclesQuery = vehiclesQuery.order('id', { ascending: true });
       const { data, error } = await vehiclesQuery;
 
       if (error) {
@@ -2587,7 +2622,16 @@ const Rentals = () => {
               : payload.new;
 
           if (changedRental?.id) {
+            if (payload.eventType === 'DELETE') {
+              locallyDeletedRentalIdsRef.current.add(changedRental.id);
+              setRentalUniverse((prev) => prev.filter((item) => item.id !== changedRental.id));
+            }
+
             setRentals((prev) => {
+              if (payload.eventType !== 'DELETE' && locallyDeletedRentalIdsRef.current.has(changedRental.id)) {
+                return prev.filter((item) => item.id !== changedRental.id);
+              }
+
               const existingIndex = prev.findIndex((item) => item.id === changedRental.id);
 
               if (payload.eventType === 'DELETE') {
@@ -2835,6 +2879,20 @@ const Rentals = () => {
       return;
     }
 
+    const rentalSnapshot = rentals.find((rental) => rental.id === rentalId) || null;
+    const universeSnapshot = rentalUniverse.find((rental) => rental.id === rentalId) || rentalSnapshot;
+    const removedFromVisibleList = Boolean(rentalSnapshot);
+
+    locallyDeletedRentalIdsRef.current.add(rentalId);
+    setError(null);
+    setRentals((prev) => prev.filter((rental) => rental.id !== rentalId));
+    setRentalUniverse((prev) => prev.filter((rental) => rental.id !== rentalId));
+    if (removedFromVisibleList) {
+      const nextTotalCount = Math.max(0, Number(totalCount || 0) - 1);
+      setTotalCount(nextTotalCount);
+      setTotalPages(Math.max(1, Math.ceil(nextTotalCount / Math.max(1, Number(itemsPerPage || 10)))));
+    }
+
     try {
       const result = await EnhancedTransactionalRentalService.deleteRental(rentalId);
 
@@ -2842,18 +2900,34 @@ const Rentals = () => {
         throw new Error(result?.error || 'Failed to delete rental');
       }
 
-      appWarmupService.invalidateModule('rentals');
+      appWarmupService.markRentalDeleted(rentalId);
+      appWarmupService.invalidateModule('rentals', { rewarm: false });
       appWarmupService.invalidateModule('finance');
       appWarmupService.invalidateModule('maintenance');
-      setRentals((prev) => prev.filter((rental) => rental.id !== rentalId));
-      setRentalUniverse((prev) => prev.filter((rental) => rental.id !== rentalId));
-      setTotalCount((prev) => Math.max(0, Number(prev || 0) - 1));
       void fetchRentals(statusFilter, paymentStatusFilter);
       void fetchRentalOverviewSnapshot();
       if (result?.warning) {
         setError(result.warning);
       }
     } catch (err) {
+      locallyDeletedRentalIdsRef.current.delete(rentalId);
+      if (rentalSnapshot) {
+        setRentals((prev) => {
+          if (prev.some((rental) => rental.id === rentalId)) return prev;
+          return sortRentalsForDisplay([...prev, rentalSnapshot], getEffectiveRentalStatus);
+        });
+      }
+      if (universeSnapshot) {
+        setRentalUniverse((prev) => {
+          if (prev.some((rental) => rental.id === rentalId)) return prev;
+          return sortRentalsForDisplay([...prev, universeSnapshot], getEffectiveRentalStatus);
+        });
+      }
+      if (removedFromVisibleList) {
+        const nextTotalCount = Math.max(0, Number(totalCount || 0));
+        setTotalCount(nextTotalCount);
+        setTotalPages(Math.max(1, Math.ceil(nextTotalCount / Math.max(1, Number(itemsPerPage || 10)))));
+      }
       console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
       setError(err.message);
     } finally {
@@ -3827,6 +3901,23 @@ const Rentals = () => {
     );
   };
 
+  const getPendingExtensionBadge = (rental) => {
+    const pendingExtensionCount = getPendingExtensionCount(rental);
+
+    if (pendingExtensionCount <= 0) return null;
+
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 text-xs font-medium rounded-full border border-amber-200">
+        <Clock className="h-3 w-3" />
+        <span>
+          {pendingExtensionCount > 1
+            ? tr(`${pendingExtensionCount} pending`, `${pendingExtensionCount} en attente`)
+            : tr('Extension pending', 'Prolongation en attente')}
+        </span>
+      </span>
+    );
+  };
+
   const handleFilterChange = (setter, filterName, value) => {
     setter(value);
     if (filterName === 'status') {
@@ -4493,6 +4584,7 @@ const Rentals = () => {
                             <div className="flex items-center gap-2 mt-1">
                               {getRentalTypeBadge(rental.rental_type)}
                               {getDurationBadge(rental)}
+                              {getPendingExtensionBadge(rental)}
                               {getExtensionBadge(rental)}
                             </div>
                             <div className="text-sm text-gray-500">
@@ -4932,6 +5024,7 @@ const Rentals = () => {
                         <div className={`mb-${isCompactMobileCard ? '2' : '2.5'} flex flex-wrap items-center gap-1.5`}>
                           {getRentalTypeBadge(rental.rental_type)}
                           {getDurationBadge(rental)}
+                          {getPendingExtensionBadge(rental)}
                           {getExtensionBadge(rental)}
                           {getBookingSourceBadge(rental)}
                         </div>

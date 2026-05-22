@@ -1,3 +1,5 @@
+import { buildOwnerExecutionWorkspaceHref } from './ownerRentalExecutionLinks';
+
 export const MESSAGE_FAMILIES = {
   verification: 'verification',
   bookings: 'bookings',
@@ -27,6 +29,43 @@ export const MESSAGE_THREAD_TYPES = {
   marketplaceModeration: 'marketplace_moderation',
   accountStatus: 'account_status',
   supportCase: 'support_case',
+};
+
+export const MESSAGE_THREAD_SURFACES = {
+  conversation: 'conversation',
+  workflow: 'workflow',
+  internal: 'internal',
+};
+
+export const MESSAGE_WORKFLOW_KINDS = {
+  identityReview: 'identity_review',
+  listingReview: 'listing_review',
+  accountReview: 'account_review',
+};
+
+export const MESSAGE_CONVERSATION_KINDS = {
+  supportCase: 'support_case',
+  rentalChat: 'rental_chat',
+  marketplaceChat: 'marketplace_chat',
+  teamChat: 'team_chat',
+  socialReply: 'social_reply',
+};
+
+export const MESSAGE_ATTACHMENT_KINDS = {
+  photo: 'photo',
+  image: 'image',
+  video: 'video',
+  audio: 'audio',
+  file: 'file',
+  document: 'document',
+};
+
+export const MESSAGE_INBOX_LANES = {
+  conversations: 'conversations',
+  reviews: 'reviews',
+  support: 'support',
+  updates: 'updates',
+  internal: 'internal',
 };
 
 export const MESSAGE_SENDER_ROLES = {
@@ -88,6 +127,161 @@ export const normalizeSenderRole = (value) => {
   return MESSAGE_SENDER_ROLES.system;
 };
 
+export const getNormalizedThreadType = (thread = {}) =>
+  String(thread?.threadType || thread?.thread_type || '').trim().toLowerCase();
+
+export const isVerificationThread = (thread = {}) =>
+  normalizeMessageFamily(thread?.family) === MESSAGE_FAMILIES.verification;
+
+export const isSupportThread = (thread = {}) =>
+  normalizeMessageFamily(thread?.family) === MESSAGE_FAMILIES.support;
+
+export const isMarketplaceModerationThread = (thread = {}) =>
+  getNormalizedThreadType(thread) === MESSAGE_THREAD_TYPES.marketplaceModeration;
+
+export const isInternalOnlyThread = (thread = {}) => {
+  const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+  const visibilityScope = String(thread?.visibility_scope || metadata.visibilityScope || '').trim().toLowerCase();
+  return (
+    visibilityScope === 'internal' ||
+    metadata.internalOnly === true ||
+    metadata.teamOnly === true
+  );
+};
+
+export const resolveThreadSurface = (thread = {}) => {
+  const family = normalizeMessageFamily(thread?.family);
+  const threadType = getNormalizedThreadType(thread);
+
+  if (isInternalOnlyThread(thread)) {
+    return MESSAGE_THREAD_SURFACES.internal;
+  }
+
+  if (
+    family === MESSAGE_FAMILIES.verification ||
+    family === MESSAGE_FAMILIES.accountTrust ||
+    threadType === MESSAGE_THREAD_TYPES.marketplaceModeration
+  ) {
+    return MESSAGE_THREAD_SURFACES.workflow;
+  }
+
+  if (
+    family === MESSAGE_FAMILIES.support ||
+    family === MESSAGE_FAMILIES.bookings ||
+    family === MESSAGE_FAMILIES.tours ||
+    family === MESSAGE_FAMILIES.marketplace
+  ) {
+    return MESSAGE_THREAD_SURFACES.conversation;
+  }
+
+  return MESSAGE_THREAD_SURFACES.conversation;
+};
+
+export const resolveThreadWorkflowKind = (thread = {}) => {
+  const family = normalizeMessageFamily(thread?.family);
+  const threadType = getNormalizedThreadType(thread);
+  if (family === MESSAGE_FAMILIES.verification) return MESSAGE_WORKFLOW_KINDS.identityReview;
+  if (threadType === MESSAGE_THREAD_TYPES.marketplaceModeration) return MESSAGE_WORKFLOW_KINDS.listingReview;
+  if (family === MESSAGE_FAMILIES.accountTrust) return MESSAGE_WORKFLOW_KINDS.accountReview;
+  return '';
+};
+
+export const resolveConversationKind = (thread = {}) => {
+  const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+  const family = normalizeMessageFamily(thread?.family);
+  const threadType = getNormalizedThreadType(thread);
+  const contentType = String(metadata.contentType || metadata.content_type || metadata.type || '').trim().toLowerCase();
+
+  if (isInternalOnlyThread(thread) || metadata.directStaffChat) {
+    return MESSAGE_CONVERSATION_KINDS.teamChat;
+  }
+
+  if (contentType === 'story_reply' || contentType === 'post_reply') {
+    return MESSAGE_CONVERSATION_KINDS.socialReply;
+  }
+
+  if (family === MESSAGE_FAMILIES.bookings || family === MESSAGE_FAMILIES.tours) {
+    return MESSAGE_CONVERSATION_KINDS.rentalChat;
+  }
+
+  if (
+    family === MESSAGE_FAMILIES.marketplace &&
+    threadType !== MESSAGE_THREAD_TYPES.marketplaceModeration
+  ) {
+    return MESSAGE_CONVERSATION_KINDS.marketplaceChat;
+  }
+
+  return MESSAGE_CONVERSATION_KINDS.supportCase;
+};
+
+export const normalizeMessageAttachmentKind = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'photo') return MESSAGE_ATTACHMENT_KINDS.photo;
+  if (normalized === 'image') return MESSAGE_ATTACHMENT_KINDS.image;
+  if (normalized === 'video') return MESSAGE_ATTACHMENT_KINDS.video;
+  if (normalized === 'audio') return MESSAGE_ATTACHMENT_KINDS.audio;
+  if (normalized === 'document' || normalized === 'doc' || normalized === 'pdf') return MESSAGE_ATTACHMENT_KINDS.document;
+  if (normalized === 'file' || normalized === 'attachment') return MESSAGE_ATTACHMENT_KINDS.file;
+  return normalized || MESSAGE_ATTACHMENT_KINDS.file;
+};
+
+export const normalizeMessageAttachments = (attachments = [], message = {}) =>
+  (Array.isArray(attachments) ? attachments : [])
+    .map((attachment, index) => ({
+      id: String(attachment?.id || `${message?.id || 'message'}-attachment-${index}`).trim(),
+      kind: normalizeMessageAttachmentKind(attachment?.kind || attachment?.type || ''),
+      publicUrl: String(attachment?.publicUrl || attachment?.public_url || '').trim(),
+      thumbnailUrl: String(
+        attachment?.thumbnailUrl ||
+        attachment?.thumbnail_url ||
+        attachment?.previewUrl ||
+        attachment?.preview_url ||
+        attachment?.publicUrl ||
+        attachment?.public_url ||
+        ''
+      ).trim(),
+      originalFilename: String(attachment?.originalFilename || attachment?.original_filename || '').trim(),
+      fileSize: Number(attachment?.fileSize || attachment?.file_size || 0) || 0,
+      mimeType: String(attachment?.mimeType || attachment?.mime_type || '').trim().toLowerCase(),
+      status: String(attachment?.status || 'active').trim().toLowerCase() || 'active',
+      expiresAt: attachment?.expiresAt || attachment?.expires_at || null,
+    }))
+    .filter((attachment) => attachment.publicUrl || attachment.thumbnailUrl || attachment.originalFilename);
+
+export const resolveThreadCapabilities = (thread = {}) => {
+  const surface = resolveThreadSurface(thread);
+  const workflowKind = resolveThreadWorkflowKind(thread);
+  const conversationKind = resolveConversationKind(thread);
+
+  return {
+    supportsTextMessages: surface !== MESSAGE_THREAD_SURFACES.workflow,
+    supportsPhotos: surface === MESSAGE_THREAD_SURFACES.conversation || surface === MESSAGE_THREAD_SURFACES.internal,
+    supportsFiles: conversationKind === MESSAGE_CONVERSATION_KINDS.teamChat || conversationKind === MESSAGE_CONVERSATION_KINDS.socialReply,
+    supportsRichReplies: surface !== MESSAGE_THREAD_SURFACES.workflow,
+    supportsInternalNotes: surface !== MESSAGE_THREAD_SURFACES.workflow && conversationKind !== MESSAGE_CONVERSATION_KINDS.socialReply,
+    supportsWorkflowTimeline: surface === MESSAGE_THREAD_SURFACES.workflow,
+    supportsSocialContext: conversationKind === MESSAGE_CONVERSATION_KINDS.socialReply,
+    workflowKind,
+    conversationKind,
+  };
+};
+
+export const resolveAdminInboxLane = (thread = {}) => {
+  const surface = resolveThreadSurface(thread);
+  if (surface === MESSAGE_THREAD_SURFACES.internal) return MESSAGE_INBOX_LANES.internal;
+  if (surface === MESSAGE_THREAD_SURFACES.workflow) return MESSAGE_INBOX_LANES.reviews;
+  if (isSupportThread(thread)) return MESSAGE_INBOX_LANES.support;
+  return MESSAGE_INBOX_LANES.conversations;
+};
+
+export const resolveAccountInboxLane = (thread = {}) => {
+  const surface = resolveThreadSurface(thread);
+  if (surface === MESSAGE_THREAD_SURFACES.internal) return MESSAGE_INBOX_LANES.internal;
+  if (surface === MESSAGE_THREAD_SURFACES.workflow) return MESSAGE_INBOX_LANES.updates;
+  if (isSupportThread(thread)) return MESSAGE_INBOX_LANES.support;
+  return MESSAGE_INBOX_LANES.conversations;
+};
+
 export const getMessageFamilyMeta = (family) =>
   FAMILY_META[normalizeMessageFamily(family)] || FAMILY_META[MESSAGE_FAMILIES.support];
 
@@ -101,6 +295,9 @@ const getStatusToneValue = (thread = {}) =>
   String(thread?.statusTone || thread?.status_tone || '').trim();
 
 export const createMessageThread = (thread = {}) => ({
+  surface: resolveThreadSurface(thread),
+  workflowKind: resolveThreadWorkflowKind(thread),
+  conversationKind: resolveConversationKind(thread),
   id: String(thread.id || `${thread.family || 'support'}-${Date.now()}`),
   family: normalizeMessageFamily(thread.family),
   threadType: getThreadTypeValue(thread) || MESSAGE_THREAD_TYPES.supportCase,
@@ -124,7 +321,13 @@ export const createMessageThread = (thread = {}) => ({
   entity_id: String(thread.entity_id || '').trim(),
   timeline_events: Array.isArray(thread.timeline_events) ? thread.timeline_events : [],
   messages: Array.isArray(thread.messages) ? thread.messages : [],
-  metadata: thread.metadata && typeof thread.metadata === 'object' ? thread.metadata : {},
+  metadata: {
+    ...(thread.metadata && typeof thread.metadata === 'object' ? thread.metadata : {}),
+    surface: resolveThreadSurface(thread),
+    workflowKind: resolveThreadWorkflowKind(thread),
+    conversationKind: resolveConversationKind(thread),
+    capabilities: resolveThreadCapabilities(thread),
+  },
 });
 
 export const sortMessageThreads = (threads = []) =>
@@ -178,6 +381,196 @@ export const MESSAGE_THREAD_SECTIONS = {
   updates: 'updates',
 };
 
+const normalizeWorkspaceMode = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'admin' || normalized === 'guide') return 'admin';
+  if (normalized === 'account' || normalized === 'owner' || normalized === 'customer') return 'account';
+  return 'account';
+};
+
+const getWorkspaceModeFromLocation = () => {
+  if (typeof window === 'undefined') return 'account';
+  const pathname = String(window.location.pathname || '').trim().toLowerCase();
+  return pathname.startsWith('/admin') || pathname.startsWith('/guide') ? 'admin' : 'account';
+};
+
+const getThreadMetadata = (thread = {}) =>
+  thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+
+const normalizeThreadStatus = (thread = {}) => {
+  const metadata = getThreadMetadata(thread);
+  return String(
+    metadata.requestStatus ||
+    metadata.verificationStatus ||
+    metadata.status ||
+    thread?.status ||
+    ''
+  ).trim().toLowerCase();
+};
+
+const resolveThreadRequestId = (thread = {}) => {
+  const metadata = getThreadMetadata(thread);
+  const direct = String(
+    metadata.requestId ||
+    metadata.bookingReference ||
+    thread?.entity_id ||
+    ''
+  ).trim();
+  if (direct) return direct;
+
+  const candidates = [
+    metadata.href,
+    metadata.adminHref,
+    thread?.href,
+    thread?.latest_message,
+    thread?.subject,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  for (const value of candidates) {
+    const pathMatch = value.match(/\/account\/rentals\/requests\/([^/?#\s]+)/i);
+    if (pathMatch?.[1]) {
+      return decodeURIComponent(pathMatch[1]);
+    }
+    const queryMatch = value.match(/[?&]requestId=([^&#\s]+)/i);
+    if (queryMatch?.[1]) {
+      return decodeURIComponent(queryMatch[1]);
+    }
+  }
+
+  return '';
+};
+
+export const resolveThreadContextTarget = (
+  thread = {},
+  {
+    workspace = 'auto',
+    senderRole = 'customer',
+    fallbackHref = '',
+  } = {}
+) => {
+  const metadata = getThreadMetadata(thread);
+  const workspaceMode = workspace === 'auto' ? getWorkspaceModeFromLocation() : normalizeWorkspaceMode(workspace);
+  const currentSenderRole = normalizeSenderRole(senderRole);
+  const family = normalizeMessageFamily(thread?.family);
+  const threadType = getNormalizedThreadType(thread);
+  const routePrefix = workspaceMode === 'admin' ? '/admin' : '/account';
+  const metadataHref = String(metadata.href || thread?.href || '').trim();
+  const metadataAdminHref = String(metadata.adminHref || '').trim();
+  const preferredHref = workspaceMode === 'admin'
+    ? (metadataAdminHref || metadataHref)
+    : (metadataHref || metadataAdminHref);
+
+  if (family === MESSAGE_FAMILIES.verification || family === MESSAGE_FAMILIES.accountTrust) {
+    const basePath = workspaceMode === 'admin' ? '/admin/verification' : '/account/verification';
+    const params = new URLSearchParams();
+    if (thread?.entity_type) params.set('entityType', String(thread.entity_type));
+    if (thread?.entity_id) params.set('entityId', String(thread.entity_id));
+    if (metadata.documentId) params.set('documentId', String(metadata.documentId));
+    if (metadata.documentType || metadata.verificationType) {
+      params.set('documentType', String(metadata.documentType || metadata.verificationType));
+    }
+    return {
+      href: params.size ? `${basePath}?${params.toString()}` : (preferredHref || basePath),
+      label: 'Open verification',
+      context: 'verification',
+    };
+  }
+
+  if (threadType === MESSAGE_THREAD_TYPES.marketplaceModeration) {
+    return {
+      href: preferredHref || (workspaceMode === 'admin' ? '/admin/verification' : '/account/vehicles'),
+      label: workspaceMode === 'admin' ? 'Open listing review' : 'Open listing',
+      context: 'listing_review',
+    };
+  }
+
+  if (family === MESSAGE_FAMILIES.marketplace) {
+    const requestId = resolveThreadRequestId(thread);
+    const status = normalizeThreadStatus(thread);
+    const shouldOpenConfirmState = workspaceMode !== 'admin' && status === 'pre_approved';
+    const isOwnerFacingView =
+      workspaceMode !== 'admin' && (
+        threadType === MESSAGE_THREAD_TYPES.marketplaceOwnerRequest ||
+        (threadType !== MESSAGE_THREAD_TYPES.marketplaceCustomerRequest && currentSenderRole === MESSAGE_SENDER_ROLES.owner)
+      );
+    const ownerFacingHref = isOwnerFacingView
+      ? buildOwnerExecutionWorkspaceHref({
+          id: requestId,
+          requestId,
+          vehiclePublicProfileId:
+            metadata.vehiclePublicProfileId ||
+            metadata.vehicle_public_profile_id ||
+            metadata.rawListing?.vehicle_public_profile_id ||
+            '',
+          requestStatus:
+            metadata.requestStatus ||
+            metadata.request_status ||
+            metadata.status ||
+            '',
+          ownerExecution:
+            metadata.ownerExecution ||
+            metadata.owner_execution ||
+            metadata.raw?.counter_offer?.owner_execution ||
+            {},
+        }, { focus: 'request' })
+      : '';
+    const href = requestId
+      ? workspaceMode === 'admin'
+        ? (preferredHref || `${routePrefix}/messages`)
+        : isOwnerFacingView
+          ? (preferredHref || ownerFacingHref || `${routePrefix}/rentals/requests/${encodeURIComponent(requestId)}`)
+          : `${routePrefix}/rentals/requests/${encodeURIComponent(requestId)}${shouldOpenConfirmState ? '?action=confirm' : ''}`
+      : preferredHref;
+
+    return {
+      href: href || fallbackHref,
+      label: workspaceMode === 'admin'
+        ? 'Open request'
+        : isOwnerFacingView
+          ? 'Open owner request'
+          : shouldOpenConfirmState
+            ? 'Open booking confirmation'
+            : 'Open request',
+      context: 'marketplace_request',
+      requestId,
+    };
+  }
+
+  if (family === MESSAGE_FAMILIES.bookings) {
+    const entityId = String(thread?.entity_id || '').trim();
+    return {
+      href: preferredHref || (entityId ? `${routePrefix}/rentals/${encodeURIComponent(entityId)}` : fallbackHref),
+      label: workspaceMode === 'admin' ? 'Open rental' : 'Open rental details',
+      context: 'rental',
+    };
+  }
+
+  if (family === MESSAGE_FAMILIES.tours) {
+    const entityId = String(thread?.entity_id || '').trim();
+    return {
+      href: preferredHref || (entityId ? `${routePrefix}/tours/${encodeURIComponent(entityId)}` : `${routePrefix}/tours`),
+      label: workspaceMode === 'admin' ? 'Open tour' : 'Open tour details',
+      context: 'tour',
+    };
+  }
+
+  if (family === MESSAGE_FAMILIES.support) {
+    return {
+      href: preferredHref || (workspaceMode === 'admin' ? '/admin/messages?section=support' : '/account/messages?section=support'),
+      label: workspaceMode === 'admin' ? 'Open support case' : 'Open support',
+      context: 'support',
+    };
+  }
+
+  return {
+    href: preferredHref || fallbackHref || `${routePrefix}/messages`,
+    label: workspaceMode === 'admin' ? 'Open details' : 'Open details',
+    context: 'details',
+  };
+};
+
 const normalizeStatusLabel = (value) => String(value || '').trim().toLowerCase();
 
 const labelIncludes = (value, tokens = []) => {
@@ -222,6 +615,7 @@ const isAccountTrustNeedsAction = (thread) => {
 };
 
 const isConversationThread = (thread) => {
+  if (resolveThreadSurface(thread) !== MESSAGE_THREAD_SURFACES.conversation) return false;
   const type = getThreadTypeValue(thread);
   const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
   if (metadata.replyEnabled || metadata.conversationEnabled || metadata.postPaymentChat) return true;

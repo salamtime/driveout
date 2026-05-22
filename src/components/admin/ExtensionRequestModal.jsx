@@ -421,7 +421,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
         alert('✅ Extension updated successfully!');
 
-        onExtensionCreated({
+        await Promise.resolve(onExtensionCreated?.({
           extension: updatedExtension,
           autoApprove: isApprovedExtension,
           extensionHours,
@@ -429,7 +429,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           extensionValue,
           extensionPrice: finalPrice,
           newEndDate,
-        });
+        }));
       } else {
         const { extension } = await ExtensionPricingService.validateAndCalculateExtensionPrice(
           rental.id, 
@@ -444,7 +444,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           : '✅ Extension request submitted for approval!'
         );
 
-        onExtensionCreated({
+        await Promise.resolve(onExtensionCreated?.({
           extension,
           autoApprove,
           extensionHours,
@@ -454,7 +454,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           newEndDate:
             priceCalculation?.newEndDate ||
             new Date(new Date(rental.rental_end_date).getTime() + extensionHours * 60 * 60 * 1000).toISOString(),
-        });
+        }));
       }
 
       onClose();

@@ -13,6 +13,9 @@ const SETTINGS_ROW_ID = 1;
 const APP_SETTINGS_TABLE = 'app_settings';
 const OPTIONAL_SETTINGS_COLUMNS = new Set([
   'auto_send_contract_email_after_creation',
+  'daily_return_fixed_time',
+  'daily_late_return_hourly_penalty_mad',
+  'daily_late_return_full_day_threshold_hours',
   'rental_details_default_view',
   'tenant_deletion_retention_days',
 ]);
@@ -106,6 +109,9 @@ const getDefaultSettings = () => ({
   defaultRentalDuration: 4,
   minRentalDuration: 1,
   maxRentalDuration: 24,
+  dailyReturnFixedTime: '14:00',
+  dailyLateReturnHourlyPenaltyMad: 200,
+  dailyLateReturnFullDayThresholdHours: 4,
   maintenanceMode: false,
   onlineBooking: true,
   realTimeTracking: true,
@@ -181,11 +187,16 @@ const normalizeSettings = (value = {}) => {
   merged.operatingDays = Array.isArray(merged.operatingDays)
     ? merged.operatingDays.map((day) => String(day).toLowerCase())
     : defaults.operatingDays;
+  merged.dailyReturnFixedTime = /^\d{2}:\d{2}$/.test(String(merged.dailyReturnFixedTime || ''))
+    ? String(merged.dailyReturnFixedTime)
+    : defaults.dailyReturnFixedTime;
 
   [
     'defaultRentalDuration',
     'minRentalDuration',
     'maxRentalDuration',
+    'dailyLateReturnHourlyPenaltyMad',
+    'dailyLateReturnFullDayThresholdHours',
     'baseHourlyRate',
     'dailyRate',
     'weeklyRate',
@@ -242,6 +253,8 @@ const normalizeSettings = (value = {}) => {
   merged.messagingMaxPhotosPerMessage = Math.max(1, Math.min(10, merged.messagingMaxPhotosPerMessage || defaults.messagingMaxPhotosPerMessage));
   merged.messagingPhotoRetentionDays = Math.max(1, Math.min(30, merged.messagingPhotoRetentionDays || defaults.messagingPhotoRetentionDays));
   merged.messagingDraftRetentionHours = Math.max(1, Math.min(168, merged.messagingDraftRetentionHours || defaults.messagingDraftRetentionHours));
+  merged.dailyLateReturnHourlyPenaltyMad = Math.max(0, Math.min(5000, merged.dailyLateReturnHourlyPenaltyMad || defaults.dailyLateReturnHourlyPenaltyMad));
+  merged.dailyLateReturnFullDayThresholdHours = Math.max(1, Math.min(24, merged.dailyLateReturnFullDayThresholdHours || defaults.dailyLateReturnFullDayThresholdHours));
   merged.tenantDeletionRetentionDays = Math.max(1, Math.min(365, Number(merged.tenantDeletionRetentionDays ?? defaults.tenantDeletionRetentionDays) || defaults.tenantDeletionRetentionDays));
   merged.rentalDetailsDefaultView =
     String(merged.rentalDetailsDefaultView || '').toLowerCase() === 'light'
@@ -281,6 +294,9 @@ const toTableRow = (settings = {}) => {
     default_rental_duration: normalized.defaultRentalDuration,
     min_rental_duration: normalized.minRentalDuration,
     max_rental_duration: normalized.maxRentalDuration,
+    daily_return_fixed_time: normalized.dailyReturnFixedTime,
+    daily_late_return_hourly_penalty_mad: normalized.dailyLateReturnHourlyPenaltyMad,
+    daily_late_return_full_day_threshold_hours: normalized.dailyLateReturnFullDayThresholdHours,
     maintenance_mode: normalized.maintenanceMode,
     online_booking: normalized.onlineBooking,
     real_time_tracking: normalized.realTimeTracking,
@@ -358,6 +374,9 @@ const fromTableRow = (row = {}) => normalizeSettings({
   defaultRentalDuration: row.default_rental_duration,
   minRentalDuration: row.min_rental_duration,
   maxRentalDuration: row.max_rental_duration,
+  dailyReturnFixedTime: row.daily_return_fixed_time,
+  dailyLateReturnHourlyPenaltyMad: row.daily_late_return_hourly_penalty_mad,
+  dailyLateReturnFullDayThresholdHours: row.daily_late_return_full_day_threshold_hours,
   maintenanceMode: row.maintenance_mode,
   onlineBooking: row.online_booking,
   realTimeTracking: row.real_time_tracking,

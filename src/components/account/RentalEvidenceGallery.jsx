@@ -16,13 +16,15 @@ const RentalEvidenceGallery = ({
   subtitle = '',
   photos = [],
   emptyLabel = 'No photos uploaded yet.',
+  variant = 'card',
+  hideHeader = false,
 }) => {
   const normalizedPhotos = useMemo(() => normalizePhotos(photos), [photos]);
   const [activePhoto, setActivePhoto] = useState(null);
-
-  return (
+  const isFlat = variant === 'flat';
+  const galleryContent = (
     <>
-      <section className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm">
+      {!hideHeader ? (
         <div className="flex items-start gap-3">
           <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
             <Camera className="h-4.5 w-4.5" />
@@ -32,33 +34,45 @@ const RentalEvidenceGallery = ({
             {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
           </div>
         </div>
+      ) : null}
 
-        {normalizedPhotos.length > 0 ? (
-          <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-4">
-            {normalizedPhotos.map((photo) => {
-              const imageUrl = photo.thumbnailUrl || photo.publicUrl;
-              return (
-                <button
-                  key={photo.id}
-                  type="button"
-                  onClick={() => setActivePhoto(photo)}
-                  className="overflow-hidden rounded-[1rem] border border-slate-200 bg-slate-50 transition hover:border-violet-200"
-                >
-                  <img
-                    src={imageUrl}
-                    alt={photo.originalFilename || title}
-                    className="h-24 w-full object-cover"
-                  />
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="mt-4 rounded-[1rem] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-500">
-            {emptyLabel}
-          </div>
-        )}
-      </section>
+      {normalizedPhotos.length > 0 ? (
+        <div className={`${hideHeader ? '' : 'mt-4'} grid grid-cols-3 gap-3 sm:grid-cols-4`}>
+          {normalizedPhotos.map((photo) => {
+            const imageUrl = photo.thumbnailUrl || photo.publicUrl;
+            return (
+              <button
+                key={photo.id}
+                type="button"
+                onClick={() => setActivePhoto(photo)}
+                className="overflow-hidden rounded-[1rem] border border-slate-200 bg-slate-50 transition hover:border-violet-200"
+              >
+                <img
+                  src={imageUrl}
+                  alt={photo.originalFilename || title}
+                  className="h-24 w-full object-cover"
+                />
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={`${hideHeader ? '' : 'mt-4'} rounded-[1rem] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-500`}>
+          {emptyLabel}
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <>
+      {isFlat ? (
+        <div>{galleryContent}</div>
+      ) : (
+        <section className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm">
+          {galleryContent}
+        </section>
+      )}
 
       {activePhoto ? (
         <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm">

@@ -5,14 +5,18 @@ import criticalModuleCacheService from './CriticalModuleCacheService';
 import rentalSummaryService from './RentalSummaryService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { supabase } from '../lib/supabase';
+import { shouldScopeSharedTenantData } from './OrganizationService';
 import { getHostContext } from '../utils/hostContext';
 
-const WARM_RENTALS_SNAPSHOT_KEY = 'app:warm-rentals:default';
+const WARM_RENTALS_SNAPSHOT_KEY = 'app:warm-rentals:default:v2';
 const WARM_RENTALS_TTL_MS = 60 * 1000;
 const WARM_FINANCE_TTL_MS = 60 * 1000;
 const WARM_MAINTENANCE_TTL_MS = 60 * 1000;
 const WARMUP_TTL_MS = 45 * 1000;
 const WARMUP_STARTED_AT_KEY = 'app:warmup:started-at';
+const DELETED_RENTALS_KEY = 'app:deleted-rentals';
+const DELETED_RENTALS_TTL_MS = 5 * 60 * 1000;
+const WARM_FINANCE_SNAPSHOT_KEY = 'finance-default-v3';
 
 const safeSessionStorage = {
   get(key) {
@@ -51,7 +55,7 @@ class AppWarmupService {
   getAllowedWarmModules() {
     const host = getHostContext();
 
-    if (host.kind === 'tenant') {
+    if (shouldScopeSharedTenantData(host)) {
       return [];
     }
 
@@ -61,7 +65,7 @@ class AppWarmupService {
   getWarmRentalsSnapshot() {
     const sharedSnapshot = criticalModuleCacheService.get('rentals-default', WARM_RENTALS_TTL_MS);
     if (sharedSnapshot) {
-      return sharedSnapshot;
+      return this.filterDeletedRentalsFromSnapshot(sharedSnapshot);
     }
 
     const raw = safeSessionStorage.get(WARM_RENTALS_SNAPSHOT_KEY);
@@ -72,7 +76,7 @@ class AppWarmupService {
       if (!parsed?.warmedAt || Date.now() - parsed.warmedAt > WARM_RENTALS_TTL_MS) {
         return null;
       }
-      return parsed;
+      return this.filterDeletedRentalsFromSnapshot(parsed);
     } catch (_error) {
       return null;
     }
@@ -81,12 +85,14 @@ class AppWarmupService {
   setWarmRentalsSnapshot(snapshot) {
     if (!snapshot) return;
 
-    criticalModuleCacheService.set('rentals-default', snapshot);
+    const filteredSnapshot = this.filterDeletedRentalsFromSnapshot(snapshot);
+
+    criticalModuleCacheService.set('rentals-default', filteredSnapshot);
 
     safeSessionStorage.set(
       WARM_RENTALS_SNAPSHOT_KEY,
       JSON.stringify({
-        ...snapshot,
+        ...filteredSnapshot,
         warmedAt: Date.now(),
       })
     );
@@ -95,6 +101,68 @@ class AppWarmupService {
   clearWarmRentalsSnapshot() {
     criticalModuleCacheService.clear('rentals-default');
     safeSessionStorage.remove(WARM_RENTALS_SNAPSHOT_KEY);
+  }
+
+  getDeletedRentalEntries() {
+    const raw = safeSessionStorage.get(DELETED_RENTALS_KEY);
+    if (!raw) return {};
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+      const now = Date.now();
+      return Object.fromEntries(
+        Object.entries(parsed).filter(([, deletedAt]) => {
+          const timestamp = Number(deletedAt);
+          return Number.isFinite(timestamp) && now - timestamp < DELETED_RENTALS_TTL_MS;
+        })
+      );
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  getDeletedRentalIds() {
+    return new Set(Object.keys(this.getDeletedRentalEntries()));
+  }
+
+  markRentalDeleted(rentalId) {
+    const normalizedRentalId = String(rentalId || '').trim();
+    if (!normalizedRentalId) return;
+
+    const nextEntries = {
+      ...this.getDeletedRentalEntries(),
+      [normalizedRentalId]: Date.now(),
+    };
+
+    safeSessionStorage.set(DELETED_RENTALS_KEY, JSON.stringify(nextEntries));
+    this.clearWarmRentalsSnapshot();
+    sharedQueryCacheService.invalidateNamespace('rentals-summary');
+  }
+
+  filterDeletedRentalsFromSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return snapshot;
+
+    const deletedIds = this.getDeletedRentalIds();
+    if (!deletedIds.size) return snapshot;
+
+    const filterRows = (rows) => {
+      if (!Array.isArray(rows)) return rows;
+      return rows.filter((rental) => !deletedIds.has(String(rental?.id || '')));
+    };
+
+    const rentals = filterRows(snapshot.rentals);
+    const rentalUniverse = filterRows(snapshot.rentalUniverse);
+
+    return {
+      ...snapshot,
+      rentals,
+      rentalUniverse,
+      totalCount: typeof snapshot.totalCount === 'number'
+        ? Math.min(snapshot.totalCount, Array.isArray(rentalUniverse) ? rentalUniverse.length : snapshot.totalCount)
+        : snapshot.totalCount,
+    };
   }
 
   markWarmupStarted() {
@@ -153,16 +221,16 @@ class AppWarmupService {
   }
 
   getWarmFinanceSnapshot() {
-    return criticalModuleCacheService.get('finance-default', WARM_FINANCE_TTL_MS);
+    return criticalModuleCacheService.get(WARM_FINANCE_SNAPSHOT_KEY, WARM_FINANCE_TTL_MS);
   }
 
   setWarmFinanceSnapshot(snapshot) {
     if (!snapshot) return;
-    criticalModuleCacheService.set('finance-default', snapshot);
+    criticalModuleCacheService.set(WARM_FINANCE_SNAPSHOT_KEY, snapshot);
   }
 
   clearWarmFinanceSnapshot() {
-    criticalModuleCacheService.clear('finance-default');
+    criticalModuleCacheService.clear(WARM_FINANCE_SNAPSHOT_KEY);
   }
 
   async warmFinanceManagement() {
@@ -174,9 +242,8 @@ class AppWarmupService {
       orgId: 'current',
     };
 
-    const [kpiData, trendData, vehicles, customers] = await Promise.all([
-      financeApiV2.getKPIData(filters),
-      financeApiV2.getTrendData(filters),
+    const [{ kpiData, trendData, pulseRows = [] }, vehicles, customers] = await Promise.all([
+      financeApiV2.getOverviewSummaryData(filters),
       financeApiV2.getVehicles(filters.orgId),
       financeApiV2.getCustomers(filters.orgId),
     ]);
@@ -185,6 +252,7 @@ class AppWarmupService {
       filters,
       kpiData,
       trendData: Array.isArray(trendData) ? trendData : [],
+      pulseRows: Array.isArray(pulseRows) ? pulseRows : [],
       vehicles: Array.isArray(vehicles) ? vehicles : [],
       customers: Array.isArray(customers) ? customers : [],
     });
@@ -266,7 +334,7 @@ class AppWarmupService {
         break;
       case 'finance':
         this.clearWarmFinanceSnapshot();
-        sharedQueryCacheService.invalidateNamespace('finance-overview-summary');
+        financeApiV2.invalidateCaches();
         break;
       case 'maintenance':
         this.clearWarmMaintenanceSnapshot();

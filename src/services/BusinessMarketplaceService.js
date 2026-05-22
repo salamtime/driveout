@@ -12,6 +12,7 @@ import {
   isMarketplaceChatUnlocked,
   normalizeMarketplaceRequestLifecycleStatus,
 } from '../utils/marketplaceRequestState';
+import { normalizeRentalExecutionDraft } from '../utils/rentalExecutionFlow';
 import { assertCanCreateListing } from './TenantLimitService';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
@@ -223,22 +224,6 @@ const toArrayMedia = (media) => {
 
   return [];
 };
-
-const normalizeExecutionPhotos = (photos) =>
-  (Array.isArray(photos) ? photos : [])
-    .map((photo, index) => ({
-      id: String(photo?.id || `execution-photo-${index}`).trim(),
-      kind: String(photo?.kind || 'photo').trim().toLowerCase() || 'photo',
-      bucket: String(photo?.bucket || '').trim(),
-      storagePath: String(photo?.storagePath || photo?.storage_path || '').trim(),
-      publicUrl: String(photo?.publicUrl || photo?.public_url || '').trim(),
-      thumbnailUrl: String(photo?.thumbnailUrl || photo?.thumbnail_url || photo?.publicUrl || photo?.public_url || '').trim(),
-      mimeType: String(photo?.mimeType || photo?.mime_type || '').trim().toLowerCase(),
-      originalFilename: String(photo?.originalFilename || photo?.original_filename || '').trim(),
-      fileSize: Number(photo?.fileSize || photo?.file_size || 0) || 0,
-      uploadedAt: photo?.uploadedAt || photo?.uploaded_at || null,
-    }))
-    .filter((photo) => photo.publicUrl || photo.thumbnailUrl);
 
 export const REQUIRED_VEHICLE_PHOTO_TYPES = ['hero', 'context', 'detail'];
 
@@ -593,31 +578,7 @@ const normalizeOwnerRequest = (request, listing, profile) => {
       ? safeNumber(listing?.daily_price_amount) * Math.max(1, duration)
       : safeNumber(listing?.hourly_price_amount) * Math.max(1, duration);
   const money = getMarketplaceMoneyBreakdown({ estimatedAmount });
-  const rawOwnerExecution = counterOffer?.owner_execution && typeof counterOffer.owner_execution === 'object'
-    ? counterOffer.owner_execution
-    : {};
-  const ownerExecution = {
-    handoffChecked: Boolean(rawOwnerExecution.handoffChecked),
-    handoffMediaReady: Boolean(rawOwnerExecution.handoffMediaReady),
-    handoffPhotos: normalizeExecutionPhotos(rawOwnerExecution.handoffPhotos),
-    startOdometer: rawOwnerExecution.startOdometer ?? null,
-    startFuelLevel: rawOwnerExecution.startFuelLevel ?? null,
-    legalDocsChecked: Boolean(rawOwnerExecution.legalDocsChecked),
-    depositConfirmed: Boolean(rawOwnerExecution.depositConfirmed),
-    contractSigned: Boolean(rawOwnerExecution.contractSigned),
-    startReadyAt: rawOwnerExecution.startReadyAt || null,
-    startedAt: rawOwnerExecution.startedAt || null,
-    returnPendingAt: rawOwnerExecution.returnPendingAt || null,
-    returnMediaReady: Boolean(rawOwnerExecution.returnMediaReady),
-    returnPhotos: normalizeExecutionPhotos(rawOwnerExecution.returnPhotos),
-    returnOdometer: rawOwnerExecution.returnOdometer ?? null,
-    returnFuelLevel: rawOwnerExecution.returnFuelLevel ?? null,
-    issueReviewed: Boolean(rawOwnerExecution.issueReviewed),
-    issueReported: Boolean(rawOwnerExecution.issueReported),
-    depositReviewed: Boolean(rawOwnerExecution.depositReviewed),
-    depositOutcome: String(rawOwnerExecution.depositOutcome || '').trim().toLowerCase(),
-    returnSavedAt: rawOwnerExecution.returnSavedAt || null,
-  };
+  const ownerExecution = normalizeRentalExecutionDraft(counterOffer?.owner_execution);
 
   return {
     id: request.id,
@@ -686,6 +647,13 @@ export const normalizeOwnerVehicleForForm = (profile, listing, linkedFleetVehicl
   const rules = toObject(profile?.rules);
   const safetyInfo = toObject(profile?.safety_info);
   const workingHours = toObject(profile?.working_hours);
+  const normalizedFleetVehicle = normalizeFleetVehicleForOwnerForm(linkedFleetVehicle);
+  const profileRegistrationNumber = String(profile?.registration_number || '').trim();
+  const profileRegistrationDate = String(profile?.registration_date || '').trim();
+  const profileRegistrationExpiryDate = String(profile?.registration_expiry_date || '').trim();
+  const profileInsurancePolicyNumber = String(profile?.insurance_policy_number || '').trim();
+  const profileInsuranceProvider = String(profile?.insurance_provider || '').trim();
+  const profileInsuranceExpiryDate = String(profile?.insurance_expiry_date || '').trim();
 
   return {
     id: profile?.id || '',
@@ -771,7 +739,13 @@ export const normalizeOwnerVehicleForForm = (profile, listing, linkedFleetVehicl
     inspectionCompleted: Boolean(safetyInfo?.inspection_completed),
     safetyNotes: safetyInfo?.notes || '',
     verificationNotes: profile?.verification_notes || '',
-    ...normalizeFleetVehicleForOwnerForm(linkedFleetVehicle),
+    ...normalizedFleetVehicle,
+    registrationNumber: normalizedFleetVehicle.registrationNumber || profileRegistrationNumber || '',
+    registrationDate: normalizedFleetVehicle.registrationDate || profileRegistrationDate || '',
+    registrationExpiryDate: normalizedFleetVehicle.registrationExpiryDate || profileRegistrationExpiryDate || '',
+    insurancePolicyNumber: normalizedFleetVehicle.insurancePolicyNumber || profileInsurancePolicyNumber || '',
+    insuranceProvider: normalizedFleetVehicle.insuranceProvider || profileInsuranceProvider || '',
+    insuranceExpiryDate: normalizedFleetVehicle.insuranceExpiryDate || profileInsuranceExpiryDate || '',
     rawProfile: profile || null,
     rawListing: listing || null,
     rawFleetVehicle: linkedFleetVehicle || null,
@@ -810,6 +784,12 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     vehicle_condition: String(formData.vehicleCondition || '').trim() || null,
     color: String(formData.color || '').trim() || null,
     extras: toStringArray(formData.extras),
+    registration_number: String(formData.registrationNumber || '').trim() || null,
+    registration_date: optionalDateString(formData.registrationDate),
+    registration_expiry_date: optionalDateString(formData.registrationExpiryDate),
+    insurance_policy_number: String(formData.insurancePolicyNumber || '').trim() || null,
+    insurance_provider: String(formData.insuranceProvider || '').trim() || null,
+    insurance_expiry_date: optionalDateString(formData.insuranceExpiryDate),
     fuel_policy: String(formData.fuelPolicy || '').trim() || 'return_same_level',
     deposit_amount: optionalNumber(formData.depositAmount),
     mileage_limit_km: optionalInteger(formData.mileageLimitKm),
@@ -1052,6 +1032,60 @@ class BusinessMarketplaceService {
   static async getOwnerVehicle(ownerId, vehicleId) {
     if (!ownerId || !vehicleId) {
       return { vehicle: null, setupRequired: false, error: null };
+    }
+
+    try {
+      const apiResult = await adminApiRequest(`/api/owner-vehicles?vehicleId=${encodeURIComponent(String(vehicleId))}`);
+      const rawVehicle = apiResult?.vehicle || null;
+
+      if (rawVehicle?.profile) {
+        const vehicle = normalizeOwnerVehicleForForm(
+          rawVehicle.profile || null,
+          rawVehicle.listing || null,
+          rawVehicle.fleetVehicle || null
+        );
+
+        if (!rawVehicle?.listing?.id) {
+          return {
+            vehicle,
+            setupRequired: false,
+            error: null,
+          };
+        }
+
+        const [historyResponse, messagesResponse] = await Promise.all([
+          supabase
+            .from(MARKETPLACE_MODERATION_HISTORY_TABLE)
+            .select('*')
+            .eq('listing_id', rawVehicle.listing.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from(MARKETPLACE_MESSAGES_TABLE)
+            .select('*')
+            .eq('listing_id', rawVehicle.listing.id)
+            .order('created_at', { ascending: false }),
+        ]);
+
+        if (historyResponse.error && !setupErrorCodes.has(String(historyResponse.error.code || ''))) {
+          return { vehicle, setupRequired: false, error: historyResponse.error };
+        }
+
+        if (messagesResponse.error && !setupErrorCodes.has(String(messagesResponse.error.code || ''))) {
+          return { vehicle, setupRequired: false, error: messagesResponse.error };
+        }
+
+        return {
+          vehicle: {
+            ...vehicle,
+            moderationHistory: historyResponse.data || [],
+            ownerMessages: messagesResponse.data || [],
+          },
+          setupRequired: false,
+          error: null,
+        };
+      }
+    } catch (apiError) {
+      console.warn('Falling back to direct owner vehicle load:', apiError?.message || apiError);
     }
 
     const { data: profile, error: profileError } = await supabase
@@ -1546,138 +1580,61 @@ class BusinessMarketplaceService {
     throw new Error('Unable to update marketplace request.');
   }
 
+  static async publishOwnerListing({ ownerId, vehicleId }) {
+    if (!ownerId) {
+      throw new Error('You must be signed in to publish this listing.');
+    }
+    if (!vehicleId) {
+      throw new Error('Save the vehicle first before publishing.');
+    }
+
+    const apiResult = await adminApiRequest('/api/owner-vehicles', {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'publish_listing',
+        vehicleId,
+      }),
+    });
+
+    businessMarketplaceCache.invalidate((key) =>
+      key === `owner-vehicle-count:${String(ownerId)}` ||
+      key === `owner-vehicles:${String(ownerId)}` ||
+      key.startsWith(`owner-requests:${String(ownerId)}:`)
+    );
+
+    return {
+      vehicle: normalizeOwnerVehicleForForm(
+        apiResult?.vehicle?.profile || null,
+        apiResult?.vehicle?.listing || null,
+        apiResult?.vehicle?.fleetVehicle || null
+      ),
+      published: Boolean(apiResult?.published),
+    };
+  }
+
   static async saveOwnerExecution(ownerId, requestId, executionDraft, requestStatus = null) {
     if (!ownerId || !requestId) {
       throw new Error('Missing request context.');
     }
 
-    const { data: existingRequest, error } = await supabase
-      .from(BOOKING_REQUESTS_TABLE)
-      .select('counter_offer, request_status')
-      .eq('id', requestId)
-      .eq('owner_id', ownerId)
-      .maybeSingle();
+    const normalizedExecutionDraft = normalizeRentalExecutionDraft(executionDraft);
+    const apiResult = await adminApiRequest('/api/me?resource=owner-marketplace-execution', {
+      method: 'POST',
+      body: JSON.stringify({
+        ownerId,
+        requestId,
+        requestStatus,
+        executionDraft: normalizedExecutionDraft,
+      }),
+    });
 
-    if (error) {
-      throw error;
-    }
+    businessMarketplaceCache.invalidate((key) =>
+      key.startsWith(`owner-requests:${String(ownerId)}:`) ||
+      key === `owner-vehicles:${String(ownerId)}` ||
+      key === `owner-vehicle-count:${String(ownerId)}`
+    );
 
-    const existingCounterOffer =
-      existingRequest?.counter_offer && typeof existingRequest.counter_offer === 'object'
-        ? existingRequest.counter_offer
-        : {};
-    const currentRequestStatus = normalizeMarketplaceRequestLifecycleStatus(existingRequest || 'pending');
-
-    const normalizedExecutionDraft = executionDraft && typeof executionDraft === 'object'
-      ? executionDraft
-      : {};
-
-    const updates = {
-      counter_offer: {
-        ...existingCounterOffer,
-        owner_execution: {
-          handoffChecked: Boolean(normalizedExecutionDraft.handoffChecked),
-          handoffMediaReady: Boolean(normalizedExecutionDraft.handoffMediaReady),
-          handoffPhotos: normalizeExecutionPhotos(normalizedExecutionDraft.handoffPhotos),
-          startOdometer: normalizedExecutionDraft.startOdometer ?? null,
-          startFuelLevel: normalizedExecutionDraft.startFuelLevel ?? null,
-          legalDocsChecked: Boolean(normalizedExecutionDraft.legalDocsChecked),
-          depositConfirmed: Boolean(normalizedExecutionDraft.depositConfirmed),
-          contractSigned: Boolean(normalizedExecutionDraft.contractSigned),
-          startReadyAt: normalizedExecutionDraft.startReadyAt || null,
-          startedAt: normalizedExecutionDraft.startedAt || null,
-          returnPendingAt: normalizedExecutionDraft.returnPendingAt || null,
-          returnMediaReady: Boolean(normalizedExecutionDraft.returnMediaReady),
-          returnPhotos: normalizeExecutionPhotos(normalizedExecutionDraft.returnPhotos),
-          returnOdometer: normalizedExecutionDraft.returnOdometer ?? null,
-          returnFuelLevel: normalizedExecutionDraft.returnFuelLevel ?? null,
-          issueReviewed: Boolean(normalizedExecutionDraft.issueReviewed),
-          issueReported: Boolean(normalizedExecutionDraft.issueReported),
-          depositReviewed: Boolean(normalizedExecutionDraft.depositReviewed),
-          depositOutcome: String(normalizedExecutionDraft.depositOutcome || '').trim().toLowerCase(),
-          returnSavedAt: normalizedExecutionDraft.returnSavedAt || null,
-        },
-      },
-    };
-
-    if (requestStatus) {
-      const normalizedNextStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
-      const validTransition =
-        (normalizedNextStatus === 'active' && currentRequestStatus === 'approved') ||
-        (normalizedNextStatus === 'completed' && currentRequestStatus === 'active');
-
-      if (!validTransition) {
-        throw new Error('This rental is not ready for that action yet.');
-      }
-
-      const hasCompleteHandoff =
-        Boolean(normalizedExecutionDraft.handoffChecked) &&
-        Boolean(normalizedExecutionDraft.handoffMediaReady) &&
-        Number.isFinite(Number(normalizedExecutionDraft.startOdometer)) &&
-        Number(normalizedExecutionDraft.startOdometer) >= 0 &&
-        Number.isFinite(Number(normalizedExecutionDraft.startFuelLevel)) &&
-        Boolean(normalizedExecutionDraft.legalDocsChecked) &&
-        Boolean(normalizedExecutionDraft.depositConfirmed) &&
-        Boolean(normalizedExecutionDraft.contractSigned) &&
-        Boolean(normalizedExecutionDraft.startReadyAt);
-
-      const hasCompleteReturn =
-        Boolean(normalizedExecutionDraft.returnPendingAt) &&
-        Boolean(normalizedExecutionDraft.returnMediaReady) &&
-        Number.isFinite(Number(normalizedExecutionDraft.returnOdometer)) &&
-        Number(normalizedExecutionDraft.returnOdometer) >= 0 &&
-        (
-          !Number.isFinite(Number(normalizedExecutionDraft.startOdometer)) ||
-          Number(normalizedExecutionDraft.returnOdometer) >= Number(normalizedExecutionDraft.startOdometer)
-        ) &&
-        Number.isFinite(Number(normalizedExecutionDraft.returnFuelLevel)) &&
-        Boolean(normalizedExecutionDraft.issueReviewed);
-
-      if (normalizedNextStatus === 'active' && !hasCompleteHandoff) {
-        throw new Error('Finish the handoff checklist before starting this rental.');
-      }
-
-      if (normalizedNextStatus === 'completed' && !hasCompleteReturn) {
-        throw new Error('Finish the return review before ending this rental.');
-      }
-
-      updates.request_status = requestStatus;
-      if (requestStatus === 'active') {
-        updates.closed_at = null;
-      }
-      if (requestStatus === 'completed') {
-        updates.closed_at = new Date().toISOString();
-      }
-    }
-
-    const updatedRequest = await this.updateOwnerRequest(ownerId, requestId, updates);
-
-    if (requestStatus === 'active') {
-      await RentalEventService.recordEvent({
-        rentalId: requestId,
-        eventType: 'started',
-        actor: 'owner',
-        metadata: {
-          ownerId,
-          startedAt: normalizedExecutionDraft.startedAt || new Date().toISOString(),
-        },
-      });
-    }
-
-    if (requestStatus === 'completed') {
-      await RentalEventService.recordEvent({
-        rentalId: requestId,
-        eventType: 'ended',
-        actor: 'owner',
-        metadata: {
-          ownerId,
-          endedAt: normalizedExecutionDraft.returnSavedAt || new Date().toISOString(),
-          issueReported: Boolean(normalizedExecutionDraft.issueReported),
-        },
-      });
-    }
-
-    return updatedRequest;
+    return apiResult?.request || apiResult;
   }
 
   static async acceptRequest(ownerId, requestId, message = '') {

@@ -36,6 +36,22 @@ const getPackageName = (pkg = {}) =>
     ''
   ).toLowerCase();
 
+const isUnlimitedPackage = (pkg = {}) => {
+  const name = getPackageName(pkg);
+  const kind = getPackageKind(pkg);
+  const rawLimit = pkg?.included_kilometers ?? pkg?.includedKilometers ?? pkg?.included_km ?? pkg?.includedKm;
+  const parsedLimit = Number(rawLimit);
+  const hasNoFiniteLimit = rawLimit == null || rawLimit === '' || (Number.isFinite(parsedLimit) && parsedLimit <= 0);
+
+  return (
+    name.includes('unlimited') ||
+    name.includes('unlimted') ||
+    name.includes('illimité') ||
+    kind.includes('unlimited') ||
+    (hasNoFiniteLimit && (name.includes('km') || name.includes('kilometer')))
+  );
+};
+
 export const getSimplePackageDurationUnits = (pkg = {}) => {
   const durationUnits = Number(
     pkg.duration_units ??
@@ -249,11 +265,19 @@ export const selectBestKilometerPackage = (
     requestedDurationUnits = 1,
   } = {}
 ) => {
+  if (originalPackage && isUnlimitedPackage(originalPackage)) {
+    return {
+      selectedPackage: originalPackage,
+      packageLimitKm: Number.POSITIVE_INFINITY,
+      packageOverflowKm: 0,
+    };
+  }
+
   const normalizedPackages = (Array.isArray(packages) ? packages : [])
     .filter(Boolean)
     .map((pkg) => ({
       ...pkg,
-      baseIncludedKm: normalizePackageLimit(pkg),
+      baseIncludedKm: isUnlimitedPackage(pkg) ? Number.POSITIVE_INFINITY : normalizePackageLimit(pkg),
       packageDurationUnits: getSimplePackageDurationUnits(pkg),
     }))
     .filter((pkg) => pkg.baseIncludedKm > 0)

@@ -252,10 +252,15 @@ const VehicleFinanceTabV2 = ({ filters, vehicles = [], loading, refreshTrigger, 
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+        <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-16 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-            <div className="text-5xl leading-none animate-pulse">⏳</div>
+            <div className="rounded-2xl bg-violet-50 p-3">
+              <Car className="h-6 w-6 animate-pulse text-violet-700" />
+            </div>
             <h3 className="text-xl font-semibold text-slate-900">{tr('Loading vehicle finance...', 'Chargement de la finance véhicule...')}</h3>
+            <p className="text-sm text-slate-500">
+              {tr('We are preparing the lifetime finance view for the current fleet selection.', 'Nous préparons la vue finance à vie pour la sélection de flotte actuelle.')}
+            </p>
           </div>
         </div>
       </div>
@@ -266,10 +271,10 @@ const VehicleFinanceTabV2 = ({ filters, vehicles = [], loading, refreshTrigger, 
   if (!vehicles || vehicles.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="rounded-[2rem] border border-amber-200 bg-amber-50 p-6">
-          <div className="flex items-center space-x-3">
+        <div className="rounded-[28px] border border-amber-200 bg-amber-50/90 p-6 shadow-[0_18px_42px_rgba(245,158,11,0.10)]">
+          <div className="flex items-start gap-3">
             <div className="rounded-2xl bg-amber-100 p-3">
-              <Car className="w-6 h-6 text-amber-700" />
+              <Car className="h-6 w-6 text-amber-700" />
             </div>
             <div>
               <h3 className="font-semibold text-amber-900">{tr('No vehicles available', 'Aucun véhicule disponible')}</h3>
@@ -657,14 +662,19 @@ const VehicleFinanceTabV2 = ({ filters, vehicles = [], loading, refreshTrigger, 
 
   return (
     <div className="space-y-5">
-      <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 shadow-[0_16px_40px_rgba(76,29,149,0.08)]">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Vehicle Finance', 'Finance véhicule')}</p>
-            <h3 className="mt-1 text-xl font-bold tracking-tight text-slate-900">{tr('Vehicle lifetime finance', 'Finance véhicule à vie')}</h3>
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-[1.2rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+              <Car className="h-5 w-5 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Vehicle Finance', 'Finance véhicule')}</p>
+              <h3 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">{tr('Vehicle lifetime finance', 'Finance véhicule à vie')}</h3>
+            </div>
           </div>
 
-          <div className="rounded-full border border-slate-200 bg-slate-50/80 px-3 py-1.5 text-xs font-medium text-slate-600">
+          <div className="rounded-full border border-slate-200 bg-slate-50/80 px-4 py-2 text-xs font-medium text-slate-600">
             <span className="font-semibold text-slate-900">{tr('Lifetime performance per vehicle', 'Performance à vie par véhicule')}</span>
           </div>
         </div>
@@ -707,16 +717,16 @@ const VehicleFinanceTabV2 = ({ filters, vehicles = [], loading, refreshTrigger, 
                 </div>
               </div>
 
-              <div className="mt-3 grid grid-cols-3 divide-x divide-slate-100 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                <div className="pr-3">
+              <div className="mt-3 grid grid-cols-1 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                <div className="py-2 sm:py-0 sm:pr-3">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Revenue', 'Revenus')}</p>
                   <p className="mt-1 text-sm font-bold text-emerald-700">{formatCompact(vehicle.revenue)} MAD</p>
                 </div>
-                <div className="px-3">
+                <div className="py-2 sm:px-3 sm:py-0">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Expenses', 'Dépenses')}</p>
                   <p className="mt-1 text-sm font-bold text-rose-700">{formatCompact(vehicle.totalCosts)} MAD</p>
                 </div>
-                <div className="pl-3">
+                <div className="py-2 sm:pl-3 sm:py-0">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Net', 'Net')}</p>
                   <p className={`mt-1 text-sm font-bold ${profitPositive ? 'text-emerald-700' : 'text-rose-700'}`}>{profitPositive ? '+' : ''}{formatCompact(vehicle.profit)} MAD</p>
                 </div>

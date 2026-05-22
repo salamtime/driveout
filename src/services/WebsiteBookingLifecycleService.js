@@ -216,7 +216,7 @@ class WebsiteBookingLifecycleService {
 
     const { data: expiredRows, error: fetchError } = await supabase
       .from('app_4c3a7a6153_rentals')
-      .select('id, vehicle_id, website_booking_status, is_vehicle_locked, hold_expires_at')
+      .select('id, vehicle_id, rental_status, status, started_at, rental_started_at, completed_at, rental_completed_at, website_booking_status, is_vehicle_locked, hold_expires_at')
       .eq('booking_source', WEBSITE_BOOKING_SOURCE)
       .eq('is_vehicle_locked', true)
       .in('website_booking_status', ['verified', 'awaiting_payment', 'payment_submitted'])
@@ -226,7 +226,21 @@ class WebsiteBookingLifecycleService {
     if (fetchError) throw fetchError;
     if (!expiredRows?.length) return { updated: 0 };
 
-    const ids = expiredRows.map((row) => row.id).filter(Boolean);
+    const expirableRows = expiredRows.filter((row) => {
+      const status = String(row.rental_status || row.status || '').toLowerCase();
+      const isTerminalOrActive = ['active', 'in_progress', 'checked_out', 'completed', 'cancelled', 'expired', 'void'].includes(status);
+      return (
+        !isTerminalOrActive &&
+        !row.started_at &&
+        !row.rental_started_at &&
+        !row.completed_at &&
+        !row.rental_completed_at
+      );
+    });
+
+    if (!expirableRows.length) return { updated: 0 };
+
+    const ids = expirableRows.map((row) => row.id).filter(Boolean);
     const { error: updateError } = await supabase
       .from('app_4c3a7a6153_rentals')
       .update({
@@ -242,7 +256,7 @@ class WebsiteBookingLifecycleService {
 
     if (updateError) throw updateError;
 
-    const vehicleIds = [...new Set(expiredRows.map((row) => row.vehicle_id).filter(Boolean))];
+    const vehicleIds = [...new Set(expirableRows.map((row) => row.vehicle_id).filter(Boolean))];
     await Promise.all(
       vehicleIds.map((vehicleId) =>
         this.reconcileVehicleOperationalStatus(vehicleId, {

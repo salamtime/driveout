@@ -1,15 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import toast from 'react-hot-toast';
 import {
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Camera,
   CalendarClock,
   Car,
   CheckCircle2,
   ChevronDown,
   Edit,
   ExternalLink,
+  FileSignature,
   FileText,
   Droplets,
   DollarSign,
@@ -18,6 +22,7 @@ import {
   MessageSquareText,
   MoreHorizontal,
   Gauge,
+  Info,
   Save,
   Send,
   Store,
@@ -28,16 +33,20 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import BusinessMarketplaceService, { getMarketplaceStatusLabel, getMarketplaceStatusTone, getVehiclePhotoRequirementStatus, validateOwnerVehicleForm } from '../../services/BusinessMarketplaceService';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import VehicleAnnualTaxService from '../../services/VehicleAnnualTaxService';
 import { financeApiV2 } from '../../services/financeApiV2';
 import VerificationService from '../../services/VerificationService';
+import FuelLevelModal from '../../components/admin/FuelLevelModal';
+import SignaturePadModal from '../../components/SignaturePadModal';
 import DocumentUpload from '../../components/DocumentUpload';
 import VehicleDocuments from '../../components/VehicleDocuments';
 import VehicleImageUpload from '../../components/VehicleImageUpload';
 import MessageWidget from '../../components/messages/MessageWidget';
 import { getOtherParty } from '../../components/messages/threadHelpers';
+import MessageService from '../../services/MessageService';
 import {
   getWorkspaceFocusedSectionClass as getFocusedSectionClass,
   workspaceEyebrowClass,
@@ -50,7 +59,7 @@ import {
   workspaceTitleClass,
 } from '../../components/account/accountWorkspaceDesignSystem';
 import { VEHICLE_CATEGORY_OPTIONS } from '../../utils/vehicleCategoryOptions';
-import { getVerificationTypeLabel, VEHICLE_REQUIRED_VERIFICATIONS } from '../../utils/verificationStatus';
+import { buildEntityVerificationSummary, VEHICLE_REQUIRED_VERIFICATIONS } from '../../utils/verificationStatus';
 import { getMarketplaceFundsPolicy, getMarketplaceMoneyBreakdown, normalizeMarketplaceRequestLifecycleStatus } from '../../utils/marketplaceRequestState';
 import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -62,6 +71,9 @@ import { getCurrentOrganizationId } from '../../services/OrganizationService';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 import RentalEvidenceGallery from '../../components/account/RentalEvidenceGallery';
 import RentalPhotoEvidenceCapture from '../../components/account/RentalPhotoEvidenceCapture';
+import AccountRentalExecutionStepperShell, {
+  AccountRentalExecutionStickyFooter,
+} from '../../components/account/AccountRentalExecutionStepperShell';
 import OwnerListingSetupGuide from '../../components/account/OwnerListingSetupGuide';
 import MessageAttachmentService from '../../services/MessageAttachmentService';
 import RentalEventService from '../../services/RentalEventService';
@@ -72,19 +84,39 @@ import {
   trackAccountJourneyEvent,
   trackAccountJourneyEventOnce,
 } from '../../utils/accountJourneyAnalytics';
-
-const RENTAL_PHOTOS_TABLE = 'rental_photos';
+import {
+  createRentalExecutionDraft as createOwnerExecutionDraft,
+  isRentalExecutionHandoffLocked as isOwnerExecutionHandoffLocked,
+  isRentalExecutionReturnLocked as isOwnerExecutionReturnLocked,
+  normalizeRentalExecutionDraft as normalizeOwnerExecutionDraft,
+  normalizeRentalExecutionPhotos as normalizeOwnerExecutionPhotos,
+  RENTAL_EXECUTION_FLOW_MIN_PHOTOS,
+} from '../../utils/rentalExecutionFlow';
+import {
+  buildOwnerExecutionWorkspaceHref,
+  getOwnerExecutionActionConfig,
+} from '../../utils/ownerRentalExecutionLinks';
+import { buildDriveOutMarketplaceRentalDocumentPayload } from '../../utils/marketplaceRentalDocuments';
+import { encodePublicSharePayload } from '../../utils/publicSharePayload';
 
 const formatMoney = (amount, currencyCode = 'MAD', locale = 'en') =>
   new Intl.NumberFormat(locale === 'fr' ? 'fr-MA' : 'en-MA', {
     maximumFractionDigits: 0,
   }).format(Number(amount || 0)) + ` ${currencyCode}`;
 
-const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
-const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
-const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
-const OWNER_EXECUTION_FLOW_KEY = 'saharax_owner_execution_flow';
-const OWNER_VEHICLE_SAVE_TIMEOUT_MS = 20000;
+const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'driveout_owner_vehicle_ids';
+const OWNER_EXECUTION_FLOW_KEY = 'driveout_owner_execution_flow';
+const OWNER_RETURN_FLOW_ARM_DELAY_MS = 5000;
+const OWNER_EXECUTION_FOCUS_STAGES = new Set(['approved', 'handoff', 'ready_to_start', 'return_pending']);
+const OWNER_STORAGE_LEGACY_KEYS = Object.freeze({
+  [LAST_OWNER_VEHICLE_ID_KEY]: 'saharax_last_owner_vehicle_id',
+  [LAST_OWNER_VEHICLE_COUNT_KEY]: 'saharax_last_owner_vehicle_count',
+  [OWNER_VEHICLE_IDS_KEY]: 'saharax_owner_vehicle_ids',
+  [OWNER_EXECUTION_FLOW_KEY]: 'saharax_owner_execution_flow',
+});
+const OWNER_VEHICLE_SAVE_TIMEOUT_MS = 60000;
 
 const withTimeout = (promise, timeoutMs, message) =>
   Promise.race([
@@ -99,137 +131,87 @@ const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
 };
 
+const buildOwnerVehicleStorageKeys = (baseKey, userId = '') => {
+  const primaryKey = buildOwnerVehicleStorageKey(baseKey, userId);
+  const legacyBaseKey = OWNER_STORAGE_LEGACY_KEYS[baseKey];
+  const legacyKey = legacyBaseKey ? buildOwnerVehicleStorageKey(legacyBaseKey, userId) : null;
+  return [primaryKey, legacyKey].filter(Boolean);
+};
+
+const readOwnerVehicleStorageValue = (baseKey, userId = '', fallbackValue = null) => {
+  if (typeof window === 'undefined') return fallbackValue;
+  const storageKeys = buildOwnerVehicleStorageKeys(baseKey, userId);
+  for (const storageKey of storageKeys) {
+    const nextValue = window.localStorage.getItem(storageKey);
+    if (nextValue !== null) return nextValue;
+  }
+  return fallbackValue;
+};
+
 const buildOwnerExecutionStorageKey = (requestId, userId = '') => {
   const normalizedRequestId = String(requestId || '').trim();
   if (!normalizedRequestId) return '';
   return buildOwnerVehicleStorageKey(`${OWNER_EXECUTION_FLOW_KEY}:${normalizedRequestId}`, userId);
 };
 
-const createOwnerExecutionDraft = () => ({
-  handoffChecked: false,
-  handoffMediaReady: false,
-  handoffPhotos: [],
-  startOdometer: '',
-  startFuelLevel: '',
-  legalDocsChecked: false,
-  depositConfirmed: false,
-  contractSigned: false,
-  startReadyAt: null,
-  startedAt: null,
-  returnPendingAt: null,
-  returnMediaReady: false,
-  returnPhotos: [],
-  returnOdometer: '',
-  returnFuelLevel: '',
-  issueReviewed: false,
-  issueReported: false,
-  depositReviewed: false,
-  depositOutcome: '',
-  returnSavedAt: null,
-});
-
-const normalizeOwnerExecutionPhotos = (photos) =>
-  (Array.isArray(photos) ? photos : [])
-    .map((photo, index) => ({
-      id: String(photo?.id || `owner-photo-${index}`).trim(),
-      kind: String(photo?.kind || 'photo').trim().toLowerCase() || 'photo',
-      bucket: String(photo?.bucket || '').trim(),
-      storagePath: String(photo?.storagePath || photo?.storage_path || '').trim(),
-      publicUrl: String(photo?.publicUrl || photo?.public_url || '').trim(),
-      thumbnailUrl: String(photo?.thumbnailUrl || photo?.thumbnail_url || photo?.publicUrl || photo?.public_url || '').trim(),
-      mimeType: String(photo?.mimeType || photo?.mime_type || '').trim().toLowerCase(),
-      originalFilename: String(photo?.originalFilename || photo?.original_filename || '').trim(),
-      fileSize: Number(photo?.fileSize || photo?.file_size || 0) || 0,
-      uploadedAt: photo?.uploadedAt || photo?.uploaded_at || null,
-    }))
-    .filter((photo) => photo.publicUrl || photo.thumbnailUrl);
-
-const OWNER_HANDOFF_MIN_PHOTOS = 3;
-const OWNER_RETURN_MIN_PHOTOS = 3;
-
-const normalizeOwnerExecutionDraft = (value) => {
-  const raw = value && typeof value === 'object' ? value : {};
-  return {
-    handoffChecked: Boolean(raw.handoffChecked),
-    handoffMediaReady: Boolean(raw.handoffMediaReady) || normalizeOwnerExecutionPhotos(raw.handoffPhotos).length >= OWNER_HANDOFF_MIN_PHOTOS,
-    handoffPhotos: normalizeOwnerExecutionPhotos(raw.handoffPhotos),
-    startOdometer:
-      raw.startOdometer === null || raw.startOdometer === undefined || raw.startOdometer === ''
-        ? ''
-        : String(raw.startOdometer),
-    startFuelLevel:
-      raw.startFuelLevel === null || raw.startFuelLevel === undefined || raw.startFuelLevel === ''
-        ? ''
-        : String(raw.startFuelLevel),
-    legalDocsChecked: Boolean(raw.legalDocsChecked),
-    depositConfirmed: Boolean(raw.depositConfirmed),
-    contractSigned: Boolean(raw.contractSigned),
-    startReadyAt: raw.startReadyAt || null,
-    startedAt: raw.startedAt || null,
-    returnPendingAt: raw.returnPendingAt || null,
-    returnMediaReady: Boolean(raw.returnMediaReady) || normalizeOwnerExecutionPhotos(raw.returnPhotos).length >= OWNER_RETURN_MIN_PHOTOS,
-    returnPhotos: normalizeOwnerExecutionPhotos(raw.returnPhotos),
-    returnOdometer:
-      raw.returnOdometer === null || raw.returnOdometer === undefined || raw.returnOdometer === ''
-        ? ''
-        : String(raw.returnOdometer),
-    returnFuelLevel:
-      raw.returnFuelLevel === null || raw.returnFuelLevel === undefined || raw.returnFuelLevel === ''
-        ? ''
-        : String(raw.returnFuelLevel),
-    issueReviewed: Boolean(raw.issueReviewed),
-    issueReported: Boolean(raw.issueReported),
-    depositReviewed: Boolean(raw.depositReviewed),
-    depositOutcome: String(raw.depositOutcome || '').trim().toLowerCase(),
-    returnSavedAt: raw.returnSavedAt || null,
-  };
+const buildOwnerExecutionStorageKeys = (requestId, userId = '') => {
+  const normalizedRequestId = String(requestId || '').trim();
+  if (!normalizedRequestId) return [];
+  return buildOwnerVehicleStorageKeys(`${OWNER_EXECUTION_FLOW_KEY}:${normalizedRequestId}`, userId);
 };
 
-const isOwnerExecutionHandoffLocked = (draft = {}, requestStatus = '') => {
-  const normalizedStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
-  return Boolean(
-    draft?.startedAt ||
-    draft?.returnPendingAt ||
-    draft?.returnSavedAt ||
-    ['active', 'completed'].includes(normalizedStatus)
-  );
+const OWNER_HANDOFF_MIN_PHOTOS = RENTAL_EXECUTION_FLOW_MIN_PHOTOS.handoff;
+const OWNER_LEGAL_DOCS_MIN_PHOTOS = RENTAL_EXECUTION_FLOW_MIN_PHOTOS.legalDocs;
+const OWNER_RETURN_MIN_PHOTOS = RENTAL_EXECUTION_FLOW_MIN_PHOTOS.return;
+const hasOwnerExecutionNumberValue = (value) => {
+  if (value === null || value === undefined || value === '') return false;
+  const normalizedValue = Number(value);
+  return Number.isFinite(normalizedValue) && normalizedValue >= 0;
 };
 
-const isOwnerExecutionReturnLocked = (draft = {}, requestStatus = '') => {
-  const normalizedStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
-  return Boolean(draft?.returnSavedAt || normalizedStatus === 'completed');
+const getOwnerExecutionFuelLabel = (value, tr) => {
+  if (!hasOwnerExecutionNumberValue(value)) return tr('Not recorded', 'Non enregistré');
+  const level = Number(value);
+  if (level === 0) return tr('Empty', 'Vide');
+  if (level === 8) return tr('Full', 'Plein');
+  return `${level}/8`;
+};
+
+const isOwnerExecutionDepositReviewComplete = (draft = {}) => {
+  const outcome = String(draft?.depositOutcome || '').trim().toLowerCase();
+  if (!draft?.depositReviewed || !outcome) return false;
+  if (outcome === 'refund_full') {
+    return Boolean(String(draft?.depositRefundSignatureUrl || '').trim());
+  }
+  return true;
 };
 
 const OWNER_HANDOFF_STEPS = [
   {
-    key: 'handoff_check',
-    label: { en: 'Handoff check', fr: 'Contrôle départ' },
-    note: { en: 'Confirm pickup is ready.', fr: 'Confirmez que le départ est prêt.' },
-    gate: (draft) => Boolean(draft.handoffChecked),
-  },
-  {
     key: 'vehicle_photos',
-    label: { en: 'Vehicle photos', fr: 'Photos véhicule' },
-    note: { en: 'Capture clear pickup photos.', fr: 'Capturez des photos claires du départ.' },
+    label: { en: 'Vehicle inspection', fr: 'Inspection véhicule' },
+    note: { en: 'Capture clear vehicle inspection photos.', fr: 'Capturez des photos claires de l’inspection véhicule.' },
     gate: (draft) => Boolean(draft.handoffMediaReady),
   },
   {
     key: 'start_odometer',
     label: { en: 'Odometer input', fr: 'Saisie compteur' },
     note: { en: 'Record the starting odometer.', fr: 'Enregistrez le kilométrage de départ.' },
-    gate: (draft) => Number.isFinite(Number(draft.startOdometer)) && Number(draft.startOdometer) >= 0,
+    gate: (draft) => hasOwnerExecutionNumberValue(draft.startOdometer),
   },
   {
     key: 'start_fuel',
     label: { en: 'Fuel level', fr: 'Niveau carburant' },
     note: { en: 'Set the starting fuel level.', fr: 'Définissez le niveau de carburant de départ.' },
-    gate: (draft) => Number.isFinite(Number(draft.startFuelLevel)) && Number(draft.startFuelLevel) >= 0,
+    gate: (draft) => hasOwnerExecutionNumberValue(draft.startFuelLevel),
   },
   {
     key: 'legal_docs',
     label: { en: 'Registration + insurance', fr: 'Carte grise + assurance' },
-    note: { en: 'Check the documents before handoff.', fr: 'Contrôlez les documents avant le départ.' },
-    gate: (draft) => Boolean(draft.legalDocsChecked),
+    note: { en: 'Capture one registration photo and one insurance photo.', fr: 'Capturez une photo de carte grise et une photo d’assurance.' },
+    gate: (draft) =>
+      Boolean(draft.legalDocsMediaReady) ||
+      normalizeOwnerExecutionPhotos(draft.legalDocsPhotos).length >= OWNER_LEGAL_DOCS_MIN_PHOTOS,
   },
   {
     key: 'deposit',
@@ -250,7 +232,7 @@ const OWNER_FUEL_LEVEL_OPTIONS = Array.from({ length: 9 }, (_value, index) => in
 const OWNER_RETURN_STEPS = [
   {
     key: 'return_photos',
-    label: { en: 'Return photos', fr: 'Photos retour' },
+    label: { en: 'Vehicle inspection', fr: 'Inspection véhicule' },
     note: { en: 'Capture the vehicle on return.', fr: 'Capturez le véhicule au retour.' },
     gate: (draft) => Boolean(draft.returnMediaReady),
   },
@@ -259,21 +241,26 @@ const OWNER_RETURN_STEPS = [
     label: { en: 'Odometer input', fr: 'Saisie compteur' },
     note: { en: 'Record the final odometer reading.', fr: 'Enregistrez le kilométrage final.' },
     gate: (draft) =>
-      Number.isFinite(Number(draft.returnOdometer)) &&
-      Number(draft.returnOdometer) >= 0 &&
-      (!Number.isFinite(Number(draft.startOdometer)) || Number(draft.returnOdometer) >= Number(draft.startOdometer)),
+      hasOwnerExecutionNumberValue(draft.returnOdometer) &&
+      (!hasOwnerExecutionNumberValue(draft.startOdometer) || Number(draft.returnOdometer) >= Number(draft.startOdometer)),
   },
   {
     key: 'return_fuel',
     label: { en: 'Fuel level input', fr: 'Saisie carburant' },
     note: { en: 'Capture the fuel level on return.', fr: 'Capturez le niveau de carburant au retour.' },
-    gate: (draft) => Number.isFinite(Number(draft.returnFuelLevel)) && Number(draft.returnFuelLevel) >= 0,
+    gate: (draft) => hasOwnerExecutionNumberValue(draft.returnFuelLevel),
   },
   {
-    key: 'issue_report',
-    label: { en: 'Issue report', fr: 'Rapport incident' },
-    note: { en: 'Record any issue or mark no issue.', fr: 'Enregistrez un incident ou marquez aucun incident.' },
-    gate: (draft) => Boolean(draft.issueReviewed),
+    key: 'return_condition',
+    label: { en: 'Return condition', fr: 'État retour' },
+    note: { en: 'Review the final condition and add a note if there is an issue.', fr: 'Contrôlez l’état final et ajoutez une note s’il y a un incident.' },
+    gate: (draft) => Boolean(draft.issueReviewed) && (!draft.issueReported || Boolean(String(draft.issueNote || '').trim())),
+  },
+  {
+    key: 'deposit_review',
+    label: { en: 'Deposit closeout', fr: 'Clôture caution' },
+    note: { en: 'Record how the deposit is handled at return.', fr: 'Enregistrez comment la caution est gérée au retour.' },
+    gate: isOwnerExecutionDepositReviewComplete,
   },
   {
     key: 'end_rental',
@@ -429,6 +416,13 @@ const getLinkedFleetVehicleIdFromProfile = (profile = {}, vehicleForm = null) =>
 
   return String(rawValue || '').trim() || null;
 };
+
+const buildVehicleVerificationEntityIds = (...values) =>
+  [...new Set(
+    values
+      .map((value) => String(value || '').trim())
+      .filter((value) => value && value !== 'null' && value !== 'undefined' && !value.startsWith('owner-draft-'))
+  )];
 
 const getPricingGuide = ({ categoryCode, year, vehicleCondition, hasVehicleMedia, documentCount }) => {
   const normalizedCategory = String(categoryCode || '').trim().toLowerCase();
@@ -589,9 +583,40 @@ const mapVehicleVerificationRequestsToDocuments = (requests = []) => {
     .filter((document) => document.url || document.storagePath);
 };
 
+const getVehicleVerificationRowsFromFileResults = (verificationFileResults = []) => {
+  const rowsById = new Map();
+  const addRow = (row) => {
+    const verificationType = String(row?.verification_type || '').trim().toLowerCase();
+    if (!['vehicle_registration', 'vehicle_insurance'].includes(verificationType)) return;
+
+    const id = String(row?.id || '').trim();
+    const fallbackKey = [
+      verificationType,
+      row?.entity_id,
+      row?.file_path,
+      row?.file_url,
+      row?.created_at,
+    ].filter(Boolean).join(':');
+    const key = id || fallbackKey;
+    if (!key || rowsById.has(key)) return;
+    rowsById.set(key, row);
+  };
+
+  (Array.isArray(verificationFileResults) ? verificationFileResults : []).forEach((fileResult) => {
+    (Array.isArray(fileResult?.requests) ? fileResult.requests : []).forEach(addRow);
+    const latestByType = fileResult?.summary?.latestByType;
+    if (latestByType && typeof latestByType === 'object') {
+      Object.values(latestByType).forEach(addRow);
+    }
+  });
+
+  return Array.from(rowsById.values());
+};
+
 const mergeVehicleDocuments = (currentDocuments = [], nextDocuments = []) => {
   const mergedDocuments = [];
   const seenKeys = new Set();
+  const seenIds = new Set();
   const replacementIds = new Set(
     (Array.isArray(nextDocuments) ? nextDocuments : [])
       .map((document) => String(document?.replacesDocumentId || '').trim())
@@ -607,16 +632,18 @@ const mergeVehicleDocuments = (currentDocuments = [], nextDocuments = []) => {
 
       const source = String(document?.source || '').trim().toLowerCase();
       const categoryKey = String(document?.categoryKey || '').trim().toLowerCase();
+      const documentId = String(document?.id || '').trim();
       const documentKey =
         source === 'verification' && categoryKey
           ? `verification:${categoryKey}`
           : document?.storagePath || document?.url || document?.id;
 
-      if (!documentKey || seenKeys.has(documentKey)) {
+      if (!documentKey || seenKeys.has(documentKey) || (documentId && seenIds.has(documentId))) {
         return;
       }
 
       seenKeys.add(documentKey);
+      if (documentId) seenIds.add(documentId);
       mergedDocuments.push(document);
     });
 
@@ -675,15 +702,57 @@ const getCombinedReviewEntryMeta = ({
   marketplaceVerificationReady,
   ownerVerificationReady,
   missingChecklistItems,
+  journeyState,
+  latestReviewDetail,
   tr,
 }) => {
   const missingItems = Array.isArray(missingChecklistItems) ? missingChecklistItems : [];
   const hasMissingChecklistItems = missingItems.length > 0;
+  const normalizedJourneyState = String(journeyState || '').trim().toLowerCase();
+
+  if (normalizedJourneyState === 'live') {
+    return {
+      title: tr('Listing is live', "L'annonce est en ligne"),
+      body: tr('The admin review is complete and the vehicle is already visible on the marketplace.', "La revue admin est terminée et le véhicule est déjà visible sur la marketplace."),
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      ready: false,
+    };
+  }
+
+  if (normalizedJourneyState === 'approved') {
+    return {
+      title: tr('Approved for publication', 'Approuvé pour publication'),
+      body: tr('Admin approval is complete. The last step is publishing the listing live.', "L'approbation admin est terminée. La dernière étape consiste à publier l'annonce."),
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      ready: false,
+    };
+  }
+
+  if (normalizedJourneyState === 'changes_requested') {
+    return {
+      title: tr('Changes requested', 'Modifications demandées'),
+      body: latestReviewDetail || tr('Review feedback is waiting for you in messages. Update the listing, then send it again.', 'Le retour de revue vous attend dans les messages. Mettez l’annonce à jour, puis renvoyez-la.'),
+      tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      ready: false,
+    };
+  }
+
+  if (normalizedJourneyState === 'pending_review') {
+    return {
+      title: tr('Submitted for admin review', "Envoyée en revue admin"),
+      body: tr(
+        'You are done for now. Admin is checking the listing and will either approve it for publishing or request changes here.',
+        "Vous avez terminé pour le moment. L'admin vérifie l'annonce et l'approuvera pour publication ou demandera des modifications ici."
+      ),
+      tone: 'border-sky-200 bg-sky-50 text-sky-800',
+      ready: false,
+    };
+  }
 
   if (!hasStartedDraft) {
     return {
-      title: tr('Start with this vehicle', 'Commencez par ce véhicule'),
-      body: tr('Add the vehicle, legal details, and listing setup first. The full review button will unlock after that.', "Ajoutez d'abord le véhicule, les informations légales et la configuration de l'annonce. Le bouton d'envoi complet se débloquera ensuite."),
+      title: tr('Start setup first', 'Commencez la configuration'),
+      body: tr('Complete the vehicle, documents, and listing setup first.', "Complétez d'abord le véhicule, les documents et la configuration de l'annonce."),
       tone: 'border-slate-200 bg-slate-50 text-slate-700',
       ready: false,
     };
@@ -691,10 +760,10 @@ const getCombinedReviewEntryMeta = ({
 
   if (!ownerVerificationReady) {
     return {
-      title: tr('Owner trust approval required before review', 'Approbation de confiance propriétaire requise avant la revue'),
+      title: tr('Owner approval pending', 'Approbation propriétaire en attente'),
       body: tr(
-        'Your driver license and profile ID must be approved before this vehicle can move into marketplace review. You can keep building pricing, photos, and pickup setup while admin reviews them.',
-        "Votre permis de conduire et votre pièce d'identité doivent être approuvés avant que ce véhicule puisse passer en revue marketplace. Vous pouvez continuer les prix, photos et le départ pendant la revue admin."
+        'Your ID and license must be approved before review can be sent.',
+        "Votre pièce d'identité et votre permis doivent être approuvés avant l'envoi en revue."
       ),
       tone: 'border-amber-200 bg-amber-50 text-amber-800',
       ready: false,
@@ -703,8 +772,11 @@ const getCombinedReviewEntryMeta = ({
 
   if (!marketplaceVerificationReady) {
     return {
-      title: tr('Documents already go to admin', "Les documents partent déjà à l'admin"),
-      body: tr('Registration and insurance uploads are sent automatically for verification. Keep completing the listing while admin reviews them. Once vehicle verification is approved, you can send the full package for review in one step.', "Les téléversements d'immatriculation et d'assurance partent automatiquement en vérification. Continuez l'annonce pendant la revue admin. Une fois le véhicule approuvé, vous pourrez envoyer tout le dossier en une seule étape."),
+      title: tr('Vehicle approval pending', 'Approbation véhicule en attente'),
+      body: tr(
+        'Registration and insurance are already with admin. Finish the listing while you wait.',
+        "L'immatriculation et l'assurance sont déjà chez l'admin. Terminez l'annonce pendant l'attente."
+      ),
       tone: 'border-amber-200 bg-amber-50 text-amber-800',
       ready: false,
     };
@@ -712,10 +784,10 @@ const getCombinedReviewEntryMeta = ({
 
   if (hasMissingChecklistItems) {
     return {
-      title: tr('Finish the last setup tasks', 'Terminez les dernières tâches'),
+      title: tr('Finish the last tasks', 'Terminez les dernières tâches'),
       body: tr(
-        'Complete the remaining checklist items below to unlock one full review send.',
-        "Terminez les dernières tâches ci-dessous pour débloquer un seul envoi complet en revue."
+        'Complete the remaining checklist to unlock review.',
+        "Terminez la checklist restante pour débloquer la revue."
       ),
       tone: 'border-amber-200 bg-amber-50 text-amber-800',
       ready: false,
@@ -723,66 +795,13 @@ const getCombinedReviewEntryMeta = ({
   }
 
   return {
-    title: tr('Send one full review', 'Envoyer une revue complète'),
-    body: tr('Send the vehicle, documents, and listing package together. After approval, you can publish whenever you are ready.', "Envoyez ensemble le véhicule, les documents et l'annonce. Après approbation, vous publierez quand vous serez prêt."),
+    title: tr('Ready to send', 'Prêt à envoyer'),
+    body: tr(
+      'Send the full package to admin in one step.',
+      "Envoyez le dossier complet à l'admin en une seule étape."
+    ),
     tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
     ready: true,
-  };
-};
-
-const getMarketplaceMilestoneMeta = ({
-  effectiveMarketplaceJourneyState,
-  canSendFullReview,
-  nextMarketplaceChecklistItem,
-  completedMarketplaceChecklistCount,
-  totalMarketplaceChecklistCount,
-  tr,
-}) => {
-  if (effectiveMarketplaceJourneyState === 'live') {
-    return {
-      badge: tr('Milestone reached', 'Palier atteint'),
-      title: tr('Listing is live', "L'annonce est en ligne"),
-      body: tr('Your marketplace journey is complete. You can now manage bookings and keep the listing fresh.', "Votre parcours marketplace est terminé. Vous pouvez maintenant gérer les réservations et garder l'annonce à jour."),
-      tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-    };
-  }
-
-  if (effectiveMarketplaceJourneyState === 'approved') {
-    return {
-      badge: tr('Next milestone', 'Prochain palier'),
-      title: tr('Publish when ready', 'Publier quand vous êtes prêt'),
-      body: tr('Admin approval is complete. The only step left is going live.', "L'approbation admin est terminée. Il ne reste plus qu'à publier."),
-      tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-    };
-  }
-
-  if (effectiveMarketplaceJourneyState === 'pending_review') {
-    return {
-      badge: tr('Next milestone', 'Prochain palier'),
-      title: tr('Wait for admin review', "Attendre la revue admin"),
-      body: tr('Your full package is already in review. The next update will appear here automatically.', "Votre dossier complet est déjà en revue. La prochaine mise à jour apparaîtra ici automatiquement."),
-      tone: 'border-sky-200 bg-sky-50 text-sky-800',
-    };
-  }
-
-  if (canSendFullReview) {
-    return {
-      badge: tr('Next milestone', 'Prochain palier'),
-      title: tr('Send full review', 'Envoyer la revue complète'),
-      body: tr('Everything required is ready. Send the full package to move this vehicle into review.', "Tout le nécessaire est prêt. Envoyez le dossier complet pour faire passer ce véhicule en revue."),
-      tone: 'border-violet-200 bg-violet-50 text-violet-800',
-    };
-  }
-
-  return {
-    badge: tr('Progress', 'Progression'),
-    title: nextMarketplaceChecklistItem
-      ? tr('Keep going', 'Continuez')
-      : tr('Start setup', 'Commencez la configuration'),
-    body: nextMarketplaceChecklistItem
-      ? `${tr('Complete next:', 'Complétez ensuite :')} ${nextMarketplaceChecklistItem.label}`
-      : `${completedMarketplaceChecklistCount}/${totalMarketplaceChecklistCount} ${tr('tasks finished', 'tâches terminées')}`,
-    tone: 'border-amber-200 bg-amber-50 text-amber-800',
   };
 };
 
@@ -808,6 +827,56 @@ const formatDate = (value, locale = 'en') => {
     month: 'short',
     year: 'numeric',
   }).format(date);
+};
+
+const formatRelativeDuration = (minutes, tr) => {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+  const days = Math.floor(safeMinutes / (60 * 24));
+  const hours = Math.floor((safeMinutes % (60 * 24)) / 60);
+  const mins = safeMinutes % 60;
+
+  if (days > 0) {
+    return tr(
+      `${days}d ${hours}h`,
+      `${days}j ${hours}h`
+    );
+  }
+  if (hours > 0) {
+    return mins > 0
+      ? tr(`${hours}h ${mins}m`, `${hours}h ${mins}m`)
+      : tr(`${hours}h`, `${hours}h`);
+  }
+  return tr(`${mins}m`, `${mins} min`);
+};
+
+const formatClockDuration = (milliseconds) => {
+  const safeMilliseconds = Math.max(0, Math.floor(Number(milliseconds) || 0));
+  const totalSeconds = Math.floor(safeMilliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return [
+    String(hours).padStart(2, '0'),
+    String(minutes).padStart(2, '0'),
+    String(seconds).padStart(2, '0'),
+  ].join(':');
+};
+
+const getRelativeTimeCopy = (targetValue, nowValue, tr, { futureLabel, pastLabel } = {}) => {
+  if (!targetValue) return '';
+  const target = new Date(targetValue);
+  if (Number.isNaN(target.getTime())) return '';
+  const now = new Date(nowValue);
+  const diffMinutes = Math.round((target.getTime() - now.getTime()) / 60000);
+
+  if (diffMinutes >= 0) {
+    const durationLabel = formatRelativeDuration(diffMinutes, tr);
+    return futureLabel ? futureLabel(durationLabel) : tr(`In ${durationLabel}`, `Dans ${durationLabel}`);
+  }
+
+  const durationLabel = formatRelativeDuration(Math.abs(diffMinutes), tr);
+  return pastLabel ? pastLabel(durationLabel) : tr(`${durationLabel} ago`, `Il y a ${durationLabel}`);
 };
 
 const MoneyLine = ({ label, value, strong = false }) => (
@@ -847,7 +916,7 @@ const getOwnerExecutionMeta = (status, tr) => {
     return {
       badge: tr('Ready to start rental', 'Prête à démarrer la location'),
       tone: 'border-sky-200 bg-sky-50 text-sky-700',
-      note: tr('Everything is confirmed. Complete pickup, collect evidence, and start the rental.', 'Tout est confirmé. Finalisez le départ, collectez les preuves et démarrez la location.'),
+      note: '',
       steps: [
         { key: 'request', label: tr('Booking confirmed', 'Réservation confirmée'), done: true },
         { key: 'handoff', label: tr('Vehicle handoff', 'Remise du véhicule'), active: true },
@@ -1011,6 +1080,93 @@ const OwnerStepperStepCard = ({
   </div>
 );
 
+const OwnerRentalWorkflowStepCard = ({
+  number,
+  title,
+  detail,
+  complete = false,
+  active = false,
+  disabled = false,
+  icon: StepIcon = FileText,
+  actionLabel = '',
+  onAction,
+  children = null,
+  fullBleedChildren = false,
+}) => (
+  <div
+    className={`rounded-[22px] border p-4 transition-all ${
+      complete
+        ? 'border-emerald-200 bg-emerald-50/90'
+        : active
+          ? 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+          : 'border-slate-200 bg-white/90'
+    }`}
+  >
+    <div className="flex items-start gap-3">
+      <div
+        className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+          complete ? 'bg-emerald-500 text-white' : active ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-600'
+        }`}
+      >
+        {complete ? <CheckCircle2 className="h-5 w-5" /> : <span className="text-sm font-bold">{number}</span>}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-slate-900">{title}</p>
+            {detail ? (
+              <p className={`mt-1 text-xs leading-5 ${complete ? 'text-violet-700' : 'text-slate-500'}`}>
+                {detail}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex flex-shrink-0 items-center gap-2">
+            {actionLabel && onAction ? (
+              <button
+                type="button"
+                onClick={onAction}
+                disabled={disabled}
+                aria-label={actionLabel}
+                title={actionLabel}
+                className={`inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border shadow-sm transition disabled:cursor-not-allowed ${
+                  disabled
+                    ? 'border-slate-200 bg-slate-100 text-slate-400'
+                    : complete
+                      ? 'border-emerald-200 bg-white text-violet-700 hover:bg-emerald-50'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <Edit className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+            <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${complete ? 'text-emerald-600' : active ? 'text-violet-600' : 'text-slate-400'}`} />
+          </div>
+        </div>
+        {!fullBleedChildren && children ? <div className="mt-3">{children}</div> : null}
+        {actionLabel && !complete ? (
+          <button
+            type="button"
+            onClick={onAction}
+            disabled={disabled}
+            className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 ${
+              complete
+                ? 'border border-emerald-200 bg-white text-violet-700 shadow-sm hover:bg-emerald-50'
+                : 'bg-violet-600 text-white shadow-sm hover:bg-violet-700'
+            }`}
+          >
+            {actionLabel}
+          </button>
+        ) : null}
+      </div>
+    </div>
+    {fullBleedChildren && children ? (
+      <div className="-mx-4 -mb-4 mt-4 overflow-hidden rounded-b-[20px] border-t border-violet-100 bg-white">
+        {children}
+      </div>
+    ) : null}
+  </div>
+);
+
 const OwnerPolicyLine = ({ label, detail }) => (
   <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
     <p className="text-sm font-semibold text-slate-950">{label}</p>
@@ -1023,7 +1179,7 @@ const storeOwnerVehicleId = (userId, vehicleId, options = {}) => {
 
   try {
     const existingIds = JSON.parse(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+      readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]'
     );
     const normalizedIds = Array.isArray(existingIds)
       ? existingIds.map((item) => String(item || '').trim()).filter(Boolean)
@@ -1033,7 +1189,7 @@ const storeOwnerVehicleId = (userId, vehicleId, options = {}) => {
     window.localStorage.setItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId), String(vehicleId));
     if (options.incrementCount) {
       const currentCount = Number.parseInt(
-        window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+        readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_COUNT_KEY, userId, '0') || '0',
         10
       );
       const nextCount = Number.isFinite(currentCount) && currentCount > 0 ? Math.max(nextIds.length, currentCount + 1) : nextIds.length;
@@ -1051,11 +1207,11 @@ const getKnownOwnerVehicleCount = (userId = '') => {
 
   try {
     const savedCount = Number.parseInt(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_COUNT_KEY, userId, '0') || '0',
       10
     );
     const savedIds = JSON.parse(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+      readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]'
     );
     const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
     return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount);
@@ -1173,8 +1329,8 @@ const getMarketplaceJourneyMeta = (journeyState, tr) => {
       };
     case 'pending_review':
       return {
-        listingLabel: tr('In review', 'En revue'),
-        reviewLabel: tr('In review', 'En revue'),
+        listingLabel: tr('Waiting for admin', "En attente de l'admin"),
+        reviewLabel: tr('Waiting for admin', "En attente de l'admin"),
         tone: 'border-sky-200 bg-sky-50 text-sky-700',
       };
     case 'approved':
@@ -1248,7 +1404,12 @@ const createTaxFormState = (record = null) => ({
   notes: record?.notes || '',
 });
 
-const SectionCard = ({ title, description, icon: Icon, children }) => (
+const SectionCard = ({ title, description, icon: Icon, children, plain = false }) => {
+  if (plain) {
+    return <section className="space-y-4">{children}</section>;
+  }
+
+  return (
   <section className={workspacePanelClass}>
     <div className="flex flex-wrap items-center gap-3">
       <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 text-violet-600 shadow-sm">
@@ -1261,7 +1422,207 @@ const SectionCard = ({ title, description, icon: Icon, children }) => (
     </div>
     <div className="mt-5">{children}</div>
   </section>
+  );
+};
+
+const OperationsCollapseCard = ({
+  eyebrow,
+  title,
+  description,
+  icon: Icon = FileText,
+  expanded,
+  onToggle,
+  expandLabel = 'Show detail',
+  collapseLabel = 'Hide detail',
+  children,
+}) => (
+  <div
+    className={`overflow-hidden rounded-[24px] border bg-white transition-[border-color,box-shadow] duration-200 ${
+      expanded
+        ? 'border-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.14),0_18px_40px_rgba(109,40,217,0.10)]'
+        : 'border-violet-100 shadow-[0_12px_30px_rgba(76,29,149,0.06)]'
+    }`}
+  >
+    <button
+      type="button"
+      onClick={onToggle}
+      className="flex w-full items-start gap-3 px-4 py-4 text-left"
+      aria-label={expanded ? collapseLabel : expandLabel}
+      aria-expanded={expanded}
+    >
+      <span
+        className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border shadow-sm transition-[border-color,background-color,box-shadow,color] duration-200 ${
+          expanded
+            ? 'border-violet-200 bg-violet-50/90 text-violet-600 shadow-[0_10px_24px_rgba(109,40,217,0.10)]'
+            : 'border-violet-100 bg-violet-50 text-violet-600'
+        }`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+        <span className="min-w-0">
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{eyebrow}</span>
+          <span className="mt-1 block text-base font-bold text-slate-900">{title}</span>
+          {description ? <span className="mt-1 block text-xs text-slate-500">{description}</span> : null}
+        </span>
+        <span
+          className={`rounded-full p-2 transition-[background-color,color,box-shadow] duration-200 ${
+            expanded
+              ? 'bg-violet-100 text-violet-600 shadow-[0_8px_18px_rgba(109,40,217,0.10)]'
+              : 'bg-slate-100 text-slate-500'
+          }`}
+        >
+          <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </span>
+      </span>
+    </button>
+    {expanded ? <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3">{children}</div> : null}
+  </div>
 );
+
+const OwnerExecutionMediaPhaseCard = ({
+  title,
+  description,
+  photos = [],
+  emptyLabel,
+  countLabel,
+}) => (
+  <div className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-base font-bold text-slate-950">{title}</p>
+        {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+      </div>
+      <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${
+        photos.length > 0
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          : 'border-slate-200 bg-slate-50 text-slate-500'
+      }`}>
+        <Camera className="h-3.5 w-3.5" />
+        {countLabel}
+      </span>
+    </div>
+    <div className="mt-4">
+      <RentalEvidenceGallery
+        title={title}
+        subtitle=""
+        photos={photos}
+        emptyLabel={emptyLabel}
+        variant="flat"
+        hideHeader
+      />
+    </div>
+  </div>
+);
+
+const OwnerExecutionDocumentRow = ({
+  title,
+  description,
+  statusLabel,
+  statusTone = 'slate',
+  href = '',
+  previewUrl = '',
+  previewAlt = '',
+  previewLabel = '',
+  previewEmptyLabel = '',
+  showPreviewSlot = false,
+  onAction = null,
+  actionLabel = '',
+  actionBusy = false,
+  actionDisabled = false,
+  tr,
+}) => {
+  const toneClass =
+    statusTone === 'emerald'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : statusTone === 'amber'
+        ? 'border-amber-200 bg-amber-50 text-amber-700'
+        : statusTone === 'violet'
+          ? 'border-violet-200 bg-violet-50 text-violet-700'
+          : 'border-slate-200 bg-slate-50 text-slate-600';
+
+  return (
+    <div className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-base font-bold text-slate-950">{title}</p>
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${toneClass}`}>
+              {statusTone === 'emerald' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <FileText className="h-3.5 w-3.5" />}
+              {statusLabel}
+            </span>
+          </div>
+          <p className="mt-1 text-sm leading-6 text-slate-500">{description}</p>
+        </div>
+        {showPreviewSlot ? (
+          <div className="flex w-full flex-shrink-0 flex-col gap-2 sm:w-[172px]">
+            {previewLabel ? (
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                {previewLabel}
+              </p>
+            ) : null}
+            <div className="flex h-20 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/50 p-2 shadow-inner">
+              {previewUrl ? (
+                <img
+                  src={previewUrl}
+                  alt={previewAlt || title}
+                  className="max-h-full w-full object-contain"
+                />
+              ) : (
+                <span className="px-2 text-center text-xs font-semibold leading-5 text-slate-400">
+                  {previewEmptyLabel || tr('No signature yet', 'Aucune signature')}
+                </span>
+              )}
+            </div>
+          </div>
+        ) : onAction ? (
+          <button
+            type="button"
+            onClick={onAction}
+            disabled={actionBusy || actionDisabled}
+            className="inline-flex flex-shrink-0 items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+          >
+            {actionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+            {actionBusy ? tr('Preparing...', 'Préparation...') : actionLabel || tr('Open', 'Ouvrir')}
+          </button>
+        ) : href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex flex-shrink-0 items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
+          >
+            <ExternalLink className="h-4 w-4" />
+            {actionLabel || tr('Open', 'Ouvrir')}
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+const RentalOperationSummaryCard = ({ label, value, detail, tone = 'slate' }) => {
+  const isReferenceDetail = tone === 'violet';
+  const detailClassName = tone === 'emerald'
+    ? 'mobile-summary-support mt-1 text-sm font-semibold text-emerald-600'
+    : 'mobile-summary-support mt-1 text-sm font-medium text-slate-500';
+
+  return (
+    <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{label}</p>
+      <p className="mobile-summary-value mt-2 line-clamp-2 text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">{value || '—'}</p>
+      {detail ? (
+        isReferenceDetail ? (
+          <span className="mobile-summary-support mt-1 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 shadow-sm">
+            {detail}
+          </span>
+        ) : (
+          <p className={detailClassName}>{detail}</p>
+        )
+      ) : null}
+    </div>
+  );
+};
 
 const StatusPill = ({ label, tone = 'slate' }) => (
   <span
@@ -1384,21 +1745,59 @@ const AccountMarketplaceVehicleProfile = () => {
   const navigate = useNavigate();
   const { vehicleId } = useParams();
   const isNewVehicle = vehicleId === 'new';
+  const isOperationsWorkspaceRoute = location.pathname.includes('/account/operations/');
+  const routeOwnerOperationRequest = useMemo(() => {
+    if (!isOperationsWorkspaceRoute) return null;
+    const requestId = String(new URLSearchParams(location.search).get('requestId') || '').trim();
+    let stateRequest = location.state?.ownerOperationRequest;
+    if (!stateRequest?.id && requestId && typeof window !== 'undefined') {
+      try {
+        const cachedRequest = JSON.parse(window.sessionStorage.getItem(`driveout_owner_operation_request:${requestId}`) || 'null');
+        if (cachedRequest?.id) stateRequest = cachedRequest;
+      } catch {
+        // Best-effort route acceleration only.
+      }
+    }
+    if (!stateRequest?.id) return null;
+    if (requestId && String(stateRequest.id) !== requestId) return null;
+    const requestVehicleId = String(
+      stateRequest?.vehiclePublicProfileId ||
+        stateRequest?.rawListing?.vehicle_public_profile_id ||
+        stateRequest?.rawProfile?.id ||
+        ''
+    ).trim();
+    if (requestVehicleId && vehicleId && requestVehicleId !== String(vehicleId)) return null;
+    return stateRequest;
+  }, [isOperationsWorkspaceRoute, location.search, location.state, vehicleId]);
   const { user, userProfile, activatePrivateOwnerAccount } = useAuth();
   const [vehicle, setVehicle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(isOperationsWorkspaceRoute ? 'bookings' : 'overview');
   const [isEditingVehicle, setIsEditingVehicle] = useState(isNewVehicle);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState('');
+  const [lastProfileSaveAt, setLastProfileSaveAt] = useState(0);
+  const [reviewSubmissionPending, setReviewSubmissionPending] = useState(false);
+  const [reviewSubmissionNotice, setReviewSubmissionNotice] = useState('');
+  const [reviewSubmissionSent, setReviewSubmissionSent] = useState(false);
+  const [publishListingPending, setPublishListingPending] = useState(false);
+  const [reviewPublishDetailsExpanded, setReviewPublishDetailsExpanded] = useState(true);
+  const [operationsWorkflowExpanded, setOperationsWorkflowExpanded] = useState(false);
+  const [operationsReferenceExpanded, setOperationsReferenceExpanded] = useState(false);
+  const [operationsMediaExpanded, setOperationsMediaExpanded] = useState(false);
+  const [operationsFocusedMediaPhase, setOperationsFocusedMediaPhase] = useState('');
+  const [operationsDocumentsExpanded, setOperationsDocumentsExpanded] = useState(false);
+  const [operationsVehicleExpanded, setOperationsVehicleExpanded] = useState(false);
+  const [operationsDetailExpanded, setOperationsDetailExpanded] = useState(false);
+  const [operationsQueueExpanded, setOperationsQueueExpanded] = useState(false);
   const [sectionSaveMeta, setSectionSaveMeta] = useState({});
   const [vehicleLegalScanResults, setVehicleLegalScanResults] = useState({});
   const [formData, setFormData] = useState(() => buildFormData(null));
   const [fieldErrors, setFieldErrors] = useState({});
-  const [vehicleRequests, setVehicleRequests] = useState([]);
+  const [vehicleRequests, setVehicleRequests] = useState(() => (routeOwnerOperationRequest ? [routeOwnerOperationRequest] : []));
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
   const [vehicleFuelState, setVehicleFuelState] = useState(null);
   const [annualTaxRecords, setAnnualTaxRecords] = useState([]);
@@ -1409,11 +1808,37 @@ const AccountMarketplaceVehicleProfile = () => {
   const [taxSaving, setTaxSaving] = useState(false);
   const [taxForm, setTaxForm] = useState(() => createTaxFormState());
   const [focusedSectionId, setFocusedSectionId] = useState('');
+  const [vehicleLegalProcessingState, setVehicleLegalProcessingState] = useState({
+    active: false,
+    queued: false,
+    currentCategory: '',
+    currentCategoryLabel: '',
+    queuedCategory: '',
+    queuedCategoryLabel: '',
+    status: '',
+    progress: 0,
+  });
   const [reviewThreadOpenSignal, setReviewThreadOpenSignal] = useState(0);
   const [ownerExecutionDraft, setOwnerExecutionDraft] = useState(() => createOwnerExecutionDraft());
+  const ownerExecutionDraftRef = useRef(ownerExecutionDraft);
   const [ownerExecutionSaving, setOwnerExecutionSaving] = useState(false);
+  const [ownerExecutionDocumentActionKey, setOwnerExecutionDocumentActionKey] = useState('');
+  const [ownerExecutionNow, setOwnerExecutionNow] = useState(() => Date.now());
   const [handoffOdometerInput, setHandoffOdometerInput] = useState('');
   const [returnOdometerInput, setReturnOdometerInput] = useState('');
+  const [showOwnerStartOdometerModal, setShowOwnerStartOdometerModal] = useState(false);
+  const [showOwnerStartFuelModal, setShowOwnerStartFuelModal] = useState(false);
+  const [showOwnerReturnOdometerModal, setShowOwnerReturnOdometerModal] = useState(false);
+  const [showOwnerReturnFuelModal, setShowOwnerReturnFuelModal] = useState(false);
+  const [showOwnerSignatureModal, setShowOwnerSignatureModal] = useState(false);
+  const [showOwnerRefundSignatureModal, setShowOwnerRefundSignatureModal] = useState(false);
+  const operationsMediaSectionRef = useRef(null);
+  const ownerExecutionDocumentGenerationRef = useRef({ contract: false, receipt: false });
+  const ownerExecutionDocumentAutoPrepareRef = useRef('');
+
+  useEffect(() => {
+    ownerExecutionDraftRef.current = ownerExecutionDraft;
+  }, [ownerExecutionDraft]);
 
   const getVehicleLegalFieldLabel = useCallback(
     (fieldKey) => {
@@ -1437,18 +1862,27 @@ const AccountMarketplaceVehicleProfile = () => {
       return returnPath;
     }
 
+    if (isOperationsWorkspaceRoute) {
+      return '/account/overview';
+    }
+
     if (getKnownOwnerVehicleCount(user?.id) > 1) {
       return '/account/vehicles';
     }
 
     return '/account/vehicles';
-  }, [location, user?.id]);
+  }, [isOperationsWorkspaceRoute, location, user?.id]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const effectiveActiveTab = isOperationsWorkspaceRoute ? 'bookings' : activeTab;
   const resumeEditingAfterLoad = Boolean(location.state?.resumeEditing);
   const resumeFocusedSectionId = String(location.state?.focusSectionId || '').trim();
   const resolvedVehicleId = vehicle?.id || vehicleId;
   const linkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(vehicle?.rawProfile, vehicle);
-  const vehicleVerificationEntityId = linkedFleetVehicleId || null;
+  const vehicleVerificationEntityIds = useMemo(
+    () => buildVehicleVerificationEntityIds(linkedFleetVehicleId, resolvedVehicleId),
+    [linkedFleetVehicleId, resolvedVehicleId]
+  );
+  const vehicleVerificationEntityId = vehicleVerificationEntityIds[0] || null;
   const draftUploadVehicleId = vehicle?.id || (isNewVehicle && user?.id ? `owner-draft-${user.id}` : resolvedVehicleId);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
@@ -1531,6 +1965,17 @@ const AccountMarketplaceVehicleProfile = () => {
     };
   }, [draftUploadVehicleId, isNewVehicle, vehicle?.id]);
 
+  useEffect(() => {
+    if (!routeOwnerOperationRequest?.id) return;
+    setVehicleRequests((current) => {
+      const rows = Array.isArray(current) ? current : [];
+      if (rows.some((request) => String(request?.id || '') === String(routeOwnerOperationRequest.id))) {
+        return rows;
+      }
+      return [routeOwnerOperationRequest, ...rows];
+    });
+  }, [routeOwnerOperationRequest]);
+
   const getAnnualTaxDocumentForRecord = useCallback((record) => {
     const taxYear = String(record?.tax_year || '').trim();
     if (!annualTaxDocuments.length) return null;
@@ -1598,12 +2043,26 @@ const AccountMarketplaceVehicleProfile = () => {
         throw result.error;
       }
       const nextVehicle = result?.vehicle || null;
-      const nextVehicleVerificationEntityId = getLinkedFleetVehicleIdFromProfile(nextVehicle?.rawProfile, nextVehicle);
-      const verificationFileResult = nextVehicleVerificationEntityId
-        ? await VerificationService.getEntityVerificationFile('vehicle', nextVehicleVerificationEntityId, { forceRefresh: silent }).catch(() => ({ summary: null, requests: [] }))
-        : { summary: null, requests: [] };
-      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []);
-      setVehicleVerificationSummary(verificationFileResult?.summary || null);
+      const nextLinkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(nextVehicle?.rawProfile, nextVehicle);
+      const nextVehicleVerificationEntityIds = buildVehicleVerificationEntityIds(nextLinkedFleetVehicleId, nextVehicle?.id || vehicleId);
+      const verificationFileResults = nextVehicleVerificationEntityIds.length > 0
+        ? await Promise.all(
+            nextVehicleVerificationEntityIds.map((entityId) =>
+              VerificationService.getEntityVerificationFile('vehicle', entityId, { forceRefresh: true })
+                .catch(() => ({ summary: null, requests: [] }))
+            )
+          )
+        : [{ summary: null, requests: [] }];
+      const fallbackVehicleVerificationSummary = nextVehicle?.rawFleetVehicle?.verification_summary || null;
+      const nextVerificationSources = fallbackVehicleVerificationSummary
+        ? [...verificationFileResults, { summary: fallbackVehicleVerificationSummary, requests: [] }]
+        : verificationFileResults;
+      const nextVerificationRequests = getVehicleVerificationRowsFromFileResults(nextVerificationSources);
+      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(nextVerificationRequests);
+      const nextVerificationSummary = nextVerificationRequests.length > 0
+        ? buildEntityVerificationSummary(nextVerificationRequests, 'vehicle')
+        : nextVerificationSources.find((fileResult) => fileResult?.summary)?.summary || null;
+      setVehicleVerificationSummary(nextVerificationSummary);
       setVehicleDocuments((current) => mergeVehicleDocuments(current, nextVerificationDocuments));
       setOwnerVerificationSummary(ownerVerificationResult?.summary || null);
       setVehicle(nextVehicle);
@@ -1611,7 +2070,6 @@ const AccountMarketplaceVehicleProfile = () => {
       setIsEditingVehicle(resumeEditingAfterLoad);
       setFocusedSectionId(resumeFocusedSectionId || '');
       storeOwnerVehicleId(user?.id, nextVehicle?.id);
-      const nextLinkedFleetVehicleId = getLinkedFleetVehicleIdFromProfile(nextVehicle?.rawProfile, nextVehicle);
       if (nextLinkedFleetVehicleId) {
         try {
           const [nextFuelState, nextAnnualTaxes, nextFinanceOverview] = await Promise.all([
@@ -1723,6 +2181,10 @@ const AccountMarketplaceVehicleProfile = () => {
   }, [isNewVehicle, loadVehicleProfile, user?.id, vehicleId]);
 
   useEffect(() => {
+    if (isOperationsWorkspaceRoute) {
+      setActiveTab('bookings');
+      return;
+    }
     const requestedTab = new URLSearchParams(location.search).get('tab');
     if (!requestedTab) {
       setActiveTab('overview');
@@ -1731,7 +2193,22 @@ const AccountMarketplaceVehicleProfile = () => {
     if (['overview', 'listing', 'bookings', 'finance', 'legal'].includes(requestedTab)) {
       setActiveTab(requestedTab);
     }
-  }, [location.search, isNewVehicle]);
+  }, [isNewVehicle, isOperationsWorkspaceRoute, location.search]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const requestId = String(searchParams.get('requestId') || '').trim();
+    const focusSectionFromQuery = String(searchParams.get('focusSectionId') || '').trim();
+    if (!requestId && !focusSectionFromQuery) return;
+
+    if (requestId) {
+      setActiveTab('bookings');
+      setFocusedSectionId(focusSectionFromQuery || 'owner-rental-execution');
+      return;
+    }
+
+    setFocusedSectionId(focusSectionFromQuery);
+  }, [location.search]);
 
   useEffect(() => {
     if (!focusedSectionId) return undefined;
@@ -1804,18 +2281,47 @@ const AccountMarketplaceVehicleProfile = () => {
       declined: rows.filter((row) => String(row?.requestStatus || '').toLowerCase() === 'declined').length,
     };
   }, [vehicleRequests]);
+  const requestedOperationalRequestId = useMemo(
+    () => String(new URLSearchParams(location.search).get('requestId') || '').trim(),
+    [location.search]
+  );
   const operationalRequest = useMemo(() => {
     const rows = Array.isArray(vehicleRequests) ? vehicleRequests : [];
+    if (isOperationsWorkspaceRoute && requestedOperationalRequestId) {
+      const requestedRouteMatch = rows.find(
+        (row) => String(row?.id || '').trim() === requestedOperationalRequestId
+      );
+      if (requestedRouteMatch) return requestedRouteMatch;
+    }
+
     const candidates = rows.filter((row) =>
       ['pre_approved', 'approved', 'active', 'completed'].includes(String(row?.requestStatus || '').toLowerCase())
     );
     if (!candidates.length) return null;
+    if (requestedOperationalRequestId) {
+      const requestedMatch = candidates.find(
+        (row) => String(row?.id || '').trim() === requestedOperationalRequestId
+      );
+      if (requestedMatch) return requestedMatch;
+    }
     return [...candidates].sort((left, right) => {
       const priorityDelta = getOwnerExecutionPriority(left?.requestStatus) - getOwnerExecutionPriority(right?.requestStatus);
       if (priorityDelta !== 0) return priorityDelta;
       return new Date(right?.updatedAt || right?.createdAt || 0).getTime() - new Date(left?.updatedAt || left?.createdAt || 0).getTime();
     })[0] || null;
-  }, [vehicleRequests]);
+  }, [isOperationsWorkspaceRoute, requestedOperationalRequestId, vehicleRequests]);
+  const ownerExecutionWorkflowStatus = useMemo(() => {
+    const normalizedStatus = normalizeMarketplaceRequestLifecycleStatus(operationalRequest?.requestStatus || 'pending');
+    const isRenderableStatus = ['pre_approved', 'approved', 'active', 'completed'].includes(normalizedStatus);
+
+    if (isRenderableStatus) return normalizedStatus;
+
+    if (isOperationsWorkspaceRoute && operationalRequest?.id && requestedOperationalRequestId) {
+      return 'approved';
+    }
+
+    return normalizedStatus;
+  }, [isOperationsWorkspaceRoute, operationalRequest?.id, operationalRequest?.requestStatus, requestedOperationalRequestId]);
   const operationalRequestMoney = useMemo(
     () => getMarketplaceMoneyBreakdown({
       estimatedAmount:
@@ -1834,11 +2340,15 @@ const AccountMarketplaceVehicleProfile = () => {
     ]
   );
   const operationalExecutionMeta = useMemo(
-    () => getOwnerExecutionMeta(operationalRequest?.requestStatus, tr),
-    [operationalRequest?.requestStatus, tr]
+    () => getOwnerExecutionMeta(ownerExecutionWorkflowStatus, tr),
+    [ownerExecutionWorkflowStatus, tr]
+  );
+  const operationalRequestExecutionAction = useMemo(
+    () => getOwnerExecutionActionConfig(operationalRequest, tr),
+    [operationalRequest, tr]
   );
   const operationalFundsLifecycle = useMemo(() => {
-    const status = String(operationalRequest?.requestStatus || '').trim().toLowerCase();
+    const status = String(ownerExecutionWorkflowStatus || '').trim().toLowerCase();
     return [
       {
         key: 'fee',
@@ -1862,7 +2372,7 @@ const AccountMarketplaceVehicleProfile = () => {
         complete: ['active', 'completed'].includes(status),
       },
     ];
-  }, [operationalRequest?.requestStatus, tr]);
+  }, [ownerExecutionWorkflowStatus, tr]);
   const operationalSettlementRules = useMemo(
     () => getMarketplaceFundsPolicy(tr),
     [tr]
@@ -1871,47 +2381,115 @@ const AccountMarketplaceVehicleProfile = () => {
     () => buildOwnerExecutionStorageKey(operationalRequest?.id, user?.id),
     [operationalRequest?.id, user?.id]
   );
+  const ownerExecutionStorageKeys = useMemo(
+    () => buildOwnerExecutionStorageKeys(operationalRequest?.id, user?.id),
+    [operationalRequest?.id, user?.id]
+  );
   const ownerExecutionStage = useMemo(() => {
-    const status = normalizeMarketplaceRequestLifecycleStatus(operationalRequest || 'pending');
+    const status = normalizeMarketplaceRequestLifecycleStatus(ownerExecutionWorkflowStatus || 'pending');
     if (status === 'completed' || ownerExecutionDraft.returnSavedAt) return 'completed';
     if ((status === 'active' || ownerExecutionDraft.startedAt) && ownerExecutionDraft.returnPendingAt) return 'return_pending';
     if (status === 'active' || ownerExecutionDraft.startedAt) return 'live';
     if (status === 'approved' || ownerExecutionDraft.startReadyAt) return ownerExecutionDraft.startReadyAt ? 'ready_to_start' : 'handoff';
     if (status === 'pre_approved') return 'approved';
     return 'requested';
-  }, [operationalRequest?.requestStatus, ownerExecutionDraft.returnPendingAt, ownerExecutionDraft.returnSavedAt, ownerExecutionDraft.startedAt, ownerExecutionDraft.startReadyAt]);
+  }, [ownerExecutionDraft.returnPendingAt, ownerExecutionDraft.returnSavedAt, ownerExecutionDraft.startedAt, ownerExecutionDraft.startReadyAt, ownerExecutionWorkflowStatus]);
+  const ownerExecutionFocusMode = useMemo(
+    () => isOperationsWorkspaceRoute && OWNER_EXECUTION_FOCUS_STAGES.has(ownerExecutionStage),
+    [isOperationsWorkspaceRoute, ownerExecutionStage]
+  );
+  useEffect(() => {
+    if (!ownerExecutionFocusMode) return;
+
+    setOperationsReferenceExpanded(false);
+    setOperationsMediaExpanded(false);
+    setOperationsFocusedMediaPhase('');
+    setOperationsDocumentsExpanded(false);
+    setOperationsVehicleExpanded(false);
+    setOperationsDetailExpanded(false);
+    setOperationsWorkflowExpanded(false);
+    setOperationsQueueExpanded(false);
+  }, [ownerExecutionFocusMode, ownerExecutionStage]);
   const ownerExecutionHandoffLocked = useMemo(
-    () => isOwnerExecutionHandoffLocked(ownerExecutionDraft, operationalRequest?.requestStatus),
-    [ownerExecutionDraft, operationalRequest?.requestStatus]
+    () => isOwnerExecutionHandoffLocked(ownerExecutionDraft, ownerExecutionWorkflowStatus),
+    [ownerExecutionDraft, ownerExecutionWorkflowStatus]
   );
   const ownerExecutionStartedAt = useMemo(
     () => ownerExecutionDraft.startedAt || operationalRequest?.rawRequest?.counter_offer?.owner_execution?.startedAt || operationalRequest?.updatedAt || null,
     [operationalRequest?.rawRequest?.counter_offer?.owner_execution?.startedAt, operationalRequest?.updatedAt, ownerExecutionDraft.startedAt]
   );
+  const ownerExecutionStartedAtMs = useMemo(() => {
+    if (!ownerExecutionStartedAt) return null;
+    const timestamp = new Date(ownerExecutionStartedAt).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }, [ownerExecutionStartedAt]);
+  const ownerExecutionReturnFlowArmed = useMemo(
+    () =>
+      Boolean(ownerExecutionStartedAtMs) &&
+      ownerExecutionNow - ownerExecutionStartedAtMs >= OWNER_RETURN_FLOW_ARM_DELAY_MS,
+    [ownerExecutionNow, ownerExecutionStartedAtMs]
+  );
   const ownerExecutionCanEndRental = useMemo(
     () => ownerExecutionStage === 'live' && Boolean(ownerExecutionStartedAt),
     [ownerExecutionStage, ownerExecutionStartedAt]
   );
-  const ownerExecutionReturnLocked = useMemo(
-    () => isOwnerExecutionReturnLocked(ownerExecutionDraft, operationalRequest?.requestStatus),
-    [ownerExecutionDraft, operationalRequest?.requestStatus]
+  const ownerExecutionCanStartReturnFlow = useMemo(
+    () => ownerExecutionCanEndRental && ownerExecutionReturnFlowArmed,
+    [ownerExecutionCanEndRental, ownerExecutionReturnFlowArmed]
   );
+  const ownerExecutionReturnLocked = useMemo(
+    () => isOwnerExecutionReturnLocked(ownerExecutionDraft, ownerExecutionWorkflowStatus),
+    [ownerExecutionDraft, ownerExecutionWorkflowStatus]
+  );
+  const ownerExecutionHandoffPhotos = useMemo(
+    () => normalizeOwnerExecutionPhotos(ownerExecutionDraft.handoffPhotos),
+    [ownerExecutionDraft.handoffPhotos]
+  );
+  const ownerExecutionLegalDocsPhotos = useMemo(
+    () => normalizeOwnerExecutionPhotos(ownerExecutionDraft.legalDocsPhotos),
+    [ownerExecutionDraft.legalDocsPhotos]
+  );
+  const ownerExecutionReturnPhotos = useMemo(
+    () => normalizeOwnerExecutionPhotos(ownerExecutionDraft.returnPhotos),
+    [ownerExecutionDraft.returnPhotos]
+  );
+  const ownerExecutionMediaCount =
+    ownerExecutionHandoffPhotos.length +
+    ownerExecutionLegalDocsPhotos.length +
+    ownerExecutionReturnPhotos.length;
+  const ownerExecutionLegalDocsReady =
+    Boolean(ownerExecutionDraft.legalDocsMediaReady) ||
+    ownerExecutionLegalDocsPhotos.length >= OWNER_LEGAL_DOCS_MIN_PHOTOS;
+  const openOwnerExecutionMediaSection = useCallback((phase = '') => {
+    const normalizedPhase = String(phase || '').trim();
+    setOperationsFocusedMediaPhase(['handoff', 'legal_docs', 'return'].includes(normalizedPhase) ? normalizedPhase : '');
+    setOperationsReferenceExpanded(true);
+    setOperationsMediaExpanded(true);
+    if (typeof window === 'undefined') return;
+
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        operationsMediaSectionRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }, 80);
+    });
+  }, []);
   const ownerHandoffReady = useMemo(
     () => [
-      ownerExecutionDraft.handoffChecked,
       ownerExecutionDraft.handoffMediaReady,
-      Number.isFinite(Number(ownerExecutionDraft.startOdometer)) && Number(ownerExecutionDraft.startOdometer) >= 0,
-      Number.isFinite(Number(ownerExecutionDraft.startFuelLevel)) && Number(ownerExecutionDraft.startFuelLevel) >= 0,
-      ownerExecutionDraft.legalDocsChecked,
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer),
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel),
+      ownerExecutionLegalDocsReady,
       ownerExecutionDraft.depositConfirmed,
       ownerExecutionDraft.contractSigned,
     ].every(Boolean),
     [
-      ownerExecutionDraft.handoffChecked,
       ownerExecutionDraft.contractSigned,
       ownerExecutionDraft.depositConfirmed,
       ownerExecutionDraft.handoffMediaReady,
-      ownerExecutionDraft.legalDocsChecked,
+      ownerExecutionLegalDocsReady,
       ownerExecutionDraft.startFuelLevel,
       ownerExecutionDraft.startOdometer,
     ]
@@ -1919,56 +2497,398 @@ const AccountMarketplaceVehicleProfile = () => {
   const ownerReturnReady = useMemo(
     () => [
       ownerExecutionDraft.returnMediaReady,
-      Number.isFinite(Number(ownerExecutionDraft.returnOdometer)) &&
-        Number(ownerExecutionDraft.returnOdometer) >= 0 &&
-        (!Number.isFinite(Number(ownerExecutionDraft.startOdometer)) ||
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer) &&
+        (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ||
           Number(ownerExecutionDraft.returnOdometer) >= Number(ownerExecutionDraft.startOdometer)),
-      Number.isFinite(Number(ownerExecutionDraft.returnFuelLevel)) && Number(ownerExecutionDraft.returnFuelLevel) >= 0,
-      ownerExecutionDraft.issueReviewed,
-    ].every(Boolean),
-    [
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel),
+	      ownerExecutionDraft.issueReviewed &&
+	        (!ownerExecutionDraft.issueReported || Boolean(String(ownerExecutionDraft.issueNote || '').trim())),
+	      isOwnerExecutionDepositReviewComplete(ownerExecutionDraft),
+	    ].every(Boolean),
+	    [
+	      ownerExecutionDraft.depositOutcome,
+	      ownerExecutionDraft.depositReviewed,
+	      ownerExecutionDraft.depositRefundSignatureUrl,
+	      ownerExecutionDraft.issueNote,
+	      ownerExecutionDraft.issueReported,
       ownerExecutionDraft.issueReviewed,
       ownerExecutionDraft.returnFuelLevel,
       ownerExecutionDraft.returnMediaReady,
       ownerExecutionDraft.startOdometer,
       ownerExecutionDraft.returnOdometer,
     ]
-  );
+	  );
+	  const ownerReturnFuelDelta = useMemo(() => {
+    if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel) || !hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)) return null;
+    const startLevel = Number(ownerExecutionDraft.startFuelLevel);
+    const returnLevel = Number(ownerExecutionDraft.returnFuelLevel);
+    return returnLevel - startLevel;
+	  }, [ownerExecutionDraft.returnFuelLevel, ownerExecutionDraft.startFuelLevel]);
+	  const ownerReturnDepositOutcomeLabel = useMemo(() => {
+	    if (ownerExecutionDraft.depositOutcome === 'refund_full') {
+	      return ownerExecutionDraft.depositRefundSignatureUrl
+	        ? tr('Refund in full • Signature saved', 'Remboursement total • Signature enregistrée')
+	        : tr('Refund in full • Signature required', 'Remboursement total • Signature requise');
+	    }
+	    if (ownerExecutionDraft.depositOutcome === 'hold_partial') return tr('Hold partially', 'Retenir partiellement');
+	    if (ownerExecutionDraft.depositOutcome === 'hold_full') return tr('Hold fully', 'Retenir en totalité');
+	    return tr('Choose the deposit outcome before closing the rental.', 'Choisissez le résultat de la caution avant de clôturer la location.');
+	  }, [ownerExecutionDraft.depositOutcome, ownerExecutionDraft.depositRefundSignatureUrl, tr]);
   const ownerHandoffCurrentStep = useMemo(() => {
-    if (!ownerExecutionDraft.handoffChecked) return OWNER_HANDOFF_STEPS[0];
-    if (!ownerExecutionDraft.handoffMediaReady) return OWNER_HANDOFF_STEPS[1];
-    if (!(Number.isFinite(Number(ownerExecutionDraft.startOdometer)) && Number(ownerExecutionDraft.startOdometer) >= 0)) return OWNER_HANDOFF_STEPS[2];
-    if (!(Number.isFinite(Number(ownerExecutionDraft.startFuelLevel)) && Number(ownerExecutionDraft.startFuelLevel) >= 0)) return OWNER_HANDOFF_STEPS[3];
-    if (!ownerExecutionDraft.legalDocsChecked) return OWNER_HANDOFF_STEPS[4];
-    if (!ownerExecutionDraft.depositConfirmed) return OWNER_HANDOFF_STEPS[5];
-    if (!ownerExecutionDraft.contractSigned) return OWNER_HANDOFF_STEPS[6];
-    return OWNER_HANDOFF_STEPS[6];
+    if (!ownerExecutionDraft.handoffMediaReady) return OWNER_HANDOFF_STEPS[0];
+    if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)) return OWNER_HANDOFF_STEPS[1];
+    if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel)) return OWNER_HANDOFF_STEPS[2];
+    if (!ownerExecutionLegalDocsReady) return OWNER_HANDOFF_STEPS[3];
+    if (!ownerExecutionDraft.depositConfirmed) return OWNER_HANDOFF_STEPS[4];
+    if (!ownerExecutionDraft.contractSigned) return OWNER_HANDOFF_STEPS[5];
+    return OWNER_HANDOFF_STEPS[5];
   }, [
-    ownerExecutionDraft.handoffChecked,
     ownerExecutionDraft.contractSigned,
     ownerExecutionDraft.depositConfirmed,
     ownerExecutionDraft.handoffMediaReady,
-    ownerExecutionDraft.legalDocsChecked,
+    ownerExecutionLegalDocsReady,
     ownerExecutionDraft.startFuelLevel,
     ownerExecutionDraft.startOdometer,
   ]);
   const ownerReturnCurrentStep = useMemo(() => {
     if (!ownerExecutionDraft.returnMediaReady) return OWNER_RETURN_STEPS[0];
     if (
-      !(Number.isFinite(Number(ownerExecutionDraft.returnOdometer)) &&
-        Number(ownerExecutionDraft.returnOdometer) >= 0 &&
-        (!Number.isFinite(Number(ownerExecutionDraft.startOdometer)) ||
+      !(hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer) &&
+        (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ||
           Number(ownerExecutionDraft.returnOdometer) >= Number(ownerExecutionDraft.startOdometer)))
     ) return OWNER_RETURN_STEPS[1];
-    if (!(Number.isFinite(Number(ownerExecutionDraft.returnFuelLevel)) && Number(ownerExecutionDraft.returnFuelLevel) >= 0)) return OWNER_RETURN_STEPS[2];
-    if (!ownerExecutionDraft.issueReviewed) return OWNER_RETURN_STEPS[3];
-    return OWNER_RETURN_STEPS[4];
-  }, [
+    if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)) return OWNER_RETURN_STEPS[2];
+    if (!ownerExecutionDraft.issueReviewed || (ownerExecutionDraft.issueReported && !String(ownerExecutionDraft.issueNote || '').trim())) return OWNER_RETURN_STEPS[3];
+	    if (!isOwnerExecutionDepositReviewComplete(ownerExecutionDraft)) return OWNER_RETURN_STEPS[4];
+	    return OWNER_RETURN_STEPS[5];
+	  }, [
+	    ownerExecutionDraft.depositOutcome,
+	    ownerExecutionDraft.depositReviewed,
+	    ownerExecutionDraft.depositRefundSignatureUrl,
+    ownerExecutionDraft.issueNote,
+    ownerExecutionDraft.issueReported,
     ownerExecutionDraft.issueReviewed,
     ownerExecutionDraft.returnFuelLevel,
     ownerExecutionDraft.returnMediaReady,
     ownerExecutionDraft.startOdometer,
     ownerExecutionDraft.returnOdometer,
+  ]);
+  const ownerExecutionMediaReferenceMeta = useMemo(() => {
+    const mediaCountDescription = ownerExecutionMediaCount > 0
+      ? tr(
+          `Inspection ${ownerExecutionHandoffPhotos.length} • Documents ${ownerExecutionLegalDocsPhotos.length} • Return ${ownerExecutionReturnPhotos.length}`,
+          `Inspection ${ownerExecutionHandoffPhotos.length} • Documents ${ownerExecutionLegalDocsPhotos.length} • Retour ${ownerExecutionReturnPhotos.length}`
+        )
+      : tr('Inspection 0 • Documents 0 • Return 0', 'Inspection 0 • Documents 0 • Retour 0');
+
+    if (
+      operationsFocusedMediaPhase === 'handoff' ||
+      ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'vehicle_photos')
+    ) {
+      return {
+        phase: 'handoff',
+        shortLabel: tr('Pickup inspection', 'Inspection départ'),
+        eyebrow: tr('Current media', 'Média actuel'),
+        title: tr('Vehicle inspection media', 'Médias inspection véhicule'),
+        description: tr(
+          'Current step: capture or review pickup inspection photos.',
+          'Étape actuelle : capturez ou vérifiez les photos d’inspection départ.'
+        ),
+      };
+    }
+
+    if (
+      operationsFocusedMediaPhase === 'legal_docs' ||
+      ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'legal_docs')
+    ) {
+      return {
+        phase: 'legal_docs',
+        shortLabel: tr('Documents proof', 'Preuve documents'),
+        eyebrow: tr('Current media', 'Média actuel'),
+        title: tr('Registration and insurance media', 'Médias carte grise et assurance'),
+        description: tr(
+          'Current step: keep registration and insurance proof close.',
+          'Étape actuelle : gardez la preuve carte grise et assurance à portée.'
+        ),
+      };
+    }
+
+    if (
+      operationsFocusedMediaPhase === 'return' ||
+      (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'return_photos')
+    ) {
+      return {
+        phase: 'return',
+        shortLabel: tr('Return inspection', 'Inspection retour'),
+        eyebrow: tr('Current media', 'Média actuel'),
+        title: tr('Return inspection media', 'Médias inspection retour'),
+        description: tr(
+          'Current step: capture or review return inspection photos.',
+          'Étape actuelle : capturez ou vérifiez les photos d’inspection retour.'
+        ),
+      };
+    }
+
+    return {
+      phase: 'all',
+      shortLabel: tr('Media archive', 'Archive médias'),
+      eyebrow: tr('Vehicle media', 'Médias véhicule'),
+      title: tr('Vehicle inspection and rental media', 'Inspection véhicule et médias location'),
+      description: mediaCountDescription,
+    };
+  }, [
+    ownerExecutionHandoffPhotos.length,
+    ownerExecutionLegalDocsPhotos.length,
+    ownerExecutionMediaCount,
+    ownerExecutionReturnPhotos.length,
+    ownerExecutionStage,
+    ownerHandoffCurrentStep.key,
+    ownerReturnCurrentStep.key,
+    operationsFocusedMediaPhase,
+    tr,
+  ]);
+  const ownerExecutionReferenceSummary = useMemo(() => {
+    const summaryItems = [
+      ownerExecutionFocusMode && ownerExecutionMediaReferenceMeta.phase !== 'all'
+        ? ownerExecutionMediaReferenceMeta.shortLabel
+        : null,
+      tr(
+        `${ownerExecutionMediaCount} media item${ownerExecutionMediaCount === 1 ? '' : 's'}`,
+        `${ownerExecutionMediaCount} média${ownerExecutionMediaCount === 1 ? '' : 's'}`
+      ),
+      tr(
+        `${vehicleDocuments.length} vehicle document${vehicleDocuments.length === 1 ? '' : 's'}`,
+        `${vehicleDocuments.length} document${vehicleDocuments.length === 1 ? '' : 's'} véhicule`
+      ),
+      formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
+    ];
+
+    return summaryItems.filter(Boolean).join(' • ');
+  }, [
+    isFrench,
+    operationalRequest?.currencyCode,
+    operationalRequest?.depositAmount,
+    ownerExecutionFocusMode,
+    ownerExecutionMediaCount,
+    ownerExecutionMediaReferenceMeta.phase,
+    ownerExecutionMediaReferenceMeta.shortLabel,
+    tr,
+    vehicleDocuments.length,
+  ]);
+  const ownerExecutionMediaPhaseCards = useMemo(() => {
+    const phaseCards = [
+      {
+        key: 'handoff',
+        title: tr('Vehicle inspection', 'Inspection véhicule'),
+        description: '',
+        photos: ownerExecutionHandoffPhotos,
+        emptyLabel: tr(
+          'Vehicle inspection photos will appear here after you save the inspection.',
+          'Les photos d’inspection véhicule apparaîtront ici après avoir enregistré l’inspection.'
+        ),
+        countLabel: tr(
+          `${ownerExecutionHandoffPhotos.length} photo${ownerExecutionHandoffPhotos.length === 1 ? '' : 's'}`,
+          `${ownerExecutionHandoffPhotos.length} photo${ownerExecutionHandoffPhotos.length === 1 ? '' : 's'}`
+        ),
+      },
+      {
+        key: 'legal_docs',
+        title: tr('Registration + insurance', 'Carte grise + assurance'),
+        description: '',
+        photos: ownerExecutionLegalDocsPhotos,
+        emptyLabel: tr(
+          'Registration and insurance photos will appear here after the document step is saved.',
+          'Les photos de carte grise et assurance apparaîtront ici après l’enregistrement de l’étape documents.'
+        ),
+        countLabel: tr(
+          `${ownerExecutionLegalDocsPhotos.length} photo${ownerExecutionLegalDocsPhotos.length === 1 ? '' : 's'}`,
+          `${ownerExecutionLegalDocsPhotos.length} photo${ownerExecutionLegalDocsPhotos.length === 1 ? '' : 's'}`
+        ),
+      },
+      {
+        key: 'return',
+        title: tr('Return media', 'Médias de retour'),
+        description: '',
+        photos: ownerExecutionReturnPhotos,
+        emptyLabel: tr(
+          'Return photos will appear here once ready-to-finish evidence is saved.',
+          'Les photos de retour apparaîtront ici une fois la preuve de clôture enregistrée.'
+        ),
+        countLabel: tr(
+          `${ownerExecutionReturnPhotos.length} photo${ownerExecutionReturnPhotos.length === 1 ? '' : 's'}`,
+          `${ownerExecutionReturnPhotos.length} photo${ownerExecutionReturnPhotos.length === 1 ? '' : 's'}`
+        ),
+      },
+    ];
+
+    if (ownerExecutionMediaReferenceMeta.phase === 'all') return phaseCards;
+
+    return [...phaseCards].sort((left, right) => {
+      if (left.key === ownerExecutionMediaReferenceMeta.phase) return -1;
+      if (right.key === ownerExecutionMediaReferenceMeta.phase) return 1;
+      return 0;
+    });
+  }, [
+    ownerExecutionHandoffPhotos,
+    ownerExecutionLegalDocsPhotos,
+    ownerExecutionMediaReferenceMeta.phase,
+    ownerExecutionReturnPhotos,
+    tr,
+  ]);
+  const buildOwnerExecutionDocumentPayloadForDraft = useCallback(
+    (draftOverride = ownerExecutionDraft) =>
+      buildDriveOutMarketplaceRentalDocumentPayload({
+        operationalRequest,
+        ownerExecutionDraft: draftOverride,
+        formData,
+        vehicleDocuments,
+        vehicleFuelState,
+        ownerUserId: user?.id || '',
+        language: isFrench ? 'fr' : 'en',
+      }),
+    [
+      formData,
+      isFrench,
+      operationalRequest,
+      user?.id,
+      vehicleDocuments,
+      vehicleFuelState,
+    ]
+  );
+  const ownerExecutionDocumentPayload = useMemo(
+    () => buildOwnerExecutionDocumentPayloadForDraft(ownerExecutionDraft),
+    [buildOwnerExecutionDocumentPayloadForDraft, ownerExecutionDraft]
+  );
+  const ownerExecutionDocumentRows = useMemo(() => {
+    const contractSignatureUrl = String(ownerExecutionDocumentPayload.artifacts.contractSignatureUrl || '').trim();
+    const refundSignatureUrl = String(ownerExecutionDocumentPayload.artifacts.refundSignatureUrl || '').trim();
+    const contractDocumentUrl = String(ownerExecutionDocumentPayload.contract.url || '').trim();
+    const finalReceiptUrl = String(ownerExecutionDocumentPayload.finalReceipt.url || '').trim();
+    const contractMissingFields = Array.isArray(ownerExecutionDocumentPayload.contract.missingFields)
+      ? ownerExecutionDocumentPayload.contract.missingFields
+      : [];
+    const receiptMissingFields = Array.isArray(ownerExecutionDocumentPayload.finalReceipt.missingFields)
+      ? ownerExecutionDocumentPayload.finalReceipt.missingFields
+      : [];
+    const formatMissingFields = (fields) =>
+      fields.length
+        ? tr(
+            `Missing: ${fields.join(', ')}.`,
+            `Manquant : ${fields.join(', ')}.`
+          )
+        : '';
+    const refundAmountLabel = formatMoney(
+      ownerExecutionDocumentPayload.finalReceipt.refund.amount || ownerExecutionDocumentPayload.request.depositAmount || 0,
+      ownerExecutionDocumentPayload.finalReceipt.refund.currencyCode || ownerExecutionDocumentPayload.request.currencyCode || 'MAD',
+      isFrench ? 'fr' : 'en'
+    );
+
+    return [
+      {
+        key: 'contract-signature',
+        title: tr('Start signature', 'Signature départ'),
+        description: contractSignatureUrl
+          ? tr('Customer signature captured before the rental started.', 'Signature client capturée avant le démarrage de la location.')
+          : tr('Customer signature will appear here after the start signature step.', 'La signature client apparaîtra ici après l’étape de signature départ.'),
+        statusLabel: contractSignatureUrl ? tr('Signature saved', 'Signature enregistrée') : tr('Pending', 'En attente'),
+        statusTone: contractSignatureUrl ? 'emerald' : 'slate',
+        previewUrl: contractSignatureUrl,
+        previewAlt: tr('Start signature preview', 'Aperçu signature départ'),
+        previewLabel: tr('Signature preview', 'Aperçu signature'),
+        previewEmptyLabel: tr('Waiting for start signature', 'Signature départ en attente'),
+        showPreviewSlot: true,
+      },
+      {
+        key: 'refund-signature',
+        title: tr('Refund signature', 'Signature remboursement'),
+        description: refundSignatureUrl
+          ? tr(
+              `Renter confirmed the full deposit refund: ${refundAmountLabel}.`,
+              `Le locataire a confirmé le remboursement total de la caution : ${refundAmountLabel}.`
+            )
+          : ownerExecutionDraft.depositOutcome === 'refund_full'
+            ? tr('Full refund selected. Signature is required before closing the deposit review.', 'Remboursement total sélectionné. La signature est requise avant de clôturer la caution.')
+            : tr('Only required when the deposit is refunded in full.', 'Requise uniquement lorsque la caution est remboursée en totalité.'),
+        statusLabel: refundSignatureUrl
+          ? tr('Signature saved', 'Signature enregistrée')
+          : ownerExecutionDraft.depositOutcome === 'refund_full'
+            ? tr('Signature required', 'Signature requise')
+            : tr('Not required', 'Non requise'),
+        statusTone: refundSignatureUrl ? 'emerald' : ownerExecutionDraft.depositOutcome === 'refund_full' ? 'amber' : 'slate',
+        previewUrl: refundSignatureUrl,
+        previewAlt: tr('Refund signature preview', 'Aperçu signature remboursement'),
+        previewLabel: tr('Signature preview', 'Aperçu signature'),
+        previewEmptyLabel: ownerExecutionDraft.depositOutcome === 'refund_full'
+          ? tr('Waiting for refund signature', 'Signature remboursement en attente')
+          : tr('No refund signature needed', 'Aucune signature requise'),
+        showPreviewSlot: true,
+      },
+      {
+        key: 'contract-document',
+        title: tr('Contract', 'Contrat'),
+        description: contractDocumentUrl
+          ? tr('DriveOut contract is ready without pricing details.', 'Le contrat DriveOut est prêt sans détails de prix.')
+          : ownerExecutionDocumentPayload.contract.canGenerate
+            ? tr(
+                'Contract is being prepared automatically with customer, license, vehicle, start time, and expected return only.',
+                'Le contrat est préparé automatiquement avec uniquement le client, le permis, le véhicule, le départ et le retour prévu.'
+              )
+            : formatMissingFields(contractMissingFields),
+        statusLabel: contractDocumentUrl
+          ? tr('Ready', 'Prêt')
+          : ownerExecutionDocumentPayload.contract.canGenerate
+            ? tr('Preparing', 'Préparation')
+            : tr('Missing info', 'Infos manquantes'),
+        statusTone: contractDocumentUrl ? 'emerald' : ownerExecutionDocumentPayload.contract.canGenerate ? 'violet' : 'amber',
+        href: contractDocumentUrl,
+        canGenerate: Boolean(ownerExecutionDocumentPayload.contract.canGenerate),
+        actionLabel: tr('Open contract', 'Ouvrir le contrat'),
+      },
+      {
+        key: 'receipt-document',
+        title: tr('Receipt', 'Reçu'),
+        description: finalReceiptUrl
+          ? ownerExecutionDraft.returnSavedAt
+            ? tr('Receipt is updated with return result and refund signature.', 'Le reçu est mis à jour avec le résultat retour et la signature de remboursement.')
+            : tr('Receipt is ready with the rental start details.', 'Le reçu est prêt avec les détails de départ de la location.')
+          : ownerExecutionDocumentPayload.finalReceipt.canGenerate
+            ? tr('Receipt is being prepared automatically. It opens once the rental starts, then updates after return.', 'Le reçu est préparé automatiquement. Il s’ouvre au départ de la location, puis se met à jour au retour.')
+            : formatMissingFields(receiptMissingFields) || tr('Available after the rental starts.', 'Disponible après le départ de la location.'),
+        statusLabel: finalReceiptUrl
+          ? tr('Ready', 'Prêt')
+          : ownerExecutionDocumentPayload.finalReceipt.canGenerate
+            ? tr('Preparing', 'Préparation')
+            : tr('Pending start', 'Départ en attente'),
+        statusTone: finalReceiptUrl ? 'emerald' : ownerExecutionDocumentPayload.finalReceipt.canGenerate ? 'violet' : 'slate',
+        href: finalReceiptUrl,
+        canGenerate: Boolean(ownerExecutionDocumentPayload.finalReceipt.canGenerate),
+        actionLabel: tr('Open receipt', 'Ouvrir le reçu'),
+      },
+    ];
+  }, [
+    isFrench,
+    ownerExecutionDraft.depositOutcome,
+    ownerExecutionDraft.returnSavedAt,
+    ownerExecutionDocumentPayload,
+    tr,
+  ]);
+  const ownerExecutionDocumentsSummary = useMemo(() => {
+    const savedSignatures = [
+      ownerExecutionDocumentPayload.artifacts.contractSignatureUrl,
+      ownerExecutionDocumentPayload.artifacts.refundSignatureUrl,
+    ].filter((value) => String(value || '').trim()).length;
+    const readyDocuments = [
+      ownerExecutionDocumentPayload.contract.url,
+      ownerExecutionDocumentPayload.finalReceipt.url,
+    ].filter((value) => String(value || '').trim()).length;
+
+    return tr(
+      `${savedSignatures} signature${savedSignatures === 1 ? '' : 's'} saved • ${readyDocuments} file${readyDocuments === 1 ? '' : 's'} ready`,
+      `${savedSignatures} signature${savedSignatures === 1 ? '' : 's'} enregistrée${savedSignatures === 1 ? '' : 's'} • ${readyDocuments} fichier${readyDocuments === 1 ? '' : 's'} prêt${readyDocuments === 1 ? '' : 's'}`
+    );
+  }, [
+    ownerExecutionDocumentPayload,
+    tr,
   ]);
   const ownerExecutionSummary = useMemo(() => {
     if (ownerExecutionStage === 'completed') {
@@ -2012,6 +2932,246 @@ const AccountMarketplaceVehicleProfile = () => {
       note: tr('Once the renter confirms, this becomes the owner pickup flow.', 'Dès que le locataire confirme, cela devient le flux de départ propriétaire.'),
     };
   }, [ownerExecutionStage, tr]);
+  const ownerExecutionProgressModel = useMemo(() => {
+    if (ownerExecutionStage === 'return_pending') {
+      const completed = OWNER_RETURN_STEPS.filter((step) => step.gate(ownerExecutionDraft)).length;
+      return {
+        label: tr('Return progress', 'Progression retour'),
+        hint: tr(ownerReturnCurrentStep.note.en, ownerReturnCurrentStep.note.fr),
+        completed,
+        total: OWNER_RETURN_STEPS.length,
+      };
+    }
+
+    if (ownerExecutionStage === 'ready_to_start') {
+      return {
+        label: tr('Pickup locked', 'Départ verrouillé'),
+        hint: tr('Everything is complete. Move the request into the live rental state.', 'Tout est terminé. Passez la demande à la location active.'),
+        completed: OWNER_HANDOFF_STEPS.length,
+        total: OWNER_HANDOFF_STEPS.length,
+      };
+    }
+
+    if (ownerExecutionStage === 'live') {
+      return {
+        label: tr('Rental live', 'Location active'),
+        hint: tr('The live rental is running. Keep support close and close it with the return flow.', 'La location est en cours. Gardez le support proche et terminez-la avec le flux retour.'),
+        completed: OWNER_HANDOFF_STEPS.length,
+        total: OWNER_HANDOFF_STEPS.length,
+      };
+    }
+
+    if (ownerExecutionStage === 'completed') {
+      return {
+        label: tr('Return complete', 'Retour terminé'),
+        hint: tr('The owner-side start and finish evidence are fully saved.', 'Les preuves de départ et de fin côté propriétaire sont entièrement enregistrées.'),
+        completed: OWNER_RETURN_STEPS.length,
+        total: OWNER_RETURN_STEPS.length,
+      };
+    }
+
+    const completed = OWNER_HANDOFF_STEPS.filter((step) => step.gate(ownerExecutionDraft)).length;
+    return {
+      label: tr('Pickup progress', 'Progression départ'),
+      hint: tr(ownerHandoffCurrentStep.note.en, ownerHandoffCurrentStep.note.fr),
+      completed,
+      total: OWNER_HANDOFF_STEPS.length,
+    };
+  }, [ownerExecutionDraft, ownerExecutionStage, ownerHandoffCurrentStep, ownerReturnCurrentStep, tr]);
+  const ownerExecutionProgressPercent = useMemo(() => {
+    if (!ownerExecutionProgressModel.total) return 0;
+    return Math.round((ownerExecutionProgressModel.completed / ownerExecutionProgressModel.total) * 100);
+  }, [ownerExecutionProgressModel.completed, ownerExecutionProgressModel.total]);
+  const ownerExecutionStagePills = useMemo(
+    () => [
+      { label: tr('Handoff', 'Remise'), active: ownerExecutionStage === 'handoff' || ownerExecutionStage === 'approved' },
+      { label: tr('Ready', 'Prête'), active: ownerExecutionStage === 'ready_to_start' },
+      { label: tr('Live', 'Active'), active: ownerExecutionStage === 'live' },
+      { label: tr('Return', 'Retour'), active: ownerExecutionStage === 'return_pending' },
+      { label: tr('Done', 'Terminée'), active: ownerExecutionStage === 'completed' },
+    ],
+    [ownerExecutionStage, tr]
+  );
+  const ownerExecutionStatusCards = useMemo(() => {
+    const now = ownerExecutionNow;
+    const cards = [
+      {
+        eyebrow: tr('Stage', 'Étape'),
+        value: ownerExecutionSummary.badge,
+        detail: ownerExecutionSummary.note,
+        icon: ShieldCheck,
+        tone:
+          ownerExecutionStage === 'completed'
+            ? 'emerald'
+            : ownerExecutionStage === 'live' || ownerExecutionStage === 'return_pending'
+              ? 'sky'
+              : 'violet',
+      },
+    ];
+
+    if (operationalRequest?.requestedStartAt) {
+      cards.push({
+        eyebrow: tr('Pickup', 'Départ'),
+        value: formatDateTime(operationalRequest.requestedStartAt, isFrench ? 'fr' : 'en'),
+        detail: getRelativeTimeCopy(operationalRequest.requestedStartAt, now, tr, {
+          futureLabel: (duration) => tr(`Starts in ${duration}`, `Départ dans ${duration}`),
+          pastLabel: (duration) => tr(`Started ${duration} ago`, `Démarré il y a ${duration}`),
+        }),
+        icon: CalendarClock,
+        tone: ownerExecutionStage === 'completed' ? 'slate' : 'violet',
+      });
+    }
+
+    if (operationalRequest?.requestedEndAt) {
+      cards.push({
+        eyebrow: tr('Return target', 'Retour prévu'),
+        value: formatDateTime(operationalRequest.requestedEndAt, isFrench ? 'fr' : 'en'),
+        detail: getRelativeTimeCopy(operationalRequest.requestedEndAt, now, tr, {
+          futureLabel: (duration) => tr(`Due in ${duration}`, `Prévu dans ${duration}`),
+          pastLabel: (duration) => tr(`Late by ${duration}`, `En retard de ${duration}`),
+        }),
+        icon: Car,
+        tone: ownerExecutionStage === 'return_pending' ? 'amber' : ownerExecutionStage === 'completed' ? 'emerald' : 'sky',
+      });
+    }
+
+    if (ownerExecutionStartedAt) {
+      cards.push({
+        eyebrow: tr('Live timer', 'Timer actif'),
+        value: formatRelativeDuration((now - new Date(ownerExecutionStartedAt).getTime()) / 60000, tr),
+        detail: tr('Elapsed since the rental was started.', 'Temps écoulé depuis le démarrage de la location.'),
+        icon: Gauge,
+        tone: ownerExecutionStage === 'completed' ? 'slate' : 'emerald',
+      });
+    } else {
+      cards.push({
+        eyebrow: tr('Deposit', 'Caution'),
+        value: formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
+        detail: tr('Keep the deposit linked to the handoff and return evidence.', 'Gardez la caution liée aux preuves de départ et de retour.'),
+        icon: DollarSign,
+        tone: 'slate',
+      });
+    }
+
+    return cards.slice(0, 4);
+  }, [
+    isFrench,
+    operationalRequest?.currencyCode,
+    operationalRequest?.depositAmount,
+    operationalRequest?.requestedEndAt,
+    operationalRequest?.requestedStartAt,
+    ownerExecutionNow,
+    ownerExecutionStage,
+    ownerExecutionStartedAt,
+    ownerExecutionSummary.badge,
+    ownerExecutionSummary.note,
+    tr,
+  ]);
+  const ownerExecutionLiveTimer = useMemo(() => {
+    if (!ownerExecutionStartedAtMs) return null;
+
+    const endTimestamp = operationalRequest?.requestedEndAt
+      ? new Date(operationalRequest.requestedEndAt).getTime()
+      : null;
+    const hasEndTimestamp = Number.isFinite(endTimestamp);
+    const remainingMs = hasEndTimestamp ? endTimestamp - ownerExecutionNow : null;
+
+    return {
+      elapsedLabel: formatClockDuration(ownerExecutionNow - ownerExecutionStartedAtMs),
+      remainingLabel: hasEndTimestamp
+        ? remainingMs <= 0
+          ? tr('Expired', 'Expiré')
+          : formatClockDuration(remainingMs)
+        : '—',
+      expired: hasEndTimestamp && remainingMs <= 0,
+    };
+  }, [operationalRequest?.requestedEndAt, ownerExecutionNow, ownerExecutionStartedAtMs, tr]);
+  const ownerExecutionPrimaryStatusCards = useMemo(
+    () => (isOperationsWorkspaceRoute ? ownerExecutionStatusCards.slice(0, 2) : ownerExecutionStatusCards),
+    [isOperationsWorkspaceRoute, ownerExecutionStatusCards]
+  );
+  const ownerExecutionSecondaryStatusCards = useMemo(
+    () => (isOperationsWorkspaceRoute ? ownerExecutionStatusCards.slice(2) : []),
+    [isOperationsWorkspaceRoute, ownerExecutionStatusCards]
+  );
+  const ownerOperationSummaryCards = useMemo(() => {
+    const rentalType = String(operationalRequest?.rentalType || '').trim().toLowerCase();
+    const duration = Number(operationalRequest?.duration || 0);
+    const durationLabel = duration > 0
+      ? rentalType === 'daily'
+        ? tr(`${duration} day${duration === 1 ? '' : 's'}`, `${duration} jour${duration === 1 ? '' : 's'}`)
+        : tr(`${duration} hour${duration === 1 ? '' : 's'}`, `${duration} heure${duration === 1 ? '' : 's'}`)
+      : tr('By request', 'Sur demande');
+    const paymentDetail = operationalRequestMoney.ownerPayoutAmount > 0
+      ? tr(
+          `Owner payout ${formatMoney(operationalRequestMoney.ownerPayoutAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}`,
+          `Versement propriétaire ${formatMoney(operationalRequestMoney.ownerPayoutAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}`
+        )
+      : tr('Payment tracked with the request.', 'Paiement suivi avec la demande.');
+
+    return [
+      {
+        key: 'customer',
+        label: tr('Customer', 'Client'),
+        value: operationalRequest?.customerName || tr('Customer', 'Client'),
+        detail: operationalRequest?.requestReference || operationalRequest?.customerEmail || operationalRequest?.customerPhone || tr('Contact in Inbox', 'Contact dans Inbox'),
+        icon: MessageSquareText,
+        tone: 'violet',
+      },
+      {
+        key: 'schedule',
+        label: tr('Schedule', 'Planning'),
+        value: formatDateTime(operationalRequest?.requestedStartAt, isFrench ? 'fr' : 'en'),
+        detail: operationalRequest?.requestedEndAt
+          ? `${tr('Until', 'Jusqu’au')} ${formatDateTime(operationalRequest.requestedEndAt, isFrench ? 'fr' : 'en')}`
+          : durationLabel,
+        icon: CalendarClock,
+        tone: 'sky',
+      },
+      {
+        key: 'payment',
+        label: tr('Payment', 'Paiement'),
+        value: formatMoney(operationalRequestMoney.estimatedAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
+        detail: paymentDetail,
+        icon: DollarSign,
+        tone: 'emerald',
+      },
+      {
+        key: 'security',
+        label: tr('Security', 'Garantie'),
+        value: formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
+        detail: tr('Deposit linked to pickup and return evidence.', 'Caution liée aux preuves de départ et retour.'),
+        icon: ShieldCheck,
+        tone: 'amber',
+      },
+      {
+        key: 'package',
+        label: tr('Package', 'Forfait'),
+        value: operationalRequest?.listingTitle || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle', 'Véhicule'),
+        detail: durationLabel,
+        icon: FileText,
+        tone: 'slate',
+      },
+    ];
+  }, [
+    formData.brandName,
+    formData.modelName,
+    isFrench,
+    operationalRequest?.currencyCode,
+    operationalRequest?.customerEmail,
+    operationalRequest?.customerName,
+    operationalRequest?.customerPhone,
+    operationalRequest?.depositAmount,
+    operationalRequest?.duration,
+    operationalRequest?.listingTitle,
+    operationalRequest?.requestReference,
+    operationalRequest?.rentalType,
+    operationalRequest?.requestedEndAt,
+    operationalRequest?.requestedStartAt,
+    operationalRequestMoney.estimatedAmount,
+    operationalRequestMoney.ownerPayoutAmount,
+    tr,
+  ]);
   const listingReviewSummary = useMemo(() => {
     const moderationHistory = Array.isArray(vehicle?.moderationHistory) ? vehicle.moderationHistory : [];
     const ownerMessages = Array.isArray(vehicle?.ownerMessages) ? vehicle.ownerMessages : [];
@@ -2023,6 +3183,18 @@ const AccountMarketplaceVehicleProfile = () => {
       latestOwnerMessage: ownerMessages[0] || null,
     };
   }, [vehicle]);
+
+  useEffect(() => {
+    if (!operationalRequest?.id) return undefined;
+    const intervalMs = ownerExecutionStage === 'live' || ownerExecutionStage === 'return_pending'
+      ? 1000
+      : 60 * 1000;
+    setOwnerExecutionNow(Date.now());
+    const intervalId = window.setInterval(() => {
+      setOwnerExecutionNow(Date.now());
+    }, intervalMs);
+    return () => window.clearInterval(intervalId);
+  }, [operationalRequest?.id, ownerExecutionStage]);
 
   useEffect(() => {
     const serverDraft = operationalRequest?.ownerExecution ? normalizeOwnerExecutionDraft(operationalRequest.ownerExecution) : null;
@@ -2038,13 +3210,15 @@ const AccountMarketplaceVehicleProfile = () => {
     }
 
     try {
-      const raw = window.localStorage.getItem(ownerExecutionStorageKey);
+      const raw = ownerExecutionStorageKeys
+        .map((storageKey) => window.localStorage.getItem(storageKey))
+        .find((value) => value !== null);
       setOwnerExecutionDraft(raw ? normalizeOwnerExecutionDraft(JSON.parse(raw)) : createOwnerExecutionDraft());
     } catch (storageError) {
       console.warn('Failed to restore owner execution flow:', storageError);
       setOwnerExecutionDraft(createOwnerExecutionDraft());
     }
-  }, [operationalRequest?.ownerExecution, ownerExecutionStorageKey]);
+  }, [operationalRequest?.ownerExecution, ownerExecutionStorageKey, ownerExecutionStorageKeys]);
 
   useEffect(() => {
     if (!ownerExecutionStorageKey || typeof window === 'undefined') return;
@@ -2068,10 +3242,11 @@ const AccountMarketplaceVehicleProfile = () => {
     async (nextDraft, nextRequestStatus = null) => {
       if (!user?.id || !operationalRequest?.id) {
         setOwnerExecutionDraft(nextDraft);
-        return;
+        return true;
       }
 
       const normalizedDraft = normalizeOwnerExecutionDraft(nextDraft);
+      ownerExecutionDraftRef.current = normalizedDraft;
       setOwnerExecutionDraft(normalizedDraft);
       setOwnerExecutionSaving(true);
 
@@ -2115,13 +3290,398 @@ const AccountMarketplaceVehicleProfile = () => {
             };
           })
         );
+        return true;
       } catch (saveError) {
         console.warn('Failed to persist owner execution flow:', saveError);
+        return false;
       } finally {
         setOwnerExecutionSaving(false);
       }
     },
     [operationalRequest?.id, user?.id]
+  );
+
+  const createOwnerExecutionDocumentShareRecord = useCallback(
+    async ({ shareType, payload }) => {
+      const normalizedShareType = String(shareType || '').trim();
+      if (!normalizedShareType || !payload) return null;
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+      const encodedPayload = await encodePublicSharePayload(payload);
+
+      const response = await fetch('/api/public-links?resource=document-shares&action=create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({
+          shareType: normalizedShareType,
+          rentalId: operationalRequest?.id || null,
+          expiresInDays: 30,
+          ...(encodedPayload ? { payloadEncoded: encodedPayload } : { payload }),
+        }),
+      });
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body?.url) {
+        const responseError = body?.error;
+        const errorMessage =
+          typeof responseError === 'string'
+            ? responseError
+            : responseError?.message || responseError?.error || (
+                responseError ? JSON.stringify(responseError) : 'Failed to create DriveOut document share'
+              );
+        throw new Error(errorMessage);
+      }
+
+      return body.url;
+    },
+    [operationalRequest?.id]
+  );
+
+  const buildOwnerExecutionDocumentSharePayload = useCallback(
+    (documentPayload, shareType) => {
+      const normalizedShareType = String(shareType || '').trim().toLowerCase();
+      const sourceDocument =
+        normalizedShareType === 'receipt'
+          ? documentPayload?.finalReceipt
+          : documentPayload?.contract;
+      const evidence = documentPayload?.evidence || {};
+
+      return {
+        language: documentPayload?.language || (isFrench ? 'fr' : 'en'),
+        rentalId: documentPayload?.request?.reference || documentPayload?.request?.id || '',
+        customerName: documentPayload?.customer?.name || documentPayload?.customer?.email || '',
+        rental: sourceDocument?.rental || documentPayload?.rental || null,
+        settings: {
+          logoUrl: '/assets/driveout-mark.svg',
+          stampUrl: '',
+        },
+        source: {
+          type: 'driveout_marketplace',
+          requestId: documentPayload?.request?.id || operationalRequest?.id || null,
+          requestReference: documentPayload?.request?.reference || null,
+          vehicleId: documentPayload?.vehicle?.id || operationalRequest?.vehiclePublicProfileId || null,
+          ownerUserId: user?.id || null,
+          customerUserId: documentPayload?.customer?.id || operationalRequest?.customerId || null,
+        },
+        bundle: {
+          contract: Boolean(documentPayload?.artifacts?.contractSignatureUrl || documentPayload?.artifacts?.contractUrl),
+          receipt: normalizedShareType === 'receipt' || Boolean(documentPayload?.artifacts?.finalReceiptUrl || documentPayload?.artifacts?.refundSignatureUrl),
+          openingMedia: Array.isArray(evidence.handoffPhotos) && evidence.handoffPhotos.length > 0,
+          closingMedia: Array.isArray(evidence.returnPhotos) && evidence.returnPhotos.length > 0,
+        },
+      };
+    },
+    [
+      isFrench,
+      operationalRequest?.customerId,
+      operationalRequest?.id,
+      operationalRequest?.vehiclePublicProfileId,
+      user?.id,
+    ]
+  );
+
+  const ensureOwnerExecutionContractDocument = useCallback(
+    async (draftOverride = ownerExecutionDraft) => {
+      const normalizedDraft = normalizeOwnerExecutionDraft(draftOverride);
+      const existingContractUrl = String(normalizedDraft.contractDocumentUrl || '').trim();
+      const generatedAtMs = Date.parse(normalizedDraft.contractDocumentGeneratedAt || '');
+      const contractRefreshDates = [
+        normalizedDraft.contractSignedAt,
+        normalizedDraft.startedAt,
+      ]
+        .map((value) => Date.parse(value || ''))
+        .filter((value) => Number.isFinite(value));
+      const shouldRefreshExistingContract =
+        Boolean(existingContractUrl) &&
+        contractRefreshDates.some((value) => !Number.isFinite(generatedAtMs) || value > generatedAtMs);
+
+      if (existingContractUrl && !shouldRefreshExistingContract) {
+        return normalizedDraft;
+      }
+      if (ownerExecutionDocumentGenerationRef.current.contract) {
+        return normalizedDraft;
+      }
+
+      const documentPayload = buildOwnerExecutionDocumentPayloadForDraft(normalizedDraft);
+      if (!documentPayload?.contract?.canGenerate) {
+        return normalizedDraft;
+      }
+
+      ownerExecutionDocumentGenerationRef.current.contract = true;
+      try {
+        const url = await createOwnerExecutionDocumentShareRecord({
+          shareType: 'contract',
+          payload: buildOwnerExecutionDocumentSharePayload(documentPayload, 'contract'),
+        });
+
+        if (!url) return normalizedDraft;
+
+        return normalizeOwnerExecutionDraft({
+          ...normalizedDraft,
+          contractDocumentUrl: url,
+          contractDocumentGeneratedAt: new Date().toISOString(),
+        });
+      } catch (documentError) {
+        console.warn('Failed to create DriveOut contract share:', documentError);
+        return normalizedDraft;
+      } finally {
+        ownerExecutionDocumentGenerationRef.current.contract = false;
+      }
+    },
+    [
+      buildOwnerExecutionDocumentPayloadForDraft,
+      buildOwnerExecutionDocumentSharePayload,
+      createOwnerExecutionDocumentShareRecord,
+      ownerExecutionDraft,
+    ]
+  );
+
+  const ensureOwnerExecutionFinalReceiptDocument = useCallback(
+    async (draftOverride = ownerExecutionDraft) => {
+      const normalizedDraft = normalizeOwnerExecutionDraft(draftOverride);
+      const existingReceiptUrl = String(normalizedDraft.finalReceiptUrl || '').trim();
+      const generatedAtMs = Date.parse(normalizedDraft.finalReceiptGeneratedAt || '');
+      const receiptRefreshDates = [
+        normalizedDraft.returnSavedAt,
+        normalizedDraft.depositRefundSignedAt,
+      ]
+        .map((value) => Date.parse(value || ''))
+        .filter((value) => Number.isFinite(value));
+      const shouldRefreshExistingReceipt =
+        Boolean(existingReceiptUrl) &&
+        receiptRefreshDates.some((value) => !Number.isFinite(generatedAtMs) || value > generatedAtMs);
+
+      if (existingReceiptUrl && !shouldRefreshExistingReceipt) {
+        return normalizedDraft;
+      }
+      if (ownerExecutionDocumentGenerationRef.current.receipt) {
+        return normalizedDraft;
+      }
+
+      const documentPayload = buildOwnerExecutionDocumentPayloadForDraft(normalizedDraft);
+      if (!documentPayload?.finalReceipt?.canGenerate) {
+        return normalizedDraft;
+      }
+
+      ownerExecutionDocumentGenerationRef.current.receipt = true;
+      try {
+        const url = await createOwnerExecutionDocumentShareRecord({
+          shareType: 'receipt',
+          payload: buildOwnerExecutionDocumentSharePayload(documentPayload, 'receipt'),
+        });
+
+        if (!url) return normalizedDraft;
+
+        return normalizeOwnerExecutionDraft({
+          ...normalizedDraft,
+          finalReceiptUrl: url,
+          finalReceiptGeneratedAt: new Date().toISOString(),
+        });
+      } catch (documentError) {
+        console.warn('Failed to create DriveOut receipt share:', documentError);
+        return normalizedDraft;
+      } finally {
+        ownerExecutionDocumentGenerationRef.current.receipt = false;
+      }
+    },
+    [
+      buildOwnerExecutionDocumentPayloadForDraft,
+      buildOwnerExecutionDocumentSharePayload,
+      createOwnerExecutionDocumentShareRecord,
+      ownerExecutionDraft,
+    ]
+  );
+
+  useEffect(() => {
+    if (!user?.id || !operationalRequest?.id) return undefined;
+
+    const currentDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || ownerExecutionDraft);
+    const documentPayload = buildOwnerExecutionDocumentPayloadForDraft(currentDraft);
+    const isDocumentMissingOrStale = (url, generatedAt, refreshDates = []) => {
+      const hasUrl = Boolean(String(url || '').trim());
+      if (!hasUrl) return true;
+
+      const generatedAtMs = Date.parse(generatedAt || '');
+      return refreshDates
+        .map((value) => Date.parse(value || ''))
+        .filter((value) => Number.isFinite(value))
+        .some((value) => !Number.isFinite(generatedAtMs) || value > generatedAtMs);
+    };
+    const shouldPrepareContract =
+      Boolean(documentPayload?.contract?.canGenerate) &&
+      isDocumentMissingOrStale(
+        currentDraft.contractDocumentUrl,
+        currentDraft.contractDocumentGeneratedAt,
+        [currentDraft.contractSignedAt, currentDraft.startedAt]
+      );
+    const shouldPrepareReceipt =
+      Boolean(documentPayload?.finalReceipt?.canGenerate) &&
+      isDocumentMissingOrStale(
+        currentDraft.finalReceiptUrl,
+        currentDraft.finalReceiptGeneratedAt,
+        [currentDraft.returnSavedAt, currentDraft.depositRefundSignedAt]
+      );
+
+    if (!shouldPrepareContract && !shouldPrepareReceipt) return undefined;
+
+    const autoPrepareKey = [
+      operationalRequest.id,
+      shouldPrepareContract ? 'contract' : '',
+      currentDraft.contractDocumentUrl || '',
+      currentDraft.contractDocumentGeneratedAt || '',
+      currentDraft.contractSignatureUrl || '',
+      currentDraft.contractSignedAt || '',
+      currentDraft.startedAt || '',
+      shouldPrepareReceipt ? 'receipt' : '',
+      currentDraft.finalReceiptUrl || '',
+      currentDraft.finalReceiptGeneratedAt || '',
+      currentDraft.returnSavedAt || '',
+      currentDraft.depositOutcome || '',
+      currentDraft.depositRefundSignatureUrl || '',
+      currentDraft.depositRefundSignedAt || '',
+    ].join('|');
+
+    if (ownerExecutionDocumentAutoPrepareRef.current === autoPrepareKey) return undefined;
+    ownerExecutionDocumentAutoPrepareRef.current = autoPrepareKey;
+
+    let cancelled = false;
+
+    void (async () => {
+      let preparedDraft = currentDraft;
+
+      if (shouldPrepareContract) {
+        preparedDraft = await ensureOwnerExecutionContractDocument(preparedDraft);
+      }
+
+      const preparedPayload = buildOwnerExecutionDocumentPayloadForDraft(preparedDraft);
+      const shouldPrepareUpdatedReceipt =
+        Boolean(preparedPayload?.finalReceipt?.canGenerate) &&
+        isDocumentMissingOrStale(
+          preparedDraft.finalReceiptUrl,
+          preparedDraft.finalReceiptGeneratedAt,
+          [preparedDraft.returnSavedAt, preparedDraft.depositRefundSignedAt]
+        );
+
+      if (shouldPrepareUpdatedReceipt) {
+        preparedDraft = await ensureOwnerExecutionFinalReceiptDocument(preparedDraft);
+      }
+
+      if (cancelled) return;
+
+      const latestDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || ownerExecutionDraft);
+      const mergedDraft = normalizeOwnerExecutionDraft({
+        ...latestDraft,
+        contractDocumentUrl: preparedDraft.contractDocumentUrl || latestDraft.contractDocumentUrl,
+        contractDocumentGeneratedAt: preparedDraft.contractDocumentGeneratedAt || latestDraft.contractDocumentGeneratedAt,
+        finalReceiptUrl: preparedDraft.finalReceiptUrl || latestDraft.finalReceiptUrl,
+        finalReceiptGeneratedAt: preparedDraft.finalReceiptGeneratedAt || latestDraft.finalReceiptGeneratedAt,
+      });
+      const hasDocumentChanges =
+        mergedDraft.contractDocumentUrl !== latestDraft.contractDocumentUrl ||
+        mergedDraft.contractDocumentGeneratedAt !== latestDraft.contractDocumentGeneratedAt ||
+        mergedDraft.finalReceiptUrl !== latestDraft.finalReceiptUrl ||
+        mergedDraft.finalReceiptGeneratedAt !== latestDraft.finalReceiptGeneratedAt;
+
+      if (hasDocumentChanges) {
+        await persistOwnerExecutionDraft(mergedDraft);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    buildOwnerExecutionDocumentPayloadForDraft,
+    ensureOwnerExecutionContractDocument,
+    ensureOwnerExecutionFinalReceiptDocument,
+    operationalRequest?.id,
+    ownerExecutionDraft,
+    persistOwnerExecutionDraft,
+    user?.id,
+  ]);
+
+  const openOwnerExecutionGeneratedDocument = useCallback(
+    async (documentType) => {
+      const normalizedType = String(documentType || '').trim().toLowerCase();
+      if (!['contract', 'receipt'].includes(normalizedType) || ownerExecutionDocumentActionKey) return;
+
+      const actionKey = `${normalizedType}-document`;
+      let pendingWindow = null;
+
+      if (typeof window !== 'undefined') {
+        pendingWindow = window.open('', '_blank');
+        if (pendingWindow) {
+          pendingWindow.document.title = normalizedType === 'contract' ? 'Preparing contract...' : 'Preparing receipt...';
+          pendingWindow.document.body.innerHTML = '<p style="font-family: system-ui, sans-serif; padding: 24px;">Preparing document...</p>';
+        }
+      }
+
+      setOwnerExecutionDocumentActionKey(actionKey);
+
+      try {
+        const currentDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || ownerExecutionDraft);
+        const nextDraft =
+          normalizedType === 'contract'
+            ? await ensureOwnerExecutionContractDocument(currentDraft)
+            : await ensureOwnerExecutionFinalReceiptDocument(currentDraft);
+        const nextUrl =
+          normalizedType === 'contract'
+            ? String(nextDraft.contractDocumentUrl || '').trim()
+            : String(nextDraft.finalReceiptUrl || '').trim();
+
+        if (!nextUrl) {
+          throw new Error(
+            normalizedType === 'contract'
+              ? tr('Contract is missing required information.', 'Le contrat manque des informations obligatoires.')
+              : tr('Receipt is not ready yet.', 'Le reçu n’est pas encore prêt.')
+          );
+        }
+
+        const currentUrl =
+          normalizedType === 'contract'
+            ? String(currentDraft.contractDocumentUrl || '').trim()
+            : String(currentDraft.finalReceiptUrl || '').trim();
+        const currentGeneratedAt =
+          normalizedType === 'contract'
+            ? currentDraft.contractDocumentGeneratedAt
+            : currentDraft.finalReceiptGeneratedAt;
+        const nextGeneratedAt =
+          normalizedType === 'contract'
+            ? nextDraft.contractDocumentGeneratedAt
+            : nextDraft.finalReceiptGeneratedAt;
+
+        if (nextUrl !== currentUrl || nextGeneratedAt !== currentGeneratedAt) {
+          await persistOwnerExecutionDraft(nextDraft);
+        }
+
+        if (pendingWindow && !pendingWindow.closed) {
+          pendingWindow.location.href = nextUrl;
+        } else if (typeof window !== 'undefined') {
+          window.open(nextUrl, '_blank', 'noopener,noreferrer');
+        }
+      } catch (documentError) {
+        if (pendingWindow && !pendingWindow.closed) {
+          pendingWindow.close();
+        }
+        console.warn('Unable to open DriveOut owner execution document:', documentError);
+        toast.error(documentError?.message || tr('Unable to prepare document right now.', 'Impossible de préparer le document pour le moment.'));
+      } finally {
+        setOwnerExecutionDocumentActionKey('');
+      }
+    },
+    [
+      ensureOwnerExecutionContractDocument,
+      ensureOwnerExecutionFinalReceiptDocument,
+      ownerExecutionDocumentActionKey,
+      ownerExecutionDraft,
+      persistOwnerExecutionDraft,
+      tr,
+    ]
   );
 
   const sendOwnerExecutionPhotoMessage = useCallback(async ({ kind, attachments }) => {
@@ -2147,34 +3707,42 @@ const AccountMarketplaceVehicleProfile = () => {
       console.warn('Unable to resolve marketplace request thread for execution photos:', threadLookupError);
     }
 
-    await MessageService.sendSharedMessage({
-      family: MESSAGE_FAMILIES.marketplace,
-      threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
-      ...(existingThreadKey ? { threadKey: existingThreadKey } : {}),
-      entityType: 'marketplace_request',
-      entityId: String(operationalRequest.id),
-      recipientUserId: operationalRequest.customerId,
-      recipientRole: 'customer',
-      senderRole: 'owner',
-      messageType: 'note',
-      subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
-      body: kind === 'handoff'
-        ? tr('Photos uploaded', 'Photos téléversées')
-        : tr('Photos uploaded', 'Photos téléversées'),
-      attachments,
-      metadata: {
-        requestId: String(operationalRequest.id),
-        requestStatus: operationalRequest.requestStatus,
-        photoEvidenceKind: kind,
-        photoEvidenceLabel: kind === 'handoff'
-          ? tr('Pickup evidence', 'Preuve de départ')
-          : tr('Return evidence', 'Preuve de retour'),
-        href: `/account/vehicles?requestId=${encodeURIComponent(String(operationalRequest.id))}#requests`,
-      },
-    });
+    try {
+      await MessageService.sendSharedMessage({
+        family: MESSAGE_FAMILIES.marketplace,
+        threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+        ...(existingThreadKey ? { threadKey: existingThreadKey } : {}),
+        entityType: 'marketplace_request',
+        entityId: String(operationalRequest.id),
+        recipientUserId: operationalRequest.customerId,
+        recipientRole: 'customer',
+        senderRole: 'owner',
+        messageType: 'note',
+        subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
+        body: kind === 'handoff'
+          ? tr('Vehicle inspection photos uploaded', 'Photos d’inspection véhicule téléversées')
+          : kind === 'legal_docs'
+            ? tr('Registration and insurance photos uploaded', 'Photos carte grise et assurance téléversées')
+            : tr('Photos uploaded', 'Photos téléversées'),
+        attachments,
+        metadata: {
+          requestId: String(operationalRequest.id),
+          requestStatus: operationalRequest.requestStatus,
+          photoEvidenceKind: kind,
+          photoEvidenceLabel: kind === 'handoff'
+            ? tr('Vehicle inspection', 'Inspection véhicule')
+            : kind === 'legal_docs'
+              ? tr('Registration + insurance', 'Carte grise + assurance')
+              : tr('Return evidence', 'Preuve de retour'),
+          href: buildOwnerExecutionWorkspaceHref(operationalRequest, { focus: 'execution' }),
+        },
+      });
+    } catch (messageError) {
+      console.warn('Execution photos saved, but the customer thread note could not be sent:', messageError);
+    }
   }, [operationalRequest?.customerId, operationalRequest?.id, operationalRequest?.listingTitle, operationalRequest?.requestStatus, tr]);
 
-  const sendOwnerExecutionSystemMessage = useCallback(async ({ body, event, requestStatus }) => {
+  const sendOwnerExecutionSystemMessage = useCallback(async ({ body, event, requestStatus, documentLinks = [] }) => {
     if (!operationalRequest?.customerId || !operationalRequest?.id || !body) {
       return;
     }
@@ -2197,56 +3765,61 @@ const AccountMarketplaceVehicleProfile = () => {
       console.warn('Unable to resolve marketplace request thread for execution update:', threadLookupError);
     }
 
-    await MessageService.sendSharedMessage({
-      family: MESSAGE_FAMILIES.marketplace,
-      threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
-      ...(existingThreadKey ? { threadKey: existingThreadKey } : {}),
-      entityType: 'marketplace_request',
-      entityId: String(operationalRequest.id),
-      recipientUserId: operationalRequest.customerId,
-      recipientRole: 'customer',
-      senderRole: 'owner',
-      messageType: 'system_event',
-      subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
-      body,
-      metadata: {
-        event,
-        requestId: String(operationalRequest.id),
-        requestStatus: requestStatus || operationalRequest.requestStatus,
-        href: `/account/vehicles?requestId=${encodeURIComponent(String(operationalRequest.id))}#requests`,
-      },
-    });
-  }, [operationalRequest?.customerId, operationalRequest?.id, operationalRequest?.listingTitle, operationalRequest?.requestStatus, tr]);
-
-  const saveRentalPhotoRows = useCallback(async (kind, attachments = []) => {
-    const rows = (Array.isArray(attachments) ? attachments : [])
-      .filter((attachment) => attachment?.publicUrl)
-      .map((attachment) => ({
-        request_id: operationalRequest?.id || null,
-        vehicle_id: vehicle?.id || null,
-        phase: kind,
-        kind: attachment?.kind || 'photo',
-        bucket: attachment?.bucket || null,
-        storage_path: attachment?.storagePath || null,
-        public_url: attachment?.publicUrl,
-        thumbnail_url: attachment?.thumbnailUrl || attachment?.publicUrl || null,
-        mime_type: attachment?.mimeType || null,
-        original_filename: attachment?.originalFilename || null,
-        file_size: Number(attachment?.fileSize || 0) || 0,
-        created_by: user?.id || null,
-      }));
-
-    if (!rows.length) return;
+    const normalizedDocumentLinks = Array.isArray(documentLinks)
+      ? documentLinks
+          .map((link, index) => {
+            if (!link || typeof link !== 'object') return null;
+            const href = String(link.href || link.url || '').trim();
+            if (!href) return null;
+            return {
+              key: String(link.key || link.kind || link.label || `document-${index}`).trim() || `document-${index}`,
+              label: String(link.label || link.title || '').trim() || tr('Open document', 'Ouvrir le document'),
+              href,
+              url: href,
+              kind: String(link.kind || link.key || '').trim(),
+              type: String(link.kind || link.type || link.key || '').trim(),
+            };
+          })
+          .filter(Boolean)
+      : [];
 
     try {
-      await supabase.from(RENTAL_PHOTOS_TABLE).insert(rows);
-    } catch (photoRowError) {
-      console.warn('Failed to save rental photo rows:', photoRowError);
+      await MessageService.sendSharedMessage({
+        family: MESSAGE_FAMILIES.marketplace,
+        threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+        ...(existingThreadKey ? { threadKey: existingThreadKey } : {}),
+        entityType: 'marketplace_request',
+        entityId: String(operationalRequest.id),
+        recipientUserId: operationalRequest.customerId,
+        recipientRole: 'customer',
+        senderRole: 'owner',
+        messageType: 'system_event',
+        subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
+        body,
+        metadata: {
+          event,
+          requestId: String(operationalRequest.id),
+          requestStatus: requestStatus || operationalRequest.requestStatus,
+          href: buildOwnerExecutionWorkspaceHref(operationalRequest, { focus: 'execution' }),
+          ...(normalizedDocumentLinks.length
+            ? {
+                documentLinks: normalizedDocumentLinks,
+                document_links: normalizedDocumentLinks,
+                documentActions: normalizedDocumentLinks,
+                document_actions: normalizedDocumentLinks,
+                actions: normalizedDocumentLinks,
+                hasDocumentActions: true,
+              }
+            : {}),
+        },
+      });
+    } catch (messageError) {
+      console.warn('Execution status was saved, but the customer thread update could not be sent:', messageError);
     }
-  }, [operationalRequest?.id, user?.id, vehicle?.id]);
+  }, [operationalRequest?.customerId, operationalRequest?.id, operationalRequest?.listingTitle, operationalRequest?.requestStatus, tr]);
 
   const toggleOwnerExecutionFlag = useCallback((field) => {
-    if (ownerExecutionHandoffLocked && ['handoffChecked', 'handoffMediaReady', 'legalDocsChecked', 'depositConfirmed', 'contractSigned'].includes(field)) {
+    if (ownerExecutionHandoffLocked && ['handoffMediaReady', 'legalDocsChecked', 'depositConfirmed', 'contractSigned'].includes(field)) {
       return;
     }
     const nextDraft = {
@@ -2317,12 +3890,70 @@ const AccountMarketplaceVehicleProfile = () => {
     })();
   }, [linkedFleetVehicleId, operationalRequest?.id, ownerExecutionDraft, ownerExecutionHandoffLocked, persistOwnerExecutionDraft]);
 
+  const openOwnerStartOdometerModal = useCallback(() => {
+    if (ownerExecutionHandoffLocked) return;
+    setHandoffOdometerInput(
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)
+        ? String(ownerExecutionDraft.startOdometer)
+        : ''
+    );
+    setShowOwnerStartOdometerModal(true);
+  }, [ownerExecutionDraft.startOdometer, ownerExecutionHandoffLocked]);
+
+  const handleOwnerStartOdometerModalSave = useCallback(() => {
+    if (!hasOwnerExecutionNumberValue(handoffOdometerInput)) return;
+    saveOwnerExecutionStartOdometer(handoffOdometerInput);
+    setShowOwnerStartOdometerModal(false);
+  }, [handoffOdometerInput, saveOwnerExecutionStartOdometer]);
+
+  const openOwnerStartFuelModal = useCallback(() => {
+    if (ownerExecutionHandoffLocked) return;
+    setShowOwnerStartFuelModal(true);
+  }, [ownerExecutionHandoffLocked]);
+
+  const handleOwnerStartFuelModalSave = useCallback((level) => {
+    saveOwnerExecutionStartFuelLevel(level);
+  }, [saveOwnerExecutionStartFuelLevel]);
+
+  const saveOwnerExecutionContractSignature = useCallback((signatureUrl = '') => {
+    if (ownerExecutionHandoffLocked) return;
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      contractSigned: true,
+      contractSignatureUrl: String(signatureUrl || ownerExecutionDraft.contractSignatureUrl || '').trim(),
+      contractSignedAt: new Date().toISOString(),
+    };
+    void (async () => {
+      await persistOwnerExecutionDraft(nextDraft);
+      const documentDraft = await ensureOwnerExecutionContractDocument(nextDraft);
+      const generatedContractUrl = String(documentDraft.contractDocumentUrl || '').trim();
+      if (!generatedContractUrl) return;
+
+      const currentDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || documentDraft);
+      await persistOwnerExecutionDraft({
+        ...currentDraft,
+        contractSigned: true,
+        contractSignatureUrl: documentDraft.contractSignatureUrl || currentDraft.contractSignatureUrl,
+        contractSignedAt: documentDraft.contractSignedAt || currentDraft.contractSignedAt,
+        contractDocumentUrl: generatedContractUrl,
+        contractDocumentGeneratedAt: documentDraft.contractDocumentGeneratedAt || currentDraft.contractDocumentGeneratedAt,
+      });
+    })();
+  }, [ensureOwnerExecutionContractDocument, ownerExecutionDraft, ownerExecutionHandoffLocked, persistOwnerExecutionDraft]);
+
+  const openOwnerSignatureModal = useCallback(() => {
+    if (ownerExecutionHandoffLocked) return;
+    setShowOwnerSignatureModal(true);
+  }, [ownerExecutionHandoffLocked]);
+
   const saveOwnerExecutionReturnOdometer = useCallback((value) => {
     if (ownerExecutionReturnLocked) return;
     const normalizedValue = Number(value);
-    const startOdometer = Number(ownerExecutionDraft.startOdometer);
+    const startOdometer = hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)
+      ? Number(ownerExecutionDraft.startOdometer)
+      : null;
     if (!Number.isFinite(normalizedValue) || normalizedValue < 0) return;
-    if (Number.isFinite(startOdometer) && normalizedValue < startOdometer) return;
+    if (startOdometer !== null && normalizedValue < startOdometer) return;
 
     const nextDraft = {
       ...ownerExecutionDraft,
@@ -2366,36 +3997,111 @@ const AccountMarketplaceVehicleProfile = () => {
     })();
   }, [linkedFleetVehicleId, operationalRequest?.id, ownerExecutionDraft, ownerExecutionReturnLocked, persistOwnerExecutionDraft]);
 
-  const markOwnerExecutionReadyToStart = useCallback(() => {
-    if (!ownerHandoffReady) return;
-    const nextDraft = {
-      ...ownerExecutionDraft,
-      startReadyAt: ownerExecutionDraft.startReadyAt || new Date().toISOString(),
-    };
-    void (async () => {
-      await persistOwnerExecutionDraft(nextDraft);
-    })();
-  }, [ownerExecutionDraft, ownerHandoffReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
+  const openOwnerReturnOdometerModal = useCallback(() => {
+    if (ownerExecutionReturnLocked) return;
+    setReturnOdometerInput(
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer)
+        ? String(ownerExecutionDraft.returnOdometer)
+        : ''
+    );
+    setShowOwnerReturnOdometerModal(true);
+  }, [ownerExecutionDraft.returnOdometer, ownerExecutionReturnLocked]);
+
+  const handleOwnerReturnOdometerModalSave = useCallback(() => {
+    const startOdometer = hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)
+      ? Number(ownerExecutionDraft.startOdometer)
+      : null;
+    if (!hasOwnerExecutionNumberValue(returnOdometerInput)) return;
+    if (startOdometer !== null && Number(returnOdometerInput) < startOdometer) return;
+    saveOwnerExecutionReturnOdometer(returnOdometerInput);
+    setShowOwnerReturnOdometerModal(false);
+  }, [ownerExecutionDraft.startOdometer, returnOdometerInput, saveOwnerExecutionReturnOdometer]);
+
+  const openOwnerReturnFuelModal = useCallback(() => {
+    if (ownerExecutionReturnLocked) return;
+    setShowOwnerReturnFuelModal(true);
+  }, [ownerExecutionReturnLocked]);
+
+  const handleOwnerReturnFuelModalSave = useCallback((level) => {
+    saveOwnerExecutionReturnFuelLevel(level);
+  }, [saveOwnerExecutionReturnFuelLevel]);
 
   const markOwnerExecutionStarted = useCallback(() => {
-    if (!ownerExecutionDraft.startReadyAt || !ownerHandoffReady) return;
+    if (!ownerHandoffReady) return;
+    const startedAt = new Date().toISOString();
     const nextDraft = {
       ...ownerExecutionDraft,
-      startReadyAt: ownerExecutionDraft.startReadyAt || new Date().toISOString(),
-      startedAt: ownerExecutionDraft.startedAt || new Date().toISOString(),
+      startReadyAt: ownerExecutionDraft.startReadyAt || startedAt,
+      startedAt: ownerExecutionDraft.startedAt || startedAt,
+      returnPendingAt: null,
     };
+    setOwnerExecutionNow(Date.now());
     void (async () => {
-      await persistOwnerExecutionDraft(nextDraft, 'active');
+      const startSaved = await persistOwnerExecutionDraft(nextDraft, 'active');
+      if (!startSaved) {
+        toast.error(tr('Could not start the rental. Please try again.', 'Impossible de démarrer la location. Veuillez réessayer.'));
+        return;
+      }
+
+      const persistedStartDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || nextDraft);
+      const documentDraft = await ensureOwnerExecutionContractDocument(persistedStartDraft);
+      const receiptDraft = await ensureOwnerExecutionFinalReceiptDocument(documentDraft);
+      const contractDocumentUrl = String(documentDraft.contractDocumentUrl || '').trim();
+      const receiptUrl = String(receiptDraft.finalReceiptUrl || '').trim();
+      const documentLinks = [
+        contractDocumentUrl
+          ? {
+              key: 'contract',
+              kind: 'contract',
+              label: tr('Open contract', 'Ouvrir le contrat'),
+              href: contractDocumentUrl,
+            }
+          : null,
+        receiptUrl
+          ? {
+              key: 'receipt',
+              kind: 'receipt',
+              label: tr('Open receipt', 'Ouvrir le reçu'),
+              href: receiptUrl,
+            }
+          : null,
+      ].filter(Boolean);
+
+      const latestDraft = normalizeOwnerExecutionDraft(ownerExecutionDraftRef.current || persistedStartDraft);
+      const mergedDocumentDraft = normalizeOwnerExecutionDraft({
+        ...latestDraft,
+        contractDocumentUrl: receiptDraft.contractDocumentUrl || latestDraft.contractDocumentUrl,
+        contractDocumentGeneratedAt: receiptDraft.contractDocumentGeneratedAt || latestDraft.contractDocumentGeneratedAt,
+        finalReceiptUrl: receiptDraft.finalReceiptUrl || latestDraft.finalReceiptUrl,
+        finalReceiptGeneratedAt: receiptDraft.finalReceiptGeneratedAt || latestDraft.finalReceiptGeneratedAt,
+      });
+      const hasDocumentUpdates =
+        mergedDocumentDraft.contractDocumentUrl !== latestDraft.contractDocumentUrl ||
+        mergedDocumentDraft.contractDocumentGeneratedAt !== latestDraft.contractDocumentGeneratedAt ||
+        mergedDocumentDraft.finalReceiptUrl !== latestDraft.finalReceiptUrl ||
+        mergedDocumentDraft.finalReceiptGeneratedAt !== latestDraft.finalReceiptGeneratedAt;
+
+      if (hasDocumentUpdates) {
+        await persistOwnerExecutionDraft(mergedDocumentDraft);
+      }
+
       await sendOwnerExecutionSystemMessage({
-        body: tr('Rental started', 'Location démarrée'),
+        body: contractDocumentUrl && receiptUrl
+          ? tr('Rental started. Contract and receipt are ready.', 'Location démarrée. Le contrat et le reçu sont prêts.')
+          : contractDocumentUrl
+            ? tr('Rental started. The contract is ready.', 'Location démarrée. Le contrat est prêt.')
+            : receiptUrl
+              ? tr('Rental started. The receipt is ready.', 'Location démarrée. Le reçu est prêt.')
+              : tr('Rental started', 'Location démarrée'),
         event: 'started',
         requestStatus: 'active',
+        documentLinks,
       });
     })();
-  }, [ownerExecutionDraft, ownerHandoffReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
+  }, [ensureOwnerExecutionContractDocument, ensureOwnerExecutionFinalReceiptDocument, ownerExecutionDraft, ownerHandoffReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
 
   const markOwnerExecutionReturnPending = useCallback(() => {
-    if (!ownerExecutionCanEndRental) return;
+    if (!ownerExecutionCanStartReturnFlow) return;
     const nextDraft = {
       ...ownerExecutionDraft,
       returnPendingAt: ownerExecutionDraft.returnPendingAt || new Date().toISOString(),
@@ -2403,7 +4109,29 @@ const AccountMarketplaceVehicleProfile = () => {
     void (async () => {
       await persistOwnerExecutionDraft(nextDraft);
     })();
-  }, [ownerExecutionCanEndRental, ownerExecutionDraft, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
+  }, [ownerExecutionCanStartReturnFlow, ownerExecutionDraft, persistOwnerExecutionDraft]);
+
+  const cancelOwnerExecutionReturnPending = useCallback(() => {
+    if (ownerExecutionReturnLocked || ownerExecutionSaving || ownerExecutionStage !== 'return_pending') return;
+
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      returnPendingAt: null,
+    };
+
+    setOwnerExecutionNow(Date.now());
+    void (async () => {
+      await persistOwnerExecutionDraft(nextDraft, 'active');
+      toast.success(tr('Finish flow cancelled. Rental is still live.', 'Flux de fin annulé. La location reste active.'));
+    })();
+  }, [
+    ownerExecutionDraft,
+    ownerExecutionReturnLocked,
+    ownerExecutionSaving,
+    ownerExecutionStage,
+    persistOwnerExecutionDraft,
+    tr,
+  ]);
 
   const setOwnerIssueReview = useCallback((issueReported) => {
     if (ownerExecutionReturnLocked) return;
@@ -2411,6 +4139,7 @@ const AccountMarketplaceVehicleProfile = () => {
       ...ownerExecutionDraft,
       issueReviewed: true,
       issueReported: Boolean(issueReported),
+      issueNote: issueReported ? String(ownerExecutionDraft.issueNote || '').trim() : '',
     };
     void (async () => {
       await persistOwnerExecutionDraft(nextDraft);
@@ -2428,6 +4157,89 @@ const AccountMarketplaceVehicleProfile = () => {
     })();
   }, [operationalRequest?.id, ownerExecutionDraft, ownerExecutionReturnLocked, persistOwnerExecutionDraft, user?.id]);
 
+  const saveOwnerExecutionIssueNote = useCallback((note = '') => {
+    if (ownerExecutionReturnLocked) return;
+
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      issueReviewed: true,
+      issueReported: true,
+      issueNote: String(note || '').trim(),
+    };
+
+    if (!nextDraft.issueNote) return;
+    void persistOwnerExecutionDraft(nextDraft);
+  }, [ownerExecutionDraft, ownerExecutionReturnLocked, persistOwnerExecutionDraft]);
+
+  const saveOwnerExecutionDepositReview = useCallback((outcome = '') => {
+    if (ownerExecutionReturnLocked) return;
+    const normalizedOutcome = String(outcome || '').trim().toLowerCase();
+    if (!normalizedOutcome) return;
+    if (normalizedOutcome === 'refund_full' && !String(ownerExecutionDraft.depositRefundSignatureUrl || '').trim()) {
+      setShowOwnerRefundSignatureModal(true);
+      return;
+    }
+
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      depositReviewed: true,
+      depositOutcome: normalizedOutcome,
+      ...(normalizedOutcome === 'refund_full'
+        ? {}
+        : {
+            depositRefundSignatureUrl: '',
+            depositRefundSignedAt: null,
+            depositRefundAmount: 0,
+            depositRefundCurrency: '',
+            depositRefundSignedBy: '',
+            depositRefundRecordedBy: '',
+          }),
+    };
+
+    void persistOwnerExecutionDraft(nextDraft);
+  }, [ownerExecutionDraft, ownerExecutionReturnLocked, persistOwnerExecutionDraft]);
+
+  const openOwnerRefundSignatureModal = useCallback(() => {
+    if (ownerExecutionReturnLocked || ownerExecutionSaving) return;
+    setShowOwnerRefundSignatureModal(true);
+  }, [ownerExecutionReturnLocked, ownerExecutionSaving]);
+
+  const saveOwnerExecutionDepositRefundSignature = useCallback((signatureUrl = '') => {
+    if (ownerExecutionReturnLocked) return;
+    const normalizedSignatureUrl = String(signatureUrl || '').trim();
+    if (!normalizedSignatureUrl) return;
+
+    const signedAt = new Date().toISOString();
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      depositReviewed: true,
+      depositOutcome: 'refund_full',
+      depositRefundSignatureUrl: normalizedSignatureUrl,
+      depositRefundSignedAt: signedAt,
+      depositRefundAmount: Math.max(0, Number(operationalRequest?.depositAmount || 0) || 0),
+      depositRefundCurrency: String(operationalRequest?.currencyCode || 'MAD').trim() || 'MAD',
+      depositRefundSignedBy: String(
+        operationalRequest?.customerId ||
+        operationalRequest?.customerEmail ||
+        operationalRequest?.customerName ||
+        ''
+      ).trim(),
+      depositRefundRecordedBy: String(user?.id || '').trim(),
+    };
+
+    void persistOwnerExecutionDraft(nextDraft);
+  }, [
+    operationalRequest?.currencyCode,
+    operationalRequest?.customerEmail,
+    operationalRequest?.customerId,
+    operationalRequest?.customerName,
+    operationalRequest?.depositAmount,
+    ownerExecutionDraft,
+    ownerExecutionReturnLocked,
+    persistOwnerExecutionDraft,
+    user?.id,
+  ]);
+
   const saveOwnerReturnFlow = useCallback(() => {
     if (!ownerReturnReady || ownerExecutionReturnLocked) return;
     const nextDraft = {
@@ -2435,14 +4247,28 @@ const AccountMarketplaceVehicleProfile = () => {
       returnSavedAt: ownerExecutionDraft.returnSavedAt || new Date().toISOString(),
     };
     void (async () => {
-      await persistOwnerExecutionDraft(nextDraft, 'completed');
+      const documentDraft = await ensureOwnerExecutionFinalReceiptDocument(nextDraft);
+      const finalReceiptUrl = String(documentDraft.finalReceiptUrl || '').trim();
+      await persistOwnerExecutionDraft(documentDraft, 'completed');
       await sendOwnerExecutionSystemMessage({
-        body: tr('Rental completed', 'Location terminée'),
+        body: finalReceiptUrl
+          ? tr('Rental completed. The receipt has been updated.', 'Location terminée. Le reçu a été mis à jour.')
+          : tr('Rental completed', 'Location terminée'),
         event: 'completed',
         requestStatus: 'completed',
+        documentLinks: finalReceiptUrl
+          ? [
+              {
+                key: 'receipt',
+                kind: 'receipt',
+                label: tr('Open receipt', 'Ouvrir le reçu'),
+                href: finalReceiptUrl,
+              },
+            ]
+          : [],
       });
     })();
-  }, [ownerExecutionDraft, ownerExecutionReturnLocked, ownerReturnReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
+  }, [ensureOwnerExecutionFinalReceiptDocument, ownerExecutionDraft, ownerExecutionReturnLocked, ownerReturnReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
 
   const uploadOwnerExecutionPhotos = useCallback(async (kind, files = []) => {
     if (!user?.id || !operationalRequest?.id || !Array.isArray(files) || files.length === 0) {
@@ -2472,22 +4298,272 @@ const AccountMarketplaceVehicleProfile = () => {
               handoffPhotos: stampedAttachments,
               handoffMediaReady: stampedAttachments.length >= OWNER_HANDOFF_MIN_PHOTOS,
             }
-          : {
-              returnPhotos: stampedAttachments,
-              returnMediaReady: stampedAttachments.length >= OWNER_RETURN_MIN_PHOTOS,
-            }),
+          : kind === 'legal_docs'
+            ? {
+                legalDocsPhotos: stampedAttachments,
+                legalDocsMediaReady: stampedAttachments.length >= OWNER_LEGAL_DOCS_MIN_PHOTOS,
+                legalDocsChecked: stampedAttachments.length >= OWNER_LEGAL_DOCS_MIN_PHOTOS,
+              }
+            : {
+                returnPhotos: stampedAttachments,
+                returnMediaReady: stampedAttachments.length >= OWNER_RETURN_MIN_PHOTOS,
+              }),
       };
 
       await persistOwnerExecutionDraft(nextDraft);
-      await saveRentalPhotoRows(kind, stampedAttachments);
       await sendOwnerExecutionPhotoMessage({ kind, attachments: uploadedAttachments });
+      toast.success(kind === 'handoff'
+        ? tr('Vehicle inspection photos saved.', 'Photos d’inspection véhicule enregistrées.')
+        : kind === 'legal_docs'
+          ? tr('Registration and insurance photos saved.', 'Photos carte grise et assurance enregistrées.')
+          : tr('Return photos saved.', 'Photos de retour enregistrées.'));
     } catch (photoError) {
       console.warn(`Failed to upload ${kind} execution photos:`, photoError);
       toast.error(photoError?.message || tr('Unable to upload photos right now.', 'Impossible de téléverser les photos pour le moment.'));
     } finally {
       setOwnerExecutionSaving(false);
     }
-  }, [operationalRequest?.id, ownerExecutionDraft, persistOwnerExecutionDraft, saveRentalPhotoRows, sendOwnerExecutionPhotoMessage, tr, user?.id]);
+  }, [operationalRequest?.id, ownerExecutionDraft, persistOwnerExecutionDraft, sendOwnerExecutionPhotoMessage, tr, user?.id]);
+  const ownerExecutionFooterPrimaryAction = useMemo(() => {
+    if (ownerExecutionStage === 'ready_to_start') {
+      return {
+        label: tr('Start rental', 'Démarrer la location'),
+        onClick: markOwnerExecutionStarted,
+        disabled: ownerExecutionSaving,
+        tone: 'violet',
+        icon: CalendarClock,
+      };
+    }
+
+    if (ownerExecutionStage === 'live') {
+      return {
+        label: ownerExecutionCanStartReturnFlow
+          ? tr('Start return flow', 'Démarrer le retour')
+          : tr('Timer starting…', 'Timer en cours…'),
+        onClick: markOwnerExecutionReturnPending,
+        disabled: ownerExecutionSaving || !ownerExecutionCanStartReturnFlow,
+        tone: 'violet',
+        icon: FileText,
+      };
+    }
+
+    if (ownerExecutionStage === 'return_pending') {
+      if (ownerReturnCurrentStep.key === 'return_odometer') {
+        return {
+          label: hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer)
+            ? tr('Edit reading', 'Modifier le relevé')
+            : tr('Add reading', 'Ajouter le relevé'),
+          onClick: openOwnerReturnOdometerModal,
+          disabled: ownerExecutionSaving || ownerExecutionReturnLocked,
+          tone: 'violet',
+          icon: Gauge,
+        };
+      }
+
+      if (ownerReturnCurrentStep.key === 'return_fuel') {
+        return {
+          label: hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)
+            ? tr('Edit fuel', 'Modifier le carburant')
+            : tr('Record fuel', 'Enregistrer le carburant'),
+          onClick: openOwnerReturnFuelModal,
+          disabled: ownerExecutionSaving || ownerExecutionReturnLocked,
+          tone: 'violet',
+          icon: Droplets,
+        };
+      }
+
+      if (ownerReturnCurrentStep.key === 'return_condition') {
+        return {
+          label: ownerExecutionDraft.issueReported
+            ? tr('Save issue note', "Enregistrer la note d'incident")
+            : tr('No issue', 'Aucun incident'),
+          onClick: ownerExecutionDraft.issueReported
+            ? () => saveOwnerExecutionIssueNote(ownerExecutionDraft.issueNote)
+            : () => setOwnerIssueReview(false),
+          disabled:
+            ownerExecutionSaving ||
+            (ownerExecutionDraft.issueReported && !String(ownerExecutionDraft.issueNote || '').trim()),
+          tone: ownerExecutionDraft.issueReported ? 'amber' : 'violet',
+          icon: ownerExecutionDraft.issueReported ? AlertTriangle : CheckCircle2,
+        };
+      }
+
+      if (ownerReturnCurrentStep.key === 'deposit_review') {
+        const refundSignatureMissing =
+          ownerExecutionDraft.depositOutcome === 'refund_full' &&
+          !String(ownerExecutionDraft.depositRefundSignatureUrl || '').trim();
+        return {
+          label: refundSignatureMissing
+            ? tr('Sign refund receipt', 'Signer le reçu de remboursement')
+            : tr('Save deposit review', 'Enregistrer la caution'),
+          onClick: refundSignatureMissing
+            ? openOwnerRefundSignatureModal
+            : () => saveOwnerExecutionDepositReview(ownerExecutionDraft.depositOutcome),
+          disabled: ownerExecutionSaving || !String(ownerExecutionDraft.depositOutcome || '').trim(),
+          tone: 'violet',
+          icon: refundSignatureMissing ? FileSignature : DollarSign,
+        };
+      }
+
+      if (ownerReturnCurrentStep.key === 'end_rental') {
+        return {
+          label: tr('Finish rental', 'Terminer la location'),
+          onClick: saveOwnerReturnFlow,
+          disabled: ownerExecutionSaving || !ownerReturnReady,
+          tone: 'violet',
+          icon: CheckCircle2,
+        };
+      }
+
+      return null;
+    }
+
+    if (ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') {
+      if (ownerHandoffReady) {
+        return {
+          label: tr('Start rental', 'Démarrer la location'),
+          onClick: markOwnerExecutionStarted,
+          disabled: ownerExecutionSaving,
+          tone: 'violet',
+          icon: CalendarClock,
+        };
+      }
+
+      if (ownerHandoffCurrentStep.key === 'start_odometer') {
+        return {
+          label: tr('Add reading', 'Ajouter le relevé'),
+          onClick: openOwnerStartOdometerModal,
+          disabled: ownerExecutionSaving,
+          tone: 'violet',
+          icon: Gauge,
+        };
+      }
+
+      if (ownerHandoffCurrentStep.key === 'start_fuel') {
+        return {
+          label: tr('Record fuel', 'Enregistrer le carburant'),
+          onClick: openOwnerStartFuelModal,
+          disabled: ownerExecutionSaving,
+          tone: 'violet',
+          icon: Droplets,
+        };
+      }
+
+      if (ownerHandoffCurrentStep.key === 'deposit') {
+        return {
+          label: tr('Confirm deposit', 'Confirmer la caution'),
+          onClick: () => toggleOwnerExecutionFlag('depositConfirmed'),
+          disabled: ownerExecutionSaving,
+          tone: 'violet',
+          icon: DollarSign,
+        };
+      }
+
+      if (ownerHandoffCurrentStep.key === 'signature') {
+        return {
+          label: tr('Sign contract', 'Signer le contrat'),
+          onClick: openOwnerSignatureModal,
+          disabled: ownerExecutionSaving,
+          tone: 'violet',
+          icon: FileSignature,
+        };
+      }
+    }
+
+    return null;
+  }, [
+    handoffOdometerInput,
+    markOwnerExecutionReturnPending,
+    markOwnerExecutionStarted,
+    openOwnerReturnFuelModal,
+    openOwnerReturnOdometerModal,
+    openOwnerSignatureModal,
+    openOwnerRefundSignatureModal,
+    openOwnerStartFuelModal,
+    openOwnerStartOdometerModal,
+    ownerExecutionCanStartReturnFlow,
+    ownerExecutionDraft.depositOutcome,
+    ownerExecutionDraft.depositRefundSignatureUrl,
+    ownerExecutionDraft.returnFuelLevel,
+    ownerExecutionDraft.returnOdometer,
+    ownerExecutionDraft.startFuelLevel,
+    ownerExecutionDraft.startOdometer,
+    ownerExecutionReturnLocked,
+    ownerExecutionSaving,
+    ownerExecutionStage,
+    ownerExecutionDraft.issueNote,
+    ownerExecutionDraft.issueReported,
+    ownerHandoffCurrentStep.key,
+    ownerHandoffReady,
+    ownerReturnCurrentStep.key,
+    ownerReturnReady,
+    returnOdometerInput,
+    saveOwnerExecutionDepositReview,
+    saveOwnerExecutionIssueNote,
+    saveOwnerReturnFlow,
+    setOwnerIssueReview,
+    toggleOwnerExecutionFlag,
+    tr,
+  ]);
+  const ownerExecutionFooterHelper = useMemo(() => {
+    if (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'return_photos') {
+      return tr(
+        'Upload the return evidence above to unlock the next step.',
+        'Téléversez la preuve de retour ci-dessus pour débloquer l’étape suivante.'
+      );
+    }
+    if ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'vehicle_photos') {
+      return tr(
+        'Upload the vehicle inspection above to unlock the rest of the handoff.',
+        'Téléversez l’inspection véhicule ci-dessus pour débloquer le reste de la remise.'
+      );
+    }
+    if ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'legal_docs') {
+      return tr(
+        'Upload one registration photo and one insurance photo above to confirm documents.',
+        'Téléversez une photo de carte grise et une photo d’assurance ci-dessus pour confirmer les documents.'
+      );
+    }
+    if (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'return_condition') {
+      return tr(
+        'Confirm the final condition above and add a note if anything needs follow-up.',
+        "Confirmez l'état final ci-dessus et ajoutez une note si un suivi est nécessaire."
+      );
+    }
+    if (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'deposit_review') {
+      return tr(
+        'Save the deposit outcome before closing the rental.',
+        'Enregistrez le résultat de la caution avant de clôturer la location.'
+      );
+    }
+    return ownerExecutionProgressModel.hint;
+  }, [ownerExecutionProgressModel.hint, ownerExecutionStage, ownerHandoffCurrentStep.key, ownerReturnCurrentStep.key, tr]);
+  const ownerExecutionFooter = useMemo(() => {
+    if (!operationalRequest || ownerExecutionStage === 'completed') return null;
+    const showLiveTimer = Boolean(ownerExecutionLiveTimer) && (ownerExecutionStage === 'live' || ownerExecutionStage === 'return_pending');
+
+    return (
+      <AccountRentalExecutionStickyFooter
+        progressLabel={showLiveTimer ? tr('Elapsed', 'Écoulé') : tr('Progress', 'Progression')}
+        progressValue={showLiveTimer ? ownerExecutionLiveTimer.elapsedLabel : `${ownerExecutionProgressModel.completed}/${ownerExecutionProgressModel.total}`}
+        progressValueClassName={showLiveTimer && ownerExecutionLiveTimer.expired ? 'text-red-600' : showLiveTimer ? 'text-emerald-600' : 'text-slate-950'}
+        helper={ownerExecutionFooterHelper}
+        secondaryLabel={showLiveTimer ? tr('Remaining', 'Restant') : tr('Next', 'Suivant')}
+        secondaryValue={showLiveTimer ? ownerExecutionLiveTimer.remainingLabel : ownerExecutionFooterPrimaryAction?.label || ownerExecutionFooterHelper}
+        secondaryValueClassName={showLiveTimer && ownerExecutionLiveTimer.expired ? 'text-rose-600' : showLiveTimer ? 'text-blue-600' : 'text-slate-950'}
+        primaryAction={ownerExecutionFooterPrimaryAction}
+      />
+    );
+  }, [
+    operationalRequest,
+    ownerExecutionFooterHelper,
+    ownerExecutionFooterPrimaryAction,
+    ownerExecutionLiveTimer,
+    ownerExecutionProgressModel.completed,
+    ownerExecutionProgressModel.total,
+    ownerExecutionStage,
+    tr,
+  ]);
   const listingReviewReplyTarget = useMemo(() => {
     const latestAdminMessage = (Array.isArray(vehicle?.ownerMessages) ? vehicle.ownerMessages : []).find(
       (message) =>
@@ -2678,24 +4754,21 @@ const AccountMarketplaceVehicleProfile = () => {
     const normalizedCategory = String(category || '').trim().toLowerCase();
     let nextFormData = null;
     const filledFieldLabels = [];
+    const extractedValueMap = {
+      registrationNumber: extractedData?.registration_number,
+      registrationDate: extractedData?.registration_date,
+      registrationExpiryDate: extractedData?.registration_expiry_date,
+      insurancePolicyNumber: extractedData?.insurance_policy_number,
+      insuranceProvider: extractedData?.insurance_provider,
+      insuranceExpiryDate: extractedData?.insurance_expiry_date,
+    };
 
     setFormData((current) => {
       const updated = { ...current };
 
       if (success && extractedData) {
-        const categoryFieldKeys = VEHICLE_LEGAL_OCR_FIELD_MAP[normalizedCategory] || [];
-
-        categoryFieldKeys.forEach((fieldKey) => {
-          const extractedValueMap = {
-            registrationNumber: extractedData.registration_number,
-            registrationDate: extractedData.registration_date,
-            registrationExpiryDate: extractedData.registration_expiry_date,
-            insurancePolicyNumber: extractedData.insurance_policy_number,
-            insuranceProvider: extractedData.insurance_provider,
-            insuranceExpiryDate: extractedData.insurance_expiry_date,
-          };
-
-          const value = extractedValueMap[fieldKey];
+        Object.entries(extractedValueMap).forEach(([fieldKey, rawValue]) => {
+          const value = String(rawValue || '').trim();
           if (value) {
             updated[fieldKey] = value;
             filledFieldLabels.push(getVehicleLegalFieldLabel(fieldKey));
@@ -2808,22 +4881,34 @@ const AccountMarketplaceVehicleProfile = () => {
   };
 
   const refreshVehicleVerificationDocuments = useCallback(async () => {
-    if (!vehicleVerificationEntityId) return;
+    if (vehicleVerificationEntityIds.length === 0) return;
 
     try {
-      const verificationFileResult = await VerificationService.getEntityVerificationFile(
-        'vehicle',
-        vehicleVerificationEntityId,
-        { forceRefresh: true }
+      const verificationFileResults = await Promise.all(
+        vehicleVerificationEntityIds.map((entityId) =>
+          VerificationService.getEntityVerificationFile(
+            'vehicle',
+            entityId,
+            { forceRefresh: true }
+          ).catch(() => ({ summary: null, requests: [] }))
+        )
       );
 
-      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(verificationFileResult?.requests || []);
-      setVehicleVerificationSummary(verificationFileResult?.summary || null);
+      const fallbackVehicleVerificationSummary = vehicle?.rawFleetVehicle?.verification_summary || null;
+      const nextVerificationSources = fallbackVehicleVerificationSummary
+        ? [...verificationFileResults, { summary: fallbackVehicleVerificationSummary, requests: [] }]
+        : verificationFileResults;
+      const nextVerificationRequests = getVehicleVerificationRowsFromFileResults(nextVerificationSources);
+      const nextVerificationDocuments = mapVehicleVerificationRequestsToDocuments(nextVerificationRequests);
+      const nextVerificationSummary = nextVerificationRequests.length > 0
+        ? buildEntityVerificationSummary(nextVerificationRequests, 'vehicle')
+        : nextVerificationSources.find((fileResult) => fileResult?.summary)?.summary || null;
+      setVehicleVerificationSummary(nextVerificationSummary);
       setVehicleDocuments((current) => mergeVehicleDocuments(current, nextVerificationDocuments));
     } catch (verificationRefreshError) {
       console.warn('Unable to refresh vehicle verification documents:', verificationRefreshError);
     }
-  }, [vehicleVerificationEntityId]);
+  }, [vehicleVerificationEntityIds]);
 
   const handleDeleteVehicleDocument = useCallback(async (deletedDocumentId) => {
     setVehicleDocuments((current) =>
@@ -2832,6 +4917,11 @@ const AccountMarketplaceVehicleProfile = () => {
 
     await refreshVehicleVerificationDocuments();
   }, [refreshVehicleVerificationDocuments]);
+
+  useEffect(() => {
+    if (activeTab !== 'legal' || vehicleVerificationEntityIds.length === 0) return;
+    void refreshVehicleVerificationDocuments();
+  }, [activeTab, refreshVehicleVerificationDocuments, vehicleVerificationEntityIds]);
 
   const persistVehicle = async (
     submitForReview = false,
@@ -2897,6 +4987,7 @@ const AccountMarketplaceVehicleProfile = () => {
 
       setVehicle(savedVehicle);
       setFormData(buildFormData(savedVehicle));
+      setLastProfileSaveAt(Date.now());
       storeOwnerVehicleId(user?.id, savedVehicle?.id, { incrementCount: isNewVehicle });
       if (savedVehicle?.id) {
         void activatePrivateOwnerAccount({ source: 'vehicle_saved' });
@@ -2961,12 +5052,20 @@ const AccountMarketplaceVehicleProfile = () => {
           }
         );
       }
+      return {
+        success: true,
+        vehicle: savedVehicle,
+      };
     } catch (saveErrorValue) {
       if (isBackgroundSave) {
         console.warn('Background vehicle save failed:', saveErrorValue);
       } else {
         setSaveError(saveErrorValue?.message || tr('Unable to save this vehicle right now.', 'Impossible d’enregistrer ce véhicule pour le moment.'));
       }
+      return {
+        success: false,
+        error: saveErrorValue,
+      };
     } finally {
       if (!isBackgroundSave) {
         setSaving(false);
@@ -2975,14 +5074,90 @@ const AccountMarketplaceVehicleProfile = () => {
     }
   };
 
+  const getPostLegalContinueTarget = () => {
+    const nextSection = pricingPickupComplete
+      ? 'listing-journey'
+      : listingDetailsComplete && listingPricingComplete
+        ? 'listing-rules'
+        : 'listing-details';
+
+    return {
+      to: `${location.pathname}?tab=listing`,
+      state: {
+        ...(location.state || {}),
+        from: currentPath,
+        resumeEditing: true,
+        focusSectionId: nextSection,
+      },
+    };
+  };
+
   const handleConfirmVehicleLegalDetails = async () => {
-    await persistVehicle(
+    const result = await persistVehicle(
       false,
       false,
       null,
       tr('Legal details saved.', 'Détails légaux enregistrés.'),
       { source: 'legal_details_save' }
     );
+
+    if (result?.success && !isNewVehicle) {
+      navigateWithinVehicleProfile(getPostLegalContinueTarget());
+    }
+  };
+
+  const handlePublishApprovedListing = async () => {
+    if (!user?.id || !vehicle?.listingId) {
+      setSaveError(tr('Save the listing first before publishing.', "Enregistrez d'abord l'annonce avant de publier."));
+      return false;
+    }
+
+    if (!listingApproved && !listingIsLive) {
+      setSaveError(tr('Admin approval is required before publishing.', "L'approbation admin est requise avant publication."));
+      return false;
+    }
+
+    if (listingIsLive) {
+      return true;
+    }
+
+    try {
+      setPublishListingPending(true);
+      setSubmitting(true);
+      setSaveError('');
+      setSaveSuccess('');
+
+      const result = await withTimeout(
+        BusinessMarketplaceService.publishOwnerListing({
+          ownerId: user.id,
+          vehicleId: vehicle?.id || vehicleId,
+        }),
+        OWNER_VEHICLE_SAVE_TIMEOUT_MS,
+        tr('Publishing took too long. Please try again.', 'La publication a pris trop de temps. Veuillez réessayer.')
+      );
+
+      const publishedVehicle = result?.vehicle || null;
+      if (!publishedVehicle) {
+        throw new Error(tr('Publishing did not return the live listing. Please refresh and try again.', "La publication n'a pas renvoyé l'annonce en ligne. Actualisez puis réessayez."));
+      }
+
+      setVehicle(publishedVehicle);
+      setFormData(buildFormData(publishedVehicle));
+      setLastProfileSaveAt(Date.now());
+      setSaveSuccess(tr('Listing published. It is now live on the marketplace.', "Annonce publiée. Elle est maintenant en ligne sur la marketplace."));
+      trackAccountJourneyEvent(ACCOUNT_JOURNEY_EVENTS.listingWentLive, {
+        source: 'owner_publish_button',
+        vehicleId: publishedVehicle?.id || vehicle?.id || vehicleId || '',
+        listingId: publishedVehicle?.listingId || vehicle?.listingId || '',
+      });
+      return true;
+    } catch (publishError) {
+      setSaveError(publishError?.message || tr('Unable to publish this listing right now.', "Impossible de publier cette annonce pour le moment."));
+      return false;
+    } finally {
+      setPublishListingPending(false);
+      setSubmitting(false);
+    }
   };
 
   const handleSaveTaxRecord = async () => {
@@ -3078,6 +5253,26 @@ const AccountMarketplaceVehicleProfile = () => {
     ? vehicleVerificationSummary.latestByType
     : {};
   const vehicleVerificationSubmitted = VEHICLE_REQUIRED_VERIFICATIONS.every((type) => Boolean(vehicleVerificationLatestByType[type]));
+  const vehicleLegalDocumentCategoryPresent = (category) => {
+    const aliases = category === 'registration'
+      ? ['registration', 'vehicle_registration', 'immatriculation']
+      : ['insurance', 'vehicle_insurance', 'assurance'];
+
+    return (Array.isArray(vehicleDocuments) ? vehicleDocuments : []).some((document) => {
+      const haystack = [
+        document?.categoryKey,
+        document?.category,
+        document?.verificationType,
+        document?.name,
+        document?.storagePath,
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      return aliases.some((alias) => haystack.includes(alias));
+    });
+  };
+  const registrationDocumentUploaded = Boolean(vehicleVerificationLatestByType.vehicle_registration) || vehicleLegalDocumentCategoryPresent('registration');
+  const insuranceDocumentUploaded = Boolean(vehicleVerificationLatestByType.vehicle_insurance) || vehicleLegalDocumentCategoryPresent('insurance');
+  const vehicleLegalDocumentsUploaded = registrationDocumentUploaded && insuranceDocumentUploaded;
   const vehicleVerificationWaitingOnAdmin =
     vehicleVerificationSubmitted &&
     ['pending', 'approved'].includes(vehicleVerificationStatus);
@@ -3095,12 +5290,21 @@ const AccountMarketplaceVehicleProfile = () => {
     String(formData.insuranceExpiryDate || '').trim()
   );
   const vehicleLegalFieldsComplete = registrationFieldsComplete && insuranceFieldsComplete;
-  const vehicleLegalStepComplete = vehicleVerificationReady || vehicleLegalScanComplete || (vehicleVerificationSubmitted && vehicleLegalFieldsComplete);
+  const vehicleLegalStepComplete = vehicleVerificationReady || vehicleLegalScanComplete || vehicleLegalDocumentsUploaded || (vehicleVerificationSubmitted && vehicleLegalFieldsComplete);
   const vehicleLegalManualFallbackSubmitted = vehicleVerificationSubmitted && !vehicleLegalStepComplete;
+  const effectiveVehicleVerificationMissing = vehicleVerificationMissing.filter((type) => {
+    if (type === 'vehicle_registration') {
+      return !(registrationDocumentUploaded || registrationFieldsComplete);
+    }
+    if (type === 'vehicle_insurance') {
+      return !(insuranceDocumentUploaded || insuranceFieldsComplete);
+    }
+    return true;
+  });
   const nextVehicleLegalUploadCategory =
-    !registrationFieldsComplete && !vehicleVerificationLatestByType.vehicle_registration
+    !registrationDocumentUploaded
       ? 'registration'
-      : !insuranceFieldsComplete && !vehicleVerificationLatestByType.vehicle_insurance
+      : !insuranceDocumentUploaded
         ? 'insurance'
         : !registrationFieldsComplete
           ? 'registration'
@@ -3108,9 +5312,6 @@ const AccountMarketplaceVehicleProfile = () => {
             ? 'insurance'
             : 'registration';
   const marketplaceVerificationReady = ownerVerificationReady && vehicleVerificationReady;
-  const verificationMissingLabels = [...ownerVerificationMissing, ...vehicleVerificationMissing].map((type) =>
-    getVerificationTypeLabel(type, isFrench ? 'fr' : 'en')
-  );
   const effectiveMarketplaceJourneyState = getEffectiveMarketplaceJourneyState({
     marketplaceVerificationReady,
     hasStartedDraft,
@@ -3119,6 +5320,8 @@ const AccountMarketplaceVehicleProfile = () => {
     moderationStatus: vehicle?.moderationStatus,
   });
   const marketplaceJourneyMeta = getMarketplaceJourneyMeta(effectiveMarketplaceJourneyState, tr);
+  const listingReviewSubmitted = effectiveMarketplaceJourneyState === 'pending_review';
+  const listingApproved = effectiveMarketplaceJourneyState === 'approved';
   const listingIsLive = effectiveMarketplaceJourneyState === 'live';
   const insuranceExpiryDate = formData.insuranceExpiryDate ? new Date(formData.insuranceExpiryDate) : null;
   const hasValidInsuranceExpiry = insuranceExpiryDate && !Number.isNaN(insuranceExpiryDate.getTime());
@@ -3140,22 +5343,9 @@ const AccountMarketplaceVehicleProfile = () => {
     normalizedFuelPolicy.includes('same') ||
     normalizedFuelPolicy.includes('full') ||
     normalizedFuelPolicy.includes('return');
-  const listingFuelLevel = Number.isFinite(Number(vehicleFuelState?.current_fuel_lines))
-    ? Number(vehicleFuelState.current_fuel_lines)
-    : 8;
-  const listingFuelLitersLabel = Number.isFinite(Number(listingFuelLevel))
-    ? `${FuelTransactionService.linesToLiters(
-        listingFuelLevel,
-        vehicleFuelState?.tank_capacity_liters || undefined
-      ).toFixed(1)} L`
-    : '';
   const fuelPolicyDisplay = returnSameFuelLevel
     ? tr('Return with the same fuel level', 'Retour avec le même niveau de carburant')
     : (formData.fuelPolicy || tr('Custom fuel policy', 'Politique carburant personnalisée'));
-  const listingReviewStatusLabel = marketplaceJourneyMeta?.badge || getMarketplaceStatusLabel(
-    vehicle?.listingStatus || vehicle?.moderationStatus || 'draft',
-    isFrench ? 'fr' : 'en'
-  );
   const latestReviewDetail =
     listingReviewSummary.latestModerationEntry?.feedback ||
     listingReviewSummary.latestModerationEntry?.reason ||
@@ -3168,20 +5358,14 @@ const AccountMarketplaceVehicleProfile = () => {
       { key: 'legal', label: tr('Documents', 'Documents'), icon: ShieldCheck },
     ];
 
-    if (hasStartedDraft || operationalRequest) {
-      baseTabs.push({ key: 'bookings', label: tr('Operations', 'Opérations'), icon: CalendarClock });
-    }
-
     if (linkedFleetVehicleId || vehicleFinanceOverview) {
       baseTabs.push({ key: 'finance', label: tr('Money', 'Argent'), icon: DollarSign });
     }
 
     return baseTabs;
   }, [
-    hasStartedDraft,
     isFrench,
     linkedFleetVehicleId,
-    operationalRequest,
     vehicleFinanceOverview,
   ]);
   const ownerProfileAlerts = [
@@ -3210,9 +5394,12 @@ const AccountMarketplaceVehicleProfile = () => {
     .filter(Boolean)
     .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
   const vehicleLegalDocumentStatusMap = {
-    registration: vehicleVerificationReady || registrationScanComplete || (vehicleVerificationSubmitted && registrationFieldsComplete)
+    registration: vehicleVerificationReady || registrationScanComplete || registrationDocumentUploaded || (vehicleVerificationSubmitted && registrationFieldsComplete)
       ? {
-          label: tr(vehicleVerificationReady ? 'Verified' : 'Verified by scan', vehicleVerificationReady ? 'Vérifié' : 'Vérifié par scan'),
+          label: tr(
+            vehicleVerificationReady ? 'Verified' : registrationScanComplete ? 'Verified by scan' : 'Uploaded',
+            vehicleVerificationReady ? 'Vérifié' : registrationScanComplete ? 'Vérifié par scan' : 'Téléversé'
+          ),
           tone: 'bg-emerald-100 text-emerald-700',
         }
       : vehicleLegalScanResults.registration?.pendingSave
@@ -3226,9 +5413,12 @@ const AccountMarketplaceVehicleProfile = () => {
             tone: 'bg-amber-100 text-amber-700',
           }
         : null,
-    insurance: vehicleVerificationReady || insuranceScanComplete || (vehicleVerificationSubmitted && insuranceFieldsComplete)
+    insurance: vehicleVerificationReady || insuranceScanComplete || insuranceDocumentUploaded || (vehicleVerificationSubmitted && insuranceFieldsComplete)
       ? {
-          label: tr(vehicleVerificationReady ? 'Verified' : 'Verified by scan', vehicleVerificationReady ? 'Vérifié' : 'Vérifié par scan'),
+          label: tr(
+            vehicleVerificationReady ? 'Verified' : insuranceScanComplete ? 'Verified by scan' : 'Uploaded',
+            vehicleVerificationReady ? 'Vérifié' : insuranceScanComplete ? 'Vérifié par scan' : 'Téléversé'
+          ),
           tone: 'bg-emerald-100 text-emerald-700',
         }
       : vehicleLegalScanResults.insurance?.pendingSave
@@ -3311,7 +5501,7 @@ const AccountMarketplaceVehicleProfile = () => {
     {
       key: 'publish',
       done: listingIsLive,
-      label: tr('Go live', 'Mettre en ligne'),
+      label: tr('Publish now', 'Publier maintenant'),
       tab: 'listing',
       section: 'listing-journey',
     },
@@ -3324,9 +5514,202 @@ const AccountMarketplaceVehicleProfile = () => {
     marketplaceVerificationReady,
     ownerVerificationReady,
     missingChecklistItems: missingReviewChecklistItems,
+    journeyState: effectiveMarketplaceJourneyState,
+    latestReviewDetail,
     tr,
   });
-  const ownerJourneyDisplay = canSendFullReview && !['pending_review', 'approved', 'live'].includes(effectiveMarketplaceJourneyState)
+  const reviewSubmissionComplete = reviewSubmissionSent || listingReviewSubmitted || listingApproved || listingIsLive;
+  const reviewSubmissionFailed = Boolean(reviewSubmissionNotice) && !reviewSubmissionPending && !reviewSubmissionComplete;
+  const reviewWaitingForAdmin = reviewSubmissionComplete && !listingApproved && !listingIsLive;
+  const compactReviewSteps = [
+    {
+      key: 'owner',
+      label: tr('Owner', 'Propriétaire'),
+      value: ownerVerificationReady ? tr('Approved', 'Approuvée') : tr('Waiting', 'En attente'),
+      done: ownerVerificationReady,
+      tone: ownerVerificationReady ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    {
+      key: 'documents',
+      label: tr('Documents', 'Documents'),
+      value: vehicleVerificationReady
+        ? tr('Approved', 'Approuvés')
+        : vehicleVerificationSubmitted || vehicleLegalStepComplete
+          ? tr('In review', 'En revue')
+          : tr('Missing', 'Manquants'),
+      done: vehicleVerificationReady,
+      tone: vehicleVerificationReady
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+        : vehicleVerificationSubmitted || vehicleLegalStepComplete
+          ? 'border-sky-200 bg-sky-50 text-sky-800'
+          : 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    {
+      key: 'review',
+      label: tr('Review', 'Revue'),
+      value: listingIsLive
+        ? tr('Live', 'En ligne')
+        : listingApproved
+          ? tr('Approved', 'Approuvée')
+          : effectiveMarketplaceJourneyState === 'changes_requested'
+            ? tr('Changes requested', 'Modifications demandées')
+          : reviewSubmissionComplete
+            ? tr('Waiting for admin', "En attente de l'admin")
+            : canSendFullReview
+              ? tr('Ready', 'Prête')
+              : tr('Locked', 'Verrouillée'),
+      done: listingApproved || listingIsLive,
+      tone: listingApproved || listingIsLive
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+        : effectiveMarketplaceJourneyState === 'changes_requested'
+          ? 'border-amber-200 bg-amber-50 text-amber-800'
+        : reviewSubmissionComplete
+          ? 'border-sky-200 bg-sky-50 text-sky-800'
+          : canSendFullReview
+            ? 'border-violet-200 bg-violet-50 text-violet-800'
+            : 'border-slate-200 bg-slate-50 text-slate-700',
+    },
+  ];
+  const compactReviewSystemNote = reviewSubmissionPending
+    ? reviewSubmissionNotice
+    : reviewSubmissionNotice || latestReviewDetail || (
+      reviewSubmissionComplete
+        ? tr(
+            'No action is needed from you right now. Admin will review the listing, then this step will change to Approved or Changes requested.',
+            "Aucune action n'est nécessaire pour le moment. L'admin vérifiera l'annonce, puis cette étape passera à Approuvée ou Modifications demandées."
+          )
+        : !vehicle?.listingId
+          ? tr('Save once to create the approval record.', "Enregistrez une fois pour créer le dossier d'approbation.")
+          : ''
+    );
+  const compactReviewNoteTone = reviewSubmissionPending
+    ? 'border-violet-200 bg-violet-50 text-violet-900'
+    : reviewSubmissionFailed
+      ? 'border-rose-200 bg-rose-50 text-rose-900'
+    : listingApproved || listingIsLive
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+      : reviewSubmissionComplete
+        ? 'border-sky-200 bg-sky-50 text-sky-900'
+        : combinedReviewEntryMeta.ready
+          ? 'border-violet-200 bg-violet-50 text-violet-900'
+          : 'border-amber-200 bg-amber-50 text-amber-900';
+  const compactReviewNoteTitle = reviewSubmissionPending
+    ? tr('Sending review', 'Envoi de la revue')
+    : reviewSubmissionFailed
+      ? tr('Review not sent', 'Revue non envoyée')
+    : listingApproved || listingIsLive
+      ? tr('Approved', 'Approuvée')
+      : reviewSubmissionComplete
+        ? tr('Submitted - no action needed', 'Envoyée - aucune action requise')
+        : combinedReviewEntryMeta.ready
+        ? tr('Ready to send', 'Prêt à envoyer')
+          : tr('Next step', 'Étape suivante');
+  const showReviewSendCta = canSendFullReview && !reviewSubmissionComplete;
+  const reviewPublishStageModel = useMemo(() => {
+    if (listingIsLive) {
+      return {
+        key: 'live',
+        title: tr('Live on marketplace', 'En ligne sur la marketplace'),
+        body: tr(
+          'Your listing is already live. Review is complete and no further approval is needed.',
+          "Votre annonce est déjà en ligne. La revue est terminée et aucune autre approbation n'est nécessaire."
+        ),
+        tone: 'border-emerald-200 bg-emerald-50',
+        badge: tr('Live', 'En ligne'),
+      };
+    }
+
+    if (listingApproved) {
+      return {
+        key: 'approved',
+        title: tr('Approved for publication', 'Approuvé pour publication'),
+        body: tr(
+          'Admin approval is complete. The only step left is publishing the listing live.',
+          "L'approbation admin est terminée. Il ne reste plus qu'à publier l'annonce."
+        ),
+        tone: 'border-emerald-200 bg-emerald-50',
+        badge: tr('Approved for publication', 'Approuvé pour publication'),
+      };
+    }
+
+    if (effectiveMarketplaceJourneyState === 'changes_requested') {
+      return {
+        key: 'changes_requested',
+        title: tr('Needs owner updates', 'Modifications requises du propriétaire'),
+        body: tr(
+          'Admin sent listing feedback. Update the listing, then send the full review again.',
+          "L'admin a envoyé un retour sur l'annonce. Mettez-la à jour, puis renvoyez la revue complète."
+        ),
+        tone: 'border-amber-200 bg-amber-50',
+        badge: tr('Needs changes', 'Modifications requises'),
+      };
+    }
+
+    if (reviewSubmissionComplete) {
+      return {
+        key: 'waiting_for_admin',
+        title: tr('Waiting for admin', "En attente de l'admin"),
+        body: tr(
+          'Your full listing package is already with the review team. No action is needed from you right now.',
+          "Le dossier complet de votre annonce est déjà chez l'équipe de revue. Aucune action n'est requise pour le moment."
+        ),
+        tone: 'border-sky-200 bg-sky-50',
+        badge: tr('Waiting for admin', "En attente de l'admin"),
+      };
+    }
+
+    if (canSendFullReview) {
+      return {
+        key: 'ready_for_review',
+        title: tr('Ready to send for review', 'Prêt à envoyer en revue'),
+        body: tr(
+          'Everything required is ready. Send the full review once to start admin approval.',
+          "Tout le nécessaire est prêt. Envoyez la revue complète une seule fois pour lancer l'approbation admin."
+        ),
+        tone: 'border-violet-200 bg-violet-50',
+        badge: tr('Ready for review', 'Prêt pour revue'),
+      };
+    }
+
+    return {
+      key: 'not_submitted',
+      title: tr('Finish the earlier setup steps', 'Terminez les étapes précédentes'),
+      body: tr(
+        'Complete owner verification, documents, pricing, and pickup first. This final launch step will unlock automatically.',
+        "Terminez d'abord la vérification propriétaire, les documents, les prix et le retrait. Cette dernière étape se débloquera automatiquement."
+      ),
+      tone: 'border-slate-200 bg-slate-50',
+      badge: tr('Not submitted', 'Pas encore envoyé'),
+    };
+  }, [
+    canSendFullReview,
+    effectiveMarketplaceJourneyState,
+    listingApproved,
+    listingIsLive,
+    reviewSubmissionComplete,
+    tr,
+  ]);
+  const reviewPublishQuietMode = ['waiting_for_admin', 'approved', 'live'].includes(reviewPublishStageModel.key);
+  const reviewPublishQuietSummary = reviewPublishStageModel.key === 'live'
+    ? tr(
+        'Your listing is already live, so this review section stays tucked away unless you want to inspect the history.',
+        "Votre annonce est déjà en ligne, donc cette section de revue reste discrète sauf si vous voulez consulter l'historique."
+      )
+    : reviewPublishStageModel.key === 'approved'
+      ? tr(
+          'Admin approval is complete. Keep this section calm and publish only when you are ready.',
+          "L'approbation admin est terminée. Gardez cette section calme et publiez seulement quand vous êtes prêt."
+        )
+      : tr(
+          'Your part is finished for now. Admin review is in progress, so the detailed checklist stays collapsed unless you need it.',
+          "Votre part est terminée pour le moment. La revue admin est en cours, donc la checklist détaillée reste repliée sauf si vous en avez besoin."
+        );
+  const showReviewPublishDetailCards = !reviewPublishQuietMode || reviewPublishDetailsExpanded;
+  const shouldCondenseReviewPublishChrome = reviewPublishQuietMode;
+  useEffect(() => {
+    setReviewPublishDetailsExpanded(!reviewPublishQuietMode);
+  }, [reviewPublishQuietMode, vehicle?.listingId]);
+  const ownerJourneyDisplay = canSendFullReview && !['pending_review', 'approved', 'live', 'changes_requested', 'rejected'].includes(effectiveMarketplaceJourneyState)
     ? {
         listingLabel: tr('Ready for review', 'Prêt pour revue'),
         reviewLabel: tr('Ready for review', 'Prêt pour revue'),
@@ -3336,6 +5719,12 @@ const AccountMarketplaceVehicleProfile = () => {
   const listingTone = ownerJourneyDisplay.tone;
   const listingLabel = ownerJourneyDisplay.listingLabel;
   const reviewLabel = ownerJourneyDisplay.reviewLabel;
+  const listingSupportActionLabel =
+    effectiveMarketplaceJourneyState === 'changes_requested'
+      ? tr('View admin feedback', 'Voir le retour admin')
+      : listingReviewThreadHasVisibleMessages
+        ? tr('Open messages', 'Ouvrir les messages')
+        : tr('Open approval Inbox', "Ouvrir l'Inbox d'approbation");
   const shouldShowDistinctReviewChip = String(reviewLabel).trim().toLowerCase() !== String(listingLabel).trim().toLowerCase();
   const completedMarketplaceChecklistCount = marketplaceChecklist.filter((item) => item.done).length;
   const nextMarketplaceChecklistItem = (() => {
@@ -3514,9 +5903,22 @@ const AccountMarketplaceVehicleProfile = () => {
             'Admin approval is complete. The last step is publishing this listing live.',
             'L’approbation admin est terminée. La dernière étape consiste à publier cette annonce.'
           ),
-          actionLabel: tr('Go live', 'Mettre en ligne'),
+          actionLabel: tr('Publish now', 'Publier maintenant'),
           actionMode: 'journey',
         }
+      : effectiveMarketplaceJourneyState === 'changes_requested'
+        ? {
+            statusKey: 'issue',
+            statusLabel: tr('Changes requested', 'Modifications demandées'),
+            statusTone: 'bg-amber-100 text-amber-700',
+            title: tr('Review feedback waiting', 'Retour de revue en attente'),
+            body: tr(
+              'Admin sent review feedback. Open support, update the listing, then send the review again.',
+              "L'admin a envoyé un retour de revue. Ouvrez le support, mettez l'annonce à jour, puis renvoyez la revue."
+            ),
+            actionLabel: tr('Open support', 'Ouvrir le support'),
+            actionMode: 'messages',
+          }
       : effectiveMarketplaceJourneyState === 'pending_review'
         ? {
             statusKey: 'waiting',
@@ -3524,10 +5926,10 @@ const AccountMarketplaceVehicleProfile = () => {
             statusTone: 'bg-amber-100 text-amber-700',
             title: tr('Review and go live', 'Revoir et publier'),
             body: tr(
-              'Your full package is already with admin. We are waiting for review before the listing can go live.',
-              'Votre dossier complet est déjà chez l’admin. Nous attendons la revue avant que l’annonce puisse être publiée.'
+              'Your full package is already with admin. Open support anytime if you need help while the team reviews it.',
+              "Votre dossier complet est déjà chez l’admin. Ouvrez le support à tout moment si vous avez besoin d'aide pendant la revue."
             ),
-            actionLabel: tr('Open Inbox', 'Ouvrir Inbox'),
+            actionLabel: tr('Open support', 'Ouvrir le support'),
             actionMode: 'messages',
           }
         : canSendFullReview
@@ -3555,14 +5957,6 @@ const AccountMarketplaceVehicleProfile = () => {
               actionLabel: tr('View launch step', 'Voir l’étape finale'),
               actionMode: 'journey',
             };
-  const marketplaceMilestoneMeta = getMarketplaceMilestoneMeta({
-    effectiveMarketplaceJourneyState,
-    canSendFullReview,
-    nextMarketplaceChecklistItem,
-    completedMarketplaceChecklistCount,
-    totalMarketplaceChecklistCount: marketplaceChecklist.length,
-    tr,
-  });
   const ownerListingSetupProgress = buildOwnerListingSetupProgress({
     tr,
     vehicleId: vehicle?.id || vehicleId || '',
@@ -3585,6 +5979,42 @@ const AccountMarketplaceVehicleProfile = () => {
     listingIssue: ['changes_requested', 'rejected'].includes(effectiveMarketplaceJourneyState),
     canSendFullReview,
   });
+  const latestSectionSavedAt = useMemo(() => {
+    const entries = Object.values(sectionSaveMeta || {});
+    if (!entries.length) return 0;
+    return entries.reduce((latest, entry) => Math.max(latest, Number(entry?.savedAt || 0) || 0), 0);
+  }, [sectionSaveMeta]);
+  const footerLatestSavedAt = Math.max(Number(lastProfileSaveAt || 0) || 0, Number(latestSectionSavedAt || 0) || 0);
+  const footerPrimaryBusy = publishListingPending || (submitting && ownerListingSetupProgress.currentStep?.actionMode === 'submit-review');
+  const footerGuideStatusLabel = useMemo(() => {
+    if (publishListingPending) {
+      return tr('Publishing your listing now…', 'Publication de votre annonce…');
+    }
+    if (submitting && ownerListingSetupProgress.currentStep?.actionMode === 'submit-review') {
+      return tr('Sending the full review now…', 'Envoi de la revue complète…');
+    }
+    if (saving) {
+      return tr('Saving your latest changes…', 'Enregistrement de vos dernières modifications…');
+    }
+    if (footerLatestSavedAt > 0) {
+      return tr('Saved just now', 'Enregistré à l’instant');
+    }
+    if (isEditingVehicle) {
+      return tr(
+        'Keep going step by step. Manual save is only there if you want a backup now.',
+        'Continuez étape par étape. La sauvegarde manuelle sert seulement si vous voulez une sauvegarde immédiate.'
+      );
+    }
+    return tr('Use the next step button to keep moving forward.', "Utilisez le bouton d'étape suivante pour continuer.");
+  }, [
+    footerLatestSavedAt,
+    isEditingVehicle,
+    ownerListingSetupProgress.currentStep?.actionMode,
+    publishListingPending,
+    saving,
+    submitting,
+    tr,
+  ]);
   const ownerWorkflowMilestones = [
     {
       key: 'owner_verification',
@@ -3652,6 +6082,10 @@ const AccountMarketplaceVehicleProfile = () => {
     if (!milestone) return;
 
     if (milestone.key === 'review_publish') {
+      if (listingApproved && !listingIsLive) {
+        void handlePublishApprovedListing();
+        return;
+      }
       if (milestone.actionMode === 'submit-review') {
         void persistVehicle(true);
         return;
@@ -3663,6 +6097,44 @@ const AccountMarketplaceVehicleProfile = () => {
     }
 
     openMarketplaceChecklistTask(milestone.primaryTask);
+  };
+  const navigateWithinVehicleProfile = (target = {}) => {
+    const targetPath = String(target?.to || '').trim();
+    if (!targetPath.startsWith('/account/vehicles/')) {
+      return false;
+    }
+
+    const targetState = target?.state && typeof target.state === 'object' ? target.state : {};
+    const currentUrl = `${location.pathname}${location.search || ''}`;
+
+    if (currentUrl !== targetPath) {
+      navigate(targetPath, {
+        state: {
+          ...location.state,
+          ...targetState,
+        },
+      });
+      return true;
+    }
+
+    try {
+      const targetUrl = new URL(targetPath, window.location.origin);
+      const targetTab = targetUrl.searchParams.get('tab') || '';
+      if (['overview', 'listing', 'bookings', 'finance', 'legal'].includes(targetTab)) {
+        setActiveTab(targetTab);
+      }
+    } catch {
+      // If URL parsing fails, fall back to focus behavior below.
+    }
+
+    const targetSection = String(targetState.focusSectionId || '').trim();
+    if (targetSection) {
+      setFocusedSectionId('');
+      window.setTimeout(() => {
+        setFocusedSectionId(targetSection);
+      }, 0);
+    }
+    return true;
   };
   const openMarketplaceChecklistTask = (item) => {
     if (!item) return;
@@ -3688,6 +6160,20 @@ const AccountMarketplaceVehicleProfile = () => {
       });
       return;
     }
+
+    const target = {
+      to: item.tab ? `${location.pathname}?tab=${encodeURIComponent(item.tab)}` : '',
+      state: {
+        from: getCurrentLocationPath(location),
+        resumeEditing: true,
+        focusSectionId: item.section || '',
+      },
+    };
+
+    if (navigateWithinVehicleProfile(target)) {
+      return;
+    }
+
     setActiveTab(item.tab);
     setFocusedSectionId(item.section || '');
   };
@@ -3695,34 +6181,61 @@ const AccountMarketplaceVehicleProfile = () => {
     if (!vehicle?.listingId) return;
     setReviewThreadOpenSignal((current) => current + 1);
   };
+  const handleSubmitFullReview = async () => {
+    setReviewSubmissionPending(true);
+    setReviewSubmissionSent(false);
+    setReviewSubmissionNotice(
+      tr(
+        'Sending review to admin now.',
+        "Envoi de la revue à l'admin."
+      )
+    );
+
+    const result = await persistVehicle(
+      true,
+      false,
+      null,
+      tr(
+        'Full review sent. Admin approval is now pending.',
+        "La revue complète a été envoyée. L’approbation admin est maintenant en attente."
+      ),
+      { source: 'listing_review_submission_gate' }
+    );
+
+    if (result?.success) {
+      setReviewSubmissionSent(true);
+      setReviewSubmissionNotice(
+        tr(
+          'Review sent. Admin approval is now pending.',
+          "Revue envoyée. L’approbation admin est maintenant en attente."
+        )
+      );
+    } else {
+      setReviewSubmissionSent(false);
+      setReviewSubmissionNotice(
+        tr(
+          'We could not send the review yet. Please check the error above and try again.',
+          "Nous n’avons pas encore pu envoyer la revue. Vérifiez l’erreur ci-dessus puis réessayez."
+        )
+      );
+    }
+
+    setReviewSubmissionPending(false);
+  };
   const handleOwnerListingSetupStepAction = (step) => {
     if (!step) return false;
+    if (step.key === 'review_publish') {
+      if (listingApproved && !listingIsLive) {
+        void handlePublishApprovedListing();
+        return true;
+      }
+      return navigateWithinVehicleProfile(step.target || {});
+    }
     if (step.actionMode === 'submit-review') {
       void persistVehicle(true);
       return true;
     }
-
-    const target = step.target || {};
-    const targetPath = String(target.to || '').trim();
-    if (!targetPath.startsWith('/account/vehicles/')) {
-      return false;
-    }
-
-    try {
-      const targetUrl = new URL(targetPath, window.location.origin);
-      const targetTab = targetUrl.searchParams.get('tab') || '';
-      if (['overview', 'listing', 'bookings', 'finance', 'legal'].includes(targetTab)) {
-        setActiveTab(targetTab);
-      }
-    } catch {
-      // If URL parsing fails, fall back to the target state below.
-    }
-
-    const targetSection = String(target.state?.focusSectionId || '').trim();
-    if (targetSection) {
-      setFocusedSectionId(targetSection);
-    }
-    return true;
+    return navigateWithinVehicleProfile(step.target || {});
   };
 
   useEffect(() => {
@@ -3749,11 +6262,33 @@ const AccountMarketplaceVehicleProfile = () => {
     );
   }, [effectiveMarketplaceJourneyState, vehicle?.id, vehicle?.listingId, vehicleId]);
 
-  if (loading && suppressBlockingLoader) {
+  useEffect(() => {
+    if (listingReviewSubmitted && !listingApproved && !listingIsLive) {
+      setReviewSubmissionPending(false);
+      setReviewSubmissionSent(true);
+      setReviewSubmissionNotice(
+        tr(
+          'Review sent. Admin approval is now pending.',
+          "Revue envoyée. L’approbation admin est maintenant en attente."
+        )
+      );
+      return;
+    }
+
+    if (listingApproved || listingIsLive) {
+      setReviewSubmissionPending(false);
+      setReviewSubmissionSent(false);
+      setReviewSubmissionNotice('');
+    }
+  }, [isFrench, listingApproved, listingIsLive, listingReviewSubmitted]);
+
+  const canRenderOperationsFastShell = isOperationsWorkspaceRoute && Boolean(routeOwnerOperationRequest?.id);
+
+  if (loading && suppressBlockingLoader && !canRenderOperationsFastShell) {
     return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} showHeader={true} />;
   }
 
-  if (loading && !suppressBlockingLoader) {
+  if (loading && !suppressBlockingLoader && !canRenderOperationsFastShell) {
     return (
       <div className="space-y-4">
         <div className={`h-40 animate-pulse ${workspacePanelClass}`} />
@@ -3774,9 +6309,13 @@ const AccountMarketplaceVehicleProfile = () => {
     );
   }
 
+  const workspaceHeaderClassName = isOperationsWorkspaceRoute
+    ? 'sticky top-0 z-30 rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-0'
+    : `sticky top-0 z-30 ${workspaceShellClass}`;
+
   return (
-    <div className="space-y-5 pb-28">
-      <div className={`sticky top-0 z-30 ${workspaceShellClass}`}>
+    <div className="space-y-5 pb-48 sm:pb-52">
+      <div className={workspaceHeaderClassName}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
             <button
@@ -3788,55 +6327,99 @@ const AccountMarketplaceVehicleProfile = () => {
               <ArrowLeft className="w-5 h-5" />
             </button>
             <div>
-              <p className={workspaceEyebrowClass}>{tr('Listing workspace', "Espace d'annonce")}</p>
+              <p className={workspaceEyebrowClass}>
+                {isOperationsWorkspaceRoute
+                  ? tr('Rental operations', 'Opérations de location')
+                  : tr('Listing workspace', "Espace d'annonce")}
+              </p>
               <h1 className="text-3xl font-black tracking-tight text-slate-900 lg:text-4xl">
-                {formData.plateNumber || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle profile', 'Profil véhicule')}
+                {isOperationsWorkspaceRoute
+                  ? (operationalRequestExecutionAction?.title || tr('Rental execution', 'Exécution de location'))
+                  : (formData.plateNumber || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle profile', 'Profil véhicule'))}
               </h1>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
-                  {formData.brandName || tr('Vehicle', 'Véhicule')}
-                </span>
-                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-                  vehicleVerificationReady
-                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-                    : 'border border-slate-200 bg-slate-50 text-slate-700'
-                }`}>
-                  {vehicleVerificationReady ? tr('vehicle verified', 'véhicule vérifié') : tr('verification required', 'vérification requise')}
-                </span>
-                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${listingTone}`}>
-                      {listingLabel}
-                </span>
-                <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                  {formData.modelName || tr('Model not set', 'Modèle non défini')}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                  <MapPin className="h-3.5 w-3.5 text-slate-500" />
-                  {[formData.cityName, formData.areaName].filter(Boolean).join(' • ') || tr('Location not set', 'Emplacement non défini')}
-                </span>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-semibold text-slate-700">
-                  <FileText className="h-3.5 w-3.5 text-violet-500" />
-                  {vehicleDocuments.length} {tr('docs', 'docs')}
-                </span>
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
-                  insuranceExpired ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                }`}>
-                  <ShieldCheck className="h-3.5 w-3.5" />
-                  {insuranceExpired ? tr('Insurance expired', 'Assurance expirée') : tr('Insurance OK', 'Assurance OK')}
-                  {hasValidInsuranceExpiry ? ` • ${formData.insuranceExpiryDate}` : ''}
-                </span>
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
-                  ownerProfileAlerts.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'
-                }`}>
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {ownerProfileAlerts.length} {tr('alerts', 'alertes')}
-                </span>
-              </div>
+              {isOperationsWorkspaceRoute ? (
+                <>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                      {operationalRequest?.customerName || tr('Renter', 'Locataire')}
+                    </span>
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+                      {operationalRequest?.listingTitle || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle', 'Véhicule')}
+                    </span>
+                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${listingTone}`}>
+                      {ownerExecutionSummary.badge}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                    {operationalRequest?.requestedStartAt ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 font-semibold text-slate-700">
+                        <CalendarClock className="h-3.5 w-3.5 text-violet-500" />
+                        {formatDateTime(operationalRequest.requestedStartAt, isFrench ? 'fr' : 'en')}
+                      </span>
+                    ) : null}
+                    {operationalRequest?.requestedEndAt ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 font-semibold text-slate-700">
+                        <ArrowRight className="h-3.5 w-3.5 text-slate-500" />
+                        {formatDateTime(operationalRequest.requestedEndAt, isFrench ? 'fr' : 'en')}
+                      </span>
+                    ) : null}
+                    {operationalRequest?.customerEmail || operationalRequest?.customerPhone ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 font-semibold text-slate-700">
+                        <MessageSquareText className="h-3.5 w-3.5 text-slate-500" />
+                        {operationalRequest?.customerEmail || operationalRequest?.customerPhone}
+                      </span>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
+                      {formData.brandName || tr('Vehicle', 'Véhicule')}
+                    </span>
+                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
+                      vehicleVerificationReady
+                        ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border border-slate-200 bg-slate-50 text-slate-700'
+                    }`}>
+                      {vehicleVerificationReady ? tr('vehicle verified', 'véhicule vérifié') : tr('verification required', 'vérification requise')}
+                    </span>
+                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${listingTone}`}>
+                          {listingLabel}
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      {formData.modelName || tr('Model not set', 'Modèle non défini')}
+                    </span>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      <MapPin className="h-3.5 w-3.5 text-slate-500" />
+                      {[formData.cityName, formData.areaName].filter(Boolean).join(' • ') || tr('Location not set', 'Emplacement non défini')}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-semibold text-slate-700">
+                      <FileText className="h-3.5 w-3.5 text-violet-500" />
+                      {vehicleDocuments.length} {tr('docs', 'docs')}
+                    </span>
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
+                      insuranceExpired ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    }`}>
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      {insuranceExpired ? tr('Insurance expired', 'Assurance expirée') : tr('Insurance OK', 'Assurance OK')}
+                      {hasValidInsuranceExpiry ? ` • ${formData.insuranceExpiryDate}` : ''}
+                    </span>
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
+                      ownerProfileAlerts.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'
+                    }`}>
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      {ownerProfileAlerts.length} {tr('alerts', 'alertes')}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {vehicle?.listingId && listingIsLive ? (
+            {vehicle?.listingId && listingIsLive && !isOperationsWorkspaceRoute ? (
               <a
                 href={`/marketplace/marketplace-${encodeURIComponent(String(vehicle.listingId))}`}
                 className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
@@ -3845,7 +6428,18 @@ const AccountMarketplaceVehicleProfile = () => {
                 {tr('View public listing', 'Voir la fiche publique')}
               </a>
             ) : null}
-            {isEditingVehicle ? (
+            {isOperationsWorkspaceRoute ? (
+              <>
+                <Link
+                  to={operationalRequest?.id ? `/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}` : '/account/messages'}
+                  state={{ from: currentPath }}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
+                >
+                  <MessageSquareText className="w-4 h-4" />
+                  {tr('Open Inbox', 'Ouvrir Inbox')}
+                </Link>
+              </>
+            ) : isEditingVehicle ? (
               <>
                 <button
                   type="button"
@@ -3887,13 +6481,15 @@ const AccountMarketplaceVehicleProfile = () => {
         </div>
       </div>
 
-      <OwnerListingSetupGuide
-        progress={ownerListingSetupProgress}
-        tr={tr}
-        variant="compact"
-        className="sticky top-[112px] z-20"
-        onStepAction={handleOwnerListingSetupStepAction}
-      />
+      {!isOperationsWorkspaceRoute && !shouldCondenseReviewPublishChrome ? (
+        <OwnerListingSetupGuide
+          progress={ownerListingSetupProgress}
+          tr={tr}
+          variant="compact"
+          className="sticky top-[112px] z-20"
+          onStepAction={handleOwnerListingSetupStepAction}
+        />
+      ) : null}
 
       {saveError ? (
         <section className={`${workspacePanelClass} border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700`}>
@@ -3910,32 +6506,88 @@ const AccountMarketplaceVehicleProfile = () => {
         </section>
       ) : null}
 
-      <div className="sticky top-[198px] z-20 -mx-3 overflow-x-auto px-3 py-2 sm:top-[190px] sm:mx-0">
-        <div className={`${workspaceShellClass} flex min-w-max gap-2 p-2`}>
-          {tabs.map((tab) => {
-            const TabIcon = tab.icon;
-            const active = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  active
-                    ? 'bg-violet-600 text-white shadow-[0_10px_24px_rgba(124,58,237,0.22)]'
-                    : 'border border-slate-200 bg-slate-50 text-slate-600 hover:border-violet-200 hover:bg-white hover:text-violet-700'
-                }`}
-              >
-                <TabIcon className="h-4 w-4" />
-                {tab.label}
-              </button>
-            );
-          })}
+      {!isOperationsWorkspaceRoute ? (
+        <div className="sticky top-[198px] z-20 -mx-3 overflow-x-auto px-3 py-2 sm:top-[190px] sm:mx-0">
+          <div className={`${workspaceShellClass} flex min-w-max gap-2 p-2`}>
+            {tabs.map((tab) => {
+              const TabIcon = tab.icon;
+              const active = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                    active
+                      ? 'bg-violet-600 text-white shadow-[0_10px_24px_rgba(124,58,237,0.22)]'
+                      : 'border border-slate-200 bg-slate-50 text-slate-600 hover:border-violet-200 hover:bg-white hover:text-violet-700'
+                  }`}
+                >
+                  <TabIcon className="h-4 w-4" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      {activeTab === 'overview' ? (
+      {effectiveActiveTab === 'overview' ? (
         <>
+          {operationalRequestExecutionAction ? (
+            <SectionCard
+              title={tr('Rental operations moved', 'Opérations de location déplacées')}
+              description={tr(
+                'Vehicle edit now stays focused on listing setup. Use Home as the main place to launch ready-to-start and ready-to-finish rental operations.',
+                "L'édition véhicule reste maintenant centrée sur la mise en ligne. Utilisez l'accueil comme surface principale pour lancer les opérations prêtes à démarrer et prêtes à terminer."
+              )}
+              icon={CalendarClock}
+            >
+              <div
+                id="owner-operations-moved"
+                className={`rounded-[1.5rem] border border-violet-200 bg-[linear-gradient(135deg,rgba(245,243,255,0.95)_0%,rgba(255,255,255,1)_100%)] p-4 shadow-[0_16px_34px_rgba(91,33,182,0.08)] ${getFocusedSectionClass(focusedSectionId, 'owner-operations-moved')}`}
+              >
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
+                      {tr('Primary entry point', "Point d'entrée principal")}
+                    </p>
+                    <h3 className="mt-2 text-lg font-black text-slate-950">
+                      {operationalRequestExecutionAction.title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      {operationalRequestExecutionAction.detail}
+                    </p>
+                    <p className="mt-3 text-xs font-medium text-slate-500">
+                      {tr(
+                        'Open this from Home first. Vehicle edit should stay calm and focused on listing work.',
+                        "Ouvrez ceci d'abord depuis l'accueil. L'édition véhicule doit rester calme et concentrée sur le travail de mise en ligne."
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Link
+                      to="/account/overview"
+                      state={{ from: currentPath }}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
+                    >
+                      <CalendarClock className="h-4 w-4" />
+                      {tr('Open Home dashboard', "Ouvrir l'accueil")}
+                    </Link>
+                    <Link
+                      to={operationalRequestExecutionAction.href}
+                      state={{ from: currentPath }}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      {operationalRequestExecutionAction.ctaLabel}
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </SectionCard>
+          ) : null}
+
           <SectionCard
             title={tr('Vehicle setup', 'Configuration du véhicule')}
             description={tr('Core vehicle identity, photos, and setup status for this listing.', "Identité du véhicule, photos et état d'avancement de cette annonce.")}
@@ -4216,7 +6868,7 @@ const AccountMarketplaceVehicleProfile = () => {
         </>
       ) : null}
 
-      {activeTab === 'listing' ? (
+      {effectiveActiveTab === 'listing' ? (
         <>
           <section className="grid gap-4 xl:grid-cols-2">
             <div className="space-y-4">
@@ -4238,12 +6890,6 @@ const AccountMarketplaceVehicleProfile = () => {
                     </span>
                   </div>
                 </div>
-                <OwnerListingSetupGuide
-                  progress={ownerListingSetupProgress}
-                  tr={tr}
-                  className="mt-5"
-                  onStepAction={handleOwnerListingSetupStepAction}
-                />
                 {isEditingVehicle ? (
                   <>
                     <div className="mt-5 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
@@ -4413,15 +7059,26 @@ const AccountMarketplaceVehicleProfile = () => {
                           </label>
                         </div>
                       </div>
-                      <div className="mt-4">
-                        <OwnerFuelLevelPicker
-                          value={listingFuelLevel}
-                          disabled
-                          tr={tr}
-                          litersLabel={listingFuelLitersLabel}
-                          title={tr('Fuel level given to renter', 'Niveau carburant remis au locataire')}
-                          description={tr('This is the level renters should match when returning the vehicle.', 'C’est le niveau que le locataire doit retrouver au retour.')}
-                        />
+                      <div className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-4">
+                        <div className="flex items-start gap-3">
+                          <div className="rounded-2xl bg-white p-2 text-emerald-600 shadow-sm">
+                            <Droplets className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-black text-slate-950">
+                              {tr('Fuel return rule', 'Règle de retour carburant')}
+                            </p>
+                            <p className="mt-1 text-sm font-semibold text-emerald-700">
+                              {fuelPolicyDisplay}
+                            </p>
+                            <p className="mt-2 text-sm text-slate-600">
+                              {tr(
+                                'The exact fuel level is recorded during pickup, then compared when the renter returns.',
+                                'Le niveau exact est enregistré au retrait, puis comparé au retour du locataire.'
+                              )}
+                            </p>
+                          </div>
+                        </div>
                       </div>
                       <OwnerField label={tr('Pickup address', 'Adresse de retrait')}>
                         <textarea value={formData.pickupAddress} onChange={(event) => updateField('pickupAddress', event.target.value)} className={`${baseFieldClassName} min-h-[96px] resize-y`} />
@@ -4465,11 +7122,10 @@ const AccountMarketplaceVehicleProfile = () => {
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Pickup', 'Retrait')}</p>
                     <h3 className="mt-2 text-lg font-bold text-slate-950">{tr('Handoff details', 'Détails de remise')}</h3>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <ViewField label={tr('Pickup location name', 'Nom du point de retrait')} value={formData.pickupLocationName} />
-                      <ViewField label={tr('Fuel policy', 'Politique carburant')} value={fuelPolicyDisplay} />
-                      <ViewField label={tr('Fuel level', 'Niveau carburant')} value={`${listingFuelLevel}/8`} />
-                      <ViewField label={tr('Pickup address', 'Adresse de retrait')} value={formData.pickupAddress} />
-                      <ViewField label={tr('Extras', 'Extras')} value={formData.extrasText} />
+	                      <ViewField label={tr('Pickup location name', 'Nom du point de retrait')} value={formData.pickupLocationName} />
+	                      <ViewField label={tr('Fuel policy', 'Politique carburant')} value={fuelPolicyDisplay} />
+	                      <ViewField label={tr('Pickup address', 'Adresse de retrait')} value={formData.pickupAddress} />
+	                      <ViewField label={tr('Extras', 'Extras')} value={formData.extrasText} />
                     </div>
                   </div>
                 )}
@@ -4481,73 +7137,148 @@ const AccountMarketplaceVehicleProfile = () => {
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Step 6 of 6', 'Étape 6 sur 6')}</p>
                 <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Review and publish', 'Revoir et publier')}</h2>
                 <p className="mt-2 text-sm text-slate-600">
-                  {tr(
-                    'Track the approval gate and public status here. The current-step card above handles the main action.',
-                    "Suivez ici le verrou d'approbation et le statut public. La carte d'étape actuelle ci-dessus gère l'action principale."
-                  )}
+                  {reviewPublishQuietMode
+                    ? tr(
+                        'This section becomes quieter once the review flow is already handled, so the rest of the page stays easier to scan.',
+                        "Cette section devient plus discrète une fois le flux de revue déjà géré, afin que le reste de la page soit plus facile à parcourir."
+                      )
+                    : tr(
+                        'Final check before admin review and go-live.',
+                        "Dernière vérification avant la revue admin et la mise en ligne."
+                      )}
                 </p>
-                <div className={`mt-4 rounded-[1.25rem] border px-4 py-4 shadow-sm ${marketplaceVerificationReady ? 'border-emerald-200 bg-emerald-50/70' : 'border-amber-200 bg-amber-50/70'}`}>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Approval gate', "Verrou d'approbation")}</p>
-                  <h3 className="mt-2 text-lg font-bold text-slate-950">
-                    {marketplaceVerificationReady ? tr('Approved', 'Approuvée') : tr('Waiting', 'En attente')}
-                  </h3>
-                  <p className="mt-2 text-sm text-slate-600">
-                    {marketplaceVerificationReady
-                      ? tr('Your listing can move forward as soon as the remaining setup is done.', 'Votre annonce peut avancer dès que la configuration restante est terminée.')
-                      : tr('Verification approval is still pending. You can keep editing this listing now, but review and go-live stay locked until approval.', "L'approbation de vérification est encore en attente. Vous pouvez continuer cette annonce maintenant, mais la revue et la mise en ligne restent verrouillées jusqu'à l'approbation.")}
-                  </p>
-                  {!marketplaceVerificationReady && verificationMissingLabels.length ? (
-                    <p className="mt-3 text-sm font-semibold text-amber-900">
-                      {tr('Missing', 'Manquants')} : {verificationMissingLabels.join(', ')}
-                    </p>
+                <div className={`mt-4 rounded-[1.25rem] border px-4 py-4 shadow-sm ${reviewPublishStageModel.tone}`}>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                        {tr('Review status', 'Statut de la revue')}
+                      </p>
+                      <h3 className="mt-2 text-lg font-bold text-slate-950">{reviewPublishStageModel.title}</h3>
+                      <p className="mt-1 text-sm text-slate-600">{reviewPublishStageModel.body}</p>
+                    </div>
+                    <span className={`inline-flex items-center self-start rounded-full px-3 py-1 text-xs font-bold ${listingTone}`}>
+                      {reviewPublishStageModel.badge}
+                    </span>
+                  </div>
+
+                  {reviewPublishQuietMode ? (
+                    <div className="mt-4 rounded-[1.15rem] border border-white/80 bg-white/80 px-4 py-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            {tr('Quiet mode', 'Mode discret')}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900">
+                            {reviewPublishQuietSummary}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setReviewPublishDetailsExpanded((current) => !current)}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                        >
+                          <span>
+                            {reviewPublishDetailsExpanded
+                              ? tr('Hide detail', 'Masquer le détail')
+                              : tr('Show detail', 'Voir le détail')}
+                          </span>
+                          <ChevronDown className={`h-4 w-4 transition-transform ${reviewPublishDetailsExpanded ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+                    </div>
                   ) : null}
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
-                        {tr('Owner verification', 'Vérification propriétaire')}
-                      </p>
-                      <p className="mt-2 text-sm font-black text-slate-950">
-                        {ownerVerificationReady ? tr('Approved', 'Approuvée') : tr('Waiting', 'En attente')}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
-                        {tr('Vehicle documents', 'Documents véhicule')}
-                      </p>
-                      <p className="mt-2 text-sm font-black text-slate-950">
-                        {vehicleVerificationReady ? tr('Approved', 'Approuvés') : vehicleVerificationSubmitted ? tr('Under review', 'En revue') : tr('Missing', 'Manquants')}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3">
-                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
-                        {tr('Listing review', "Revue de l'annonce")}
-                      </p>
-                      <p className="mt-2 text-sm font-black text-slate-950">{listingReviewStatusLabel}</p>
-                    </div>
-                  </div>
-                  <div className="mt-3 rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-sm text-slate-600">
-                    <p className="font-bold text-slate-950">{tr('Approval details', "Détails d'approbation")}</p>
-                    <p className="mt-1">
-                      {latestReviewDetail ||
-                        (vehicle?.listingId
-                          ? tr('No admin message yet. If the listing is waiting, admin still needs to review it.', "Aucun message admin pour le moment. Si l'annonce attend, l’admin doit encore la revoir.")
-                          : tr('Save the listing once to create the approval record.', "Enregistrez l'annonce une fois pour créer le dossier d'approbation."))}
-                    </p>
-                  </div>
-                  {vehicle?.listingId ? (
-                    <div className="mt-4">
+
+                  {showReviewPublishDetailCards ? (
+                    <>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                        {compactReviewSteps.map((step, index) => (
+                          <div key={step.key} className={`rounded-2xl border bg-white/90 px-4 py-3 ${step.tone}`}>
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-[10px] font-black uppercase tracking-[0.16em] opacity-75">
+                                {tr('Step', 'Étape')} {index + 1}
+                              </p>
+                              {step.done ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                            </div>
+                            <p className="mt-2 text-sm font-black text-slate-950">{step.label}</p>
+                            <p className="mt-1 text-sm font-semibold">{step.value}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {compactReviewSystemNote ? (
+                        <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${compactReviewNoteTone}`}>
+                          <div className="flex items-start gap-3">
+                            {reviewSubmissionPending ? (
+                              <Loader2 className="mt-0.5 h-4 w-4 animate-spin" />
+                            ) : reviewSubmissionComplete ? (
+                              <CheckCircle2 className="mt-0.5 h-4 w-4" />
+                            ) : (
+                              <AlertCircle className="mt-0.5 h-4 w-4" />
+                            )}
+                            <div>
+                              <p className="font-bold">{compactReviewNoteTitle}</p>
+                              <p className="mt-1">{compactReviewSystemNote}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    {showReviewSendCta ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleSubmitFullReview()}
+                        disabled={saving || submitting || reviewSubmissionPending}
+                        className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-violet-700 px-5 py-3 text-sm font-bold text-white shadow-[0_14px_30px_rgba(109,40,217,0.22)] transition-colors hover:bg-violet-800 disabled:opacity-60"
+                      >
+                        {reviewSubmissionPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        {reviewSubmissionPending
+                          ? tr('Sending...', 'Envoi...')
+                          : tr('Send review', 'Envoyer la revue')}
+                      </button>
+                    ) : null}
+                    {listingApproved && !listingIsLive ? (
+                      <button
+                        type="button"
+                        onClick={() => void handlePublishApprovedListing()}
+                        disabled={saving || submitting || publishListingPending}
+                        className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-[0_14px_30px_rgba(5,150,105,0.24)] transition-colors hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {publishListingPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                        {publishListingPending
+                          ? tr('Publishing...', 'Publication...')
+                          : tr('Publish now', 'Publier maintenant')}
+                      </button>
+                    ) : null}
+                    {vehicle?.listingId && listingIsLive ? (
+                      <Link
+                        to={`/marketplace/marketplace-${encodeURIComponent(String(vehicle.listingId))}`}
+                        className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        {tr('View public listing', 'Voir la fiche publique')}
+                      </Link>
+                    ) : null}
+                    {vehicle?.listingId && (!reviewWaitingForAdmin || listingReviewThreadHasVisibleMessages) ? (
                       <button
                         type="button"
                         onClick={handleOpenReviewThread}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/70 bg-white/90 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                        className={`inline-flex items-center gap-2 rounded-2xl border border-white/70 bg-white/90 px-4 py-2.5 text-sm font-semibold transition hover:border-violet-200 hover:text-violet-700 ${
+                          reviewWaitingForAdmin ? 'text-slate-500' : 'text-slate-700'
+                        }`}
                       >
                         <MessageSquareText className="h-4 w-4" />
-                        {listingReviewThreadHasVisibleMessages
-                          ? tr('Open Inbox', 'Ouvrir Inbox')
-                          : tr('Open approval Inbox', "Ouvrir l'Inbox d'approbation")}
+                        {listingSupportActionLabel}
                       </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                    {reviewPublishStageModel.key === 'waiting_for_admin' ? (
+                      <span className="inline-flex items-center rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-800">
+                        {tr('Waiting for admin approval - no action needed', "En attente de l'approbation admin - aucune action requise")}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </section>
               <section className={workspacePanelClass}>
@@ -4590,8 +7321,9 @@ const AccountMarketplaceVehicleProfile = () => {
         </>
       ) : null}
 
-      {activeTab === 'bookings' ? (
+      {effectiveActiveTab === 'bookings' ? (
         <div className="space-y-4">
+          {!isOperationsWorkspaceRoute ? (
           <section id="registration-insurance" className={`${workspacePanelClass} ${getFocusedSectionClass(focusedSectionId, 'registration-insurance')}`}>
             <h2 className="text-xl font-bold text-slate-950">{tr('Booking readiness', 'État de préparation des réservations')}</h2>
             <p className="mt-2 text-sm text-slate-600">
@@ -4638,224 +7370,178 @@ const AccountMarketplaceVehicleProfile = () => {
               </div>
             )}
           </section>
+          ) : null}
 
           <SectionCard
+            plain={isOperationsWorkspaceRoute}
             title={tr('Bookings & requests', 'Réservations & demandes')}
-            description={tr('Requests, demand signals, and operational booking context for this vehicle.', 'Demandes, signaux de demande et contexte opérationnel de réservation pour ce véhicule.')}
+            description={isOperationsWorkspaceRoute
+              ? tr(
+                  'Run the rental first. Open the supporting booking detail only when you need it.',
+                  "Exécutez d'abord la location. Ouvrez le détail de réservation uniquement quand vous en avez besoin."
+                )
+              : tr('Requests, demand signals, and operational booking context for this vehicle.', 'Demandes, signaux de demande et contexte opérationnel de réservation pour ce véhicule.')}
             icon={CalendarClock}
           >
             {vehicleRequests.length ? (
               <div className="space-y-4">
               {operationalRequest && operationalExecutionMeta ? (
-                <div className="rounded-[1.7rem] border border-slate-200 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05)]">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-3 py-1 text-xs font-bold ${operationalExecutionMeta.tone}`}>
-                          {operationalExecutionMeta.badge}
-                        </span>
-                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                          {operationalRequest?.customerName || tr('Customer', 'Client')}
-                        </span>
-                      </div>
-                      <h3 className="mt-3 text-xl font-bold text-slate-950">{tr('Rental execution', "Exécution de location")}</h3>
-                      <p className="mt-2 text-sm text-slate-600">{operationalExecutionMeta.note}</p>
-                      <p className="mt-3 text-sm font-semibold text-slate-700">
-                        {[operationalRequest?.customerEmail || operationalRequest?.customerPhone || '', formatDateTime(operationalRequest?.requestedStartAt, isFrench ? 'fr' : 'en')].filter(Boolean).join(' • ')}
-                      </p>
+                <div
+                  id="owner-rental-execution"
+                  className={getFocusedSectionClass(focusedSectionId, 'owner-rental-execution')}
+                >
+                <AccountRentalExecutionStepperShell
+                  variant={isOperationsWorkspaceRoute ? 'rentalDetails' : 'stepper'}
+                  badge={isOperationsWorkspaceRoute ? '' : operationalExecutionMeta.badge}
+                  badgeTone={operationalExecutionMeta.tone}
+                  customerLabel={isOperationsWorkspaceRoute ? '' : operationalRequest?.customerName || tr('Customer', 'Client')}
+                  title={isOperationsWorkspaceRoute ? '' : tr('Rental execution', 'Exécution de location')}
+                  description={isOperationsWorkspaceRoute ? '' : operationalExecutionMeta.note}
+                  metaLine={isOperationsWorkspaceRoute ? '' : [operationalRequest?.customerEmail || operationalRequest?.customerPhone || '', formatDateTime(operationalRequest?.requestedStartAt, isFrench ? 'fr' : 'en')].filter(Boolean).join(' • ')}
+                  moneyPanel={!isOperationsWorkspaceRoute ? (
+                    <div className="space-y-2">
+                      <MoneyLine
+                        label={tr('Rental amount', 'Montant location')}
+                        value={formatMoney(operationalRequestMoney.estimatedAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
+                      />
+                      <MoneyLine
+                        label={tr('Deposit hold', 'Caution retenue')}
+                        value={formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
+                      />
+                      <MoneyLine
+                        label={tr('Expected payout', 'Versement attendu')}
+                        value={formatMoney(operationalRequestMoney.ownerPayoutAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
+                        strong
+                      />
                     </div>
-                    <div className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 sm:w-auto sm:min-w-[250px]">
-                      <div className="space-y-2">
-                        <MoneyLine
-                          label={tr('Rental amount', 'Montant location')}
-                          value={formatMoney(operationalRequestMoney.estimatedAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
+                  ) : null}
+                  summaryPanel={isOperationsWorkspaceRoute ? (
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                      {ownerOperationSummaryCards.map((card) => (
+                        <RentalOperationSummaryCard
+                          key={card.key}
+                          label={card.label}
+                          value={card.value}
+                          detail={card.detail}
+                          icon={card.icon}
+                          tone={card.tone}
                         />
-                        <MoneyLine
-                          label={tr('Deposit hold', 'Caution retenue')}
-                          value={formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
-                        />
-                        <MoneyLine
-                          label={tr('Expected payout', 'Versement attendu')}
-                          value={formatMoney(operationalRequestMoney.ownerPayoutAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}
-                          strong
-                        />
-                      </div>
+                      ))}
                     </div>
-                  </div>
-
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    {operationalExecutionMeta.steps.map((step) => (
-                      <ExecutionStep key={step.key} step={step} />
-                    ))}
-                  </div>
-
-                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Owner flow', 'Flux propriétaire')}</p>
-                          <p className="mt-2 text-base font-bold text-slate-950">{ownerExecutionSummary.badge}</p>
-                          <p className="mt-1 text-sm text-slate-600">{ownerExecutionSummary.note}</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <OwnerExecutionStagePill label={tr('Handoff', 'Remise')} active={ownerExecutionStage === 'handoff'} />
-                          <OwnerExecutionStagePill label={tr('Ready', 'Prête')} active={ownerExecutionStage === 'ready_to_start'} />
-                          <OwnerExecutionStagePill label={tr('Live', 'Active')} active={ownerExecutionStage === 'live'} />
-                          <OwnerExecutionStagePill label={tr('Return', 'Retour')} active={ownerExecutionStage === 'return_pending'} />
-                          <OwnerExecutionStagePill label={tr('Done', 'Terminée')} active={ownerExecutionStage === 'completed'} />
-                        </div>
-                      </div>
+                  ) : null}
+                  progressLabel={ownerExecutionProgressModel.label}
+                  progressValue={`${ownerExecutionProgressModel.completed}/${ownerExecutionProgressModel.total}`}
+                  progressHint={ownerExecutionProgressModel.hint}
+                  progressPercent={ownerExecutionProgressPercent}
+                  statusTitle={ownerExecutionSummary.badge}
+                  statusNote={ownerExecutionSummary.note}
+                  stagePills={ownerExecutionStagePills}
+                  overviewSteps={isOperationsWorkspaceRoute ? [] : operationalExecutionMeta.steps}
+                  statusCards={ownerExecutionPrimaryStatusCards}
+                  footer={ownerExecutionFooter}
+                >
 
                     {ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff' ? (
                       <div className="mt-4 space-y-4">
                         {ownerHandoffReady ? (
                           <OwnerStepperStepCard
                             stepNumber={tr('Step 1', 'Étape 1')}
-                            title={tr('Ready to start rental', 'Prête à démarrer la location')}
-                            note={tr('The handoff checklist is complete. Lock it and move into the live rental state.', 'La checklist de remise est terminée. Verrouillez-la et passez à la location active.')}
-                            statusLabel={ownerExecutionSaving ? tr('Saving…', 'Enregistrement…') : tr('Admin stepper flow', 'Flux stepper admin')}
-                            primaryActionLabel={tr('Ready to start rental', 'Prête à démarrer la location')}
-                            onPrimaryAction={markOwnerExecutionReadyToStart}
+                            title={tr('Start rental', 'Démarrer la location')}
+                            note={tr('The handoff checklist is complete. Start the live rental now.', 'La checklist de remise est terminée. Démarrez maintenant la location active.')}
+                            statusLabel={ownerExecutionSaving ? tr('Saving…', 'Enregistrement…') : tr('Live rental action', 'Action de location active')}
+                            primaryActionLabel={tr('Start rental', 'Démarrer la location')}
+                            onPrimaryAction={markOwnerExecutionStarted}
                             primaryDisabled={ownerExecutionSaving}
                             primaryTone="emerald"
                           >
                             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                              {tr('Pickup evidence, documents, deposit, and signature are complete.', 'Les preuves de départ, documents, caution et signature sont terminés.')}
+                              {tr('Vehicle inspection, documents, deposit, and signature are complete.', 'Inspection véhicule, documents, caution et signature sont terminés.')}
                             </div>
                           </OwnerStepperStepCard>
-                        ) : (
-                          <OwnerStepperStepCard
-                            stepNumber={tr('Step 1', 'Étape 1')}
-                            title={tr(ownerHandoffCurrentStep.label.en, ownerHandoffCurrentStep.label.fr)}
-                            note={tr(ownerHandoffCurrentStep.note.en, ownerHandoffCurrentStep.note.fr)}
-                            statusLabel={ownerExecutionSaving ? tr('Saving…', 'Enregistrement…') : tr('Admin stepper flow', 'Flux stepper admin')}
-                            primaryActionLabel={
-                              ownerHandoffCurrentStep.key === 'handoff_check'
-                                ? tr('Begin handoff', 'Commencer la remise')
-                                : ownerHandoffCurrentStep.key === 'vehicle_photos'
-                                  ? tr('Open camera', 'Ouvrir la caméra')
-                                  : ownerHandoffCurrentStep.key === 'start_odometer'
-                                    ? tr('Save odometer', 'Enregistrer le compteur')
-                                    : ownerHandoffCurrentStep.key === 'start_fuel'
-                                      ? tr('Save fuel level', 'Enregistrer le carburant')
-                                  : ownerHandoffCurrentStep.key === 'legal_docs'
-                                    ? tr('Confirm documents', 'Confirmer les documents')
-                                    : ownerHandoffCurrentStep.key === 'deposit'
-                                      ? tr('Confirm deposit', 'Confirmer la caution')
-                                    : tr('Save signature', 'Enregistrer la signature')
-                            }
-                            onPrimaryAction={() => {
-                              if (ownerHandoffCurrentStep.key === 'handoff_check') {
-                                toggleOwnerExecutionFlag('handoffChecked');
-                                return;
-                              }
-                              if (ownerHandoffCurrentStep.key === 'start_odometer') {
-                                saveOwnerExecutionStartOdometer(handoffOdometerInput);
-                                return;
-                              }
-                              if (ownerHandoffCurrentStep.key === 'start_fuel') {
-                                saveOwnerExecutionStartFuelLevel(ownerExecutionDraft.startFuelLevel);
-                                return;
-                              }
-                              if (ownerHandoffCurrentStep.key === 'legal_docs') {
-                                toggleOwnerExecutionFlag('legalDocsChecked');
-                                return;
-                              }
-                              if (ownerHandoffCurrentStep.key === 'deposit') {
-                                toggleOwnerExecutionFlag('depositConfirmed');
-                                return;
-                                }
-                              toggleOwnerExecutionFlag('contractSigned');
-                            }}
-                            primaryDisabled={
-                              ownerExecutionSaving ||
-                              ownerHandoffCurrentStep.key === 'vehicle_photos' ||
-                              (ownerHandoffCurrentStep.key === 'start_odometer' &&
-                                !(Number.isFinite(Number(handoffOdometerInput)) && Number(handoffOdometerInput) >= 0)) ||
-                              (ownerHandoffCurrentStep.key === 'start_fuel' &&
-                                !(Number.isFinite(Number(ownerExecutionDraft.startFuelLevel)) && Number(ownerExecutionDraft.startFuelLevel) >= 0))
-                            }
-                          >
-                            {ownerHandoffCurrentStep.key === 'vehicle_photos' ? (
-                              <RentalPhotoEvidenceCapture
-                                title={tr('Pickup evidence', 'Preuve de départ')}
-                                subtitle={tr('Take at least 3 clear pickup photos before the vehicle leaves.', 'Prenez au moins 3 photos claires avant le départ du véhicule.')}
-                                helper={tr('Use the camera, review the images, then confirm the upload.', 'Utilisez la caméra, vérifiez les images, puis confirmez le téléversement.')}
-                                sessionToken={`owner-handoff-${String(operationalRequest?.id || 'request')}`}
-                                photos={ownerExecutionDraft.handoffPhotos}
-                                minPhotos={OWNER_HANDOFF_MIN_PHOTOS}
-                                maxPhotos={6}
-                                saving={ownerExecutionSaving}
-                                disabled={ownerExecutionHandoffLocked}
-                                onSubmit={(files) => uploadOwnerExecutionPhotos('handoff', files)}
-                                tr={tr}
-                              />
-                            ) : ownerHandoffCurrentStep.key === 'start_odometer' ? (
-                              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                                <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
-                                  <label className="min-w-0 flex-1">
-                                    <span className="text-sm font-bold text-slate-950">{tr('Starting odometer', 'Kilométrage de départ')}</span>
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="1"
-                                      value={handoffOdometerInput}
-                                      onChange={(event) => setHandoffOdometerInput(event.target.value)}
-                                      disabled={ownerExecutionHandoffLocked || ownerExecutionSaving}
-                                      placeholder={String(formData.currentOdometer || '0')}
-                                      className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-950 shadow-sm outline-none transition focus:border-violet-300"
-                                    />
-                                  </label>
-                                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                                    <p className="font-semibold text-slate-900">{tr('Current fleet reading', 'Lecture flotte actuelle')}</p>
-                                    <p className="mt-1">{formData.currentOdometer ? `${formData.currentOdometer} km` : '—'}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : ownerHandoffCurrentStep.key === 'start_fuel' ? (
-                              <OwnerFuelLevelPicker
-                                value={ownerExecutionDraft.startFuelLevel}
-                                onChange={(level) => {
-                                  setOwnerExecutionDraft((current) => ({
-                                    ...current,
-                                    startFuelLevel: String(level),
-                                  }));
-                                }}
-                                disabled={ownerExecutionHandoffLocked || ownerExecutionSaving}
-                                tr={tr}
-                                litersLabel={
-                                  Number.isFinite(Number(ownerExecutionDraft.startFuelLevel))
-                                    ? `${FuelTransactionService.linesToLiters(Number(ownerExecutionDraft.startFuelLevel), vehicleFuelState?.tank_capacity_liters || undefined).toFixed(1)} L`
-                                    : ''
-                                }
-                              />
-                            ) : (
-                              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                                {ownerHandoffCurrentStep.key === 'legal_docs'
-                                  ? tr('Match the registration and insurance to the vehicle before release.', "Vérifiez la carte grise et l'assurance avant remise.")
-                                  : ownerHandoffCurrentStep.key === 'deposit'
-                                    ? tr('Confirm the external deposit was handled directly between renter and owner.', 'Confirmez que la caution externe a été gérée directement entre le locataire et le propriétaire.')
-                                    : ownerHandoffCurrentStep.key === 'signature'
-                                      ? tr('Get the renter signature before starting.', 'Obtenez la signature du locataire avant démarrage.')
-                                      : tr('Use the same step-by-step rhythm as admin rental handoff.', 'Utilisez le même rythme étape par étape que la remise admin.')}
-                              </div>
-                            )}
-                          </OwnerStepperStepCard>
-                        )}
+                        ) : null}
 
-                        <div className="grid gap-3 md:grid-cols-5">
+                        <div className="space-y-3">
                           {OWNER_HANDOFF_STEPS.map((step, index) => {
                             const complete = step.gate(ownerExecutionDraft);
-                            const active = ownerHandoffCurrentStep.key === step.key;
+                            const active = !complete && ownerHandoffCurrentStep.key === step.key;
+                            const iconMap = {
+                              vehicle_photos: Camera,
+                              start_odometer: Gauge,
+                              start_fuel: Droplets,
+                              legal_docs: FileText,
+                              deposit: DollarSign,
+                              signature: FileSignature,
+                            };
+                            const detailMap = {
+                              vehicle_photos: complete ? tr(`${ownerExecutionHandoffPhotos.length} vehicle inspection photos saved.`, `${ownerExecutionHandoffPhotos.length} photos d’inspection véhicule enregistrées.`) : tr(step.note.en, step.note.fr),
+                              start_odometer: complete ? `${ownerExecutionDraft.startOdometer} km` : tr(step.note.en, step.note.fr),
+                              start_fuel: complete ? getOwnerExecutionFuelLabel(ownerExecutionDraft.startFuelLevel, tr) : tr(step.note.en, step.note.fr),
+                              legal_docs: complete ? tr(`${ownerExecutionLegalDocsPhotos.length} document photos saved.`, `${ownerExecutionLegalDocsPhotos.length} photos de documents enregistrées.`) : tr(step.note.en, step.note.fr),
+                              deposit: complete ? tr('Deposit confirmed.', 'Caution confirmée.') : tr(step.note.en, step.note.fr),
+                              signature: complete ? tr('Contract signed.', 'Contrat signé.') : tr(step.note.en, step.note.fr),
+                            };
+                            const actionMap = {
+                              vehicle_photos: { label: tr('View photos', 'Voir les photos'), action: () => openOwnerExecutionMediaSection('handoff') },
+                              start_odometer: { label: complete ? tr('Edit reading', 'Modifier le relevé') : tr('Add reading', 'Ajouter le relevé'), action: openOwnerStartOdometerModal },
+                              start_fuel: { label: complete ? tr('Update fuel', 'Modifier le carburant') : tr('Record fuel', 'Enregistrer le carburant'), action: openOwnerStartFuelModal },
+                              legal_docs: { label: tr('View photos', 'Voir les photos'), action: () => openOwnerExecutionMediaSection('legal_docs') },
+                              deposit: { label: tr('Confirm deposit', 'Confirmer la caution'), action: () => toggleOwnerExecutionFlag('depositConfirmed') },
+                              signature: { label: tr('Sign contract', 'Signer le contrat'), action: openOwnerSignatureModal },
+                            };
+                            const captureStep = ['vehicle_photos', 'legal_docs'].includes(step.key);
+                            const viewableCompleteStep = complete && captureStep;
+                            const editableCompleteStep = complete && !ownerExecutionHandoffLocked && ['start_odometer', 'start_fuel'].includes(step.key);
+                            const actionableActiveStep = active && !captureStep;
+                            const actionConfig = actionableActiveStep || editableCompleteStep || viewableCompleteStep ? actionMap[step.key] : null;
                             return (
-                              <ExecutionStep
+                              <OwnerRentalWorkflowStepCard
                                 key={step.key}
-                                step={{
-                                  key: step.key,
-                                  label: `${index + 1}. ${tr(step.label.en, step.label.fr)}`,
-                                  done: complete,
-                                  active,
-                                }}
-                              />
+                                number={index + 1}
+                                title={tr(step.label.en, step.label.fr)}
+                                detail={detailMap[step.key]}
+                                complete={complete}
+                                active={active}
+                                icon={iconMap[step.key]}
+                                actionLabel={actionConfig?.label || ''}
+                                onAction={actionConfig?.action}
+                                disabled={ownerExecutionSaving || (ownerExecutionHandoffLocked && !editableCompleteStep && !viewableCompleteStep)}
+                                fullBleedChildren={active && captureStep}
+                              >
+                                {active && step.key === 'vehicle_photos' ? (
+                                  <RentalPhotoEvidenceCapture
+                                    title={tr('Vehicle inspection', 'Inspection véhicule')}
+                                    subtitle={tr('Take at least 3 clear vehicle inspection photos before the vehicle leaves.', 'Prenez au moins 3 photos claires d’inspection véhicule avant le départ.')}
+                                    helper={tr('Use the camera, review the images, then confirm the upload.', 'Utilisez la caméra, vérifiez les images, puis confirmez le téléversement.')}
+                                    sessionToken={`owner-handoff-${String(operationalRequest?.id || 'request')}`}
+                                    photos={ownerExecutionDraft.handoffPhotos}
+                                    minPhotos={OWNER_HANDOFF_MIN_PHOTOS}
+                                    maxPhotos={6}
+                                    saving={ownerExecutionSaving}
+                                    disabled={ownerExecutionHandoffLocked}
+                                    onSubmit={(files) => uploadOwnerExecutionPhotos('handoff', files)}
+                                    submitLabel={tr('Save vehicle inspection photos', 'Enregistrer les photos d’inspection véhicule')}
+                                    variant="flush"
+                                    tr={tr}
+                                  />
+                                ) : null}
+                                {active && step.key === 'legal_docs' ? (
+                                  <RentalPhotoEvidenceCapture
+                                    title={tr('Registration + insurance', 'Carte grise + assurance')}
+                                    subtitle={tr('Take exactly 2 clear photos: one registration and one insurance.', 'Prenez exactement 2 photos claires : une carte grise et une assurance.')}
+                                    helper={tr('Use the same camera flow, review both images, then confirm the upload.', 'Utilisez le même flux caméra, vérifiez les deux images, puis confirmez le téléversement.')}
+                                    sessionToken={`owner-legal-docs-${String(operationalRequest?.id || 'request')}`}
+                                    photos={ownerExecutionDraft.legalDocsPhotos}
+                                    minPhotos={OWNER_LEGAL_DOCS_MIN_PHOTOS}
+                                    maxPhotos={OWNER_LEGAL_DOCS_MIN_PHOTOS}
+                                    saving={ownerExecutionSaving}
+                                    disabled={ownerExecutionHandoffLocked}
+                                    onSubmit={(files) => uploadOwnerExecutionPhotos('legal_docs', files)}
+                                    submitLabel={tr('Save registration and insurance photos', 'Enregistrer les photos carte grise et assurance')}
+                                    variant="flush"
+                                    tr={tr}
+                                  />
+                                ) : null}
+                              </OwnerRentalWorkflowStepCard>
                             );
                           })}
                         </div>
@@ -4905,7 +7591,7 @@ const AccountMarketplaceVehicleProfile = () => {
 
                         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                           <Link
-                            to={`/account/vehicles?requestId=${encodeURIComponent(String(operationalRequest.id))}&messageRequestId=${encodeURIComponent(String(operationalRequest.id))}#requests`}
+                            to={`/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}`}
                             state={{ from: currentPath }}
                             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 sm:w-auto"
                           >
@@ -4913,7 +7599,7 @@ const AccountMarketplaceVehicleProfile = () => {
                             {tr('Chat', 'Chat')}
                           </Link>
                           <Link
-                            to={`/account/vehicles?requestId=${encodeURIComponent(String(operationalRequest.id))}&messageRequestId=${encodeURIComponent(String(operationalRequest.id))}#requests`}
+                            to={`/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}`}
                             state={{ from: currentPath }}
                             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 sm:w-auto"
                           >
@@ -4923,11 +7609,13 @@ const AccountMarketplaceVehicleProfile = () => {
                           <button
                             type="button"
                             onClick={markOwnerExecutionReturnPending}
-                            disabled={ownerExecutionSaving || !ownerExecutionCanEndRental}
+                            disabled={ownerExecutionSaving || !ownerExecutionCanStartReturnFlow}
                             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 sm:w-auto"
                           >
                             <FileText className="h-4 w-4" />
-                            {tr('End rental', 'Fin de location')}
+                            {ownerExecutionCanStartReturnFlow
+                              ? tr('Start return flow', 'Démarrer le retour')
+                              : tr('Timer starting…', 'Timer en cours…')}
                           </button>
                         </div>
                       </div>
@@ -4935,165 +7623,227 @@ const AccountMarketplaceVehicleProfile = () => {
 
                     {ownerExecutionStage === 'return_pending' ? (
                       <div className="mt-4 space-y-4">
-                        <OwnerStepperStepCard
-                          stepNumber={tr('Step 2', 'Étape 2')}
-                          title={tr(ownerReturnCurrentStep.label.en, ownerReturnCurrentStep.label.fr)}
-                          note={tr(ownerReturnCurrentStep.note.en, ownerReturnCurrentStep.note.fr)}
-                          statusLabel={ownerExecutionSaving ? tr('Saving…', 'Enregistrement…') : tr('Admin stepper flow', 'Flux stepper admin')}
-                          primaryActionLabel={
-                            ownerReturnCurrentStep.key === 'return_photos'
-                              ? tr('Open camera', 'Ouvrir la caméra')
-                              : ownerReturnCurrentStep.key === 'return_odometer'
-                                ? tr('Save odometer', 'Enregistrer le compteur')
-                                : ownerReturnCurrentStep.key === 'return_fuel'
-                                  ? tr('Save fuel level', 'Enregistrer le carburant')
-                                  : ownerReturnCurrentStep.key === 'issue_report'
-                                ? tr('No issue', 'Aucun incident')
-                              : tr('End rental', 'Fin de location')
-                          }
-                          onPrimaryAction={() => {
-                            if (ownerReturnCurrentStep.key === 'issue_report') {
-                              setOwnerIssueReview(false);
-                              return;
-                            }
-                            if (ownerReturnCurrentStep.key === 'return_odometer') {
-                              saveOwnerExecutionReturnOdometer(returnOdometerInput);
-                              return;
-                            }
-                            if (ownerReturnCurrentStep.key === 'return_fuel') {
-                              saveOwnerExecutionReturnFuelLevel(ownerExecutionDraft.returnFuelLevel);
-                              return;
-                            }
-                            saveOwnerReturnFlow();
-                          }}
-                          primaryDisabled={
-                            ownerExecutionSaving ||
-                            ownerReturnCurrentStep.key === 'return_photos' ||
-                            (ownerReturnCurrentStep.key === 'return_odometer' &&
-                              !(Number.isFinite(Number(returnOdometerInput)) &&
-                                Number(returnOdometerInput) >= 0 &&
-                                (!Number.isFinite(Number(ownerExecutionDraft.startOdometer)) ||
-                                  Number(returnOdometerInput) >= Number(ownerExecutionDraft.startOdometer)))) ||
-                            (ownerReturnCurrentStep.key === 'return_fuel' &&
-                              !(Number.isFinite(Number(ownerExecutionDraft.returnFuelLevel)) &&
-                                Number(ownerExecutionDraft.returnFuelLevel) >= 0)) ||
-                            (ownerReturnCurrentStep.key === 'end_rental' ? !ownerReturnReady : false)
-                          }
-                          primaryTone={ownerReturnCurrentStep.key === 'end_rental' ? 'slate' : 'violet'}
-                        >
-                          <div className="space-y-3">
-                            {ownerReturnCurrentStep.key === 'return_photos' ? (
-                              <RentalPhotoEvidenceCapture
-                                title={tr('Return evidence', 'Preuve de retour')}
-                                subtitle={tr('Take at least 3 clear return photos before closing the rental.', 'Prenez au moins 3 photos claires avant de clôturer la location.')}
-                                helper={tr('Capture the vehicle condition on return. Issue reporting stays optional in the next step.', 'Capturez l’état du véhicule au retour. Le signalement d’incident reste optionnel à l’étape suivante.')}
-                                sessionToken={`owner-return-${String(operationalRequest?.id || 'request')}`}
-                                photos={ownerExecutionDraft.returnPhotos}
-                                minPhotos={OWNER_RETURN_MIN_PHOTOS}
-                                maxPhotos={6}
-                                saving={ownerExecutionSaving}
-                                disabled={ownerExecutionReturnLocked}
-                                onSubmit={(files) => uploadOwnerExecutionPhotos('return', files)}
-                                tr={tr}
-                              />
-                            ) : null}
-                            {ownerReturnCurrentStep.key === 'return_odometer' ? (
-                              <div className="space-y-3">
-                                <label className="block">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                                    {tr('Return odometer', 'Compteur retour')}
-                                  </span>
-                                  <input
-                                    type="number"
-                                    inputMode="numeric"
-                                    min={Number.isFinite(Number(ownerExecutionDraft.startOdometer)) ? Number(ownerExecutionDraft.startOdometer) : 0}
-                                    step="1"
-                                    value={returnOdometerInput}
-                                    onChange={(event) => setReturnOdometerInput(event.target.value)}
-                                    disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
-                                    className={`${fieldClassName} mt-2`}
-                                    placeholder={tr('Enter final odometer', 'Entrez le compteur final')}
-                                  />
-                                </label>
-                                <p className="text-xs text-slate-500">
-                                  {Number.isFinite(Number(ownerExecutionDraft.startOdometer))
-                                    ? tr(
-                                        `Must be at least ${Math.round(Number(ownerExecutionDraft.startOdometer))}.`,
-                                        `Doit être au moins ${Math.round(Number(ownerExecutionDraft.startOdometer))}.`
-                                      )
-                                    : tr('Use the final odometer reading shown at return.', 'Utilisez le relevé final du compteur au retour.')}
-                                </p>
-                              </div>
-                            ) : null}
-                            {ownerReturnCurrentStep.key === 'return_fuel' ? (
-                              <OwnerFuelLevelPicker
-                                tr={tr}
-                                value={ownerExecutionDraft.returnFuelLevel}
-                                onSelect={(level) => {
-                                  if (ownerExecutionReturnLocked) return;
-                                  setOwnerExecutionDraft((current) => ({
-                                    ...current,
-                                    returnFuelLevel: String(level),
-                                  }));
-                                }}
-                                disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
-                              />
-                            ) : null}
-                            {ownerReturnCurrentStep.key === 'issue_report' ? (
-                              <div className="space-y-3">
-                                <div className="flex flex-wrap gap-3">
-                                  <button
-                                    type="button"
-                                    onClick={() => setOwnerIssueReview(false)}
-                                    disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
-                                    className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                      ownerExecutionDraft.issueReviewed && !ownerExecutionDraft.issueReported
-                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                        : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
-                                    }`}
-                                  >
-                                    {tr('No issue', 'Aucun incident')}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setOwnerIssueReview(true)}
-                                    disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
-                                    className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                      ownerExecutionDraft.issueReviewed && ownerExecutionDraft.issueReported
-                                        ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                        : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
-                                    }`}
-                                  >
-                                    {tr('Report issue', 'Signaler un incident')}
-                                  </button>
-                                </div>
-                                {ownerExecutionDraft.issueReviewed && ownerExecutionDraft.issueReported ? (
-                                  <p className="text-xs text-amber-700">
-                                    {tr(
-                                      'Issue documented. End the rental once the return evidence is complete.',
-                                      'Incident documenté. Terminez la location une fois la preuve de retour complète.'
-                                    )}
-                                  </p>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
-                        </OwnerStepperStepCard>
+                        {ownerReturnReady ? (
+                          <OwnerStepperStepCard
+                            stepNumber={tr('Step 2', 'Étape 2')}
+                            title={tr('End rental', 'Terminer la location')}
+                            note={tr('The return checklist is complete. Close the rental now.', 'La checklist de retour est terminée. Clôturez maintenant la location.')}
+                            statusLabel={ownerExecutionSaving ? tr('Saving…', 'Enregistrement…') : tr('Final rental action', 'Action finale de location')}
+                            primaryActionLabel={tr('End rental', 'Terminer la location')}
+                            onPrimaryAction={saveOwnerReturnFlow}
+                            primaryDisabled={ownerExecutionSaving || !ownerReturnReady}
+                            primaryTone="violet"
+                          />
+                        ) : null}
 
-                        <div className="grid gap-3 md:grid-cols-4">
+                        <div className="space-y-3">
                           {OWNER_RETURN_STEPS.map((step, index) => {
                             const complete = step.gate(ownerExecutionDraft);
-                            const active = ownerReturnCurrentStep.key === step.key;
+                            const active = !complete && ownerReturnCurrentStep.key === step.key;
+                            const iconMap = {
+                              return_photos: Camera,
+                              return_odometer: Gauge,
+                              return_fuel: Droplets,
+                              return_condition: AlertTriangle,
+                              deposit_review: DollarSign,
+                              end_rental: CheckCircle2,
+                            };
+                            const detailMap = {
+                              return_photos: complete ? tr('Return inspection completed.', 'Inspection retour terminée.') : tr(step.note.en, step.note.fr),
+                              return_odometer: complete ? `${ownerExecutionDraft.returnOdometer} km` : tr(step.note.en, step.note.fr),
+                              return_fuel: complete ? getOwnerExecutionFuelLabel(ownerExecutionDraft.returnFuelLevel, tr) : tr(step.note.en, step.note.fr),
+                              return_condition: complete
+                                ? ownerExecutionDraft.issueReported
+                                  ? tr('Issue documented.', 'Incident documenté.')
+                                  : tr('No issue reported.', 'Aucun incident signalé.')
+                                : tr(step.note.en, step.note.fr),
+                              deposit_review: complete ? ownerReturnDepositOutcomeLabel : tr(step.note.en, step.note.fr),
+                              end_rental: ownerReturnReady
+                                ? tr('Ready to close.', 'Prête à clôturer.')
+                                : tr(step.note.en, step.note.fr),
+                            };
+                            const captureStep = step.key === 'return_photos';
+                            const actionMap = {
+                              return_photos: { label: tr('View photos', 'Voir les photos'), action: () => openOwnerExecutionMediaSection('return') },
+                              return_odometer: {
+                                label: complete ? tr('Edit reading', 'Modifier le relevé') : tr('Add reading', 'Ajouter le relevé'),
+                                action: openOwnerReturnOdometerModal,
+                              },
+                              return_fuel: {
+                                label: complete ? tr('Edit fuel', 'Modifier le carburant') : tr('Record fuel', 'Enregistrer le carburant'),
+                                action: openOwnerReturnFuelModal,
+                              },
+                            };
+                            const editableReturnStep = ['return_odometer', 'return_fuel'].includes(step.key);
+                            const actionConfig = complete && captureStep
+                              ? actionMap.return_photos
+                              : ((active && !captureStep) || (complete && editableReturnStep))
+                                ? actionMap[step.key]
+                                : null;
+
                             return (
-                              <ExecutionStep
+                              <OwnerRentalWorkflowStepCard
                                 key={step.key}
-                                step={{
-                                  key: step.key,
-                                  label: `${index + 1}. ${tr(step.label.en, step.label.fr)}`,
-                                  done: complete,
-                                  active,
-                                }}
-                              />
+                                number={index + 1}
+                                title={tr(step.label.en, step.label.fr)}
+                                detail={detailMap[step.key]}
+                                complete={complete}
+                                active={active}
+                                icon={iconMap[step.key]}
+                                actionLabel={actionConfig?.label || ''}
+                                onAction={actionConfig?.action}
+                                disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                fullBleedChildren={active && captureStep}
+                              >
+                                {active && step.key === 'return_photos' ? (
+                                  <RentalPhotoEvidenceCapture
+                                    title={tr('Vehicle inspection', 'Inspection véhicule')}
+                                    subtitle={tr('Take at least 3 clear return photos before closing the rental.', 'Prenez au moins 3 photos claires avant de clôturer la location.')}
+                                    helper={tr('Capture the vehicle condition on return. Issue reporting stays optional in the next step.', 'Capturez l’état du véhicule au retour. Le signalement d’incident reste optionnel à l’étape suivante.')}
+                                    sessionToken={`owner-return-${String(operationalRequest?.id || 'request')}`}
+                                    photos={ownerExecutionDraft.returnPhotos}
+                                    minPhotos={OWNER_RETURN_MIN_PHOTOS}
+                                    maxPhotos={6}
+                                    saving={ownerExecutionSaving}
+                                    disabled={ownerExecutionReturnLocked}
+                                    onSubmit={(files) => uploadOwnerExecutionPhotos('return', files)}
+                                    submitLabel={tr('Save return photos', 'Enregistrer les photos de retour')}
+                                    variant="flush"
+                                    tr={tr}
+                                  />
+                                ) : null}
+                                {active && step.key === 'return_fuel' && ownerReturnFuelDelta !== null ? (
+                                  <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
+                                    ownerReturnFuelDelta < 0
+                                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                      : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                  }`}>
+                                    {ownerReturnFuelDelta < 0
+                                      ? tr(
+                                          `Returned ${Math.abs(ownerReturnFuelDelta)} line${Math.abs(ownerReturnFuelDelta) === 1 ? '' : 's'} below pickup.`,
+                                          `Retour avec ${Math.abs(ownerReturnFuelDelta)} ligne${Math.abs(ownerReturnFuelDelta) === 1 ? '' : 's'} de moins que le départ.`
+                                        )
+                                      : ownerReturnFuelDelta > 0
+                                        ? tr(
+                                            `Returned ${ownerReturnFuelDelta} line${ownerReturnFuelDelta === 1 ? '' : 's'} above pickup.`,
+                                            `Retour avec ${ownerReturnFuelDelta} ligne${ownerReturnFuelDelta === 1 ? '' : 's'} de plus que le départ.`
+                                          )
+                                        : tr('Fuel matches pickup level.', 'Le carburant correspond au niveau de départ.')}
+                                  </div>
+                                ) : null}
+                                {active && step.key === 'return_condition' ? (
+                                  <div className="space-y-3">
+                                    <div className="flex flex-wrap gap-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => setOwnerIssueReview(false)}
+                                        disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                          ownerExecutionDraft.issueReviewed && !ownerExecutionDraft.issueReported
+                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                            : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
+                                        }`}
+                                      >
+                                        {tr('No issue', 'Aucun incident')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setOwnerIssueReview(true)}
+                                        disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                          ownerExecutionDraft.issueReviewed && ownerExecutionDraft.issueReported
+                                            ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                            : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
+                                        }`}
+                                      >
+                                        {tr('Report issue', 'Signaler un incident')}
+                                      </button>
+                                    </div>
+                                    {ownerExecutionDraft.issueReviewed && ownerExecutionDraft.issueReported ? (
+                                      <label className="block">
+                                        <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                          {tr('Issue note', "Note d'incident")}
+                                        </span>
+                                        <textarea
+                                          value={ownerExecutionDraft.issueNote || ''}
+                                          onChange={(event) => {
+                                            const nextValue = event.target.value;
+                                            setOwnerExecutionDraft((current) => ({
+                                              ...current,
+                                              issueNote: nextValue,
+                                            }));
+                                          }}
+                                          disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                          className={`${baseFieldClassName} mt-2 min-h-[120px] resize-y`}
+                                          placeholder={tr(
+                                            'Example: Front bumper scratch seen at return, renter informed, follow-up needed before deposit release.',
+                                            "Exemple : Rayure sur le pare-chocs avant constatée au retour, locataire informé, suivi nécessaire avant restitution de la caution."
+                                          )}
+                                        />
+                                      </label>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {active && step.key === 'deposit_review' ? (
+                                  <div className="space-y-3">
+                                    <div className="grid gap-3 sm:grid-cols-3">
+                                      {[
+                                        { key: 'refund_full', label: tr('Refund in full', 'Rembourser en totalité'), tone: 'emerald' },
+                                        { key: 'hold_partial', label: tr('Hold partially', 'Retenir partiellement'), tone: 'amber' },
+                                        { key: 'hold_full', label: tr('Hold fully', 'Retenir en totalité'), tone: 'rose' },
+                                      ].map((option) => {
+                                        const selected = ownerExecutionDraft.depositOutcome === option.key;
+                                        return (
+                                          <button
+                                            key={option.key}
+	                                            type="button"
+	                                            onClick={() => {
+	                                              if (ownerExecutionReturnLocked) return;
+	                                              if (option.key === 'refund_full') {
+	                                                openOwnerRefundSignatureModal();
+	                                                return;
+	                                              }
+	                                              setOwnerExecutionDraft((current) => ({
+	                                                ...current,
+	                                                depositReviewed: true,
+	                                                depositOutcome: option.key,
+	                                                depositRefundSignatureUrl: '',
+	                                                depositRefundSignedAt: null,
+	                                                depositRefundAmount: 0,
+	                                                depositRefundCurrency: '',
+	                                                depositRefundSignedBy: '',
+	                                                depositRefundRecordedBy: '',
+	                                              }));
+	                                            }}
+                                            disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                            className={`rounded-2xl border px-4 py-4 text-left text-sm font-semibold transition ${
+                                              selected
+                                                ? option.tone === 'emerald'
+                                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                  : option.tone === 'amber'
+                                                    ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                                    : 'border-rose-200 bg-rose-50 text-rose-700'
+                                                : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
+                                            }`}
+                                          >
+                                            {option.label}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ) : null}
+                                {step.key === 'end_rental' ? (
+                                  <button
+                                    type="button"
+                                    onClick={cancelOwnerExecutionReturnPending}
+                                    disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                    className="inline-flex items-center rounded-full px-2 py-1 text-xs font-bold text-slate-500 transition hover:bg-slate-100 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {tr('Cancel finish flow', 'Annuler la fin')}
+                                  </button>
+                                ) : null}
+                              </OwnerRentalWorkflowStepCard>
                             );
                           })}
                         </div>
@@ -5126,93 +7876,453 @@ const AccountMarketplaceVehicleProfile = () => {
                               : tr('No issue reported at return', 'Aucun incident signalé au retour')}
                           </p>
                         </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Deposit outcome', 'Résultat caution')}</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-950">
+                            {ownerExecutionDraft.depositOutcome === 'refund_full'
+                              ? tr('Refunded in full', 'Remboursée en totalité')
+                              : ownerExecutionDraft.depositOutcome === 'hold_partial'
+                                ? tr('Partially held', 'Retenue partiellement')
+                                : ownerExecutionDraft.depositOutcome === 'hold_full'
+                                  ? tr('Fully held', 'Retenue en totalité')
+                                  : '—'}
+                          </p>
+                        </div>
                       </div>
                     ) : null}
-                  </div>
 
-                  <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Funds flow', 'Flux financier')}</p>
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      {operationalFundsLifecycle.map((step) => (
-                        <FundsLifecycleStep key={step.key} {...step} />
-                      ))}
+                  {isOperationsWorkspaceRoute ? (
+                    <div className="mt-4">
+                      <OperationsCollapseCard
+                        icon={FileText}
+                        eyebrow={tr('Reference', 'Référence')}
+                        title={tr('Reference details', 'Détails de référence')}
+                        description={ownerExecutionReferenceSummary}
+                        expanded={operationsReferenceExpanded}
+                        onToggle={() => {
+                          if (operationsReferenceExpanded) setOperationsFocusedMediaPhase('');
+                          setOperationsReferenceExpanded((current) => !current);
+                        }}
+                        expandLabel={tr('Show reference details', 'Voir les détails de référence')}
+                        collapseLabel={tr('Hide reference details', 'Masquer les détails de référence')}
+                      >
+                        <div className="space-y-4">
+                      <div ref={operationsMediaSectionRef}>
+                        <OperationsCollapseCard
+                          icon={Camera}
+                          eyebrow={ownerExecutionMediaReferenceMeta.eyebrow}
+                          title={ownerExecutionMediaReferenceMeta.title}
+                          description={ownerExecutionMediaReferenceMeta.description}
+                          expanded={operationsMediaExpanded}
+                          onToggle={() => {
+                            if (operationsMediaExpanded) setOperationsFocusedMediaPhase('');
+                            setOperationsMediaExpanded((current) => !current);
+                          }}
+                          expandLabel={ownerExecutionMediaCount > 0 ? tr('Show media', 'Voir les médias') : tr('Show empty media', 'Voir les médias vides')}
+                          collapseLabel={tr('Hide media', 'Masquer les médias')}
+                        >
+                          <div className="grid gap-4 xl:grid-cols-3">
+                            {ownerExecutionMediaPhaseCards.map((phaseCard) => (
+                              <OwnerExecutionMediaPhaseCard
+                                key={phaseCard.key}
+                                title={phaseCard.title}
+                                description={phaseCard.description}
+                                photos={phaseCard.photos}
+                                emptyLabel={phaseCard.emptyLabel}
+                                countLabel={phaseCard.countLabel}
+                              />
+                            ))}
+                          </div>
+	                        </OperationsCollapseCard>
+	                      </div>
+	                      <OperationsCollapseCard
+	                        icon={FileSignature}
+	                        eyebrow={tr('Documents', 'Documents')}
+	                        title={tr('Contracts and receipts', 'Contrats et reçus')}
+	                        description={ownerExecutionDocumentsSummary}
+	                        expanded={operationsDocumentsExpanded}
+	                        onToggle={() => setOperationsDocumentsExpanded((current) => !current)}
+	                        expandLabel={tr('Show documents', 'Voir les documents')}
+	                        collapseLabel={tr('Hide documents', 'Masquer les documents')}
+	                      >
+	                        <div className="grid gap-3 xl:grid-cols-2">
+	                          {ownerExecutionDocumentRows.map((documentRow) => (
+	                            <OwnerExecutionDocumentRow
+	                              key={documentRow.key}
+	                              title={documentRow.title}
+	                              description={documentRow.description}
+	                              statusLabel={documentRow.statusLabel}
+	                              statusTone={documentRow.statusTone}
+	                              href={documentRow.href}
+	                              previewUrl={documentRow.previewUrl}
+	                              previewAlt={documentRow.previewAlt}
+	                              previewLabel={documentRow.previewLabel}
+	                              previewEmptyLabel={documentRow.previewEmptyLabel}
+	                              showPreviewSlot={documentRow.showPreviewSlot}
+	                              onAction={null}
+	                              actionLabel={documentRow.actionLabel}
+	                              actionBusy={ownerExecutionDocumentActionKey === documentRow.key}
+	                              actionDisabled={!documentRow.href}
+	                              tr={tr}
+	                            />
+	                          ))}
+	                        </div>
+	                      </OperationsCollapseCard>
+	                      <OperationsCollapseCard
+	                        icon={Car}
+                        eyebrow={tr('Vehicle', 'Véhicule')}
+                        title={tr('Vehicle details and history', 'Détails et historique véhicule')}
+                        description={[
+                          formData.plateNumber || (linkedFleetVehicleId ? `#${linkedFleetVehicleId}` : ''),
+                          operationalRequest?.listingTitle || [formData.brandName, formData.modelName].filter(Boolean).join(' ') || tr('Vehicle', 'Véhicule'),
+                          tr(`${vehicleDocuments.length} document${vehicleDocuments.length === 1 ? '' : 's'}`, `${vehicleDocuments.length} document${vehicleDocuments.length === 1 ? '' : 's'}`),
+                        ].filter(Boolean).join(' • ')}
+                        expanded={operationsVehicleExpanded}
+                        onToggle={() => setOperationsVehicleExpanded((current) => !current)}
+                        expandLabel={tr('Show detail', 'Voir le détail')}
+                        collapseLabel={tr('Hide detail', 'Masquer le détail')}
+                      >
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                          <ViewField label={tr('Plate number', "Numéro d'immatriculation")} value={formData.plateNumber} />
+                          <ViewField label={tr('Vehicle type', 'Type de véhicule')} value={formData.categoryCode} />
+                          <ViewField label={tr('Location', 'Emplacement')} value={[formData.cityName, formData.areaName].filter(Boolean).join(' • ')} />
+                          <ViewField label={tr('Current odometer', 'Kilométrage actuel')} value={formData.currentOdometer ? `${formData.currentOdometer} km` : '—'} />
+                          <ViewField label={tr('Current fuel', 'Carburant actuel')} value={Number.isFinite(Number(vehicleFuelState?.current_fuel_lines)) ? `${vehicleFuelState.current_fuel_lines}/8` : '—'} />
+                          <ViewField label={tr('Documents', 'Documents')} value={`${vehicleDocuments.length}`} />
+                          <ViewField label={tr('Insurance', 'Assurance')} value={insuranceExpired ? tr('Expired', 'Expirée') : tr('OK', 'OK')} />
+                          <ViewField label={tr('Fleet record', 'Fiche flotte')} value={linkedFleetVehicleId ? `#${linkedFleetVehicleId}` : '—'} />
+                        </div>
+                      </OperationsCollapseCard>
+                      <OperationsCollapseCard
+                        icon={DollarSign}
+                        eyebrow={tr('Rental information', 'Informations location')}
+                        title={tr('Financial information and payment', 'Informations financières et paiement')}
+                        description={tr(
+                          `${formatMoney(operationalRequestMoney.estimatedAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} rental • ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} security`,
+                          `${formatMoney(operationalRequestMoney.estimatedAmount, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} location • ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} caution`
+                        )}
+                        expanded={operationsDetailExpanded}
+                        onToggle={() => setOperationsDetailExpanded((current) => !current)}
+                        expandLabel={tr('Show detail', 'Voir le détail')}
+                        collapseLabel={tr('Hide detail', 'Masquer le détail')}
+                      >
+                        <div className="space-y-4">
+                          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Funds flow', 'Flux financier')}</p>
+                            <div className="mt-3 grid gap-3 md:grid-cols-3">
+                              {operationalFundsLifecycle.map((step) => {
+                                const { key, ...stepProps } = step;
+                                return <FundsLifecycleStep key={key} {...stepProps} />;
+                              })}
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Settlement rules', 'Règles de règlement')}</p>
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              {operationalSettlementRules.map((rule) => (
+                                <OwnerPolicyLine key={rule.key} label={rule.label} detail={rule.detail} />
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-3">
+                            <Link
+                              to={`/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}`}
+                              state={{ from: currentPath }}
+                              className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+                            >
+                              <MessageSquareText className="h-4 w-4" />
+                              {tr('Open in Inbox', 'Ouvrir dans Inbox')}
+                            </Link>
+                            {operationalRequestExecutionAction?.href ? (
+                              <Link
+                                to={operationalRequestExecutionAction.href}
+                                state={{ from: currentPath }}
+                                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                {operationalRequestExecutionAction.ctaLabel}
+                              </Link>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setFocusedSectionId(`vehicle-request-${String(operationalRequest.id)}`)}
+                                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                {tr('Review request', 'Voir la demande')}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </OperationsCollapseCard>
+                        </div>
+                      </OperationsCollapseCard>
                     </div>
-                  </div>
+                  ) : (
+                    <>
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Funds flow', 'Flux financier')}</p>
+                        <div className="mt-3 grid gap-3 md:grid-cols-3">
+                          {operationalFundsLifecycle.map((step) => {
+                            const { key, ...stepProps } = step;
+                            return <FundsLifecycleStep key={key} {...stepProps} />;
+                          })}
+                        </div>
+                      </div>
 
-                  <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Settlement rules', 'Règles de règlement')}</p>
-                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      {operationalSettlementRules.map((rule) => (
-                        <OwnerPolicyLine key={rule.key} label={rule.label} detail={rule.detail} />
-                      ))}
-                    </div>
-                  </div>
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Settlement rules', 'Règles de règlement')}</p>
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          {operationalSettlementRules.map((rule) => (
+                            <OwnerPolicyLine key={rule.key} label={rule.label} detail={rule.detail} />
+                          ))}
+                        </div>
+                      </div>
 
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <Link
-                      to={`/account/vehicles?requestId=${encodeURIComponent(String(operationalRequest.id))}&messageRequestId=${encodeURIComponent(String(operationalRequest.id))}#requests`}
-                      state={{ from: currentPath }}
-                      className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
-                    >
-                      <MessageSquareText className="h-4 w-4" />
-                      {tr('Open in Inbox', 'Ouvrir dans Inbox')}
-                    </Link>
-                    <button
-                      type="button"
-                      onClick={() => setFocusedSectionId(`vehicle-request-${String(operationalRequest.id)}`)}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                      {tr('Review request', 'Voir la demande')}
-                    </button>
-                  </div>
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <Link
+                          to={`/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}`}
+                          state={{ from: currentPath }}
+                          className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+                        >
+                          <MessageSquareText className="h-4 w-4" />
+                          {tr('Open in Inbox', 'Ouvrir dans Inbox')}
+                        </Link>
+                        {operationalRequestExecutionAction?.href ? (
+                          <Link
+                            to={operationalRequestExecutionAction.href}
+                            state={{ from: currentPath }}
+                            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                            {operationalRequestExecutionAction.ctaLabel}
+                          </Link>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setFocusedSectionId(`vehicle-request-${String(operationalRequest.id)}`)}
+                            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                            {tr('Review request', 'Voir la demande')}
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </AccountRentalExecutionStepperShell>
                 </div>
               ) : null}
 
-              <div className="grid gap-3 md:grid-cols-4">
-                <div className="rounded-2xl border border-violet-100 bg-violet-50 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-600">{tr('Total requests', 'Demandes totales')}</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.total}</p>
-                </div>
-                <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600">{tr('Pending', 'En attente')}</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.pending}</p>
-                </div>
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-600">{tr('Approved by owner', 'Approuvées par le propriétaire')}</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.preApproved}</p>
-                </div>
-                <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-600">{tr('Declined', 'Refusées')}</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.declined}</p>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {vehicleRequests.slice(0, 8).map((request) => (
-                  <article key={request.id} id={`vehicle-request-${String(request.id)}`} className={workspaceInsetPanelClass}>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-bold text-slate-950">{request?.customerName || tr('Customer request', 'Demande client')}</p>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${getMarketplaceStatusTone(request?.requestStatus)}`}>
-                        {getMarketplaceStatusLabel(request?.requestStatus)}
-                      </span>
+              {false && isOperationsWorkspaceRoute && operationalRequest && operationalExecutionMeta ? (
+                <OperationsCollapseCard
+                  eyebrow={tr('Workflow map', 'Carte du flux')}
+                  title={tr('Progress, timing, and supporting milestones', 'Progression, timing et étapes de support')}
+                  description={tr(
+                    'Open this when you need the full workflow map. The active checklist above remains the main operating surface.',
+                    'Ouvrez ceci si vous avez besoin de la carte complète du flux. La checklist active ci-dessus reste la surface principale.'
+                  )}
+                  expanded={operationsWorkflowExpanded}
+                  onToggle={() => setOperationsWorkflowExpanded((current) => !current)}
+                  expandLabel={tr('Show detail', 'Voir le détail')}
+                  collapseLabel={tr('Hide detail', 'Masquer le détail')}
+                >
+                  <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      {operationalExecutionMeta.steps.map((step, index) => (
+                        <ExecutionStep
+                          key={step.key}
+                          step={{
+                            key: step.key,
+                            label: `${index + 1}. ${step.label}`,
+                            done: step.done,
+                            active: step.active,
+                          }}
+                        />
+                      ))}
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-sm text-slate-600">
-                      <span>{request?.customerEmail || request?.customerPhone || '—'}</span>
-                      <span>•</span>
-                      <span>{formatDateTime(request?.requestedStartAt, isFrench ? 'fr' : 'en')}</span>
-                    </div>
-                    {request?.requestedEndAt ? (
-                      <p className="mt-2 text-xs font-semibold text-slate-500">
-                        {tr('Until', 'Jusqu’au')} {formatDateTime(request.requestedEndAt, isFrench ? 'fr' : 'en')}
-                      </p>
+                    {ownerExecutionSecondaryStatusCards.length ? (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {ownerExecutionSecondaryStatusCards.map((card) => (
+                          <div key={`${card.eyebrow}-${card.value}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{card.eyebrow}</p>
+                            <p className="mt-2 text-sm font-semibold text-slate-950">{card.value}</p>
+                            {card.detail ? <p className="mt-1 text-xs leading-5 text-slate-500">{card.detail}</p> : null}
+                          </div>
+                        ))}
+                      </div>
                     ) : null}
-                    <p className="mt-2 text-sm leading-6 text-slate-700">
-                      {request?.ownerResponse || request?.customerMessage || tr('No response yet.', 'Pas encore de réponse.')}
-                    </p>
-                  </article>
-                ))}
-              </div>
+                  </div>
+                </OperationsCollapseCard>
+              ) : null}
+
+              {false && isOperationsWorkspaceRoute ? (
+                <div className="space-y-4">
+                  <OperationsCollapseCard
+                    eyebrow={tr('Request queue', 'File des demandes')}
+                    title={tr('Booking queue and request history', 'File de réservation et historique des demandes')}
+                    description={tr(
+                      'Keep the active rental front and center. Open the queue only when you need another request.',
+                      'Gardez la location active au centre. Ouvrez la file seulement si vous avez besoin d’une autre demande.'
+                    )}
+                    expanded={operationsQueueExpanded}
+                    onToggle={() => setOperationsQueueExpanded((current) => !current)}
+                    expandLabel={tr('Show detail', 'Voir le détail')}
+                    collapseLabel={tr('Hide detail', 'Masquer le détail')}
+                  >
+                    <div className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <div className="rounded-2xl border border-violet-100 bg-violet-50 p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-600">{tr('Total requests', 'Demandes totales')}</p>
+                          <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.total}</p>
+                        </div>
+                        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600">{tr('Pending', 'En attente')}</p>
+                          <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.pending}</p>
+                        </div>
+                        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-600">{tr('Approved by owner', 'Approuvées par le propriétaire')}</p>
+                          <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.preApproved}</p>
+                        </div>
+                        <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-600">{tr('Declined', 'Refusées')}</p>
+                          <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.declined}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        {vehicleRequests.slice(0, 8).map((request) => (
+                          (() => {
+                            const requestExecutionAction = getOwnerExecutionActionConfig(request, tr);
+                            const requestReviewHref = buildOwnerExecutionWorkspaceHref(request, { focus: 'request' });
+
+                            return (
+                              <article key={request.id} id={`vehicle-request-${String(request.id)}`} className={workspaceInsetPanelClass}>
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-bold text-slate-950">{request?.customerName || tr('Customer request', 'Demande client')}</p>
+                                  <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${getMarketplaceStatusTone(request?.requestStatus)}`}>
+                                    {getMarketplaceStatusLabel(request?.requestStatus)}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-2 text-sm text-slate-600">
+                                  <span>{request?.customerEmail || request?.customerPhone || '—'}</span>
+                                  <span>•</span>
+                                  <span>{formatDateTime(request?.requestedStartAt, isFrench ? 'fr' : 'en')}</span>
+                                </div>
+                                {request?.requestedEndAt ? (
+                                  <p className="mt-2 text-xs font-semibold text-slate-500">
+                                    {tr('Until', 'Jusqu’au')} {formatDateTime(request.requestedEndAt, isFrench ? 'fr' : 'en')}
+                                  </p>
+                                ) : null}
+                                <p className="mt-2 text-sm leading-6 text-slate-700">
+                                  {request?.ownerResponse || request?.customerMessage || tr('No response yet.', 'Pas encore de réponse.')}
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {requestExecutionAction?.href ? (
+                                    <Link
+                                      to={requestExecutionAction.href}
+                                      state={{ from: currentPath }}
+                                      className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
+                                    >
+                                      <CalendarClock className="h-4 w-4" />
+                                      {requestExecutionAction.ctaLabel}
+                                    </Link>
+                                  ) : null}
+                                  <Link
+                                    to={requestReviewHref}
+                                    state={{ from: currentPath }}
+                                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                                  >
+                                    <ExternalLink className="h-4 w-4" />
+                                    {tr('Open request', 'Ouvrir la demande')}
+                                  </Link>
+                                </div>
+                              </article>
+                            );
+                          })()
+                        ))}
+                      </div>
+                    </div>
+                  </OperationsCollapseCard>
+
+                </div>
+              ) : !isOperationsWorkspaceRoute ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="rounded-2xl border border-violet-100 bg-violet-50 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-600">{tr('Total requests', 'Demandes totales')}</p>
+                      <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.total}</p>
+                    </div>
+                    <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600">{tr('Pending', 'En attente')}</p>
+                      <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.pending}</p>
+                    </div>
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-600">{tr('Approved by owner', 'Approuvées par le propriétaire')}</p>
+                      <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.preApproved}</p>
+                    </div>
+                    <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-600">{tr('Declined', 'Refusées')}</p>
+                      <p className="mt-2 text-2xl font-black text-slate-950">{bookingsSummary.declined}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {vehicleRequests.slice(0, 8).map((request) => (
+                      (() => {
+                        const requestExecutionAction = getOwnerExecutionActionConfig(request, tr);
+                        const requestReviewHref = buildOwnerExecutionWorkspaceHref(request, { focus: 'request' });
+
+                        return (
+                          <article key={request.id} id={`vehicle-request-${String(request.id)}`} className={workspaceInsetPanelClass}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-bold text-slate-950">{request?.customerName || tr('Customer request', 'Demande client')}</p>
+                              <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${getMarketplaceStatusTone(request?.requestStatus)}`}>
+                                {getMarketplaceStatusLabel(request?.requestStatus)}
+                              </span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2 text-sm text-slate-600">
+                              <span>{request?.customerEmail || request?.customerPhone || '—'}</span>
+                              <span>•</span>
+                              <span>{formatDateTime(request?.requestedStartAt, isFrench ? 'fr' : 'en')}</span>
+                            </div>
+                            {request?.requestedEndAt ? (
+                              <p className="mt-2 text-xs font-semibold text-slate-500">
+                                {tr('Until', 'Jusqu’au')} {formatDateTime(request.requestedEndAt, isFrench ? 'fr' : 'en')}
+                              </p>
+                            ) : null}
+                            <p className="mt-2 text-sm leading-6 text-slate-700">
+                              {request?.ownerResponse || request?.customerMessage || tr('No response yet.', 'Pas encore de réponse.')}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {requestExecutionAction?.href ? (
+                                <Link
+                                  to={requestExecutionAction.href}
+                                  state={{ from: currentPath }}
+                                  className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
+                                >
+                                  <CalendarClock className="h-4 w-4" />
+                                  {requestExecutionAction.ctaLabel}
+                                </Link>
+                              ) : null}
+                              <Link
+                                to={requestReviewHref}
+                                state={{ from: currentPath }}
+                                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                {tr('Open request', 'Ouvrir la demande')}
+                              </Link>
+                            </div>
+                          </article>
+                        );
+                      })()
+                    ))}
+                  </div>
+                </>
+              ) : null}
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -5223,7 +8333,7 @@ const AccountMarketplaceVehicleProfile = () => {
         </div>
       ) : null}
 
-      {activeTab === 'finance' ? (
+      {effectiveActiveTab === 'finance' ? (
         <SectionCard
           title={tr('Finance', 'Finance')}
           description={tr('Vehicle lifetime finance, acquisition, and cost history from the linked fleet vehicle.', 'Finance véhicule à vie, acquisition et historique des coûts depuis le véhicule flotte lié.')}
@@ -5340,7 +8450,7 @@ const AccountMarketplaceVehicleProfile = () => {
         </SectionCard>
       ) : null}
 
-      {activeTab === 'legal' ? (
+      {effectiveActiveTab === 'legal' ? (
         <div className="space-y-4">
           <div id="legal-documents" className={getFocusedSectionClass(focusedSectionId, 'legal-documents')}>
           <SectionCard
@@ -5364,18 +8474,19 @@ const AccountMarketplaceVehicleProfile = () => {
               <div className="mt-4">
                 <VehicleDocuments
                   vehicleId={vehicle?.id || (isNewVehicle && user?.id ? `owner-draft-${user.id}` : resolvedVehicleId)}
+                  storageVehicleIds={[draftUploadVehicleId]}
                   documents={vehicleDocuments}
                   onDocumentsChange={(nextDocuments) => {
                     setVehicleDocuments((current) => mergeVehicleDocuments(current, nextDocuments));
                   }}
                   onDeleteDocument={handleDeleteVehicleDocument}
-                  loadFromStorage={false}
-                  syncStorageToParent={false}
+                  loadFromStorage={!loading}
+                  syncStorageToParent={true}
                   canDelete={true}
                   documentStatusMap={vehicleLegalDocumentStatusMap}
                 />
               </div>
-              {!vehicleLegalScanComplete && !vehicleVerificationReady ? (
+              {!vehicleLegalStepComplete ? (
                 <div className="mt-4">
                   <DocumentUpload
                     vehicleId={vehicle?.id || (isNewVehicle && user?.id ? `owner-draft-${user.id}` : resolvedVehicleId)}
@@ -5386,6 +8497,7 @@ const AccountMarketplaceVehicleProfile = () => {
                       setVehicleDocuments((current) => mergeVehicleDocuments(current, nextDocuments));
                     }}
                     onOcrExtracted={handleVehicleLegalOcrExtracted}
+                    onProcessingStateChange={setVehicleLegalProcessingState}
                     allowedCategoryValues={['registration', 'insurance']}
                     defaultCategory={nextVehicleLegalUploadCategory}
                     onUploadComplete={(updatedDocuments = []) => {
@@ -5410,10 +8522,14 @@ const AccountMarketplaceVehicleProfile = () => {
                     {tr(
                       vehicleVerificationReady
                         ? 'Registration and insurance are verified and ready.'
-                        : 'Registration and insurance were scanned and filled automatically.',
+                        : vehicleLegalDocumentsUploaded && !vehicleLegalScanComplete
+                          ? 'Registration and insurance are uploaded. You can continue setup while admin reviews them.'
+                          : 'Registration and insurance were scanned and filled automatically.',
                       vehicleVerificationReady
                         ? 'L’immatriculation et l’assurance sont vérifiées et prêtes.'
-                        : 'L’immatriculation et l’assurance ont été scannées et remplies automatiquement.'
+                        : vehicleLegalDocumentsUploaded && !vehicleLegalScanComplete
+                          ? 'L’immatriculation et l’assurance sont téléversées. Vous pouvez continuer pendant la revue admin.'
+                          : 'L’immatriculation et l’assurance ont été scannées et remplies automatiquement.'
                     )}
                   </p>
                 </div>
@@ -5496,43 +8612,65 @@ const AccountMarketplaceVehicleProfile = () => {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
-                  {tr('Still step 3', 'Toujours étape 3')}
+                  {vehicleLegalStepComplete ? tr('Step 3 complete', 'Étape 3 terminée') : tr('Still step 3', 'Toujours étape 3')}
                 </p>
-                <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Review extracted details', 'Vérifier les détails extraits')}</h2>
+                <h2 className="mt-2 text-xl font-bold text-slate-950">
+                  {vehicleLegalStepComplete ? tr('Legal details', 'Détails légaux') : tr('Review extracted details', 'Vérifier les détails extraits')}
+                </h2>
                 <p className="mt-2 text-sm text-slate-600">
-                  {tr('Check the scanned fields and fix anything missing before you continue.', 'Vérifiez les champs scannés et corrigez ce qui manque avant de continuer.')}
+                  {vehicleLegalStepComplete
+                    ? tr('Files are saved. Add or correct details only if you want to help admin review faster.', 'Les fichiers sont enregistrés. Ajoutez ou corrigez les détails seulement pour aider l’admin à vérifier plus vite.')
+                    : tr('Check the scanned fields and fix anything missing before you continue.', 'Vérifiez les champs scannés et corrigez ce qui manque avant de continuer.')}
                 </p>
               </div>
               {isEditingVehicle ? (
                 <button
                   type="button"
                   onClick={() => void handleConfirmVehicleLegalDetails()}
-                  disabled={saving}
+                  disabled={saving || vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued}
                   className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_32px_rgba(124,58,237,0.24)] transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   {saving ? tr('Saving...', 'Enregistrement...') : tr('Save & continue', 'Enregistrer et continuer')}
                 </button>
               ) : null}
             </div>
+            {vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued ? (
+              <div className="mt-4 rounded-[1.4rem] border border-violet-200 bg-violet-50 px-4 py-4 text-sm text-violet-800 shadow-sm">
+                <p className="font-bold text-violet-950">
+                  {tr('Scanning in progress', 'Scan en cours')}
+                </p>
+                <p className="mt-1">
+                  {vehicleLegalProcessingState.queuedCategoryLabel
+                    ? tr(
+                        `We are finishing ${vehicleLegalProcessingState.currentCategoryLabel || 'this document'} now. ${vehicleLegalProcessingState.queuedCategoryLabel} is queued next automatically.`,
+                        `Nous terminons maintenant ${vehicleLegalProcessingState.currentCategoryLabel || 'ce document'}. ${vehicleLegalProcessingState.queuedCategoryLabel} est déjà en attente ensuite automatiquement.`
+                      )
+                    : tr(
+                        `We are scanning ${vehicleLegalProcessingState.currentCategoryLabel || 'this document'} now. Only the next highlighted document should be added while this finishes.`,
+                        `Nous scannons maintenant ${vehicleLegalProcessingState.currentCategoryLabel || 'ce document'}. Seul le document suivant mis en évidence doit être ajouté pendant ce temps.`
+                      )}
+                </p>
+              </div>
+            ) : null}
             {isEditingVehicle ? (
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <div className={`mt-5 grid gap-4 sm:grid-cols-2 ${(vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued) ? 'pointer-events-none opacity-70' : ''}`}>
                 <OwnerField label={tr('Registration number', "Numéro d'immatriculation administratif")}>
-                  <input value={formData.registrationNumber} onChange={(event) => updateField('registrationNumber', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} value={formData.registrationNumber} onChange={(event) => updateField('registrationNumber', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
                 <OwnerField label={tr('Registration date', "Date d'immatriculation")}>
-                  <input type="date" value={formData.registrationDate} onChange={(event) => updateField('registrationDate', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} type="date" value={formData.registrationDate} onChange={(event) => updateField('registrationDate', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
                 <OwnerField label={tr('Registration expiry', "Expiration de l'immatriculation")}>
-                  <input type="date" value={formData.registrationExpiryDate} onChange={(event) => updateField('registrationExpiryDate', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} type="date" value={formData.registrationExpiryDate} onChange={(event) => updateField('registrationExpiryDate', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
                 <OwnerField label={tr('Policy number', "Numéro de police d'assurance")}>
-                  <input value={formData.insurancePolicyNumber} onChange={(event) => updateField('insurancePolicyNumber', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} value={formData.insurancePolicyNumber} onChange={(event) => updateField('insurancePolicyNumber', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
                 <OwnerField label={tr('Insurance provider', 'Assureur')}>
-                  <input value={formData.insuranceProvider} onChange={(event) => updateField('insuranceProvider', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} value={formData.insuranceProvider} onChange={(event) => updateField('insuranceProvider', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
                 <OwnerField label={tr('Insurance expiry', "Expiration de l'assurance")}>
-                  <input type="date" value={formData.insuranceExpiryDate} onChange={(event) => updateField('insuranceExpiryDate', event.target.value)} className={baseFieldClassName} />
+                  <input disabled={vehicleLegalProcessingState.active || vehicleLegalProcessingState.queued} type="date" value={formData.insuranceExpiryDate} onChange={(event) => updateField('insuranceExpiryDate', event.target.value)} className={baseFieldClassName} />
                 </OwnerField>
               </div>
             ) : (
@@ -5719,7 +8857,7 @@ const AccountMarketplaceVehicleProfile = () => {
         </div>
       ) : null}
 
-      {!vehicle ? (
+      {!vehicle && !canRenderOperationsFastShell ? (
         <div className={`${workspacePanelClass} border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700`}>
           <div className="flex items-start gap-2">
             <AlertCircle className="mt-0.5 h-4 w-4" />
@@ -5727,6 +8865,226 @@ const AccountMarketplaceVehicleProfile = () => {
           </div>
         </div>
       ) : null}
+
+      <Dialog
+        open={showOwnerStartOdometerModal}
+        onOpenChange={(open) => {
+          setShowOwnerStartOdometerModal(open);
+          if (!open) {
+            setHandoffOdometerInput(
+              hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)
+                ? String(ownerExecutionDraft.startOdometer)
+                : ''
+            );
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+          <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="rounded-[18px] border border-violet-100 bg-violet-50 p-3 text-violet-700 shadow-sm">
+                <Gauge className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle className="text-[1.7rem] font-bold tracking-[-0.04em] text-slate-950">
+                  {tr('Starting Odometer', 'Kilométrage de départ')}
+                </DialogTitle>
+                <DialogDescription className="mt-2 text-sm leading-6 text-slate-500">
+                  {tr('Save the vehicle reading at pickup.', 'Enregistrez le relevé du véhicule au départ.')}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 px-5 pb-5 pt-4">
+            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Current selection', 'Sélection actuelle')}
+              </p>
+              <p className="mt-3 text-[2.25rem] font-extrabold leading-none tracking-[-0.06em] text-slate-950 tabular-nums">
+                {hasOwnerExecutionNumberValue(handoffOdometerInput) ? `${Number(handoffOdometerInput)} km` : '—'}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Vehicle reading', 'Relevé du véhicule')}
+              </label>
+              <input
+                type="number"
+                value={handoffOdometerInput}
+                onChange={(event) => setHandoffOdometerInput(event.target.value)}
+                placeholder={tr('Enter odometer reading', 'Saisissez le kilométrage')}
+                className="w-full rounded-[22px] border border-slate-200 px-4 py-4 text-xl font-bold tracking-[-0.03em] text-slate-950 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                min="0"
+                step="1"
+                inputMode="numeric"
+                disabled={ownerExecutionHandoffLocked || ownerExecutionSaving}
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowOwnerStartOdometerModal(false)}
+                disabled={ownerExecutionSaving}
+                className="h-14 rounded-[20px] border border-slate-200 bg-white text-base font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                {tr('Cancel', 'Annuler')}
+              </button>
+              <button
+                type="button"
+                onClick={handleOwnerStartOdometerModalSave}
+                disabled={ownerExecutionHandoffLocked || ownerExecutionSaving || !hasOwnerExecutionNumberValue(handoffOdometerInput)}
+                className="inline-flex h-14 items-center justify-center gap-2 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                <Save className="h-4 w-4" />
+                {ownerExecutionSaving ? tr('Saving...', 'Enregistrement...') : tr('Save reading', 'Enregistrer')}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <FuelLevelModal
+        isOpen={showOwnerStartFuelModal}
+        onClose={() => setShowOwnerStartFuelModal(false)}
+        onSave={handleOwnerStartFuelModalSave}
+        currentLevel={
+          hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel)
+            ? Number(ownerExecutionDraft.startFuelLevel)
+            : null
+        }
+        title={tr('Starting Fuel Level', 'Niveau carburant départ')}
+        description={tr('Select the fuel level before the rental starts.', 'Sélectionnez le niveau de carburant avant le départ.')}
+        variant="light"
+      />
+
+      <Dialog
+        open={showOwnerReturnOdometerModal}
+        onOpenChange={(open) => {
+          setShowOwnerReturnOdometerModal(open);
+          if (!open) {
+            setReturnOdometerInput(
+              hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer)
+                ? String(ownerExecutionDraft.returnOdometer)
+                : ''
+            );
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+          <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
+            <DialogTitle className="flex items-center gap-3 text-[1.55rem] font-bold tracking-[-0.04em] text-slate-950">
+              <Gauge className="h-6 w-6 text-violet-600" />
+              {tr('Enter Ending Odometer Reading', "Saisir le kilométrage d'arrivée")}
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-sm leading-6 text-slate-500">
+              {tr("Please enter the vehicle's odometer reading at the end of the rental.", "Veuillez saisir le kilométrage du véhicule à la fin de la location.")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 px-5 pb-5 pt-4">
+            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+              <div className="flex items-start gap-3">
+                <Info className="mt-0.5 h-5 w-5 flex-shrink-0 text-violet-600" />
+                <div>
+                  <p className="text-sm leading-6 text-slate-700">
+                    {tr("Please enter the vehicle's odometer reading at the end of the rental.", "Veuillez saisir le kilométrage du véhicule à la fin de la location.")}
+                  </p>
+                  {hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ? (
+                    <p className="mt-3 text-sm font-semibold text-slate-900">
+                      <strong>{tr('Starting odometer:', 'Kilométrage de départ :')}</strong> {Number(ownerExecutionDraft.startOdometer)} km
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-900">
+                {tr('Ending Odometer (km)', "Kilométrage d'arrivée (km)")}
+              </label>
+              <input
+                type="number"
+                value={returnOdometerInput}
+                onChange={(event) => setReturnOdometerInput(event.target.value)}
+                placeholder={tr('Enter ending odometer reading', "Saisissez le kilométrage d'arrivée")}
+                className="mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                min={hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ? Number(ownerExecutionDraft.startOdometer) : 0}
+                step="1"
+                autoFocus
+                inputMode="numeric"
+                disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+              <button
+                type="button"
+                onClick={() => setShowOwnerReturnOdometerModal(false)}
+                disabled={ownerExecutionSaving}
+                className="h-14 rounded-[20px] border border-slate-200 bg-white text-base font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                {tr('Skip for Now', 'Passer pour le moment')}
+              </button>
+              <button
+                type="button"
+                onClick={handleOwnerReturnOdometerModalSave}
+                disabled={
+                  ownerExecutionReturnLocked ||
+                  ownerExecutionSaving ||
+                  !hasOwnerExecutionNumberValue(returnOdometerInput) ||
+                  (hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) &&
+                    Number(returnOdometerInput) < Number(ownerExecutionDraft.startOdometer))
+                }
+                className="inline-flex h-14 items-center justify-center gap-2 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                <Save className="h-4 w-4" />
+                {ownerExecutionSaving ? tr('Saving...', 'Enregistrement...') : tr('Save Odometer', "Enregistrer l'odomètre")}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <FuelLevelModal
+        isOpen={showOwnerReturnFuelModal}
+        onClose={() => setShowOwnerReturnFuelModal(false)}
+        onSave={handleOwnerReturnFuelModalSave}
+        currentLevel={
+          hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)
+            ? Number(ownerExecutionDraft.returnFuelLevel)
+            : hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel)
+              ? Number(ownerExecutionDraft.startFuelLevel)
+              : null
+        }
+        title={tr('Ending Fuel Level', 'Niveau carburant retour')}
+        description={tr('Select the fuel level at return.', 'Sélectionnez le niveau de carburant au retour.')}
+        variant="light"
+      />
+
+      <SignaturePadModal
+        isOpen={showOwnerSignatureModal}
+        onClose={() => setShowOwnerSignatureModal(false)}
+        onSave={saveOwnerExecutionContractSignature}
+        rentalId={`marketplace-${String(operationalRequest?.id || 'owner')}`}
+        title={tr('Customer Signature', 'Signature du client')}
+        description={tr('Have the renter sign before starting the rental.', 'Faites signer le locataire avant de démarrer la location.')}
+      />
+
+      <SignaturePadModal
+        isOpen={showOwnerRefundSignatureModal}
+        onClose={() => setShowOwnerRefundSignatureModal(false)}
+        onSave={saveOwnerExecutionDepositRefundSignature}
+        rentalId={`marketplace-${String(operationalRequest?.id || 'owner')}-deposit-refund`}
+        title={tr('Deposit Refund Signature', 'Signature de remboursement caution')}
+        description={tr(
+          `Renter confirms receipt of ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} refunded in full.`,
+          `Le locataire confirme avoir reçu ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} remboursé en totalité.`
+        )}
+      />
 
       {vehicle?.listingId ? (
         <MessageWidget
@@ -5757,56 +9115,78 @@ const AccountMarketplaceVehicleProfile = () => {
           openRequestSignal={reviewThreadOpenSignal}
           replyTarget={listingReviewReplyTarget}
           seedThread={listingReviewSeedThread}
+          listingSetupProgress={ownerListingSetupProgress}
         />
       ) : null}
 
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-violet-100 bg-white/95 px-4 py-3 shadow-[0_-18px_42px_rgba(15,23,42,0.10)] backdrop-blur lg:left-[var(--account-sidebar-width,0px)]">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-500">
-              {isEditingVehicle
-                ? tr('Save inside each card, then continue', 'Enregistrez dans chaque carte, puis continuez')
-                : tr('Next listing step', "Prochaine étape d'annonce")}
-            </p>
-            <p className="mt-1 truncate text-sm font-black text-slate-950">
-              {tr('Step', 'Étape')} {ownerListingSetupProgress.currentStep?.stepNumber || ownerListingSetupProgress.currentStepNumber}: {ownerListingSetupProgress.currentStep?.title}
-            </p>
-            <div className="mt-2 h-1.5 max-w-sm overflow-hidden rounded-full bg-violet-100">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 transition-[width] duration-300"
-                style={{ width: `${ownerListingSetupProgress.visualProgressPercent}%` }}
-              />
-            </div>
-          </div>
+      {!shouldCondenseReviewPublishChrome && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[95] px-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:px-6">
+              <div className="pointer-events-auto mx-auto w-full max-w-6xl rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
+                    <div className="truncate">
+                      {tr('Step', 'Étape')} {ownerListingSetupProgress.currentStep?.stepNumber || ownerListingSetupProgress.currentStepNumber}/{ownerListingSetupProgress.totalSteps} · {ownerListingSetupProgress.currentStep?.title || tr('Continue listing', "Continuer l'annonce")}
+                    </div>
+                    {ownerListingSetupProgress.currentStep?.detail ? (
+                      <p className="mt-1 line-clamp-2 text-xs font-medium leading-5 text-slate-500">
+                        {ownerListingSetupProgress.currentStep.detail}
+                      </p>
+                    ) : null}
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-violet-100">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 transition-[width] duration-300"
+                        style={{ width: `${ownerListingSetupProgress.visualProgressPercent}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
+                      {(saving || footerPrimaryBusy) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                      <span>{footerGuideStatusLabel}</span>
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-violet-50 px-3 py-2 text-xs font-black text-violet-700">
+                    {ownerListingSetupProgress.progressPercent}%
+                  </span>
+                </div>
 
-          {isEditingVehicle ? (
-            <button
-              type="button"
-              onClick={() => void handleSaveVehicle()}
-              disabled={saving || submitting}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
-              title={tr('Global backup save for all edited fields', 'Sauvegarde globale de secours pour tous les champs modifiés')}
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {tr('Save all', 'Tout enregistrer')}
-            </button>
-          ) : null}
+                <div className="grid grid-cols-1 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOwnerListingSetupStepAction(ownerListingSetupProgress.currentStep)}
+                    disabled={!ownerListingSetupProgress.currentStep || saving || submitting || publishListingPending}
+                    className="flex min-h-[68px] w-full items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white shadow-[0_14px_30px_rgba(109,40,217,0.24)] transition-colors duration-150 hover:bg-violet-800 disabled:opacity-60"
+                  >
+                    {footerPrimaryBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ArrowRight className="h-4 w-4" />
+                    )}
+                    <span>{ownerListingSetupProgress.currentStep?.ctaLabel || tr('Continue', 'Continuer')}</span>
+                  </button>
+                </div>
 
-          <button
-            type="button"
-            onClick={() => handleOwnerListingSetupStepAction(ownerListingSetupProgress.currentStep)}
-            disabled={!ownerListingSetupProgress.currentStep || saving || submitting}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-black text-white shadow-[0_16px_34px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px] disabled:opacity-60"
-          >
-            {submitting && ownerListingSetupProgress.currentStep?.actionMode === 'submit-review' ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <ArrowRight className="h-4 w-4" />
-            )}
-            <span>{ownerListingSetupProgress.currentStep?.ctaLabel || tr('Continue', 'Continuer')}</span>
-          </button>
-        </div>
-      </div>
+                {isEditingVehicle ? (
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1">
+                    <p className="text-[11px] font-medium text-slate-500">
+                      {tr('Need a backup before moving on?', 'Besoin d’une sauvegarde avant de continuer ?')}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveVehicle()}
+                      disabled={saving || submitting}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
+                      title={tr('Manual backup save for your current edits', 'Sauvegarde manuelle de secours pour vos modifications en cours')}
+                    >
+                      {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                      {tr('Manual save', 'Sauvegarde manuelle')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 };

@@ -1,5 +1,19 @@
 import { normalizeRentalState } from '../../utils/marketplaceRequestState';
 import { getRentalThreadPresentation } from '../../utils/rentalThreadState';
+import {
+  MESSAGE_INBOX_LANES,
+  MESSAGE_THREAD_SURFACES,
+  isInternalOnlyThread,
+  isMarketplaceModerationThread,
+  isSupportThread,
+  isVerificationThread,
+  resolveConversationKind,
+  resolveAccountInboxLane,
+  resolveAdminInboxLane,
+  resolveThreadCapabilities,
+  resolveThreadWorkflowKind,
+  resolveThreadSurface,
+} from '../../utils/messageCenter';
 
 export const MAILBOXES = {
   inbox: 'inbox',
@@ -159,7 +173,7 @@ export const getConversationStatusLabel = (thread, currentUserId, currentSenderR
     }
     if (verificationStatus === 'suspended') return tr('Suspended', 'Suspendu');
     if (verificationStatus === 'expired') return tr('Expired', 'Expiré');
-    return tr('Pending review', 'En attente');
+    return tr('In review', 'En révision');
   }
 
   if (family === 'marketplace') {
@@ -211,10 +225,26 @@ export const getThreadType = (thread = {}) => {
   return 'support';
 };
 
+export const getThreadSurface = (thread = {}) => resolveThreadSurface(thread);
+
+export const getThreadWorkflowKind = (thread = {}) => resolveThreadWorkflowKind(thread);
+
+export const getThreadConversationKind = (thread = {}) => resolveConversationKind(thread);
+
+export const getThreadCapabilities = (thread = {}) => resolveThreadCapabilities(thread);
+
+export const getThreadInboxLane = (thread = {}, currentSenderRole = 'customer') => {
+  const normalizedRole = String(currentSenderRole || '').trim().toLowerCase();
+  if (normalizedRole === 'admin' || normalizedRole === 'support') {
+    return resolveAdminInboxLane(thread);
+  }
+  return resolveAccountInboxLane(thread);
+};
+
 export const getThreadTypeLabel = (thread = {}, tr) => {
   const type = getThreadType(thread);
   if (type === 'verification') {
-    return tr('Verification', 'Vérification');
+    return tr('Identity', 'Identité');
   }
   if (type === 'marketplace_request') {
     return tr('Request', 'Demande');
@@ -238,12 +268,17 @@ export const getThreadRoleContext = (thread = {}, currentSenderRole = 'customer'
   const normalizedSenderRole = String(currentSenderRole || '').trim().toLowerCase();
   const recipientRole = String(thread?.recipient_role || metadata.recipientRole || '').trim().toLowerCase();
   const senderRole = String(thread?.sender_role || metadata.senderRole || '').trim().toLowerCase();
+  const surface = getThreadSurface(thread);
 
-  if (family === 'verification') {
+  if (surface === MESSAGE_THREAD_SURFACES.internal || isInternalOnlyThread(thread)) {
+    return 'support';
+  }
+
+  if (isVerificationThread(thread)) {
     return 'verification';
   }
 
-  if (['support', 'account_trust'].includes(family)) {
+  if (isSupportThread(thread) || family === 'account_trust') {
     return 'support';
   }
 
@@ -266,6 +301,7 @@ export const getThreadRoleContext = (thread = {}, currentSenderRole = 'customer'
       return 'owner';
     }
     if (
+      href.includes('/account/operations/') ||
       href.includes('/account/vehicles?requestId=') ||
       href.includes('/account/vehicles/') ||
       threadType === 'marketplace_owner_request'
@@ -316,6 +352,20 @@ export const getThreadRoleBucket = (thread = {}, currentSenderRole = 'customer')
   return 'support';
 };
 
+export const getThreadOperationalBucket = (thread = {}, currentSenderRole = 'customer') => {
+  const lane = getThreadInboxLane(thread, currentSenderRole);
+  if (lane === MESSAGE_INBOX_LANES.reviews || lane === MESSAGE_INBOX_LANES.updates) {
+    return 'workflow';
+  }
+  if (lane === MESSAGE_INBOX_LANES.support) {
+    return 'support';
+  }
+  if (lane === MESSAGE_INBOX_LANES.internal) {
+    return 'internal';
+  }
+  return 'conversation';
+};
+
 export const getPriorityTone = (priority) => {
   if (priority === 'urgent') return 'bg-rose-50 text-rose-700';
   if (priority === 'important') return 'bg-amber-50 text-amber-700';
@@ -324,7 +374,7 @@ export const getPriorityTone = (priority) => {
 
 export const getFamilyLabel = (thread, tr) => {
   const family = String(thread?.family || '').trim().toLowerCase();
-  if (family === 'verification') return tr('Verification', 'Vérification');
+  if (family === 'verification') return tr('Identity', 'Identité');
   if (family === 'bookings') return tr('Bookings', 'Réservations');
   if (family === 'tours') return tr('Tours', 'Tours');
   if (family === 'marketplace') return tr('Marketplace', 'Marketplace');
@@ -334,7 +384,7 @@ export const getFamilyLabel = (thread, tr) => {
 
 export const getFamilyTone = (thread) => {
   const family = String(thread?.family || '').trim().toLowerCase();
-  if (family === 'verification') return 'bg-violet-50 text-violet-700';
+  if (family === 'verification') return 'bg-amber-50 text-amber-700';
   if (family === 'bookings') return 'bg-emerald-50 text-emerald-700';
   if (family === 'tours') return 'bg-sky-50 text-sky-700';
   if (family === 'marketplace') return 'bg-amber-50 text-amber-700';

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   CalendarClock,
@@ -13,6 +13,7 @@ import CustomerExperienceService from '../../services/CustomerExperienceService'
 import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
 import VerificationService from '../../services/VerificationService';
 import MessageService from '../../services/MessageService';
+import { supabase } from '../../lib/supabase';
 import { resolveManagedAccountType } from '../../utils/accountType';
 import {
   ACCOUNT_WORKSPACE_MODES,
@@ -27,6 +28,7 @@ import {
 } from '../../utils/accountJourneyAnalytics';
 import { getMarketplaceRequestDisplay, isMarketplaceRequestOpen } from '../../utils/marketplaceRequestState';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
+import { buildOwnerExecutionWorkspaceHref, getOwnerExecutionActionConfig } from '../../utils/ownerRentalExecutionLinks';
 import StatusChip from '../../components/account/StatusChip';
 import ActionItem from '../../components/account/ActionItem';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
@@ -39,13 +41,37 @@ import {
   getUnreadMessageThreadBuckets,
 } from '../../utils/messageNotificationPreferences';
 
-const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
-const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
-const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+const preloadOwnerOperationsRoute = () => import('./AccountMarketplaceVehicleProfile');
+
+const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'driveout_owner_vehicle_ids';
+const OWNER_STORAGE_LEGACY_KEYS = Object.freeze({
+  [LAST_OWNER_VEHICLE_ID_KEY]: 'saharax_last_owner_vehicle_id',
+  [LAST_OWNER_VEHICLE_COUNT_KEY]: 'saharax_last_owner_vehicle_count',
+  [OWNER_VEHICLE_IDS_KEY]: 'saharax_owner_vehicle_ids',
+});
 
 const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   const normalizedUserId = String(userId || '').trim();
   return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const buildOwnerVehicleStorageKeys = (baseKey, userId = '') => {
+  const primaryKey = buildOwnerVehicleStorageKey(baseKey, userId);
+  const legacyBaseKey = OWNER_STORAGE_LEGACY_KEYS[baseKey];
+  const legacyKey = legacyBaseKey ? buildOwnerVehicleStorageKey(legacyBaseKey, userId) : null;
+  return [primaryKey, legacyKey].filter(Boolean);
+};
+
+const readOwnerVehicleStorageValue = (baseKey, userId = '', fallbackValue = null) => {
+  if (typeof window === 'undefined') return fallbackValue;
+  const storageKeys = buildOwnerVehicleStorageKeys(baseKey, userId);
+  for (const storageKey of storageKeys) {
+    const nextValue = window.localStorage.getItem(storageKey);
+    if (nextValue !== null) return nextValue;
+  }
+  return fallbackValue;
 };
 
 const getKnownOwnerVehicleCount = (userId = '') => {
@@ -53,15 +79,15 @@ const getKnownOwnerVehicleCount = (userId = '') => {
 
   try {
     const savedCount = Number.parseInt(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_COUNT_KEY, userId, '0') || '0',
       10
     );
     const savedIds = JSON.parse(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+      readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]'
     );
     const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
     const hasLastVehicle = Boolean(
-      String(window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId)) || '').trim()
+      String(readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_ID_KEY, userId, '') || '').trim()
     );
     return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount, hasLastVehicle ? 1 : 0);
   } catch {
@@ -147,12 +173,21 @@ const hasVehicleDeposit = (vehicle) =>
   Number(vehicle?.depositAmount || 0) >= 0;
 
 const getVehicleVerificationStage = (vehicle) => {
-  const status = String(vehicle?.vehicleVerificationStatus || '').trim().toLowerCase();
+  const status = String(
+    vehicle?.vehicleVerificationStatus ||
+    vehicle?.verificationStatus ||
+    vehicle?.rawProfile?.verification_status ||
+    ''
+  ).trim().toLowerCase();
+  const hasExplicitCompletion = vehicle?.vehicleVerificationComplete === true;
 
-  if (status === 'approved' && vehicle?.vehicleVerificationComplete) {
+  if (['approved', 'verified'].includes(status) && vehicle?.vehicleVerificationComplete !== false) {
     return 'approved';
   }
-  if (['pending', 'in_review'].includes(status)) {
+  if (status === 'approved' && hasExplicitCompletion) {
+    return 'approved';
+  }
+  if (['pending', 'pending_verification', 'in_review'].includes(status)) {
     return 'pending';
   }
   if (['rejected', 'suspended', 'expired'].includes(status)) {
@@ -168,7 +203,7 @@ const getOwnerJourneyLabel = (journeyState, tr) => {
     case 'approved':
       return tr('Approved for publication', 'Approuvé pour publication');
     case 'pending_review':
-      return tr('Listing review in progress', "Revue de l'annonce en cours");
+      return tr('Waiting for admin approval', "En attente de l'approbation admin");
     case 'changes_requested':
       return tr('Changes requested', 'Modifications demandées');
     case 'rejected':
@@ -357,56 +392,75 @@ const AccountOverview = () => {
   const { workspaceMode } = workspaceIdentity;
   const isOwnerWorkspace = workspaceMode !== ACCOUNT_WORKSPACE_MODES.service;
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const loadWorkspaceOverview = useCallback(async ({ silent = false } = {}) => {
+    if (!user) {
+      setLoading(false);
+      return null;
+    }
+
+    try {
+      if (!silent) {
+        setLoading(true);
+      }
+      setError('');
+
+      const verificationPromise = VerificationService.getEntityVerificationSummary('user', user.id).catch(() => ({ requests: [] }));
+
+      void verificationPromise.then((verificationResult) => {
+        setVerificationRequests(Array.isArray(verificationResult?.requests) ? verificationResult.requests : []);
+      });
+
+      const [
+        accountSnapshot,
+        customerRequestsResult,
+        ownerVehiclesResult,
+        ownerRequestsResult,
+        verificationResult,
+        toursResult,
+        messageThreadsResult,
+      ] = await Promise.all([
+        CustomerExperienceService.getCustomerAccountSnapshot(user, { forceRefresh: true }),
+        CustomerExperienceService.getCustomerMarketplaceRequests(user),
+        BusinessMarketplaceService.getOwnerVehicles(user.id),
+        BusinessMarketplaceService.getOwnerRequests(user.id, 'all'),
+        verificationPromise,
+        CustomerExperienceService.getCustomerTourHistory(user).catch(() => []),
+        MessageService.listSharedThreads({ limit: 50 }).catch(() => ({ threads: [] })),
+      ]);
+
+      setSnapshot(accountSnapshot);
+      setCustomerRequests(Array.isArray(customerRequestsResult) ? customerRequestsResult : []);
+      setVerificationRequests(Array.isArray(verificationResult?.requests) ? verificationResult.requests : []);
+      setTourBookings(Array.isArray(toursResult) ? toursResult : []);
+      setMessageThreads(Array.isArray(messageThreadsResult?.threads) ? messageThreadsResult.threads : []);
+      setDbOwnerVehicleCount(Array.isArray(ownerVehiclesResult?.vehicles) ? ownerVehiclesResult.vehicles.length : 0);
+      setOwnerData({
+        vehicles: ownerVehiclesResult?.vehicles || [],
+        requests: ownerRequestsResult?.requests || [],
+      });
+      return {
+        accountSnapshot,
+        customerRequestsResult,
+        ownerVehiclesResult,
+        ownerRequestsResult,
+      };
+    } catch (loadError) {
+      setError(loadError?.message || tr('Unable to load your workspace overview right now.', 'Impossible de charger votre vue générale pour le moment.'));
+      return null;
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
+  }, [tr, user]);
+
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
-      if (!user) {
-        setLoading(false);
+      const result = await loadWorkspaceOverview();
+      if (cancelled && result) {
         return;
-      }
-
-      try {
-        setLoading(true);
-        setError('');
-
-        const [
-          accountSnapshot,
-          customerRequestsResult,
-          ownerVehiclesResult,
-          ownerRequestsResult,
-          verificationResult,
-          toursResult,
-          messageThreadsResult,
-        ] = await Promise.all([
-          CustomerExperienceService.getCustomerAccountSnapshot(user, { forceRefresh: true }),
-          CustomerExperienceService.getCustomerMarketplaceRequests(user),
-          BusinessMarketplaceService.getOwnerVehicles(user.id),
-          BusinessMarketplaceService.getOwnerRequests(user.id, 'all'),
-          VerificationService.getEntityVerificationSummary('user', user.id).catch(() => ({ requests: [] })),
-          CustomerExperienceService.getCustomerTourHistory(user).catch(() => []),
-          MessageService.listSharedThreads({ limit: 50 }).catch(() => ({ threads: [] })),
-        ]);
-
-        if (cancelled) return;
-        setSnapshot(accountSnapshot);
-        setCustomerRequests(Array.isArray(customerRequestsResult) ? customerRequestsResult : []);
-        setVerificationRequests(Array.isArray(verificationResult?.requests) ? verificationResult.requests : []);
-        setTourBookings(Array.isArray(toursResult) ? toursResult : []);
-        setMessageThreads(Array.isArray(messageThreadsResult?.threads) ? messageThreadsResult.threads : []);
-        setDbOwnerVehicleCount(Array.isArray(ownerVehiclesResult?.vehicles) ? ownerVehiclesResult.vehicles.length : 0);
-        setOwnerData({
-          vehicles: ownerVehiclesResult?.vehicles || [],
-          requests: ownerRequestsResult?.requests || [],
-        });
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError?.message || tr('Unable to load your workspace overview right now.', 'Impossible de charger votre vue générale pour le moment.'));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
       }
     };
 
@@ -414,7 +468,63 @@ const AccountOverview = () => {
     return () => {
       cancelled = true;
     };
-  }, [managedAccountType, user?.id, userProfile?.accountType, userProfile?.role, isFrench]);
+  }, [loadWorkspaceOverview]);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    let reloadTimer = null;
+    const queueReload = () => {
+      if (reloadTimer) {
+        window.clearTimeout(reloadTimer);
+      }
+      reloadTimer = window.setTimeout(() => {
+        void loadWorkspaceOverview({ silent: true });
+      }, 500);
+    };
+
+    const bookingChannels = [
+      supabase
+        .channel(`account-overview-booking-customer:${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'app_booking_requests',
+            filter: `customer_id=eq.${user.id}`,
+          },
+          queueReload
+        )
+        .subscribe(),
+      supabase
+        .channel(`account-overview-booking-owner:${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'app_booking_requests',
+            filter: `owner_id=eq.${user.id}`,
+          },
+          queueReload
+        )
+        .subscribe(),
+    ];
+
+    return () => {
+      if (reloadTimer) {
+        window.clearTimeout(reloadTimer);
+      }
+      bookingChannels.forEach((channel) => {
+        try {
+          supabase.removeChannel(channel);
+        } catch {
+          // ignore cleanup errors
+        }
+      });
+    };
+  }, [loadWorkspaceOverview, user?.id]);
 
   const profile = snapshot?.profile || {};
   const notificationPreferences = useMemo(
@@ -427,6 +537,10 @@ const AccountOverview = () => {
 
   const ownerVehicles = ownerData.vehicles || [];
   const ownerRequests = ownerData.requests || [];
+  const openCustomerRequests = useMemo(
+    () => customerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)),
+    [customerRequests]
+  );
   const meaningfulOwnerVehicles = useMemo(
     () => ownerVehicles.filter((vehicle) => isMeaningfulOwnerVehicle(vehicle)),
     [ownerVehicles]
@@ -497,29 +611,77 @@ const AccountOverview = () => {
   const identityStatus = isVerificationHydrating
     ? { label: tr('Checking status', 'Vérification en cours'), tone: 'neutral' }
     : getIdentityStatus(effectiveVerificationStatus, trustProgress, latestVerificationByType, tr);
+  const identityStatusDisplay = useMemo(() => {
+    if (isVerificationHydrating) {
+      return {
+        label: tr('Checking verification', 'Vérification en cours'),
+        tone: 'neutral',
+        actionable: false,
+      };
+    }
+
+    if (hasRejectedVerification) {
+      return {
+        label: tr('Verification needs updates', 'Vérification à corriger'),
+        tone: 'danger',
+        actionable: true,
+      };
+    }
+
+    if (hasPendingVerificationReview) {
+      return {
+        label: tr('Verification in review', 'Vérification en revue'),
+        tone: 'warning',
+        actionable: true,
+      };
+    }
+
+    if (identityStatus.tone !== 'success') {
+      return {
+        label: tr('Verification needed', 'Vérification requise'),
+        tone: 'violet',
+        actionable: true,
+      };
+    }
+
+    return {
+      ...identityStatus,
+      actionable: false,
+    };
+  }, [
+    hasPendingVerificationReview,
+    hasRejectedVerification,
+    identityStatus,
+    isVerificationHydrating,
+    tr,
+  ]);
   const ownerVerificationReady = effectiveVerificationStatus === 'approved';
   const ownerVehicleHasDraft = Boolean(primaryOwnerVehicle && isMeaningfulOwnerVehicle(primaryOwnerVehicle));
   const ownerVehicleMediaReady = hasVehicleMedia(primaryOwnerVehicle);
   const ownerVehiclePricingReady = hasVehiclePricing(primaryOwnerVehicle);
   const vehicleVerificationStage = getVehicleVerificationStage(primaryOwnerVehicle);
   const marketplaceVerificationReady = vehicleVerificationStage === 'approved';
+  const primaryOwnerListingStatus = primaryOwnerVehicle?.marketplaceVisible || primaryOwnerVehicle?.publishedAt
+    ? 'live'
+    : primaryOwnerVehicle?.listingStatus;
   const primaryOwnerJourneyState = useMemo(
     () =>
       getEffectiveMarketplaceJourneyState({
         marketplaceVerificationReady,
         hasStartedDraft: ownerVehicleHasDraft,
-        listingStatus: primaryOwnerVehicle?.listingStatus,
+        listingStatus: primaryOwnerListingStatus,
         reviewStatus: primaryOwnerVehicle?.reviewStatus,
         moderationStatus: primaryOwnerVehicle?.moderationStatus,
       }),
     [
       marketplaceVerificationReady,
       ownerVehicleHasDraft,
-      primaryOwnerVehicle?.listingStatus,
       primaryOwnerVehicle?.moderationStatus,
       primaryOwnerVehicle?.reviewStatus,
+      primaryOwnerListingStatus,
     ]
   );
+  const listingHasPassedAdminReview = ['approved', 'live'].includes(primaryOwnerJourneyState);
 
   const nextTour = useMemo(() => {
     if (!tourRows.length) return null;
@@ -535,17 +697,50 @@ const AccountOverview = () => {
   }, [tourRows]);
 
   const nextMarketplaceRequest = useMemo(() => {
-    if (!customerRequests.length) return null;
-    const pending = customerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
-    const sorted = pending.sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
+    if (!openCustomerRequests.length) return null;
+    const sorted = [...openCustomerRequests].sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
     return sorted[0] || null;
-  }, [customerRequests]);
+  }, [openCustomerRequests]);
   const nextOwnerRequest = useMemo(() => {
     if (!ownerRequests.length) return null;
     const pending = ownerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
     const sorted = [...pending].sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
     return sorted[0] || null;
   }, [ownerRequests]);
+  const nextOwnerExecutionRequest = useMemo(() => {
+    if (!ownerRequests.length) return null;
+
+    const getPriority = (stage) => {
+      if (stage === 'return_pending') return 0;
+      if (stage === 'live') return 1;
+      if (stage === 'ready_to_start') return 2;
+      if (stage === 'handoff' || stage === 'approved') return 3;
+      return 9;
+    };
+
+    const actionable = ownerRequests
+      .map((request) => ({
+        request,
+        action: getOwnerExecutionActionConfig(request, tr),
+      }))
+      .filter((entry) => Boolean(entry.action));
+
+    if (!actionable.length) return null;
+
+    return [...actionable].sort((left, right) => {
+      const priorityDelta = getPriority(left.action?.stage) - getPriority(right.action?.stage);
+      if (priorityDelta !== 0) return priorityDelta;
+      return new Date(right.request?.updatedAt || right.request?.createdAt || 0).getTime() -
+        new Date(left.request?.updatedAt || left.request?.createdAt || 0).getTime();
+    })[0] || null;
+  }, [ownerRequests, tr]);
+  const hasActiveOwnerExecution = Boolean(nextOwnerExecutionRequest?.action);
+  const isOwnerOperationsHydrating = Boolean(
+    isOwnerWorkspace &&
+    loading &&
+    !hasActiveOwnerExecution &&
+    ownerRequests.length === 0
+  );
   const walletBalance = Number(snapshot?.wallet?.balance || 0);
   const { supportUnreadThreads, customerUnreadThreads } = useMemo(
     () => getUnreadMessageThreadBuckets(messageThreads, notificationPreferences),
@@ -621,6 +816,27 @@ const AccountOverview = () => {
         ctaLabel: tr('Open request', 'Ouvrir la demande'),
       };
     }
+    if (nextOwnerExecutionRequest?.action) {
+      return {
+        type: 'hosting_execution',
+        title: nextOwnerExecutionRequest.action.title,
+        status: getMarketplaceStatus(nextOwnerExecutionRequest.request?.requestStatus, tr),
+        detail: [
+          nextOwnerExecutionRequest.request?.customerName,
+          formatDateTime(
+            nextOwnerExecutionRequest.request?.requestedStartAt
+              ? new Date(nextOwnerExecutionRequest.request.requestedStartAt)
+              : null,
+            locale
+          ),
+        ]
+          .filter(Boolean)
+          .join(' • '),
+        imageUrl: nextOwnerExecutionRequest.request?.coverImageUrl || '',
+        href: nextOwnerExecutionRequest.action.href,
+        ctaLabel: nextOwnerExecutionRequest.action.ctaLabel,
+      };
+    }
     if (nextOwnerRequest) {
       return {
         type: 'hosting',
@@ -630,15 +846,43 @@ const AccountOverview = () => {
           .filter(Boolean)
           .join(' • '),
         imageUrl: nextOwnerRequest?.coverImageUrl || '',
-        href: `/account/vehicles?requestId=${encodeURIComponent(String(nextOwnerRequest.id))}#requests`,
+        href: buildOwnerExecutionWorkspaceHref(nextOwnerRequest, { focus: 'request' }),
         ctaLabel: tr('Review request', 'Voir la demande'),
       };
     }
     return null;
-  }, [activeBookings, upcomingBookings, nextTour, nextMarketplaceRequest, nextOwnerRequest, locale, tr]);
+  }, [activeBookings, upcomingBookings, nextMarketplaceRequest, nextOwnerExecutionRequest, nextOwnerRequest, nextTour, locale, tr]);
 
   const nextBestAction = useMemo(() => {
     if (isOwnerWorkspace) {
+      if (isOwnerOperationsHydrating) {
+        return {
+          title: tr('Checking rental operations', 'Vérification des opérations de location'),
+          detail: tr(
+            'Home is loading your ready-to-start and ready-to-finish actions now.',
+            "L'accueil charge maintenant vos actions prêtes à démarrer et prêtes à terminer."
+          ),
+          to: '',
+          state: undefined,
+          ctaLabel: tr('Loading…', 'Chargement…'),
+          icon: CalendarClock,
+          tone: 'slate',
+          disabled: true,
+        };
+      }
+
+      if (nextOwnerExecutionRequest?.action) {
+        return {
+          title: nextOwnerExecutionRequest.action.title,
+          detail: nextOwnerExecutionRequest.action.detail,
+          to: nextOwnerExecutionRequest.action.href,
+          state: { from: currentPath },
+          ctaLabel: nextOwnerExecutionRequest.action.ctaLabel,
+          icon: CalendarClock,
+          tone: nextOwnerExecutionRequest.action.tone,
+        };
+      }
+
       if (pendingOwnerRequests > 0) {
         return {
           title: tr('Respond to booking requests', 'Répondez aux demandes de réservation'),
@@ -697,7 +941,7 @@ const AccountOverview = () => {
         };
       }
 
-      if (!ownerVehicleMediaReady) {
+      if (!listingHasPassedAdminReview && !ownerVehicleMediaReady) {
         return {
           title: tr('Add photos to continue', 'Ajoutez des photos pour continuer'),
           detail: tr(
@@ -712,7 +956,7 @@ const AccountOverview = () => {
         };
       }
 
-      if (!ownerVehiclePricingReady) {
+      if (!listingHasPassedAdminReview && !ownerVehiclePricingReady) {
         return {
           title: tr('Set your pricing', 'Définissez votre tarification'),
           detail: tr(
@@ -727,7 +971,7 @@ const AccountOverview = () => {
         };
       }
 
-      if (!ownerVerificationReady) {
+      if (!listingHasPassedAdminReview && !ownerVerificationReady) {
         return {
           title: hasPendingVerificationReview
             ? tr('Verification is in review', 'La vérification est en revue')
@@ -748,7 +992,7 @@ const AccountOverview = () => {
         };
       }
 
-      if (!marketplaceVerificationReady) {
+      if (!listingHasPassedAdminReview && !marketplaceVerificationReady) {
         return {
           title: tr('Finish vehicle documents', 'Terminez les documents du véhicule'),
           detail: tr(
@@ -866,8 +1110,11 @@ const AccountOverview = () => {
     hasPendingVerificationReview,
     hasRejectedVerification,
     isOwnerWorkspace,
+    isOwnerOperationsHydrating,
+    listingHasPassedAdminReview,
     marketplaceVerificationReady,
     nextActivity,
+    nextOwnerExecutionRequest,
     ownerVehicleMediaReady,
     ownerVehiclePricingReady,
     ownerVerificationReady,
@@ -881,8 +1128,91 @@ const AccountOverview = () => {
     vehicleVerificationStage,
   ]);
 
+  const reviewSignals = useMemo(() => {
+    const items = [];
+
+    if (hasRejectedVerification || hasPendingVerificationReview || identityStatusDisplay.tone === 'violet') {
+      items.push({
+        key: 'account_verification',
+        label:
+          hasRejectedVerification
+            ? tr('Verification needs your update', 'La vérification doit être corrigée')
+            : hasPendingVerificationReview
+              ? tr('Verification is waiting for admin review', "La vérification attend la revue de l'admin")
+              : tr('Verification is not complete yet', "La vérification n'est pas encore terminée"),
+        detail:
+          hasRejectedVerification
+            ? tr(
+                'Open the trust center to replace the document and continue.',
+                'Ouvrez le centre de confiance pour remplacer le document et continuer.'
+              )
+            : hasPendingVerificationReview
+              ? tr(
+                  'Your driver license and ID/passport are in the trust center and waiting for approval.',
+                  "Votre permis et votre pièce/passeport sont dans le centre de confiance et attendent l'approbation."
+                )
+              : tr(
+                  'Add your identity documents in the trust center so approvals can move forward.',
+                  "Ajoutez vos documents d'identité dans le centre de confiance pour faire avancer les validations."
+                ),
+        to: '/account/verification',
+        state: { from: currentPath },
+        icon: ShieldCheck,
+        tone: hasRejectedVerification ? 'rose' : hasPendingVerificationReview ? 'amber' : 'violet',
+      });
+    }
+
+    if (isOwnerWorkspace && primaryOwnerJourneyState === 'pending_review') {
+      items.push({
+        key: 'listing_review',
+        label: tr('Listing review is waiting for admin approval', "La revue de l'annonce attend l'approbation admin"),
+        detail: tr(
+          'Open the listing workspace to follow the approval state and next publishing step.',
+          "Ouvrez l'espace annonce pour suivre l'état d'approbation et la prochaine étape de publication."
+        ),
+        to: primaryVehicleListingHref,
+        state: { from: currentPath, focusSectionId: 'listing-journey' },
+        icon: CarFront,
+        tone: 'amber',
+      });
+    }
+
+    return items;
+  }, [
+    currentPath,
+    hasPendingVerificationReview,
+    hasRejectedVerification,
+    identityStatusDisplay.tone,
+    isOwnerWorkspace,
+    primaryOwnerJourneyState,
+    primaryVehicleListingHref,
+    tr,
+  ]);
+
   const homeHero = useMemo(() => {
     if (isOwnerWorkspace) {
+      if (hasActiveOwnerExecution) {
+        return {
+          eyebrow: tr('Rental operations', 'Opérations de location'),
+          title: nextOwnerExecutionRequest?.action?.title || tr('Rental operations ready', 'Opérations de location prêtes'),
+          description: tr(
+            'Home is now focused on the live owner workflow so you can start or finish the rental without digging through listing setup.',
+            "L'accueil est maintenant centré sur le flux propriétaire actif afin de démarrer ou terminer la location sans passer par la configuration de l'annonce."
+          ),
+        };
+      }
+
+      if (isOwnerOperationsHydrating) {
+        return {
+          eyebrow: tr('Rental operations', 'Opérations de location'),
+          title: tr('Checking rental operations', 'Vérification des opérations de location'),
+          description: tr(
+            'We are loading your booking and rental actions now.',
+            'Nous chargeons maintenant vos actions de réservation et de location.'
+          ),
+        };
+      }
+
       if (effectiveOwnerVehicleCount === 0) {
         return {
           eyebrow: tr('Start listing', 'Commencer une annonce'),
@@ -928,13 +1258,13 @@ const AccountOverview = () => {
 
     return {
       eyebrow: tr('Home', 'Accueil'),
-      title: tr('Your travel home', 'Votre espace voyage'),
+      title: tr('Your travel dashboard', 'Votre tableau de bord voyage'),
       description: tr(
         'Track trips, open booking conversations, and keep wallet activity close by.',
         'Suivez vos parcours, ouvrez vos conversations de réservation et gardez votre portefeuille à portée de main.'
       ),
     };
-  }, [effectiveOwnerVehicleCount, isOwnerWorkspace, primaryOwnerJourneyState, tr]);
+  }, [effectiveOwnerVehicleCount, hasActiveOwnerExecution, isOwnerOperationsHydrating, isOwnerWorkspace, nextOwnerExecutionRequest?.action?.title, primaryOwnerJourneyState, tr]);
 
   const heroSecondaryAction = useMemo(() => {
     if (isOwnerWorkspace) {
@@ -953,28 +1283,34 @@ const AccountOverview = () => {
   }, [currentPath, isOwnerWorkspace, tr]);
 
   const listingsEntry = useMemo(() => {
-    if (isOwnerWorkspace) {
-      return {
-        value: `${effectiveOwnerVehicleCount}`,
-        label:
-          effectiveOwnerVehicleCount > 0
-            ? getOwnerJourneyLabel(primaryOwnerJourneyState, tr)
-            : tr('Start your first listing', 'Commencez votre première annonce'),
-        to: effectiveOwnerVehicleCount > 0 ? '/account/vehicles' : '/account/vehicles/new/profile?tab=overview',
-        ctaLabel: effectiveOwnerVehicleCount > 0 ? tr('Open listings', 'Ouvrir les annonces') : tr('Start listing', 'Commencer'),
-      };
-    }
-
     return {
-      value: `${customerRequests.length}`,
+      value: `${effectiveOwnerVehicleCount}`,
       label:
-        customerRequests.length > 0
-          ? tr('Requests in progress', 'Demandes en cours')
-          : tr('Browse available vehicles', 'Explorer les véhicules disponibles'),
-      to: '/account/marketplace',
-      ctaLabel: tr('Open listings', 'Ouvrir les annonces'),
+        effectiveOwnerVehicleCount > 0
+          ? getOwnerJourneyLabel(primaryOwnerJourneyState, tr)
+          : tr('Start your first listing', 'Commencez votre première annonce'),
+      to: effectiveOwnerVehicleCount > 0 ? '/account/vehicles' : '/account/vehicles/new/profile?tab=overview',
+      ctaLabel: effectiveOwnerVehicleCount > 0 ? tr('Open listings', 'Ouvrir les annonces') : tr('Start listing', 'Commencer'),
     };
-  }, [customerRequests.length, effectiveOwnerVehicleCount, isOwnerWorkspace, primaryOwnerJourneyState, tr]);
+  }, [effectiveOwnerVehicleCount, primaryOwnerJourneyState, tr]);
+
+  const vehicleRequestsEntry = useMemo(() => ({
+    value: `${openCustomerRequests.length}`,
+    label:
+      openCustomerRequests.length > 0
+        ? tr('Vehicle requests in progress', 'Demandes de véhicule en cours')
+        : tr('Browse available vehicles', 'Explorer les véhicules disponibles'),
+    to: openCustomerRequests.length === 1
+      ? `/account/rentals/requests/${encodeURIComponent(String(openCustomerRequests[0]?.id || ''))}`
+      : openCustomerRequests.length > 1
+        ? '/account/rentals#marketplace-requests'
+        : '/account/marketplace',
+    ctaLabel: openCustomerRequests.length === 1
+      ? tr('Open request', 'Ouvrir la demande')
+      : openCustomerRequests.length > 1
+        ? tr('Open requests', 'Ouvrir les demandes')
+        : tr('Browse vehicles', 'Explorer les véhicules'),
+  }), [openCustomerRequests, tr]);
 
   const inboxEntry = useMemo(() => ({
     value: `${pendingOwnerRequests + totalInboxSignalCount}`,
@@ -995,17 +1331,18 @@ const AccountOverview = () => {
   }), [pendingOwnerRequests, totalInboxSignalCount, tr]);
 
   const tripsEntry = useMemo(() => {
-    const activeTripCount = activeBookings.length + upcomingBookings.length + customerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)).length;
+    const activeTourCount = tourRows.filter((tour) => !['completed', 'closed', 'cancelled', 'canceled'].includes(String(tour?.status || '').toLowerCase())).length;
+    const activeTripCount = activeBookings.length + upcomingBookings.length + activeTourCount;
     return {
       value: `${activeTripCount}`,
       label:
         activeTripCount > 0
-          ? tr('Active and upcoming trips', 'Parcours actifs et à venir')
-          : tr('No active trips', 'Aucun parcours actif'),
+          ? tr('Confirmed and upcoming trips', 'Parcours confirmés et à venir')
+          : tr('No confirmed trips yet', 'Aucun parcours confirmé pour le moment'),
       to: '/account/rentals',
       ctaLabel: tr('Open trips', 'Ouvrir les parcours'),
     };
-  }, [activeBookings.length, upcomingBookings.length, customerRequests, tr]);
+  }, [activeBookings.length, upcomingBookings.length, tourRows, tr]);
 
   const walletEntry = useMemo(() => ({
     value: formatMoney(walletBalance, snapshot?.wallet?.currencyCode || 'MAD', locale),
@@ -1013,6 +1350,58 @@ const AccountOverview = () => {
     to: '/account/revenue',
     ctaLabel: tr('Open wallet', 'Ouvrir le portefeuille'),
   }), [walletBalance, snapshot?.wallet?.currencyCode, locale, tr]);
+
+  const snapshotEntryCards = useMemo(() => {
+    const shouldShowListings = isOwnerWorkspace || effectiveOwnerVehicleCount > 0;
+    const shouldShowRequests = !isOwnerWorkspace || openCustomerRequests.length > 0;
+    const cards = [];
+
+    if (shouldShowListings) {
+      cards.push({
+        key: 'listings',
+        eyebrow: tr('Listings', 'Annonces'),
+        entry: listingsEntry,
+      });
+    }
+
+    if (shouldShowRequests) {
+      cards.push({
+        key: 'vehicle-requests',
+        eyebrow: tr('Vehicle requests', 'Demandes véhicule'),
+        entry: vehicleRequestsEntry,
+      });
+    }
+
+    cards.push(
+      {
+        key: 'inbox',
+        eyebrow: tr('Inbox', 'Inbox'),
+        entry: inboxEntry,
+      },
+      {
+        key: 'trips',
+        eyebrow: tr('Trips', 'Parcours'),
+        entry: tripsEntry,
+      },
+      {
+        key: 'wallet',
+        eyebrow: tr('Wallet', 'Portefeuille'),
+        entry: walletEntry,
+      }
+    );
+
+    return cards;
+  }, [
+    effectiveOwnerVehicleCount,
+    inboxEntry,
+    isOwnerWorkspace,
+    listingsEntry,
+    openCustomerRequests.length,
+    tripsEntry,
+    tr,
+    vehicleRequestsEntry,
+    walletEntry,
+  ]);
 
   const listingProgressSummary = useMemo(() => {
     if (!isOwnerWorkspace) {
@@ -1022,33 +1411,43 @@ const AccountOverview = () => {
     const listingDetailsComplete = Boolean(String(primaryOwnerVehicle?.listingTitle || '').trim());
     const listingPricingComplete = Boolean(ownerVehiclePricingReady && hasVehicleDeposit(primaryOwnerVehicle));
     const pickupSetupComplete = Boolean(String(primaryOwnerVehicle?.pickupLocationName || primaryOwnerVehicle?.pickupAddress || '').trim());
+    const effectiveOwnerVerificationReady = Boolean(ownerVerificationReady || listingHasPassedAdminReview);
+    const effectiveVehicleHasDraft = Boolean(ownerVehicleHasDraft || listingHasPassedAdminReview);
+    const effectiveVehicleMediaReady = Boolean(ownerVehicleMediaReady || listingHasPassedAdminReview);
+    const effectiveVehicleDocumentsReady = Boolean(marketplaceVerificationReady || listingHasPassedAdminReview);
+    const effectiveListingDetailsComplete = Boolean(listingDetailsComplete || listingHasPassedAdminReview);
+    const effectiveListingPricingComplete = Boolean(listingPricingComplete || listingHasPassedAdminReview);
+    const effectivePickupSetupComplete = Boolean(pickupSetupComplete || listingHasPassedAdminReview);
     const canSendFullReview = Boolean(
-      ownerVerificationReady &&
-      ownerVehicleHasDraft &&
-      ownerVehicleMediaReady &&
-      marketplaceVerificationReady &&
-      listingDetailsComplete &&
-      listingPricingComplete &&
-      pickupSetupComplete
+      listingHasPassedAdminReview ||
+      (
+        ownerVerificationReady &&
+        ownerVehicleHasDraft &&
+        ownerVehicleMediaReady &&
+        marketplaceVerificationReady &&
+        listingDetailsComplete &&
+        listingPricingComplete &&
+        pickupSetupComplete
+      )
     );
 
     return buildOwnerListingSetupProgress({
       tr,
       vehicleId: primaryOwnerVehicle?.id || '',
       currentPath,
-      ownerVerificationReady,
-      ownerVerificationPending: hasPendingVerificationReview,
-      ownerVerificationIssue: hasRejectedVerification,
-      vehicleHasDraft: ownerVehicleHasDraft,
-      vehicleBasicsComplete: ownerVehicleHasDraft,
-      vehiclePhotosComplete: ownerVehicleMediaReady,
-      vehicleDocumentsComplete: marketplaceVerificationReady,
-      vehicleDocumentsPending: vehicleVerificationStage === 'pending',
-      vehicleDocumentsIssue: vehicleVerificationStage === 'issue',
-      listingDetailsComplete,
-      listingPricingComplete,
-      pickupSetupComplete,
-      listingReviewSubmitted: primaryOwnerJourneyState === 'pending_review',
+      ownerVerificationReady: effectiveOwnerVerificationReady,
+      ownerVerificationPending: !listingHasPassedAdminReview && hasPendingVerificationReview,
+      ownerVerificationIssue: !listingHasPassedAdminReview && hasRejectedVerification,
+      vehicleHasDraft: effectiveVehicleHasDraft,
+      vehicleBasicsComplete: effectiveVehicleHasDraft,
+      vehiclePhotosComplete: effectiveVehicleMediaReady,
+      vehicleDocumentsComplete: effectiveVehicleDocumentsReady,
+      vehicleDocumentsPending: !listingHasPassedAdminReview && vehicleVerificationStage === 'pending',
+      vehicleDocumentsIssue: !listingHasPassedAdminReview && vehicleVerificationStage === 'issue',
+      listingDetailsComplete: effectiveListingDetailsComplete,
+      listingPricingComplete: effectiveListingPricingComplete,
+      pickupSetupComplete: effectivePickupSetupComplete,
+      listingReviewSubmitted: primaryOwnerJourneyState === 'pending_review' || listingHasPassedAdminReview,
       listingApproved: primaryOwnerJourneyState === 'approved',
       listingLive: primaryOwnerJourneyState === 'live',
       listingIssue: ['changes_requested', 'rejected'].includes(primaryOwnerJourneyState),
@@ -1059,6 +1458,7 @@ const AccountOverview = () => {
     hasPendingVerificationReview,
     hasRejectedVerification,
     isOwnerWorkspace,
+    listingHasPassedAdminReview,
     marketplaceVerificationReady,
     ownerVehicleHasDraft,
     ownerVehicleMediaReady,
@@ -1118,6 +1518,18 @@ const AccountOverview = () => {
     );
   }, [isOwnerWorkspace, primaryOwnerJourneyState, primaryOwnerVehicle?.id, primaryOwnerVehicle?.listingId]);
 
+  useEffect(() => {
+    if (!isOwnerWorkspace || !nextOwnerExecutionRequest?.action?.href) {
+      return;
+    }
+
+    if (!String(nextOwnerExecutionRequest.action.href).includes('/account/operations/')) {
+      return;
+    }
+
+    void preloadOwnerOperationsRoute();
+  }, [isOwnerWorkspace, nextOwnerExecutionRequest?.action?.href]);
+
   const trackNextActionSelection = (source, action = nextBestAction) => {
     const actionKind = getAccountJourneyActionKind(action);
     trackAccountJourneyEvent(ACCOUNT_JOURNEY_EVENTS.nextActionClicked, {
@@ -1142,6 +1554,9 @@ const AccountOverview = () => {
     'open_trust_center',
     'open_listings',
   ].includes(nextActionKind);
+  const shouldSuppressListingProgressForOwnerExecution = isOwnerWorkspace && hasActiveOwnerExecution;
+  const showHeroPrimaryAction = !hasActiveOwnerExecution;
+  const showNextStepSection = !hasActiveOwnerExecution && !shouldMergeOwnerNextStepIntoProgress;
 
   const trackTrustCenterSelection = (source) => {
     trackAccountJourneyEvent(ACCOUNT_JOURNEY_EVENTS.trustCenterOpened, {
@@ -1172,7 +1587,18 @@ const AccountOverview = () => {
         aside={
           <div className="flex flex-col items-start gap-3 sm:items-end">
             <div className="flex flex-wrap gap-2">
-              <StatusChip label={identityStatus.label} tone={identityStatus.tone} />
+              {identityStatusDisplay.actionable ? (
+                <Link
+                  to="/account/verification"
+                  state={{ from: currentPath }}
+                  onClick={() => trackTrustCenterSelection('home_hero_status_chip')}
+                  className="transition hover:translate-y-[-1px]"
+                >
+                  <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} className="cursor-pointer" />
+                </Link>
+              ) : (
+                <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} />
+              )}
               {isOwnerWorkspace && effectiveOwnerVehicleCount > 0 ? (
                 <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
                   {getOwnerJourneyLabel(primaryOwnerJourneyState, tr)}
@@ -1180,15 +1606,32 @@ const AccountOverview = () => {
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Link
-                to={nextBestAction.to}
-                state={nextBestAction.state}
-                onClick={() => trackNextActionSelection('home_hero_primary')}
-                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
-              >
-                <span>{nextBestAction.ctaLabel}</span>
-                <ArrowRight className="h-4 w-4" />
-              </Link>
+              {showHeroPrimaryAction && nextBestAction.disabled ? (
+                <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-300 px-4 py-3 text-sm font-semibold text-white opacity-80">
+                  <span>{nextBestAction.ctaLabel}</span>
+                  <ArrowRight className="h-4 w-4" />
+                </div>
+              ) : showHeroPrimaryAction ? (
+                <Link
+                  to={nextBestAction.to}
+                  state={nextBestAction.state}
+                  onClick={() => trackNextActionSelection('home_hero_primary')}
+                  onMouseEnter={() => {
+                    if (String(nextBestAction.to || '').includes('/account/operations/')) {
+                      void preloadOwnerOperationsRoute();
+                    }
+                  }}
+                  onFocus={() => {
+                    if (String(nextBestAction.to || '').includes('/account/operations/')) {
+                      void preloadOwnerOperationsRoute();
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
+                >
+                  <span>{nextBestAction.ctaLabel}</span>
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+              ) : null}
               <Link
                 to={heroSecondaryAction.to}
                 state={heroSecondaryAction.state}
@@ -1201,7 +1644,37 @@ const AccountOverview = () => {
         }
       />
 
-      {!shouldMergeOwnerNextStepIntoProgress ? (
+      {reviewSignals.length ? (
+        <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+          <AccountWorkspaceSectionHeader
+            title={tr('Review status', 'Statut des validations')}
+            titleClassName="text-base font-bold text-slate-950"
+          />
+          <div className="mt-4 space-y-3">
+            {reviewSignals.map((signal) => (
+              <ActionItem
+                key={signal.key}
+                label={signal.label}
+                detail={signal.detail}
+                to={signal.to}
+                state={signal.state}
+                onClick={() => {
+                  if (signal.key === 'account_verification') {
+                    trackTrustCenterSelection('home_review_status');
+                    return;
+                  }
+                  trackNextActionSelection('home_review_status', signal);
+                }}
+                icon={signal.icon}
+                tone={signal.tone}
+                emphasis={signal.key === 'account_verification'}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {showNextStepSection ? (
         <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
           <AccountWorkspaceSectionHeader
             title={tr('Next step', 'Prochaine étape')}
@@ -1213,6 +1686,7 @@ const AccountOverview = () => {
               detail={nextBestAction.detail}
               to={nextBestAction.to}
               state={nextBestAction.state}
+              disabled={nextBestAction.disabled}
               onClick={() => trackNextActionSelection('home_next_step_card')}
               icon={nextBestAction.icon}
               tone={nextBestAction.tone}
@@ -1222,48 +1696,97 @@ const AccountOverview = () => {
         </section>
       ) : null}
 
+      {isOwnerWorkspace && nextOwnerExecutionRequest?.action ? (
+        <section className="rounded-[1.6rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_100%)] px-5 py-4 shadow-[0_16px_40px_rgba(91,33,182,0.08)]">
+          <AccountWorkspaceSectionHeader
+            title={tr('Rental operations', 'Opérations de location')}
+            description={tr(
+              'Use Home as the main place to start and finish owner-side rental operations.',
+              "Utilisez l'accueil comme surface principale pour démarrer et terminer les opérations côté propriétaire."
+            )}
+            titleClassName="text-base font-bold text-slate-950"
+          />
+          <div className="mt-4 rounded-[1.45rem] border border-violet-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(91,33,182,0.08)]">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
+                  {tr('Ready now', 'Prête maintenant')}
+                </p>
+                <h3 className="mt-2 text-xl font-black tracking-[-0.03em] text-slate-950">
+                  {nextOwnerExecutionRequest.action.title}
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  {[
+                    nextOwnerExecutionRequest.request?.customerName,
+                    nextOwnerExecutionRequest.request?.listingTitle,
+                    formatDateTime(
+                      nextOwnerExecutionRequest.request?.requestedStartAt
+                        ? new Date(nextOwnerExecutionRequest.request.requestedStartAt)
+                        : null,
+                      locale === 'fr' ? 'fr-MA' : 'en-MA'
+                    ),
+                  ].filter(Boolean).join(' • ')}
+                </p>
+                <p className="mt-3 text-sm leading-6 text-slate-600">
+                  {nextOwnerExecutionRequest.action.detail}
+                </p>
+              </div>
+              <Link
+                to={nextOwnerExecutionRequest.action.href}
+                state={{
+                  from: currentPath,
+                  ownerOperationRequest: nextOwnerExecutionRequest.request,
+                }}
+                onClick={() => {
+                  try {
+                    if (nextOwnerExecutionRequest.request?.id) {
+                      window.sessionStorage.setItem(
+                        `driveout_owner_operation_request:${String(nextOwnerExecutionRequest.request.id)}`,
+                        JSON.stringify(nextOwnerExecutionRequest.request)
+                      );
+                    }
+                  } catch {
+                    // Navigation still works without the warm route snapshot.
+                  }
+                  trackNextActionSelection('home_rental_operations', {
+                    ...nextOwnerExecutionRequest.action,
+                    to: nextOwnerExecutionRequest.action.href,
+                  });
+                }}
+                onMouseEnter={() => void preloadOwnerOperationsRoute()}
+                onFocus={() => void preloadOwnerOperationsRoute()}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px] lg:min-w-[220px]"
+              >
+                <CalendarClock className="h-4 w-4" />
+                <span>{nextOwnerExecutionRequest.action.ctaLabel}</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
         <AccountWorkspaceSectionHeader
           title={tr('Workspace snapshot', "Vue d'ensemble")}
           titleClassName="text-base font-bold text-slate-950"
         />
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <ProfileEntryCard
-            to={listingsEntry.to}
-            state={{ from: currentPath }}
-            eyebrow={tr('Listings', 'Annonces')}
-            value={listingsEntry.value}
-            label={listingsEntry.label}
-            ctaLabel={listingsEntry.ctaLabel}
-          />
-          <ProfileEntryCard
-            to={inboxEntry.to}
-            state={{ from: currentPath }}
-            eyebrow={tr('Inbox', 'Inbox')}
-            value={inboxEntry.value}
-            label={inboxEntry.label}
-            ctaLabel={inboxEntry.ctaLabel}
-          />
-          <ProfileEntryCard
-            to={tripsEntry.to}
-            state={{ from: currentPath }}
-            eyebrow={tr('Trips', 'Parcours')}
-            value={tripsEntry.value}
-            label={tripsEntry.label}
-            ctaLabel={tripsEntry.ctaLabel}
-          />
-          <ProfileEntryCard
-            to={walletEntry.to}
-            state={{ from: currentPath }}
-            eyebrow={tr('Wallet', 'Portefeuille')}
-            value={walletEntry.value}
-            label={walletEntry.label}
-            ctaLabel={walletEntry.ctaLabel}
-          />
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
+          {snapshotEntryCards.map((card) => (
+            <ProfileEntryCard
+              key={card.key}
+              to={card.entry.to}
+              state={{ from: currentPath }}
+              eyebrow={card.eyebrow}
+              value={card.entry.value}
+              label={card.entry.label}
+              ctaLabel={card.entry.ctaLabel}
+            />
+          ))}
         </div>
       </section>
 
-      {isOwnerWorkspace && listingProgressSummary ? (
+      {isOwnerWorkspace && listingProgressSummary && !shouldSuppressListingProgressForOwnerExecution ? (
         <OwnerListingSetupGuide
           progress={listingProgressSummary}
           tr={tr}
@@ -1275,29 +1798,6 @@ const AccountOverview = () => {
             })
           }
         />
-      ) : null}
-
-      {isOwnerWorkspace && !ownerVerificationReady ? (
-        <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-          <AccountWorkspaceSectionHeader
-            title={tr('Verification support', 'Aide vérification')}
-            titleClassName="text-base font-bold text-slate-950"
-          />
-          <div className="mt-4">
-            <ActionItem
-              label={hasPendingVerificationReview ? tr('Verification in review', 'Vérification en revue') : tr('Verification needed before review', 'Vérification requise avant la revue')}
-              detail={tr(
-                'You can keep building the listing now. Verification becomes the real blocker only before review and publication.',
-                "Vous pouvez continuer à construire l'annonce maintenant. La vérification ne devient un vrai blocage qu'avant la revue et la publication."
-              )}
-              to="/account/verification"
-              state={{ from: currentPath }}
-              onClick={() => trackTrustCenterSelection('home_verification_support')}
-              icon={ShieldCheck}
-              tone={hasRejectedVerification ? 'rose' : hasPendingVerificationReview ? 'amber' : 'violet'}
-            />
-          </div>
-        </section>
       ) : null}
 
       {supportUnreadCount > 0 || (notificationPreferences.customerMessages && customerUnreadCount > 0) ? (

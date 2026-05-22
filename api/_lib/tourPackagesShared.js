@@ -10,13 +10,12 @@ import {
   resolveTenantTenancyMode,
   runPlatformTenantSelectWithModeFallback,
 } from './tenantRegistry.js';
+import { getTenantSlugFromHostname, normalizeHostname } from './tenantHostResolution.js';
 
 export const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
 export const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
 export const VEHICLE_MODELS_TABLE = 'app_4c3a7a6153_vehicle_models';
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
-const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
-const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
 const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 
 const safeJsonParse = (value) => {
@@ -48,25 +47,6 @@ const appendMarkedJson = (text, marker, payload) => {
   const cleanedText = stripMarkedJson(text, marker);
   const serialized = `${marker}${JSON.stringify(payload)}`;
   return cleanedText ? `${cleanedText}\n\n${serialized}` : serialized;
-};
-
-const normalizeHostname = (value = '') => {
-  const trimmed = String(value || '').trim().toLowerCase();
-  if (!trimmed) return '';
-
-  try {
-    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
-  } catch {
-    return trimmed.split('/')[0].split(':')[0].toLowerCase();
-  }
-};
-
-const getTenantSlugFromHostname = (hostname = '') => {
-  const normalizedHostname = normalizeHostname(hostname);
-  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
-
-  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
-  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
 };
 
 const normalizeUrl = (value = '') => {

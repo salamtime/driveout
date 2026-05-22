@@ -7,6 +7,8 @@ export const parseAmountDueResolutionMeta = (rentalLike = {}) => {
 
   try {
     const parsed = JSON.parse(rawReason);
+    if (parsed?.type === 'billing_correction') return null;
+
     const paymentReceivedNow = Math.max(0, Number(parsed?.paymentReceivedNow || 0) || 0);
     const companyDiscount = Math.max(0, Number(parsed?.companyDiscount || 0) || 0);
     const previousAmount = Math.max(0, Number(rentalLike?.amount_due_override_previous_amount || 0) || 0);
@@ -112,6 +114,19 @@ export const getRentalCollectedAmount = (rentalLike = {}) => {
 
 export const getRentalCustomerPaidAmount = (rentalLike = {}) => {
   return getRentalCustomerPaidEntries(rentalLike).reduce((sum, entry) => sum + entry.amount, 0);
+};
+
+export const getRentalCustomerPaidAmountInWindow = (rentalLike = {}, start = null, end = null) => {
+  const windowStart = toValidDate(start);
+  const windowEnd = toValidDate(end);
+  if (!windowStart || !windowEnd) {
+    return getRentalCustomerPaidAmount(rentalLike);
+  }
+
+  return getRentalCustomerPaidEntries(rentalLike).reduce((sum, entry) => {
+    if (!entry?.at) return sum;
+    return entry.at >= windowStart && entry.at <= windowEnd ? sum + entry.amount : sum;
+  }, 0);
 };
 
 export const getRentalCollectedAmountInWindow = (rentalLike = {}, start = null, end = null) => {

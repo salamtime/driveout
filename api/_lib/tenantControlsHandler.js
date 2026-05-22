@@ -66,7 +66,7 @@ const sanitizeTenantSettings = (settings = {}) => {
     normalized.telegram_enabled = source.telegram_enabled;
   }
 
-  ['telegram_bot_token', 'telegram_chat_ids', 'telegram_base_url'].forEach((key) => {
+  ['telegram_bot_token', 'telegram_chat_ids', 'telegram_website_reservation_chat_ids', 'telegram_base_url'].forEach((key) => {
     if (source[key] == null) return;
     normalized[key] = String(source[key]).trim();
   });
@@ -76,26 +76,40 @@ const sanitizeTenantSettings = (settings = {}) => {
     normalized.telegram_overdue_repeat_minutes = overdueRepeatMinutes;
   }
 
-  if (source.telegram_event_types && typeof source.telegram_event_types === 'object') {
-    const allowedTelegramEvents = [
-      'rental_created',
-      'website_reservation_created',
-      'rental_started',
-      'rental_vehicle_assigned',
-      'rental_vehicle_replaced',
-      'rental_completed',
-      'payment_received',
-      'rental_overdue',
-      'rental_cancelled',
-      'deposit_returned',
-      'rental_extension_requested',
-      'rental_price_change_requested',
-    ];
+  const allowedTelegramEvents = [
+    'rental_created',
+    'website_reservation_created',
+    'rental_started',
+    'rental_vehicle_assigned',
+    'rental_vehicle_replaced',
+    'rental_completed',
+    'payment_received',
+    'rental_overdue',
+    'rental_cancelled',
+    'deposit_returned',
+    'rental_extension_requested',
+    'rental_price_change_requested',
+  ];
 
+  if (source.telegram_event_types && typeof source.telegram_event_types === 'object') {
     normalized.telegram_event_types = allowedTelegramEvents.reduce((acc, key) => {
       if (typeof source.telegram_event_types[key] === 'boolean') {
         acc[key] = source.telegram_event_types[key];
       }
+      return acc;
+    }, {});
+  }
+
+  if (source.telegram_delivery_routes && typeof source.telegram_delivery_routes === 'object') {
+    normalized.telegram_delivery_routes = allowedTelegramEvents.reduce((acc, key) => {
+      const route = source.telegram_delivery_routes[key];
+      if (!route || typeof route !== 'object' || Array.isArray(route)) return acc;
+
+      acc[key] = {
+        workspace: route.workspace === true,
+        website: route.website === true,
+        personal: route.personal === true,
+      };
       return acc;
     }, {});
   }

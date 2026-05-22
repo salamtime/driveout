@@ -140,10 +140,15 @@ const CustomerAnalysisTabV2 = ({
 
   if (loading || dataLoading) {
     return (
-      <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+      <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-16 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-          <div className="text-5xl leading-none animate-pulse">⏳</div>
+          <div className="rounded-2xl bg-violet-50 p-3">
+            <Users className="h-6 w-6 animate-pulse text-violet-700" />
+          </div>
           <h3 className="text-xl font-semibold text-slate-900">{tr('Loading customer finance...', 'Chargement de la finance client...')}</h3>
+          <p className="text-sm text-slate-500">
+            {tr('We are preparing customer money profiles and contract timelines for the current filters.', 'Nous préparons les profils financiers clients et les chronologies de contrats pour les filtres actuels.')}
+          </p>
         </div>
       </div>
     );
@@ -151,14 +156,19 @@ const CustomerAnalysisTabV2 = ({
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[2rem] border border-violet-100/80 bg-white p-5 shadow-[0_20px_55px_rgba(76,29,149,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Customer Finance', 'Finance client')}</p>
-            <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Customer money profiles and contract timelines', 'Profils financiers client et chronologies contrat')}</h3>
-            <p className="mt-2 max-w-3xl text-sm text-slate-600">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+              <Users className="h-6 w-6 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Customer Finance', 'Finance client')}</p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Customer money profiles and contract timelines', 'Profils financiers client et chronologies contrat')}</h3>
+              <p className="mt-2 max-w-3xl text-sm text-slate-500">
               {tr('See what each customer has paid, what is still due, how much security is still pending, and the money story of every linked contract.', 'Voyez ce que chaque client a payé, ce qui reste dû, quelle garantie reste à recevoir, et l’histoire financière de chaque contrat lié.')}
-            </p>
+              </p>
+            </div>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">

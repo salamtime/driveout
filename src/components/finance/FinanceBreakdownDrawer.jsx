@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, ExternalLink, Calendar, Receipt, Wrench, Fuel, Package, Car, AlertCircle } from 'lucide-react';
+import { X, ExternalLink, Calendar, Receipt, Wrench, Fuel, Package, Car, AlertCircle, Loader2 } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
 import i18n from '../../i18n';
 
@@ -72,6 +72,10 @@ const buildOutgoingSections = (rows = []) => {
     .filter((section) => section.rows.length > 0);
 };
 
+const getOutgoingSectionTotal = (sections, key) => (
+  sections.find((section) => section.key === key)?.total || 0
+);
+
 const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpenSource }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -101,26 +105,28 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
 
   const shouldGroupOutgoing = ['outgoing', 'expenses'].includes(String(breakdownType || ''));
   const outgoingSections = shouldGroupOutgoing ? buildOutgoingSections(data?.rows || []) : [];
+  const manualExpenseTotal = getOutgoingSectionTotal(outgoingSections, 'manual_expenses');
+  const fuelExpenseTotal = getOutgoingSectionTotal(outgoingSections, 'fuel_costs');
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="h-full w-full max-w-2xl overflow-y-auto border-l border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.18)]"
+        className="h-full w-full max-w-full overflow-y-auto border-l border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.18)] sm:max-w-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-6 py-5 backdrop-blur">
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur sm:px-6 sm:py-5">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
                 {tr('Finance Breakdown', 'Détail finance')}
               </p>
-              <h2 className="mt-2 truncate text-xl font-semibold text-slate-900">{data?.title || tr('Finance Breakdown', 'Détail finance')}</h2>
+              <h2 className="mt-2 break-words text-xl font-semibold text-slate-900">{data?.title || tr('Finance Breakdown', 'Détail finance')}</h2>
               <p className="mt-1 text-sm text-slate-500">{data?.period || `${filters.startDate} – ${filters.endDate}`}</p>
             </div>
 
             <div className="flex shrink-0 items-start gap-3">
               {data && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-right">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-right sm:px-4 sm:py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Total', 'Total')}</p>
                   <p className="mt-1 text-lg font-bold text-slate-900">
                     {financeApiV2.formatCompactDisplay(data.total)} MAD
@@ -134,11 +140,13 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
           </div>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="space-y-6 p-4 sm:p-6">
           {loading && (
             <div className="rounded-[1.75rem] border border-slate-200 bg-white px-6 py-14 text-center shadow-sm">
               <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-                <div className="text-5xl leading-none animate-pulse">⏳</div>
+                <div className="rounded-2xl bg-violet-50 p-3 text-violet-700 shadow-sm">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                </div>
                 <h3 className="text-lg font-semibold text-slate-900">
                   {tr('Loading finance breakdown...', 'Chargement du détail finance...')}
                 </h3>
@@ -154,6 +162,27 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
 
           {!loading && !error && data && (
             <>
+              {shouldGroupOutgoing && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Manual expenses', 'Dépenses manuelles')}
+                    </p>
+                    <p className="mt-1 text-xl font-bold text-slate-900">
+                      {financeApiV2.formatCompactDisplay(manualExpenseTotal)} MAD
+                    </p>
+                  </div>
+                  <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Fuel expenses', 'Dépenses carburant')}
+                    </p>
+                    <p className="mt-1 text-xl font-bold text-slate-900">
+                      {financeApiV2.formatCompactDisplay(fuelExpenseTotal)} MAD
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3">
                 <p className="text-sm font-semibold text-slate-700">
                   {data.rows.length} {tr(data.rows.length === 1 ? 'entry' : 'entries', data.rows.length === 1 ? 'ligne' : 'lignes')}

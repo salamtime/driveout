@@ -150,7 +150,7 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
 
   return (
     <div className="space-y-5">
-      <section className="rounded-[24px] border border-slate-200 bg-slate-50/70 p-4">
+      <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Expenses', 'Dépenses')}</p>
@@ -187,15 +187,15 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
       </section>
 
       {loading ? (
-        <div className="rounded-[24px] border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-500 shadow-sm">
+        <div className="rounded-[28px] border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-500 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <Loader2 className="mx-auto h-5 w-5 animate-spin text-violet-600" />
         </div>
       ) : error ? (
-        <div className="rounded-[24px] border border-rose-200 bg-rose-50 px-5 py-6 text-sm text-rose-700 shadow-sm">
+        <div className="rounded-[28px] border border-rose-200 bg-rose-50 px-5 py-6 text-sm text-rose-700 shadow-[0_18px_42px_rgba(244,63,94,0.08)]">
           {error}
         </div>
       ) : entries.length === 0 ? (
-        <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-5 py-10 text-center shadow-sm">
+        <div className="rounded-[28px] border border-dashed border-slate-200 bg-white px-5 py-10 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <p className="text-base font-semibold text-slate-900">{tr('No expenses yet', 'Aucune dépense pour le moment')}</p>
           <p className="mt-2 text-sm text-slate-500">{tr('Use Add Expense to log the first purchase.', 'Utilisez Ajouter une dépense pour enregistrer le premier achat.')}</p>
         </div>
@@ -256,7 +256,7 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
                     ) : null}
                   </div>
 
-                  <div className="grid gap-2 text-sm text-slate-500 sm:grid-cols-3 lg:min-w-[360px]">
+                  <div className="grid gap-2 text-sm text-slate-500 sm:grid-cols-2 xl:min-w-[360px] xl:grid-cols-3">
                     <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-3">
                       <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                         <CalendarDays className="h-3.5 w-3.5" />

@@ -10,11 +10,19 @@ const normalizePackageDisplayPrice = (amount) => {
 };
 
 export const isHalfDayPackage = (pkg) =>
-  /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
+  (() => {
+    const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+    if (explicitUnits > 0 && explicitUnits !== 4) return false;
+    return /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
+  })();
 
 export const isHalfHourPackage = (pkg) =>
-  /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
-  /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
+  (() => {
+    const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+    if (explicitUnits > 0 && explicitUnits !== 0.5) return false;
+    return /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
+      /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
+  })();
 
 const getPackageDurationRank = (pkg) => {
   if (isHalfHourPackage(pkg)) return 4;
@@ -23,12 +31,41 @@ const getPackageDurationRank = (pkg) => {
   return 1;
 };
 
-const getSelectedDurationForPackage = (pkg, fallbackDurationUnits = 1) =>
-  isHalfHourPackage(pkg)
-    ? 0.5
-    : isHalfDayPackage(pkg)
-      ? 4
-      : Math.max(1, Number(pkg?.durationUnits || fallbackDurationUnits || 1) || 1);
+export const getPackageDurationUnits = (pkg, fallbackDurationUnits = 1) => {
+  const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) return explicitUnits;
+  if (isHalfHourPackage(pkg)) return 0.5;
+  if (isHalfDayPackage(pkg)) return 4;
+  return Math.max(1, Number(fallbackDurationUnits || 1) || 1);
+};
+
+export const packageMatchesDuration = (pkg, requestedDurationUnits = 1) =>
+  packageMatchesRentalDuration(pkg, requestedDurationUnits, 'hourly');
+
+const isBaseHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => {
+  const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+  return Number(requestedDurationUnits || 1) === 2 && explicitUnits === 1 && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg);
+};
+
+const getEffectivePackageDurationUnits = (pkg, fallbackDurationUnits = 1, rentalType = 'hourly') => {
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)) return 2;
+  return getPackageDurationUnits(pkg, fallbackDurationUnits);
+};
+
+export const packageMatchesRentalDuration = (pkg, requestedDurationUnits = 1, rentalType = 'hourly') => {
+  const requestedUnits = Number(requestedDurationUnits || 1) || 1;
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, requestedUnits)) return true;
+  return Math.abs(getPackageDurationUnits(pkg, requestedUnits) - requestedUnits) < 0.001;
+};
+
+const isFlexibleHourlyPackage = (pkg) => {
+  const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+  return (!Number.isFinite(explicitUnits) || explicitUnits <= 0) && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg);
+};
+
+const isFlexibleHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => {
+  return isFlexibleHourlyPackage(pkg) || isBaseHourlyPackageForDuration(pkg, requestedDurationUnits);
+};
 
 const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnits = 1) => {
   const basePackagePrice = Number(pkg?.fixedAmount || 0);
@@ -37,33 +74,41 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnit
     return normalizePackageDisplayPrice(basePackagePrice);
   }
 
-  const duration = getSelectedDurationForPackage(pkg, fallbackDurationUnits);
+  const duration = getEffectivePackageDurationUnits(pkg, fallbackDurationUnits, rentalType);
 
   if (pkg?.kind === 'unlimited') {
     if (basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice * duration);
+      return normalizePackageDisplayPrice(basePackagePrice);
     }
 
     const fallbackUnitPrice = rentalType === 'daily'
       ? Number(listing?.dailyPrice || 0)
       : Number(listing?.hourlyPrice || 0);
 
-    return fallbackUnitPrice > 0 ? normalizePackageDisplayPrice(fallbackUnitPrice * duration) : 0;
+    return fallbackUnitPrice > 0 ? normalizePackageDisplayPrice(fallbackUnitPrice) : 0;
   }
 
-  return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice * duration) : 0;
+  if (rentalType === 'hourly' && isFlexibleHourlyPackageForDuration(pkg, duration)) {
+    const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
+    return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
+  }
+
+  return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
 };
 
-export const getDefaultInstantBookingPackage = (listing, rentalType = 'hourly') => {
+export const getDefaultInstantBookingPackage = (listing, rentalType = 'hourly', selectedDurationUnits = 1) => {
   const packages = Array.isArray(listing?.packageCatalog?.[rentalType]) ? listing.packageCatalog[rentalType] : [];
   if (!packages.length) return null;
+  const requestedDurationUnits = Number(selectedDurationUnits || 1) || 1;
+  const durationScopedPackages = packages.filter((pkg) => packageMatchesRentalDuration(pkg, requestedDurationUnits, rentalType));
+  const scopedPackages = durationScopedPackages.length > 0 ? durationScopedPackages : packages;
 
-  const sortedPackages = [...packages].sort((left, right) => {
+  const sortedPackages = [...scopedPackages].sort((left, right) => {
     const rankDiff = getPackageDurationRank(left) - getPackageDurationRank(right);
     if (rankDiff !== 0) return rankDiff;
 
-    const durationDiff = getSelectedDurationForPackage(left, rentalType === 'daily' ? 1 : 1)
-      - getSelectedDurationForPackage(right, rentalType === 'daily' ? 1 : 1);
+    const durationDiff = getEffectivePackageDurationUnits(left, requestedDurationUnits, rentalType)
+      - getEffectivePackageDurationUnits(right, requestedDurationUnits, rentalType);
     if (durationDiff !== 0) return durationDiff;
 
     const kmDiff = Number(left?.includedKilometers || 0) - Number(right?.includedKilometers || 0);
@@ -79,17 +124,22 @@ export const buildInstantBookingHref = (listing, options = {}) => {
   if (!listing?.id) return '/rent';
 
   const rentalType = options.rentalType || 'hourly';
-  const selectedPackage = options.packageOverride || getDefaultInstantBookingPackage(listing, rentalType);
+  const requestedDurationUnits = Number(options.selectedDurationUnits || 1) || 1;
+  const selectedPackage = options.packageOverride || getDefaultInstantBookingPackage(listing, rentalType, requestedDurationUnits);
   const next = new URLSearchParams();
 
   next.set('rentalType', rentalType);
 
   if (selectedPackage) {
     next.set('packageId', String(selectedPackage.id || ''));
-    next.set('packageName', formatRentalPackageAllowanceLabel(selectedPackage, { rentalType }));
-    next.set('packageAmount', String(getEffectivePackagePrice(listing, selectedPackage, rentalType)));
+    const selectedDuration = getEffectivePackageDurationUnits(selectedPackage, requestedDurationUnits, rentalType);
+    const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(selectedPackage, selectedDuration)
+      ? { ...selectedPackage, durationUnits: selectedDuration, duration_units: selectedDuration }
+      : selectedPackage;
+    next.set('packageName', formatRentalPackageAllowanceLabel(displayPackage, { rentalType, fallbackDurationUnits: selectedDuration }));
+    next.set('packageAmount', String(getEffectivePackagePrice(listing, selectedPackage, rentalType, requestedDurationUnits)));
     next.set('packageKind', String(selectedPackage.kind || ''));
-    next.set('durationUnits', String(getSelectedDurationForPackage(selectedPackage)));
+    next.set('durationUnits', String(selectedDuration));
 
     if (selectedPackage.includedKilometers) {
       next.set('includedKilometers', String(selectedPackage.includedKilometers));

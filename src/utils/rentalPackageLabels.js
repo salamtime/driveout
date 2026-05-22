@@ -23,11 +23,14 @@ const getIncludedKilometers = (pkg) => {
 };
 
 const getPackageDurationUnits = (pkg, fallbackDurationUnits = 1) => {
+  const explicitUnits = normalizeNumber(pkg?.durationUnits ?? pkg?.duration_units);
+  if (explicitUnits > 0) return explicitUnits;
+
   const rawName = String(pkg?.name || '').toLowerCase();
   if (/half[\s-]?hour/.test(rawName) || /30[\s-]?(min|minute|minutes)/.test(rawName)) return 0.5;
   if (/half[\s-]?day/.test(rawName) || /demi[\s-]?journ/.test(rawName)) return 4;
 
-  const units = normalizeNumber(pkg?.durationUnits ?? pkg?.duration_units ?? fallbackDurationUnits);
+  const units = normalizeNumber(fallbackDurationUnits);
   return units > 0 ? units : 1;
 };
 

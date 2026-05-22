@@ -181,9 +181,23 @@ export const canEditRentalPriceWithoutApproval = (user) => {
   return canEditRentalPrice(user);
 };
 
+export const canAdjustRentalBalance = (user) => {
+  const userProfile = user || getCurrentUser();
+
+  return (
+    canEditRentalPrice(userProfile) ||
+    canRecordReceiveFunds(userProfile)
+  );
+};
+
 export const canRequestRentalPriceChange = (user) => {
   const userProfile = user || getCurrentUser();
-  return canEditRentalPrice(userProfile) || hasPermission('Rental Management', userProfile);
+  return (
+    canEditRentalPrice(userProfile) ||
+    hasPermission('Request Price Change', userProfile) ||
+    hasPermission('Request Rental Price Change', userProfile) ||
+    hasPermission('Request Rental Price Approval', userProfile)
+  );
 };
 
 export const canEditRentalContract = (user) => {
@@ -194,6 +208,17 @@ export const canEditRentalContract = (user) => {
   }
 
   return hasPermission('Edit Rental Contract', userProfile);
+};
+
+export const canEditRentalSecurityDeposit = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (role === 'owner' || role === 'admin') {
+    return true;
+  }
+
+  return hasPermission('Edit Rental Security Deposit', userProfile);
 };
 
 export const canEditExtensionPrice = (user) => {

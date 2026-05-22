@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   CheckCircle2,
   CreditCard,
   FileBadge,
   Loader2,
+  ShieldCheck,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 import {
@@ -17,9 +20,11 @@ import {
 } from '../../components/account/accountWorkspaceDesignSystem';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import VerificationUploadField from '../../components/verification/VerificationUploadField';
+import { supabase } from '../../lib/supabase';
 import VerificationService from '../../services/VerificationService';
 import MessageService from '../../services/MessageService';
 import { resolveReturnPath } from '../../utils/navigationReturn';
+import { getVerificationTypeLabel } from '../../utils/verificationStatus';
 
 const REQUIRED_TYPES = ['driver_license', 'profile_id'];
 const VERIFICATION_SUMMARY_TIMEOUT_MS = 8000;
@@ -211,6 +216,12 @@ const AccountVerification = () => {
   const [verificationLoading, setVerificationLoading] = useState(true);
   const [verificationError, setVerificationError] = useState('');
   const [verificationSummary, setVerificationSummary] = useState(null);
+  const driverLicenseFieldRef = useRef(null);
+  const identityFieldRef = useRef(null);
+  const [documentUiState, setDocumentUiState] = useState({
+    driver_license: { hasPendingReview: false, hasDocument: false, isBusy: false },
+    profile_id: { hasPendingReview: false, hasDocument: false, isBusy: false },
+  });
 
   const hasFullName = Boolean(userProfile?.fullName || user?.user_metadata?.full_name);
   const hasEmail = Boolean(user?.email || userProfile?.email);
@@ -315,6 +326,83 @@ const AccountVerification = () => {
     };
   }, [loadVerification, user?.id, userProfile?.verificationStatus, verificationSummary?.status]);
 
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    const translate = (en, fr) => (isFrench ? fr : en);
+
+    const scheduleRealtimeRefresh = () => {
+      if (realtimeReloadTimerRef.current) {
+        window.clearTimeout(realtimeReloadTimerRef.current);
+      }
+
+      realtimeReloadTimerRef.current = window.setTimeout(() => {
+        void loadVerification({ silent: true, forceRefresh: true });
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel(`account-verification-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'verification_requests',
+          filter: `owner_user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          const nextRecord = payload?.new || null;
+          const previousRecord = payload?.old || null;
+          const entityType = String(nextRecord?.entity_type || previousRecord?.entity_type || '').trim().toLowerCase();
+          if (entityType && entityType !== 'user') return;
+
+          const nextStatus = String(nextRecord?.status || '').trim().toLowerCase();
+          const previousStatus = String(previousRecord?.status || '').trim().toLowerCase();
+          const documentType = String(
+            nextRecord?.verification_type ||
+            previousRecord?.verification_type ||
+            'profile_id'
+          ).trim().toLowerCase();
+          const documentLabel = getVerificationTypeLabel(documentType, isFrench ? 'fr' : 'en');
+
+          if (payload?.eventType === 'UPDATE' && nextStatus && nextStatus !== previousStatus) {
+            if (nextStatus === 'approved') {
+              toast.success(
+                translate(`${documentLabel} approved.`, `${documentLabel} approuvé.`),
+                { duration: 5000 }
+              );
+            } else if (['rejected', 'suspended', 'expired'].includes(nextStatus)) {
+              toast(
+                translate(
+                  `${documentLabel} needs updates.`,
+                  `${documentLabel} nécessite des corrections.`
+                ),
+                {
+                  duration: 5000,
+                  icon: '⚠️',
+                }
+              );
+            }
+          }
+
+          scheduleRealtimeRefresh();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (realtimeReloadTimerRef.current) {
+        window.clearTimeout(realtimeReloadTimerRef.current);
+        realtimeReloadTimerRef.current = null;
+      }
+      try {
+        supabase.removeChannel(channel);
+      } catch {
+        // Ignore realtime cleanup failures.
+      }
+    };
+  }, [isFrench, loadVerification, user?.id]);
+
   const latestByType = useMemo(() => getLatestByType(verificationRequests), [verificationRequests]);
   const effectiveVerificationStatus = String(
     verificationSummary?.status ||
@@ -359,6 +447,7 @@ const AccountVerification = () => {
   const isVerificationComplete = documentState.account.tone === 'success';
   const verificationResumeHandledRef = useRef(false);
   const highlightedDocumentRef = useRef('');
+  const realtimeReloadTimerRef = useRef(null);
   const resumeBookingFlow = location.state?.resumeBookingFlow === 'marketplace_request';
   const verificationReturnPath = typeof location.state?.from === 'string' ? location.state.from : '';
   const verificationReturnLabel = typeof location.state?.fromLabel === 'string' ? location.state.fromLabel : '';
@@ -410,6 +499,175 @@ const AccountVerification = () => {
         };
   }, [isVerificationComplete, resumeBookingFlow, tr]);
 
+  const handleDocumentUiStateChange = useCallback((type, nextState) => {
+    setDocumentUiState((current) => {
+      const previous = current[type] || {};
+      if (
+        previous.hasPendingReview === nextState.hasPendingReview &&
+        previous.hasDocument === nextState.hasDocument &&
+        previous.isBusy === nextState.isBusy &&
+        previous.status === nextState.status
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [type]: nextState,
+      };
+    });
+  }, []);
+
+  const verificationDocumentProgressCount = useMemo(() => {
+    const driverReady = Boolean(
+      documentUiState.driver_license?.hasDocument ||
+      latestByType?.driver_license ||
+      hasDriverLicense
+    );
+    const identityReady = Boolean(
+      documentUiState.profile_id?.hasDocument ||
+      latestByType?.profile_id ||
+      hasIdentityDoc
+    );
+    return [driverReady, identityReady].filter(Boolean).length;
+  }, [
+    documentUiState.driver_license?.hasDocument,
+    documentUiState.profile_id?.hasDocument,
+    latestByType,
+    hasDriverLicense,
+    hasIdentityDoc,
+  ]);
+
+  const pendingReviewTypes = useMemo(
+    () =>
+      REQUIRED_TYPES.filter((type) => Boolean(documentUiState[type]?.hasPendingReview)),
+    [documentUiState]
+  );
+
+  const nextVerificationDocumentType = useMemo(() => {
+    if (needsLicenseReplacement) return 'driver_license';
+    if (needsIdentityReplacement) return 'profile_id';
+    if (!documentUiState.driver_license?.hasDocument && !latestByType?.driver_license && !hasDriverLicense) {
+      return 'driver_license';
+    }
+    if (!documentUiState.profile_id?.hasDocument && !latestByType?.profile_id && !hasIdentityDoc) {
+      return 'profile_id';
+    }
+    return '';
+  }, [
+    needsLicenseReplacement,
+    needsIdentityReplacement,
+    documentUiState.driver_license?.hasDocument,
+    documentUiState.profile_id?.hasDocument,
+    latestByType,
+    hasDriverLicense,
+    hasIdentityDoc,
+  ]);
+
+  const verificationFooterPrimaryBusy = Boolean(
+    documentUiState.driver_license?.isBusy ||
+    documentUiState.profile_id?.isBusy
+  );
+
+  const hasBothRequiredDocuments = verificationDocumentProgressCount >= REQUIRED_TYPES.length;
+
+  const verificationFooterState = useMemo(() => {
+    if (pendingReviewTypes.length && hasBothRequiredDocuments) {
+      return {
+        title: tr('Review the scanned details', 'Vérifiez les détails scannés'),
+        detail:
+          pendingReviewTypes.length > 1
+            ? tr(
+                'Confirm both documents below, then submit them together for one review request.',
+                'Confirmez les deux documents ci-dessous, puis envoyez-les ensemble dans une seule demande de vérification.'
+              )
+            : tr(
+                'Confirm the highlighted fields, then submit the document for review.',
+                'Confirmez les champs mis en avant, puis envoyez le document en vérification.'
+              ),
+        ctaLabel: tr('Submit for review', 'Envoyer pour vérification'),
+        mode: 'submit',
+      };
+    }
+
+    if (nextVerificationDocumentType) {
+      return {
+        title: tr('Upload both required documents', 'Téléversez les 2 documents requis'),
+        detail: tr('Add your driver license and your ID or passport to unlock booking verification.', 'Ajoutez votre permis et votre pièce ou passeport pour débloquer la vérification.'),
+        ctaLabel: tr('Continue verification', 'Continuer la vérification'),
+        mode: 'focus',
+      };
+    }
+
+    if (pendingReviewTypes.length) {
+      return {
+        title: tr('Upload both required documents', 'Téléversez les 2 documents requis'),
+        detail: tr(
+          'Add your driver license and your ID or passport before sending the review request.',
+          'Ajoutez votre permis et votre pièce ou passeport avant d’envoyer la demande de vérification.'
+        ),
+        ctaLabel: tr('Continue verification', 'Continuer la vérification'),
+        mode: 'focus',
+      };
+    }
+
+    if (pendingCount > 0) {
+      return {
+        title: tr('Documents submitted', 'Documents envoyés'),
+        detail: tr(
+          'Both verification documents are now waiting in admin review. You can follow updates in Inbox.',
+          'Les deux documents de vérification sont maintenant en attente de revue admin. Vous pouvez suivre les mises à jour dans Inbox.'
+        ),
+        ctaLabel: tr('Open Inbox', 'Ouvrir Inbox'),
+        mode: 'inbox',
+      };
+    }
+
+    return {
+      title: tr('Verification in progress', 'Vérification en cours'),
+      detail: tr('Keep going below to finish the trust setup.', 'Continuez ci-dessous pour terminer la configuration confiance.'),
+      ctaLabel: tr('Continue', 'Continuer'),
+      mode: 'focus',
+    };
+  }, [hasBothRequiredDocuments, nextVerificationDocumentType, pendingCount, pendingReviewTypes.length, tr]);
+
+  const handleVerificationFooterPrimary = useCallback(async () => {
+    if (verificationFooterPrimaryBusy) return;
+
+    if (verificationFooterState.mode === 'submit') {
+      const orderedPendingRefs = pendingReviewTypes.map((type) =>
+        type === 'driver_license' ? driverLicenseFieldRef : identityFieldRef
+      );
+      orderedPendingRefs[0]?.current?.focus?.();
+
+      for (const targetRef of orderedPendingRefs) {
+        await targetRef.current?.submitPendingReview?.();
+      }
+
+      await loadVerification({ silent: true, forceRefresh: true });
+      return;
+    }
+
+    if (verificationFooterState.mode === 'inbox') {
+      navigate(verificationThreadKey ? `${defaultInboxPath}?threadKey=${encodeURIComponent(verificationThreadKey)}` : defaultInboxPath);
+      return;
+    }
+
+    const focusTarget = nextVerificationDocumentType === 'profile_id'
+      ? identityFieldRef
+      : driverLicenseFieldRef;
+    focusTarget.current?.focus?.();
+  }, [
+    loadVerification,
+    verificationFooterPrimaryBusy,
+    verificationFooterState.mode,
+    nextVerificationDocumentType,
+    pendingReviewTypes,
+    navigate,
+    verificationThreadKey,
+    defaultInboxPath,
+  ]);
+
   useEffect(() => {
     if (!isVerificationComplete || !resumeBookingFlow || !verificationReturnPath || verificationResumeHandledRef.current) {
       return undefined;
@@ -450,7 +708,7 @@ const AccountVerification = () => {
   }, [focusedDocumentType, verificationLoading]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-40">
       <AccountWorkspaceHero
         eyebrow={verificationHero.eyebrow}
         title={verificationHero.title}
@@ -631,7 +889,7 @@ const AccountVerification = () => {
         </>
       ) : (
         <section className={`${workspacePanelClass} sm:px-6`}>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 space-y-4">
             {latestRejection ? (
               <div className={`${workspaceInsetPanelClass} border-rose-100 bg-rose-50`}>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-600">{tr('Action required', 'Action requise')}</p>
@@ -645,17 +903,29 @@ const AccountVerification = () => {
                 ) : null}
               </div>
             ) : pendingCount > 0 ? (
-              <div className={`${workspaceInsetPanelClass} border-amber-100 bg-amber-50`}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">{tr('Under review', 'En revue')}</p>
-                <p className="mt-2 text-sm text-amber-800">
-                  {tr('Admin is reviewing your documents. Replace one below if needed.', 'L’admin vérifie vos documents. Remplacez-en un ci-dessous si besoin.')}
-                </p>
+              <div className="flex items-center justify-between gap-3 rounded-[1.45rem] border border-amber-100 bg-amber-50 p-4 text-amber-900 shadow-[0_16px_34px_rgba(79,70,229,0.14)]">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="mt-0.5 inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-white/90 shadow-[0_10px_22px_rgba(79,70,229,0.16)]">
+                    <ShieldCheck className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">
+                      {tr('Verification is waiting for admin review', "La vérification attend la revue de l'admin")}
+                    </p>
+                    <p className="mt-1 text-sm opacity-80">
+                      {tr(
+                        'Admin is reviewing your documents now. You can replace one below if needed.',
+                        "L'admin vérifie vos documents maintenant. Vous pouvez en remplacer un ci-dessous si besoin."
+                      )}
+                    </p>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className={`${workspaceInsetPanelClass} border-violet-100 bg-violet-50`}>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('What to do now', 'Que faire maintenant')}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Verification guide', 'Guide de vérification')}</p>
                 <p className="mt-2 text-sm text-violet-900">
-                  {tr('Upload the 2 required documents below. You can complete them in any order.', 'Téléversez les 2 documents requis ci-dessous. Vous pouvez les faire dans n’importe quel ordre.')}
+                  {tr('Add your driver license and your ID or passport below. Each document stays in one clean card, and the footer tracks your progress.', 'Ajoutez votre permis et votre pièce ou passeport ci-dessous. Chaque document reste dans une seule carte claire et le pied de page suit votre progression.')}
                 </p>
               </div>
             )}
@@ -665,16 +935,6 @@ const AccountVerification = () => {
                 {tr('Loading your verification file…', 'Chargement de votre dossier de vérification…')}
               </div>
             ) : null}
-            <div className="px-1">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                {pendingCount > 0 ? tr('Documents', 'Documents') : tr('Required documents', 'Documents requis')}
-              </p>
-              <p className="mt-1 text-sm text-slate-600">
-                {pendingCount > 0
-                  ? tr('Review, scan, or replace below.', 'Consultez, scannez ou remplacez ci-dessous.')
-                  : tr('Upload or scan below.', 'Téléversez ou scannez ci-dessous.')}
-              </p>
-            </div>
             <div id="verification-driver-license" className={`${workspaceInsetPanelClass} bg-white`}>
               <div className="mb-3 flex items-center gap-3">
                 <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
@@ -682,9 +942,11 @@ const AccountVerification = () => {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-bold text-slate-950">{tr('Driver license', 'Permis de conduire')}</p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">{tr('Upload once, then remove with the X if you need to replace it.', 'Téléversez une seule fois, puis utilisez le X si vous devez le remplacer.')}</p>
                 </div>
               </div>
               <VerificationUploadField
+                ref={driverLicenseFieldRef}
                 entityType="user"
                 entityId={user?.id}
                 ownerUserId={user?.id}
@@ -696,6 +958,9 @@ const AccountVerification = () => {
                 currentProfile={userProfile}
                 onUploaded={loadVerification}
                 showStatusBadge
+                embedded
+                footerManagedReview
+                onStateChange={(state) => handleDocumentUiStateChange('driver_license', state)}
               />
             </div>
 
@@ -706,9 +971,11 @@ const AccountVerification = () => {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-bold text-slate-950">{tr('ID / Passport', 'Pièce / passeport')}</p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">{tr('Use the same clean review flow for passport or national ID.', 'Utilisez le même flux clair pour le passeport ou la pièce nationale.')}</p>
                 </div>
               </div>
               <VerificationUploadField
+                ref={identityFieldRef}
                 entityType="user"
                 entityId={user?.id}
                 ownerUserId={user?.id}
@@ -720,11 +987,55 @@ const AccountVerification = () => {
                 currentProfile={userProfile}
                 onUploaded={loadVerification}
                 showStatusBadge
+                embedded
+                footerManagedReview
+                onStateChange={(state) => handleDocumentUiStateChange('profile_id', state)}
               />
             </div>
           </div>
         </section>
       )}
+
+      {!isVerificationComplete && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[95] px-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:px-6">
+              <div className="pointer-events-auto mx-auto w-full max-w-5xl rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
+                    <div className="truncate">
+                      {tr('Verification progress', 'Progression vérification')} · {verificationDocumentProgressCount}/{REQUIRED_TYPES.length}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs font-medium leading-5 text-slate-500">
+                      {verificationFooterState.title} · {verificationFooterState.detail}
+                    </p>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-violet-100">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 transition-[width] duration-300"
+                        style={{ width: `${(verificationDocumentProgressCount / REQUIRED_TYPES.length) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-violet-50 px-3 py-2 text-xs font-black text-violet-700">
+                    {verificationDocumentProgressCount}/{REQUIRED_TYPES.length}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleVerificationFooterPrimary()}
+                  disabled={verificationFooterPrimaryBusy}
+                  className="flex min-h-[68px] w-full items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white shadow-[0_14px_30px_rgba(109,40,217,0.24)] transition-colors duration-150 hover:bg-violet-800 disabled:opacity-60"
+                >
+                  {verificationFooterPrimaryBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  <span>{verificationFooterState.ctaLabel}</span>
+                </button>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 };

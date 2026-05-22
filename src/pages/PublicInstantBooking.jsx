@@ -10,6 +10,10 @@ import PublicCatalogService from '../services/PublicCatalogService';
 import PublicBookingService from '../services/PublicBookingService';
 import VerificationService from '../services/VerificationService';
 import { fetchSystemSettings } from '../services/systemSettingsApi';
+import {
+  addConfiguredRentalDuration,
+  normalizeDailyReturnPolicy,
+} from '../utils/dailyReturnPolicy';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
 
 const CERTIFIED_BADGE_SRC = '/images/certified-badge.png';
@@ -37,20 +41,6 @@ const composeLocalDateTime = (dateValue, timeValue) => {
   if (!dateValue || !timeValue) return null;
   const localDate = new Date(`${dateValue}T${timeValue}:00`);
   return Number.isNaN(localDate.getTime()) ? null : localDate;
-};
-
-const addReservationDuration = (startDate, durationUnits, rentalType) => {
-  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) return null;
-  const endDate = new Date(startDate);
-  const safeDuration = Math.max(rentalType === 'hourly' ? 0.5 : 1, Number(durationUnits || 1));
-
-  if (rentalType === 'daily') {
-    endDate.setDate(endDate.getDate() + safeDuration);
-  } else {
-    endDate.setMinutes(endDate.getMinutes() + safeDuration * 60);
-  }
-
-  return endDate;
 };
 
 const formatReservationWindow = (date, locale = 'en-GB') => {
@@ -100,6 +90,7 @@ const PublicInstantBooking = () => {
   const [licenseStatusMessage, setLicenseStatusMessage] = useState('');
   const [success, setSuccess] = useState(null);
   const [ownerWhatsAppNumber, setOwnerWhatsAppNumber] = useState('');
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
   const [showCertifiedInfo, setShowCertifiedInfo] = useState(false);
   const [showSummaryDetails, setShowSummaryDetails] = useState(false);
   const [showLicenseSection, setShowLicenseSection] = useState(false);
@@ -240,20 +231,33 @@ const PublicInstantBooking = () => {
   );
 
   const reservationEndDate = useMemo(
-    () => addReservationDuration(reservationStartDate, selectedPackage.durationUnits || 1, rentalType),
-    [reservationStartDate, selectedPackage.durationUnits, rentalType]
+    () => addConfiguredRentalDuration(
+      reservationStartDate,
+      selectedPackage.durationUnits || 1,
+      rentalType,
+      dailyReturnPolicy
+    ),
+    [dailyReturnPolicy, reservationStartDate, selectedPackage.durationUnits, rentalType]
   );
 
   const reservationDurationHelper = useMemo(() => {
     const units = Math.max(rentalType === 'hourly' ? 0.5 : 1, Number(selectedPackage.durationUnits || 1));
     if (rentalType === 'daily') {
-      if (units === 1) return tr('This is a 24-hour rental.', "C'est une location de 24 heures.");
-      return tr(`This is a ${units}-day rental.`, `C'est une location de ${units} jours.`);
+      if (units === 1) {
+        return tr(
+          `Return is fixed for the next day at ${dailyReturnPolicy.dailyReturnFixedTime}.`,
+          `Le retour est fixé au lendemain à ${dailyReturnPolicy.dailyReturnFixedTime}.`
+        );
+      }
+      return tr(
+        `${units}-day booking returns at ${dailyReturnPolicy.dailyReturnFixedTime} on the final day.`,
+        `Une location de ${units} jours revient à ${dailyReturnPolicy.dailyReturnFixedTime} le dernier jour.`
+      );
     }
     if (units === 0.5) return tr('This is a 30-minute rental.', "C'est une location de 30 minutes.");
     if (units === 1) return tr('This is a 1-hour rental.', "C'est une location d'1 heure.");
     return tr(`This is a ${units}-hour rental.`, `C'est une location de ${units} heures.`);
-  }, [rentalType, selectedPackage.durationUnits, isFrench]);
+  }, [dailyReturnPolicy.dailyReturnFixedTime, rentalType, selectedPackage.durationUnits, isFrench]);
 
   const compactDurationLabel = useMemo(() => {
     const units = Math.max(rentalType === 'hourly' ? 0.5 : 1, Number(selectedPackage.durationUnits || 1));
@@ -349,9 +353,11 @@ const PublicInstantBooking = () => {
         const settings = await fetchSystemSettings();
         if (!active) return;
         setOwnerWhatsAppNumber(settings?.companyPhone || '');
+        setDailyReturnPolicy(normalizeDailyReturnPolicy(settings));
       } catch {
         if (!active) return;
         setOwnerWhatsAppNumber('');
+        setDailyReturnPolicy(normalizeDailyReturnPolicy());
       }
     };
 

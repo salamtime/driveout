@@ -58,6 +58,8 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
   const [success, setSuccess] = useState(null);
   const [existingRequest, setExistingRequest] = useState(null);
   const [verificationSummary, setVerificationSummary] = useState(null);
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [existingRequestLoading, setExistingRequestLoading] = useState(false);
   const [accountSnapshot, setAccountSnapshot] = useState(null);
   const [form, setForm] = useState({
     customerName: userProfile?.fullName || user?.user_metadata?.full_name || '',
@@ -84,7 +86,10 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
   const verificationStatus = String(
     verificationSummary?.status || getVerificationStatus(userProfile, user)
   ).trim().toLowerCase();
-  const isVerifiedAccount = Boolean(user?.id) && ['approved', 'verified'].includes(verificationStatus);
+  const isVerifiedAccount = Boolean(user?.id) && (
+    verificationSummary?.complete === true ||
+    ['approved', 'verified'].includes(verificationStatus)
+  );
 
   useEffect(() => {
     let active = true;
@@ -122,10 +127,12 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
     const loadVerificationSummary = async () => {
       if (!user?.id) {
         setVerificationSummary(null);
+        setVerificationLoading(false);
         return;
       }
 
       try {
+        setVerificationLoading(true);
         const result = await VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true });
         if (active) {
           setVerificationSummary(result?.summary || null);
@@ -133,6 +140,10 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
       } catch {
         if (active) {
           setVerificationSummary(null);
+        }
+      } finally {
+        if (active) {
+          setVerificationLoading(false);
         }
       }
     };
@@ -178,17 +189,26 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
     const loadExistingRequest = async () => {
       if (!user?.id || !listing?.id || isOwnerViewingOwnListing) {
         setExistingRequest(null);
+        setExistingRequestLoading(false);
         return;
       }
 
       try {
-        const result = await PublicBookingService.getExistingMarketplaceRequest(listing.id);
+        setExistingRequestLoading(true);
+        const result = await PublicBookingService.getExistingMarketplaceRequest(
+          listing?.sourceId || listing?.id,
+          listing?.id
+        );
         if (active) {
           setExistingRequest(result || null);
         }
       } catch {
         if (active) {
           setExistingRequest(null);
+        }
+      } finally {
+        if (active) {
+          setExistingRequestLoading(false);
         }
       }
     };
@@ -459,6 +479,7 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
   const existingRequestHref = existingRequest?.id
     ? `/account/messages?requestId=${encodeURIComponent(String(existingRequest.id))}`
     : '';
+  const isResolvingBookingAccess = Boolean(user?.id && !isOwnerViewingOwnListing && (verificationLoading || existingRequestLoading));
 
   if (loading) {
     return (
@@ -604,7 +625,7 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-6">
-                {!isVerifiedAccount ? (
+                {!isVerifiedAccount && !isResolvingBookingAccess ? (
                   <div className="rounded-[28px] border border-violet-200 bg-violet-50 p-6">
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-600">Verification required</p>
                     <h3 className="text-2xl font-semibold text-violet-950">Verify your account to request this vehicle</h3>
@@ -722,8 +743,14 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Request type</p>
                     <p className="mt-2 text-xl font-semibold text-slate-900">Marketplace review flow</p>
                   </div>
-                  <button type="submit" disabled={saving || Boolean(walletPreflightHelper)} className="rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">
-                    {saving ? 'Sending request...' : isVerifiedAccount ? 'Request booking' : 'Complete verification'}
+                  <button type="submit" disabled={saving || Boolean(walletPreflightHelper) || isResolvingBookingAccess} className="rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">
+                    {saving
+                      ? 'Sending request...'
+                      : isResolvingBookingAccess
+                        ? 'Checking your booking access...'
+                        : isVerifiedAccount
+                          ? 'Request booking'
+                          : 'Complete verification'}
                   </button>
                 </div>
               </form>

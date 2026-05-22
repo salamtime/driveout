@@ -16,13 +16,35 @@ import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels'
 import { resolveReturnPath } from '../utils/navigationReturn';
 import { markMarketplaceListingRequested } from '../utils/marketplaceRequestCache';
 
-const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
-const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
-const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'driveout_owner_vehicle_ids';
+const OWNER_STORAGE_LEGACY_KEYS = Object.freeze({
+  [LAST_OWNER_VEHICLE_ID_KEY]: 'saharax_last_owner_vehicle_id',
+  [LAST_OWNER_VEHICLE_COUNT_KEY]: 'saharax_last_owner_vehicle_count',
+  [OWNER_VEHICLE_IDS_KEY]: 'saharax_owner_vehicle_ids',
+});
 
 const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   const normalizedUserId = String(userId || '').trim();
   return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const buildOwnerVehicleStorageKeys = (baseKey, userId = '') => {
+  const primaryKey = buildOwnerVehicleStorageKey(baseKey, userId);
+  const legacyBaseKey = OWNER_STORAGE_LEGACY_KEYS[baseKey];
+  const legacyKey = legacyBaseKey ? buildOwnerVehicleStorageKey(legacyBaseKey, userId) : null;
+  return [primaryKey, legacyKey].filter(Boolean);
+};
+
+const readOwnerVehicleStorageValue = (baseKey, userId = '', fallbackValue = null) => {
+  if (typeof window === 'undefined') return fallbackValue;
+  const storageKeys = buildOwnerVehicleStorageKeys(baseKey, userId);
+  for (const storageKey of storageKeys) {
+    const nextValue = window.localStorage.getItem(storageKey);
+    if (nextValue !== null) return nextValue;
+  }
+  return fallbackValue;
 };
 
 const getKnownOwnerVehicleCount = (userId = '') => {
@@ -30,15 +52,15 @@ const getKnownOwnerVehicleCount = (userId = '') => {
 
   try {
     const savedCount = Number.parseInt(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_COUNT_KEY, userId, '0') || '0',
       10
     );
     const savedIds = JSON.parse(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+      readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]'
     );
     const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
     const hasLastVehicle = Boolean(
-      String(window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId)) || '').trim()
+      String(readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_ID_KEY, userId, '') || '').trim()
     );
     return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount, hasLastVehicle ? 1 : 0);
   } catch {
@@ -76,26 +98,93 @@ const normalizePackageDisplayPrice = (amount) => {
   return lastDigit === 9 ? rounded : rounded + (9 - lastDigit);
 };
 
-const isHalfDayPackage = (pkg) => /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
-const isHalfHourPackage = (pkg) =>
-  /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
-  /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
+const getExplicitDurationUnits = (pkg) => Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
 
-const getPackageDisplayName = (pkg, rentalType) => formatRentalPackageAllowanceLabel(pkg, { rentalType });
-
-const getPrimaryHourlyPackages = (packages = []) => {
-  const standard = packages.filter((pkg) => !isHalfHourPackage(pkg) && pkg?.kind !== 'unlimited');
-  return standard.slice(0, 3);
+const isHalfDayPackage = (pkg) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (explicitUnits > 0 && explicitUnits !== 4) return false;
+  return /half[\s-]?day/i.test(String(pkg?.name || '')) || /demi[\s-]?journ/i.test(String(pkg?.name || ''));
 };
 
-const getPrimaryDailyPackages = (packages = []) => {
-  const limited = packages.filter((pkg) => pkg?.kind !== 'unlimited');
-  return limited.slice(0, 3);
+const isHalfHourPackage = (pkg) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (explicitUnits > 0 && explicitUnits !== 0.5) return false;
+  return /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
+    /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
 };
 
-const getHiddenHourlyPackages = (packages = [], primary = []) => {
+const getPackageDurationUnits = (pkg, fallbackDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) return explicitUnits;
+  if (isHalfHourPackage(pkg)) return 0.5;
+  if (isHalfDayPackage(pkg)) return 4;
+  return Math.max(1, Number(fallbackDurationUnits || 1) || 1);
+};
+
+const isBaseHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  return Number(requestedDurationUnits || 1) === 2 && explicitUnits === 1 && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg);
+};
+
+const getEffectivePackageDurationUnits = (pkg, fallbackDurationUnits = 1, rentalType = 'hourly') => {
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)) return 2;
+  return getPackageDurationUnits(pkg, fallbackDurationUnits);
+};
+
+const packageMatchesDuration = (pkg, requestedDurationUnits = 1, rentalType = 'hourly') => {
+  const requestedUnits = Number(requestedDurationUnits || 1) || 1;
+  if (rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, requestedUnits)) return true;
+  return Math.abs(getPackageDurationUnits(pkg, requestedUnits) - requestedUnits) < 0.001;
+};
+
+const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  return (
+    ((!Number.isFinite(explicitUnits) || explicitUnits <= 0) && !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg)) ||
+    isBaseHourlyPackageForDuration(pkg, requestedDurationUnits)
+  );
+};
+
+const getDurationOptionsForPackages = (packages = [], rentalType = 'hourly') => {
+  const sortedOptions = Array.from(
+    new Set(
+      [
+        ...packages.map((pkg) => getPackageDurationUnits(pkg, rentalType === 'hourly' ? 1 : 1)),
+        ...(rentalType === 'hourly' ? [2] : []),
+      ]
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  ).sort((left, right) => left - right);
+
+  if (sortedOptions.length > 0) return sortedOptions;
+  return rentalType === 'hourly' ? [1] : [1];
+};
+
+const getPackageDisplayName = (pkg, rentalType, fallbackDurationUnits = 1) => {
+  const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)
+    ? { ...pkg, durationUnits: fallbackDurationUnits, duration_units: fallbackDurationUnits }
+    : pkg;
+  return formatRentalPackageAllowanceLabel(displayPackage, { rentalType, fallbackDurationUnits });
+};
+
+const getPrimaryHourlyPackages = (packages = [], selectedDurationUnits = 1) => {
+  const scopedPackages = packages.filter((pkg) => packageMatchesDuration(pkg, selectedDurationUnits, 'hourly'));
+  const standardPackages = scopedPackages.filter((pkg) => pkg?.kind !== 'unlimited');
+  const preferredPackages = standardPackages.length > 0 ? standardPackages : scopedPackages;
+  return preferredPackages.slice(0, 3);
+};
+
+const getPrimaryDailyPackages = (packages = [], selectedDurationUnits = 1) => {
+  const scopedPackages = packages.filter((pkg) => packageMatchesDuration(pkg, selectedDurationUnits, 'daily'));
+  const limitedPackages = scopedPackages.filter((pkg) => pkg?.kind !== 'unlimited');
+  const preferredPackages = limitedPackages.length > 0 ? limitedPackages : scopedPackages;
+  return preferredPackages.slice(0, 3);
+};
+
+const getHiddenHourlyPackages = (packages = [], primary = [], selectedDurationUnits = 1) => {
+  const scopedPackages = packages.filter((pkg) => packageMatchesDuration(pkg, selectedDurationUnits, 'hourly'));
   const primaryIds = new Set(primary.map((pkg) => String(pkg.id)));
-  return packages.filter((pkg) => !primaryIds.has(String(pkg.id)));
+  return scopedPackages.filter((pkg) => !primaryIds.has(String(pkg.id)));
 };
 
 const getPackageBadgeLabel = (pkg) => {
@@ -105,12 +194,8 @@ const getPackageBadgeLabel = (pkg) => {
   return null;
 };
 
-const getSelectedDurationForPackage = (pkg, selectedDurationUnits) =>
-  isHalfHourPackage(pkg)
-    ? 0.5
-    : isHalfDayPackage(pkg)
-      ? 4
-      : Math.max(1, Number(selectedDurationUnits || pkg?.durationUnits || 1) || 1);
+const getSelectedDurationForPackage = (pkg, selectedDurationUnits, rentalType = 'hourly') =>
+  getEffectivePackageDurationUnits(pkg, selectedDurationUnits, rentalType);
 
 const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnits, durationUnitPrices) => {
   const basePackagePrice = Number(pkg?.fixedAmount || 0);
@@ -119,11 +204,11 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
     return normalizePackageDisplayPrice(basePackagePrice);
   }
 
-  const duration = getSelectedDurationForPackage(pkg, selectedDurationUnits);
+  const duration = getSelectedDurationForPackage(pkg, selectedDurationUnits, rentalType);
 
   if (pkg?.kind === 'unlimited') {
     if (basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice * duration);
+      return normalizePackageDisplayPrice(basePackagePrice);
     }
 
     const unitPrice = Number(durationUnitPrices?.[String(listing.id)]?.[duration] || 0);
@@ -131,20 +216,21 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
       ? Number(listing?.dailyPrice || 0)
       : Number(listing?.hourlyPrice || 0);
     const resolvedUnitPrice = unitPrice > 0 ? unitPrice : fallbackUnitPrice;
-    return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice * duration) : 0;
+    return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice) : 0;
   }
 
-  return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice * duration) : 0;
+  if (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration)) {
+    const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
+    return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
+  }
+
+  return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
 };
 
 const getDisplayedIncludedKilometers = (pkg, selectedDurationUnits) => {
   if (pkg?.kind === 'unlimited') return 'Unlimited KM';
 
   const baseKilometers = Number(pkg?.includedKilometers || 0);
-  if (!isHalfDayPackage(pkg) && !isHalfHourPackage(pkg)) {
-    return `${baseKilometers * getSelectedDurationForPackage(pkg, selectedDurationUnits)} km`;
-  }
-
   return `${baseKilometers} km`;
 };
 
@@ -365,6 +451,9 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
       setError('');
 
       try {
+        if (!isMarketplacePage) {
+          PublicCatalogService.clearCache();
+        }
         const nextCatalog = await PublicCatalogService.getCatalog(filters);
         if (!active) return;
         setCatalog(nextCatalog);
@@ -383,7 +472,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     return () => {
       active = false;
     };
-  }, [filters]);
+  }, [filters, isMarketplacePage]);
 
   const setFilter = (key, value) => {
     const next = new URLSearchParams(searchParams);
@@ -523,9 +612,9 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     return visibleListings.map((listing) => {
       const activePackages = Array.isArray(listing?.packageCatalog?.[rentalType]) ? listing.packageCatalog[rentalType] : [];
       const primaryPackages = rentalType === 'hourly'
-        ? getPrimaryHourlyPackages(activePackages)
-        : getPrimaryDailyPackages(activePackages);
-      const hiddenPackages = getHiddenHourlyPackages(activePackages, primaryPackages);
+        ? getPrimaryHourlyPackages(activePackages, selectedDurationUnits)
+        : getPrimaryDailyPackages(activePackages, selectedDurationUnits);
+      const hiddenPackages = getHiddenHourlyPackages(activePackages, primaryPackages, selectedDurationUnits);
       return {
         ...listing,
         activePackages,
@@ -533,7 +622,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
         hiddenPackages,
       };
     });
-  }, [isMarketplacePage, rentalType, visibleListings]);
+  }, [isMarketplacePage, rentalType, selectedDurationUnits, visibleListings]);
 
   useEffect(() => {
     if (isMarketplacePage || qrVehicleSections.length === 0) {
@@ -553,6 +642,13 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     () => qrVehicleSections.find((section) => String(section.id) === String(selectedVehicleId)) || qrVehicleSections[0] || null,
     [qrVehicleSections, selectedVehicleId]
   );
+
+  const durationOptions = useMemo(() => {
+    const sourcePackages = Array.isArray(activeVehicle?.activePackages) && activeVehicle.activePackages.length > 0
+      ? activeVehicle.activePackages
+      : qrVehicleSections.flatMap((section) => section.activePackages || []);
+    return getDurationOptionsForPackages(sourcePackages, rentalType);
+  }, [activeVehicle?.activePackages, qrVehicleSections, rentalType]);
 
   const selectedVehicle = useMemo(
     () => qrVehicleSections.find((section) => String(section.id) === String(selectedChoice?.listingId)) || null,
@@ -630,13 +726,17 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     const matchingPackage = matchingVehicle.activePackages.find((pkg) => String(pkg.id) === String(selectedChoice.packageId));
     if (!matchingPackage) return;
 
-    const shouldBeHalfHour = selectedDurationUnits === 0.5;
-    const isSelectedHalfHour = isHalfHourPackage(matchingPackage);
-
-    if (shouldBeHalfHour !== isSelectedHalfHour) {
+    if (!packageMatchesDuration(matchingPackage, selectedDurationUnits, rentalType)) {
       setSelectedChoice(null);
     }
   }, [qrVehicleSections, rentalType, selectedChoice, selectedDurationUnits]);
+
+  useEffect(() => {
+    if (!durationOptions.length) return;
+    if (durationOptions.includes(Number(selectedDurationUnits || 1))) return;
+    setSelectedDurationUnits(durationOptions[0]);
+    setSelectedChoice(null);
+  }, [durationOptions, selectedDurationUnits]);
 
   const marketplaceCityOptions = useMemo(
     () => ['all', ...catalog.filters.cities.filter(Boolean)],
@@ -706,10 +806,10 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     const next = new URLSearchParams();
     next.set('rentalType', rentalType);
     next.set('packageId', selectedPackage.id);
-    next.set('packageName', getPackageDisplayName(selectedPackage, rentalType));
+    next.set('packageName', getPackageDisplayName(selectedPackage, rentalType, getSelectedDurationForPackage(selectedPackage, selectedDurationUnits, rentalType)));
     next.set('packageAmount', String(getEffectivePackagePrice(selectedVehicle, selectedPackage, rentalType, selectedDurationUnits, durationUnitPrices)));
     next.set('packageKind', selectedPackage.kind || '');
-    next.set('durationUnits', String(getSelectedDurationForPackage(selectedPackage, selectedDurationUnits)));
+    next.set('durationUnits', String(getSelectedDurationForPackage(selectedPackage, selectedDurationUnits, rentalType)));
     if (selectedVehicle.location?.city) {
       next.set('city', selectedVehicle.location.city);
     }
@@ -863,6 +963,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                           onClick={() => {
                             setRentalType(option.value);
                             setSelectedDurationUnits(1);
+                            setSelectedChoice(null);
                           }}
                           className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                             rentalType === option.value
@@ -875,13 +976,16 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                       ))}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {(rentalType === 'hourly' ? [0.5, 1, 2, 3] : [1, 2, 3]).map((units) => {
+                      {durationOptions.map((units) => {
                         const selected = selectedDurationUnits === units;
                         return (
                           <button
                             key={`${rentalType}-${units}`}
                             type="button"
-                            onClick={() => setSelectedDurationUnits(units)}
+                            onClick={() => {
+                              setSelectedDurationUnits(units);
+                              setSelectedChoice(null);
+                            }}
                             className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                               selected
                                 ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
@@ -928,14 +1032,8 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                     const canGoNextVehicle = activeVehicleIndex >= 0 && activeVehicleIndex < qrVehicleSections.length - 1;
                     const isVehicleExpanded = Boolean(expandedVehicleIds[listing.id]);
                     const activePackages = listing.activePackages || [];
-                    const halfHourPackage = activePackages.find((pkg) => isHalfHourPackage(pkg)) || null;
-                    const durationScopedPrimaryPackages = rentalType === 'hourly' && selectedDurationUnits === 0.5
-                      ? (halfHourPackage ? [halfHourPackage] : [])
-                      : (listing.primaryPackages || []);
-                    const primaryPackages = durationScopedPrimaryPackages;
-                    const hiddenPackages = rentalType === 'hourly' && selectedDurationUnits === 0.5
-                      ? []
-                      : (listing.hiddenPackages || []);
+                    const primaryPackages = listing.primaryPackages || [];
+                    const hiddenPackages = listing.hiddenPackages || [];
                     const showMorePackages = Boolean(showMorePackagesByVehicle[listing.id]);
                     const packagesToRender = showMorePackages
                       ? [...primaryPackages, ...hiddenPackages]
@@ -1063,6 +1161,13 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                         ) : null}
 
                         <div className="mt-5 space-y-3">
+                          {packagesToRender.length === 0 ? (
+                            <div className="rounded-[22px] border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-600">
+                              {rentalType === 'hourly'
+                                ? `No ${selectedDurationUnits === 0.5 ? '30-minute' : `${selectedDurationUnits}-hour`} packages are configured for this vehicle yet.`
+                                : `No ${selectedDurationUnits}-day packages are configured for this vehicle yet.`}
+                            </div>
+                          ) : null}
                           {packagesToRender.map((pkg) => {
                             const isSelected = selectedChoice?.listingId === listing.id && String(selectedChoice?.packageId) === String(pkg.id);
                             const isExpanded = Boolean(expandedPackageKeys[`${listing.id}:${pkg.id}`]);
@@ -1081,7 +1186,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                               >
                                 <div className="flex items-start justify-between gap-4">
                                   <div className="min-w-0">
-                                    <p className="text-sm font-semibold text-slate-900">{getPackageDisplayName(pkg, rentalType)}</p>
+                                    <p className="text-sm font-semibold text-slate-900">{getPackageDisplayName(pkg, rentalType, getSelectedDurationForPackage(pkg, selectedDurationUnits, rentalType))}</p>
                                     <p className="mt-3 text-2xl font-black leading-none text-slate-950">
                                       {getEffectivePackagePrice(listing, pkg, rentalType, selectedDurationUnits, durationUnitPrices)} {listing.currencyCode}
                                     </p>

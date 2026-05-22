@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, Copy, Gift, Loader2, MessageCircle, Share2, Upload, Wallet } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -270,6 +270,7 @@ const WalletTopupComposer = ({
   onNoteChange,
   onReceiptChange,
   onSubmit,
+  onViewStatus,
   tr,
 }) => (
   <section className="rounded-[2rem] border border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf5ff_100%)] p-5 shadow-[0_18px_46px_rgba(91,33,182,0.08)] sm:p-6">
@@ -365,6 +366,16 @@ const WalletTopupComposer = ({
               <div>
                 <p className="text-sm font-semibold text-emerald-900">{feedback.title}</p>
                 <p className="mt-1 text-sm leading-6 text-emerald-700">{feedback.detail}</p>
+                {onViewStatus ? (
+                  <button
+                    type="button"
+                    onClick={onViewStatus}
+                    className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3.5 py-2 text-xs font-bold text-emerald-700 shadow-sm transition hover:border-emerald-300"
+                  >
+                    <span>{tr('View status', 'Voir le statut')}</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -400,10 +411,21 @@ const AccountRevenue = () => {
   const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
   const creditsSectionRef = useRef(null);
+  const moneyRecordSectionRef = useRef(null);
   const creditsPanelRequested = useMemo(
     () => new URLSearchParams(location.search).get('panel') === 'credits',
     [location.search]
   );
+
+  const openWalletTopupStatus = useCallback(() => {
+    setActiveTab(MONEY_TABS.renting);
+    setShowDetails(true);
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        moneyRecordSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 0);
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -730,6 +752,11 @@ const AccountRevenue = () => {
         detail: tr('Funds appear within 24 hours.', 'Les fonds apparaissent sous 24 heures.'),
       });
     } catch (submitError) {
+      console.error('Wallet top-up submission failed:', {
+        message: submitError?.message,
+        status: submitError?.status,
+        payload: submitError?.payload || null,
+      });
       setError(
         submitError?.message ||
           tr(
@@ -838,17 +865,14 @@ const AccountRevenue = () => {
           `${formatMoney(pendingTopups, wallet.currencyCode || 'MAD', locale)} is still being processed.`,
           `${formatMoney(pendingTopups, wallet.currencyCode || 'MAD', locale)} est encore en cours de traitement.`
         ),
-        ctaLabel: tr('Review', 'Voir'),
-        onClick: () => {
-          setActiveTab(MONEY_TABS.renting);
-          setShowDetails(true);
-        },
-        tone: 'emerald',
+        ctaLabel: tr('View status', 'Voir le statut'),
+        onClick: openWalletTopupStatus,
+        tone: 'amber',
       });
     }
 
     return items;
-  }, [outstandingTotal, pendingMarketplaceCount, pendingTopups, wallet.currencyCode, locale, tr]);
+  }, [outstandingTotal, pendingMarketplaceCount, pendingTopups, wallet.currencyCode, locale, tr, openWalletTopupStatus]);
 
   const rentingActivity = useMemo(() => {
     const rentalItems = rentals.map((rental) => {
@@ -1232,6 +1256,7 @@ const AccountRevenue = () => {
         onNoteChange={setTopupNote}
         onReceiptChange={setTopupReceiptFile}
         onSubmit={handleSubmitTopup}
+        onViewStatus={openWalletTopupStatus}
         tr={tr}
       />
 
@@ -1307,7 +1332,7 @@ const AccountRevenue = () => {
         </div>
       </section>
 
-      <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section ref={moneyRecordSectionRef} className="scroll-mt-24 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <button
           type="button"
           onClick={() => setShowDetails((current) => !current)}
@@ -1464,6 +1489,7 @@ const AccountRevenue = () => {
 
         <Link
           to="/account/settings"
+          state={{ from: currentPath }}
           className="group rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition hover:translate-y-[-1px] hover:border-violet-200 hover:shadow-[0_18px_40px_rgba(15,23,42,0.08)]"
         >
           <div className="flex items-start justify-between gap-3">

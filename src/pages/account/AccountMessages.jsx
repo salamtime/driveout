@@ -9,8 +9,17 @@ import MessageService from '../../services/MessageService';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
 import VerificationService from '../../services/VerificationService';
+import { supabase } from '../../lib/supabase';
 import { resolveReturnPath } from '../../utils/navigationReturn';
-import { buildMessageSectionSummary } from '../../utils/messageCenter';
+import { buildMessageSectionSummary, MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES, resolveThreadContextTarget } from '../../utils/messageCenter';
+import {
+  getMarketplaceRequestDisplay,
+  normalizeMarketplaceRequestLifecycleStatus,
+} from '../../utils/marketplaceRequestState';
+import {
+  buildOwnerExecutionWorkspaceHref,
+  getOwnerExecutionActionConfig,
+} from '../../utils/ownerRentalExecutionLinks';
 import { getOtherParty, getThreadRoleContext } from '../../components/messages/threadHelpers';
 
 const getSenderRole = (userProfile, user) => {
@@ -48,7 +57,11 @@ const threadIndicatesOwnerAccess = (thread = {}, currentUserId = '') => {
 
   if (family !== 'marketplace') return false;
   if (threadType === 'marketplace_owner_request' || threadType === 'marketplace_moderation') return true;
-  if (href.includes('/account/vehicles?requestId=') || href.includes('/account/vehicles/')) return true;
+  if (
+    href.includes('/account/operations/') ||
+    href.includes('/account/vehicles?requestId=') ||
+    href.includes('/account/vehicles/')
+  ) return true;
   if (recipientUserId && recipientUserId === normalizedUserId && senderUserId !== normalizedUserId) return true;
   return false;
 };
@@ -95,7 +108,444 @@ const findPreferredRequestThread = (threads = [], requestId = '', currentSenderR
   if (!matches.length) return null;
 
   const preferredRoleContext = currentSenderRole === 'owner' ? 'owner' : 'customer';
-  return matches.find((thread) => getThreadRoleContext(thread, currentSenderRole) === preferredRoleContext) || matches[0] || null;
+  const preferredThreadType = currentSenderRole === 'owner' ? 'marketplace_owner_request' : 'marketplace_customer_request';
+  const scoreThread = (thread) => {
+    const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+    const threadType = String(thread?.thread_type || thread?.threadType || '').trim().toLowerCase();
+    const roleContext = String(getThreadRoleContext(thread, currentSenderRole) || '').trim().toLowerCase();
+    const requestStatus = normalizeMarketplaceRequestLifecycleStatus({
+      request_status:
+        metadata.requestStatus ||
+        metadata.status ||
+        thread?.status ||
+        '',
+      approved_at:
+        metadata.approvedAt ||
+        metadata.approved_at ||
+        metadata.chatUnlockedAt ||
+        metadata.chat_unlocked_at ||
+        null,
+      counter_offer:
+        metadata.counterOffer && typeof metadata.counterOffer === 'object'
+          ? metadata.counterOffer
+          : metadata.counter_offer && typeof metadata.counter_offer === 'object'
+            ? metadata.counter_offer
+            : {},
+    });
+
+    let score = 0;
+    if (threadType === preferredThreadType) score += 50;
+    if (roleContext === preferredRoleContext) score += 35;
+    if (['approved', 'active', 'completed'].includes(requestStatus)) score += 15;
+    if (requestStatus === 'expired') score -= 12;
+    score += new Date(thread?.latest_message_at || thread?.at || thread?.updated_at || 0).getTime() / 1e13;
+    return score;
+  };
+
+  return [...matches].sort((left, right) => scoreThread(right) - scoreThread(left))[0] || null;
+};
+
+const buildVerificationThreadKey = ({ entityType, entityId }) =>
+  ['verification', 'verification', String(entityType || '').trim().toLowerCase(), String(entityId || '').trim()].join(':');
+
+const buildVerificationInboxSummaryThread = ({ userId = '', verificationResponse = null }) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return null;
+
+  const requests = (Array.isArray(verificationResponse?.requests) ? verificationResponse.requests : [])
+    .filter((request) => String(request?.status || '').trim().toLowerCase() !== 'archived');
+
+  if (!requests.length) return null;
+
+  const documentTypes = [...new Set(
+    requests
+      .map((request) => String(request?.verification_type || '').trim().toLowerCase())
+      .filter(Boolean)
+  )];
+
+  const pendingCount = requests.filter((request) => String(request?.status || '').trim().toLowerCase() === 'pending').length;
+  const rejectedCount = requests.filter((request) => ['rejected', 'suspended', 'expired'].includes(String(request?.status || '').trim().toLowerCase())).length;
+  const approvedCount = requests.filter((request) => String(request?.status || '').trim().toLowerCase() === 'approved').length;
+
+  const verificationStatus =
+    rejectedCount > 0
+      ? 'needs_changes'
+      : pendingCount > 0
+        ? 'pending'
+        : approvedCount > 0
+          ? 'approved'
+          : 'pending';
+
+  const latestMessage =
+    rejectedCount > 0
+      ? 'Identity documents need updates.'
+      : pendingCount > 0
+        ? 'Identity documents are waiting for admin review.'
+        : approvedCount > 0
+          ? 'Identity documents have been approved.'
+          : 'Identity documents are ready in your trust center.';
+
+  const latestAt = requests.reduce((latest, request) => {
+    const nextTimestamp = new Date(request?.reviewed_at || request?.created_at || 0).getTime();
+    return nextTimestamp > latest ? nextTimestamp : latest;
+  }, 0);
+
+  return MessageService.normalizeSharedThread({
+    id: `verification-summary-${normalizedUserId}`,
+    thread_key: buildVerificationThreadKey({ entityType: 'user', entityId: normalizedUserId }),
+    family: 'verification',
+    thread_type: 'verification',
+    entity_type: 'user',
+    entity_id: normalizedUserId,
+    subject: 'Identity review',
+    latest_message: latestMessage,
+    latest_message_at: latestAt ? new Date(latestAt).toISOString() : new Date().toISOString(),
+    unread_count: verificationStatus === 'approved' ? 0 : Math.max(pendingCount, rejectedCount, 0),
+    status: verificationStatus,
+    metadata: {
+      type: 'verification',
+      reviewTitle: 'Identity review',
+      workflowLabel: 'Identity',
+      verificationStatus,
+      status: verificationStatus,
+      verificationType: documentTypes[0] || '',
+      documentTypes,
+      href: '/account/verification',
+    },
+  });
+};
+
+const mergeVerificationInboxThread = ({ sharedThreads = [], verificationThread = null }) => {
+  if (!verificationThread) {
+    return sharedThreads;
+  }
+
+  const verificationThreadKey = String(verificationThread?.thread_key || verificationThread?.id || '').trim();
+  const existingIndex = sharedThreads.findIndex((thread) => {
+    const threadKey = String(thread?.thread_key || thread?.id || '').trim();
+    const family = String(thread?.family || '').trim().toLowerCase();
+    return (verificationThreadKey && threadKey === verificationThreadKey) || family === 'verification';
+  });
+
+  if (existingIndex === -1) {
+    return [verificationThread, ...sharedThreads];
+  }
+
+  const existingThread = sharedThreads[existingIndex];
+  const mergedMetadata = {
+    ...(existingThread?.metadata && typeof existingThread.metadata === 'object' ? existingThread.metadata : {}),
+    ...(verificationThread?.metadata && typeof verificationThread.metadata === 'object' ? verificationThread.metadata : {}),
+  };
+
+  const mergedThread = {
+    ...existingThread,
+    ...verificationThread,
+    latestMessage: existingThread?.latestMessage || verificationThread?.latestMessage,
+    latest_message: existingThread?.latest_message || verificationThread?.latest_message,
+    unread: existingThread?.unread ?? verificationThread?.unread,
+    unread_count: Math.max(
+      Number(existingThread?.unread_count || existingThread?.unread ? 1 : 0),
+      Number(verificationThread?.unread_count || verificationThread?.unread ? 1 : 0)
+    ),
+    metadata: mergedMetadata,
+  };
+
+  const nextThreads = [...sharedThreads];
+  nextThreads.splice(existingIndex, 1, mergedThread);
+  return nextThreads;
+};
+
+const buildMarketplaceOwnerRequestThreadKey = ({ requestId = '', ownerId = '', customerUserId = '' } = {}) =>
+  [
+    MESSAGE_FAMILIES.marketplace,
+    MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+    'marketplace_request',
+    String(requestId || '').trim() || 'request',
+    String(customerUserId || '').trim() || 'customer',
+    String(ownerId || '').trim() || 'owner',
+  ].join(':');
+
+const shouldSurfaceOwnerRequestInInbox = (request = {}) => {
+  const status = normalizeMarketplaceRequestLifecycleStatus(request);
+  return status === 'pending' || status === 'countered';
+};
+
+const buildOwnerRequestInboxThread = ({ request = {}, ownerId = '', ownerName = '', ownerEmail = '', tr }) => {
+  const requestId = String(request?.id || '').trim();
+  const normalizedOwnerId = String(ownerId || '').trim();
+  if (!requestId || !normalizedOwnerId) return null;
+
+  const customerUserId = String(request?.customerId || request?.customerUserId || '').trim();
+  const customerEmail = String(request?.customerEmail || '').trim();
+  const customerName = String(request?.customerName || '').trim() || customerEmail || (typeof tr === 'function' ? tr('Customer', 'Client') : 'Customer');
+  const lifecycleStatus = normalizeMarketplaceRequestLifecycleStatus(request);
+  const displayState = getMarketplaceRequestDisplay(lifecycleStatus, tr);
+  const listingTitle = String(request?.listingTitle || request?.vehicleName || '').trim() || (typeof tr === 'function' ? tr('Marketplace request', 'Demande marketplace') : 'Marketplace request');
+  const latestAt = request?.updatedAt || request?.createdAt || new Date().toISOString();
+  const latestMessage = String(request?.customerMessage || '').trim() || (typeof tr === 'function'
+    ? tr('Rental request is waiting for your reply.', 'La demande de location attend votre réponse.')
+    : 'Rental request is waiting for your reply.');
+  const threadKey = buildMarketplaceOwnerRequestThreadKey({
+    requestId,
+    ownerId: normalizedOwnerId,
+    customerUserId,
+  });
+  const href = buildOwnerExecutionWorkspaceHref(
+    request,
+    {
+      focus:
+        lifecycleStatus === 'approved' || lifecycleStatus === 'active' || lifecycleStatus === 'completed'
+          ? 'execution'
+          : 'request',
+    }
+  );
+  const baseMetadata = {
+    type: 'marketplace_request',
+    requestId,
+    requestReference: String(request?.requestReference || '').trim() || undefined,
+    requestStatus: lifecycleStatus,
+    status: lifecycleStatus,
+    roleContext: 'owner',
+    href,
+    listingId: String(request?.listingId || '').trim() || undefined,
+    vehiclePublicProfileId: String(request?.vehiclePublicProfileId || '').trim() || undefined,
+    listingTitle,
+    vehicleName: listingTitle,
+    customerName,
+    customerEmail: customerEmail || undefined,
+    customerUserId: customerUserId || undefined,
+    ownerUserId: normalizedOwnerId,
+    ownerName: String(ownerName || '').trim() || undefined,
+    ownerEmail: String(ownerEmail || '').trim() || undefined,
+    requestedStartAt: request?.requestedStartAt || null,
+    requestedEndAt: request?.requestedEndAt || null,
+    rentalType: request?.rentalType || '',
+    duration: request?.duration || '',
+    priceAmount: Number(request?.estimatedAmount || 0) || 0,
+    estimatedAmount: Number(request?.estimatedAmount || 0) || 0,
+    currencyCode: String(request?.currencyCode || 'MAD').trim() || 'MAD',
+    replyEnabled: true,
+    readOnlyReason: displayState.readOnlyReason || '',
+    syntheticOwnerInboxThread: true,
+  };
+
+  return {
+    id: threadKey,
+    thread_key: threadKey,
+    family: MESSAGE_FAMILIES.marketplace,
+    thread_type: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+    threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+    entity_type: 'marketplace_request',
+    entity_id: requestId,
+    context_type: 'request',
+    context_id: requestId,
+    subject: listingTitle,
+    title: customerName,
+    subtitle: listingTitle,
+    summary: displayState.readOnlyReason || '',
+    latest_message: latestMessage,
+    latestMessage,
+    latest_message_at: latestAt,
+    at: latestAt,
+    unread_count: 0,
+    unread: false,
+    message_count: 1,
+    status: lifecycleStatus,
+    statusLabel: displayState.label,
+    statusTone: lifecycleStatus === 'pending' ? 'pending' : 'neutral',
+    sender_user_id: customerUserId || null,
+    recipient_user_id: normalizedOwnerId,
+    sender_role: 'customer',
+    recipient_role: 'owner',
+    sender_name: customerName,
+    sender_email: customerEmail,
+    recipient_name: String(ownerName || '').trim(),
+    recipient_email: String(ownerEmail || '').trim(),
+    priority: 'important',
+    waiting_on: 'owner',
+    workflow_status: 'active',
+    visibility_scope: 'public',
+    href,
+    metadata: baseMetadata,
+    messages: [
+      {
+        id: `owner-request-submitted-${requestId}`,
+        thread_key: threadKey,
+        family: MESSAGE_FAMILIES.marketplace,
+        thread_type: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
+        entity_type: 'marketplace_request',
+        entity_id: requestId,
+        message_type: 'submission_event',
+        subject: listingTitle,
+        body: latestMessage,
+        created_at: latestAt,
+        sender_user_id: customerUserId || null,
+        sender_role: 'customer',
+        sender_name: customerName,
+        sender_email: customerEmail,
+        recipient_user_id: normalizedOwnerId,
+        recipient_role: 'owner',
+        recipient_name: String(ownerName || '').trim(),
+        recipient_email: String(ownerEmail || '').trim(),
+        metadata: {
+          ...baseMetadata,
+          event: 'request_sent',
+        },
+        status: 'sent',
+      },
+    ],
+  };
+};
+
+const getOwnerRequestStatusTone = (status = '') => {
+  const normalizedStatus = String(status || '').trim().toLowerCase();
+  if (['approved', 'active', 'completed'].includes(normalizedStatus)) return 'success';
+  if (normalizedStatus === 'countered') return 'warning';
+  if (normalizedStatus === 'pending' || normalizedStatus === 'pre_approved') return 'pending';
+  return 'neutral';
+};
+
+const enrichOwnerRequestInboxThread = ({ thread = {}, request = {}, tr }) => {
+  const lifecycleStatus = normalizeMarketplaceRequestLifecycleStatus(request);
+  const displayState = getMarketplaceRequestDisplay(lifecycleStatus, tr);
+  const executionAction = getOwnerExecutionActionConfig(request, tr);
+  const fallbackHref = buildOwnerExecutionWorkspaceHref(
+    request,
+    { focus: executionAction ? 'execution' : 'request' }
+  );
+  const existingMetadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+  const listingTitle = String(
+    request?.listingTitle ||
+    request?.vehicleName ||
+    existingMetadata.listingTitle ||
+    existingMetadata.vehicleName ||
+    thread?.subject ||
+    ''
+  ).trim();
+  const customerName = String(
+    request?.customerName ||
+    existingMetadata.customerName ||
+    thread?.sender_name ||
+    thread?.title ||
+    ''
+  ).trim();
+  const customerEmail = String(
+    request?.customerEmail ||
+    existingMetadata.customerEmail ||
+    thread?.sender_email ||
+    ''
+  ).trim();
+  const nextMetadata = {
+    ...existingMetadata,
+    type: 'marketplace_request',
+    requestId: String(request?.id || existingMetadata.requestId || thread?.entity_id || '').trim() || undefined,
+    requestReference: String(request?.requestReference || existingMetadata.requestReference || '').trim() || undefined,
+    requestStatus: lifecycleStatus,
+    status: lifecycleStatus,
+    roleContext: 'owner',
+    href: executionAction?.href || fallbackHref || existingMetadata.href || thread?.href || '',
+    listingId: String(request?.listingId || existingMetadata.listingId || '').trim() || undefined,
+    vehiclePublicProfileId: String(request?.vehiclePublicProfileId || existingMetadata.vehiclePublicProfileId || '').trim() || undefined,
+    listingTitle: listingTitle || undefined,
+    vehicleName: listingTitle || undefined,
+    customerName: customerName || undefined,
+    customerEmail: customerEmail || undefined,
+    customerUserId: String(request?.customerId || request?.customerUserId || existingMetadata.customerUserId || '').trim() || undefined,
+    ownerUserId: String(request?.ownerId || request?.ownerUserId || existingMetadata.ownerUserId || thread?.recipient_user_id || '').trim() || undefined,
+    requestedStartAt: request?.requestedStartAt || existingMetadata.requestedStartAt || null,
+    requestedEndAt: request?.requestedEndAt || existingMetadata.requestedEndAt || null,
+    rentalType: request?.rentalType || existingMetadata.rentalType || '',
+    duration: request?.duration || existingMetadata.duration || '',
+    priceAmount: Number(request?.estimatedAmount ?? existingMetadata.priceAmount ?? existingMetadata.estimatedAmount ?? 0) || 0,
+    estimatedAmount: Number(request?.estimatedAmount ?? existingMetadata.estimatedAmount ?? 0) || 0,
+    currencyCode: String(request?.currencyCode || existingMetadata.currencyCode || 'MAD').trim() || 'MAD',
+    replyEnabled: lifecycleStatus !== 'expired',
+    readOnlyReason: displayState.readOnlyReason || '',
+    ownerExecution: request?.ownerExecution && typeof request.ownerExecution === 'object'
+      ? request.ownerExecution
+      : existingMetadata.ownerExecution,
+    approvedAt: request?.approvedAt || existingMetadata.approvedAt || null,
+    startedAt: request?.startedAt || existingMetadata.startedAt || null,
+    completedAt: request?.completedAt || existingMetadata.completedAt || null,
+    chatUnlockedAt: request?.chatUnlockedAt || existingMetadata.chatUnlockedAt || null,
+    chatUnlocked: request?.chatUnlocked ?? existingMetadata.chatUnlocked ?? null,
+    executionStage: executionAction?.key || existingMetadata.executionStage || undefined,
+  };
+
+  return {
+    ...thread,
+    status: lifecycleStatus,
+    statusLabel: displayState.label || thread?.statusLabel || thread?.status_label || '',
+    statusTone: getOwnerRequestStatusTone(lifecycleStatus),
+    href: executionAction?.href || fallbackHref || thread?.href || existingMetadata.href || '',
+    title: thread?.title || customerName || customerEmail || thread?.subject || '',
+    subtitle: thread?.subtitle || listingTitle || thread?.subtitle || '',
+    summary: displayState.readOnlyReason || thread?.summary || '',
+    metadata: nextMetadata,
+  };
+};
+
+const mergeOwnerRequestInboxThreads = ({
+  sharedThreads = [],
+  ownerRequests = [],
+  ownerId = '',
+  ownerName = '',
+  ownerEmail = '',
+  tr,
+}) => {
+  const ownerRequestMap = new Map(
+    ownerRequests.map((request) => [String(request?.id || '').trim(), request]).filter(([requestId]) => requestId)
+  );
+  const enrichedThreads = sharedThreads.map((thread) => {
+    const threadType = String(thread?.thread_type || thread?.threadType || '').trim().toLowerCase();
+    if (threadType !== MESSAGE_THREAD_TYPES.marketplaceOwnerRequest) {
+      return thread;
+    }
+
+    const requestId = resolveMarketplaceRequestId(thread);
+    const matchingRequest = ownerRequestMap.get(requestId);
+    if (!matchingRequest) {
+      return thread;
+    }
+
+    return enrichOwnerRequestInboxThread({
+      thread,
+      request: matchingRequest,
+      tr,
+    });
+  });
+
+  const existingOwnerRequestIds = new Set(
+    enrichedThreads
+      .filter((thread) => String(thread?.thread_type || thread?.threadType || '').trim().toLowerCase() === MESSAGE_THREAD_TYPES.marketplaceOwnerRequest)
+      .map((thread) => resolveMarketplaceRequestId(thread))
+      .filter(Boolean)
+  );
+
+  const syntheticThreads = ownerRequests
+    .filter(shouldSurfaceOwnerRequestInInbox)
+    .filter((request) => {
+      const requestId = String(request?.id || '').trim();
+      return requestId && !existingOwnerRequestIds.has(requestId);
+    })
+    .map((request) => buildOwnerRequestInboxThread({
+      request,
+      ownerId,
+      ownerName,
+      ownerEmail,
+      tr,
+    }))
+    .filter(Boolean);
+
+  if (!syntheticThreads.length) {
+    return enrichedThreads;
+  }
+
+  return [...syntheticThreads, ...enrichedThreads].sort((left, right) => {
+    const leftTime = new Date(left?.latest_message_at || left?.at || 0).getTime();
+    const rightTime = new Date(right?.latest_message_at || right?.at || 0).getTime();
+    return rightTime - leftTime;
+  });
 };
 
 const AccountMessages = () => {
@@ -116,6 +566,21 @@ const AccountMessages = () => {
   const repairedOwnerRequestIdsRef = useRef(new Set());
   const messageExperience = getMessageExperience();
   const effectiveSenderRole = profileSenderRole === 'owner' || ownerAccessDetected ? 'owner' : 'customer';
+  const currentUserLabel = String(
+    userProfile?.fullName ||
+    userProfile?.full_name ||
+    userProfile?.username ||
+    user?.user_metadata?.full_name ||
+    user?.email ||
+    'You'
+  ).trim();
+  const currentUserAvatarUrl = String(
+    userProfile?.profile_picture_url ||
+    userProfile?.avatar_url ||
+    user?.user_metadata?.profile_picture_url ||
+    user?.user_metadata?.avatar_url ||
+    ''
+  ).trim();
   const requestedThreadKey = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return String(params.get('threadKey') || '').trim();
@@ -163,10 +628,38 @@ const AccountMessages = () => {
         setLoading(true);
       }
       setError('');
-      const response = await MessageService.listSharedThreads();
+      const shouldLoadOwnerRequestBridge = profileSenderRole === 'owner' || ownerAccessDetected;
+      const [response, verificationResponse, ownerRequestsResponse] = await Promise.all([
+        MessageService.listSharedThreads(),
+        VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true }).catch(() => null),
+        shouldLoadOwnerRequestBridge
+          ? BusinessMarketplaceService.getOwnerRequests(user.id, 'all', { forceRefresh: true }).catch(() => null)
+          : Promise.resolve(null),
+      ]);
       const nextThreads = Array.isArray(response?.threads) ? response.threads : [];
-      setThreads(nextThreads);
-      return nextThreads;
+      const verificationSummaryThread = buildVerificationInboxSummaryThread({
+        userId: user.id,
+        verificationResponse,
+      });
+      const withVerificationThreads = mergeVerificationInboxThread({
+        sharedThreads: nextThreads,
+        verificationThread: verificationSummaryThread,
+      });
+      const ownerRequests = Array.isArray(ownerRequestsResponse?.requests) ? ownerRequestsResponse.requests : [];
+      const mergedThreads = mergeOwnerRequestInboxThreads({
+        sharedThreads: withVerificationThreads,
+        ownerRequests,
+        ownerId: user.id,
+        ownerName: currentUserLabel,
+        ownerEmail: user?.email || userProfile?.email || '',
+        tr,
+      });
+      const pendingCount = Array.isArray(verificationResponse?.requests)
+        ? verificationResponse.requests.filter((request) => String(request?.status || '').trim().toLowerCase() === 'pending').length
+        : 0;
+      setVerificationCount(pendingCount);
+      setThreads(mergedThreads);
+      return mergedThreads;
     } catch (loadError) {
       setError(loadError?.message || tr('Unable to load your Inbox right now.', 'Impossible de charger votre Inbox pour le moment.'));
       setThreads([]);
@@ -176,7 +669,7 @@ const AccountMessages = () => {
         setLoading(false);
       }
     }
-  }, [tr, user?.id]);
+  }, [currentUserLabel, ownerAccessDetected, profileSenderRole, tr, user?.email, user?.id, userProfile?.email]);
 
   useEffect(() => {
     if (!user?.id) {
@@ -227,30 +720,50 @@ const AccountMessages = () => {
       userId: user.id,
       onChange: queueRealtimeReload,
     });
+    const bookingRealtimeChannels = [
+      supabase
+        .channel(`account-messages-booking-customer:${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'app_booking_requests',
+            filter: `customer_id=eq.${user.id}`,
+          },
+          queueRealtimeReload
+        )
+        .subscribe(),
+      supabase
+        .channel(`account-messages-booking-owner:${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'app_booking_requests',
+            filter: `owner_id=eq.${user.id}`,
+          },
+          queueRealtimeReload
+        )
+        .subscribe(),
+    ];
 
     return () => {
       if (realtimeReloadTimerRef.current) {
         clearTimeout(realtimeReloadTimerRef.current);
       }
+      bookingRealtimeChannels.forEach((channel) => {
+        try {
+          supabase.removeChannel(channel);
+        } catch {
+          // ignore cleanup errors
+        }
+      });
       unsubscribe();
     };
   }, [loadThreads, user?.id]);
 
-  const currentUserLabel = String(
-    userProfile?.fullName ||
-    userProfile?.full_name ||
-    userProfile?.username ||
-    user?.user_metadata?.full_name ||
-    user?.email ||
-    'You'
-  ).trim();
-  const currentUserAvatarUrl = String(
-    userProfile?.profile_picture_url ||
-    userProfile?.avatar_url ||
-    user?.user_metadata?.profile_picture_url ||
-    user?.user_metadata?.avatar_url ||
-    ''
-  ).trim();
   useEffect(() => {
     if (profileSenderRole === 'owner') {
       setOwnerAccessDetected(true);
@@ -383,6 +896,62 @@ const AccountMessages = () => {
       actionTo: '/marketplace',
     };
   }, [effectiveSenderRole, tr]);
+  const handleOpenSupportThread = useCallback(async () => {
+    if (!user?.id) return '';
+
+    const normalizedUserId = String(user.id || '').trim();
+    const existingSupportThread = threads
+      .filter((thread) => {
+        const family = String(thread?.family || '').trim().toLowerCase();
+        const entityType = String(thread?.entity_type || '').trim().toLowerCase();
+        const entityId = String(thread?.entity_id || '').trim();
+        return family === 'support' && entityType === 'user' && entityId === normalizedUserId;
+      })
+      .sort((left, right) => {
+        const leftResolvedScore = left?.resolved_at ? 1 : 0;
+        const rightResolvedScore = right?.resolved_at ? 1 : 0;
+        if (leftResolvedScore !== rightResolvedScore) return leftResolvedScore - rightResolvedScore;
+
+        const leftUnread = Number(left?.unread_count || 0);
+        const rightUnread = Number(right?.unread_count || 0);
+        if (leftUnread !== rightUnread) return rightUnread - leftUnread;
+
+        return new Date(right?.latest_message_at || 0).getTime() - new Date(left?.latest_message_at || 0).getTime();
+      })[0];
+
+    const existingSupportThreadKey = String(
+      existingSupportThread?.thread_key || existingSupportThread?.id || ''
+    ).trim();
+
+    if (existingSupportThreadKey) {
+      return existingSupportThreadKey;
+    }
+
+    const ensureResponse = await MessageService.ensureThreadByContext({
+      contextType: 'user',
+      contextId: normalizedUserId,
+      family: 'support',
+      threadType: 'support_case',
+      senderRole: effectiveSenderRole,
+      waitingOn: 'support',
+    });
+
+    const ensuredThreadKey = String(ensureResponse?.threadState?.thread_key || '').trim();
+    const refreshedThreads = await loadThreads({ silent: true });
+
+    if (ensuredThreadKey) {
+      return ensuredThreadKey;
+    }
+
+    const fallbackSupportThread = (Array.isArray(refreshedThreads) ? refreshedThreads : []).find((thread) => {
+      const family = String(thread?.family || '').trim().toLowerCase();
+      const entityType = String(thread?.entity_type || '').trim().toLowerCase();
+      const entityId = String(thread?.entity_id || '').trim();
+      return family === 'support' && entityType === 'user' && entityId === normalizedUserId;
+    });
+
+    return String(fallbackSupportThread?.thread_key || fallbackSupportThread?.id || '').trim();
+  }, [effectiveSenderRole, loadThreads, user?.id]);
   const seedOwnerApprovedThreadForRequest = useCallback(async (request) => {
     const requestId = String(request?.id || '').trim();
     const customerUserId = String(request?.customerId || '').trim();
@@ -414,7 +983,7 @@ const AccountMessages = () => {
       chatGraceExpiresAt: request?.chatGraceExpiresAt || null,
       replyEnabled: true,
       readOnlyReason: '',
-      href: `/account/vehicles?requestId=${encodeURIComponent(requestId)}#requests`,
+      href: buildOwnerExecutionWorkspaceHref(request, { focus: 'execution' }),
     };
 
     await MessageService.sendSharedMessage({
@@ -704,45 +1273,38 @@ const AccountMessages = () => {
               showListFilters
               groupThreads
               threadGroupingMode="transaction_hub"
+              laneModel="account"
               workspaceContext={effectiveSenderRole === 'owner' ? 'owner' : 'customer'}
               onMobileConversationStateChange={setMobileConversationOpen}
               onRefresh={() => loadThreads()}
+              onSupportAction={handleOpenSupportThread}
               onOpenContext={(thread) => {
-                const requestId = String(thread?.metadata?.requestId || thread?.entity_id || '').trim();
-                const status = String(thread?.metadata?.requestStatus || thread?.metadata?.status || '').trim().toLowerCase();
-                const shouldOpenConfirmState = status === 'pre_approved';
-                const threadType = String(thread?.thread_type || thread?.threadType || '').trim().toLowerCase();
-                const isOwnerFacingView =
-                  threadType === 'marketplace_owner_request'
-                    ? true
-                    : threadType === 'marketplace_customer_request'
-                      ? false
-                      : effectiveSenderRole === 'owner';
-                const href = requestId
-                  ? isOwnerFacingView
-                    ? `/account/vehicles?requestId=${encodeURIComponent(requestId)}#requests`
-                    : `/account/rentals/requests/${encodeURIComponent(requestId)}${shouldOpenConfirmState ? '?action=confirm' : ''}`
-                  : thread?.metadata?.href || '';
-                if (href) {
-                  const threadKey = String(thread?.thread_key || thread?.id || '').trim();
-                  const returnParams = new URLSearchParams(location.search);
-                  if (threadKey) {
-                    returnParams.set('threadKey', threadKey);
-                  }
-                  if (requestId) {
-                    returnParams.set('requestId', requestId);
-                  }
-                  if (shouldOpenConfirmState) {
-                    returnParams.set('action', 'confirm');
-                  }
-                  const returnSearch = returnParams.toString();
-                  const returnPath = `${location.pathname}${returnSearch ? `?${returnSearch}` : ''}${location.hash}`;
-                  navigate(href, {
-                    state: {
-                      from: returnPath,
-                    },
-                  });
+                const threadKey = String(thread?.thread_key || thread?.id || '').trim();
+                const returnParams = new URLSearchParams(location.search);
+                if (threadKey) {
+                  returnParams.set('threadKey', threadKey);
                 }
+                const target = resolveThreadContextTarget(thread, {
+                  workspace: 'account',
+                  senderRole: effectiveSenderRole,
+                  fallbackHref: '/account/messages',
+                });
+                if (!target?.href) return;
+
+                if (target.requestId) {
+                  returnParams.set('requestId', target.requestId);
+                }
+                if (target.context === 'marketplace_request' && String(target.href).includes('action=confirm')) {
+                  returnParams.set('action', 'confirm');
+                }
+
+                const returnSearch = returnParams.toString();
+                const returnPath = `${location.pathname}${returnSearch ? `?${returnSearch}` : ''}${location.hash}`;
+                navigate(target.href, {
+                  state: {
+                    from: returnPath,
+                  },
+                });
               }}
               onMarkThreadRead={async (thread) => {
                 const threadKey = String(thread?.thread_key || '').trim();

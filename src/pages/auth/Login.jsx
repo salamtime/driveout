@@ -6,7 +6,8 @@ import i18n from '../../i18n';
 import { hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
 import { supabase } from '../../lib/supabase';
 import { requestPasswordResetEmail } from '../../services/emailApi';
-import { buildHostUrl, getHostContext } from '../../utils/hostContext';
+import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
+import { buildHostUrl, buildLocalTenantUrl, getHostContext, isFirstPartyTenantHost, isSaharaXBrandingHost } from '../../utils/hostContext';
 
 const getSafeRedirectPath = (value = '') => {
   const normalized = String(value || '').trim();
@@ -25,6 +26,14 @@ const buildMarketplaceLoginRedirect = ({ email = '', redirect = '/customer/dashb
   if (email) params.set('email', email);
   if (redirect) params.set('redirect', redirect);
   params.set('tenantAccess', 'marketplace-customer');
+
+  const host = getHostContext();
+  if (host?.isLocal) {
+    return buildLocalTenantUrl({
+      pathname: '/login',
+      search: `?${params.toString()}`,
+    });
+  }
 
   return buildHostUrl({
     kind: 'public',
@@ -54,6 +63,50 @@ const Login = () => {
   const prefilledEmail = String(queryParams.get('email') || '').trim();
   const tenantAccessNotice = queryParams.get('tenantAccess');
   const { user, session, signIn, signInWithGoogle, loading: authLoading, initialized, getBusinessOwnerHomePath } = useAuth();
+  const isAdminHost = host.kind === 'admin';
+  const isFirstPartyTenantWorkspace = isFirstPartyTenantHost(host);
+  const isSharedTenantWorkspace = shouldScopeSharedTenantData(host);
+  const loginBrand = isAdminHost
+    ? {
+        eyebrow: tr('Driveout Admin', 'Admin Driveout'),
+        heroTitle: tr('Welcome back', 'Bon retour'),
+        heroBody: tr(
+          'Sign in to manage the Driveout operations platform.',
+          'Connectez-vous pour gérer la plateforme opérationnelle Driveout.'
+        ),
+        introEyebrow: tr('Admin Access', 'Accès admin'),
+        introBody: tr(
+          'Use your Driveout admin account to continue.',
+          'Utilisez votre compte admin Driveout pour continuer.'
+        ),
+      }
+    : isFirstPartyTenantWorkspace
+      ? {
+          eyebrow: tr('Saharax Workspace', 'Espace Saharax'),
+          heroTitle: tr('Welcome back', 'Bon retour'),
+          heroBody: tr(
+            'Sign in to continue in your SaharaX workspace.',
+            'Connectez-vous pour continuer dans votre espace SaharaX.'
+          ),
+          introEyebrow: tr('Account Access', 'Accès compte'),
+          introBody: tr(
+            'Use your SaharaX account to continue.',
+            'Utilisez votre compte SaharaX pour continuer.'
+          ),
+        }
+      : {
+          eyebrow: tr('Driveout Marketplace', 'Marketplace Driveout'),
+          heroTitle: tr('Welcome back', 'Bon retour'),
+          heroBody: tr(
+            'Sign in to continue on Driveout.',
+            'Connectez-vous pour continuer sur Driveout.'
+          ),
+          introEyebrow: tr('Account Access', 'Accès compte'),
+          introBody: tr(
+            'Use your Driveout account to continue.',
+            'Utilisez votre compte Driveout pour continuer.'
+          ),
+        };
   const getRedirectPathForRole = (role, accountType = '') => {
     const platformOwnerOverride = isPlatformOwnerEmail(user?.email);
     const internalTenantRole = ['owner', 'admin', 'employee', 'guide'].includes(String(role || '').trim().toLowerCase());
@@ -102,11 +155,17 @@ const Login = () => {
   const [resetSending, setResetSending] = useState(false);
   const [resetSuccess, setResetSuccess] = useState('');
   const isBusy = authLoading;
-  const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer'
-    ? tr(
-        'This email signs in on Driveout marketplace, not inside the SaharaX tenant workspace. Continue below and we will take you to the right place.',
-        "Cet e-mail se connecte sur la marketplace Driveout, pas dans l'espace tenant SaharaX. Continuez ci-dessous et nous vous emmènerons au bon endroit."
-      )
+  const isLocalSaharaXWorkspace = Boolean(host?.isLocal) && isSaharaXBrandingHost(host);
+  const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer' && !isLocalSaharaXWorkspace
+    ? isSharedTenantWorkspace
+      ? tr(
+          'This email signs in on Driveout marketplace, not inside the SaharaX tenant workspace. Continue below and we will take you to the right place.',
+          "Cet e-mail se connecte sur la marketplace Driveout, pas dans l'espace tenant SaharaX. Continuez ci-dessous et nous vous emmènerons au bon endroit."
+        )
+      : tr(
+          'This email signs in on Driveout marketplace. Continue below and we will take you to the right place.',
+          'Cet e-mail se connecte sur la marketplace Driveout. Continuez ci-dessous et nous vous emmènerons au bon endroit.'
+        )
     : '';
 
   // Redirect if user is already logged in and auth is fully loaded
@@ -132,7 +191,7 @@ const Login = () => {
         certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
       });
 
-      if (host.kind === 'tenant' && normalizedRole === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
+      if (isSharedTenantWorkspace && !isLocalSaharaXWorkspace && normalizedRole === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
         const marketplaceRedirect = buildMarketplaceLoginRedirect({
           email: user?.email || formData.email,
           redirect: redirectQuery || '/customer/dashboard',
@@ -155,7 +214,7 @@ const Login = () => {
       }
       navigate(finalRedirectTo, { replace: true });
     }
-  }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
+  }, [authLoading, formData.email, initialized, isLocalSaharaXWorkspace, isSharedTenantWorkspace, location.state, navigate, redirectQuery, session?.user, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -256,18 +315,15 @@ const Login = () => {
             <div className="relative">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-100 backdrop-blur-sm">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                {tr('Saharax Workspace', 'Espace Saharax')}
+                {loginBrand.eyebrow}
               </div>
 
               <div className="mt-8 max-w-xl">
                 <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-                  {tr('Welcome back', 'Bon retour')}
+                  {loginBrand.heroTitle}
                 </h1>
                 <p className="mt-4 max-w-lg text-base leading-7 text-violet-100 sm:text-lg">
-                  {tr(
-                    'Sign in to continue in your SaharaX workspace.',
-                    'Connectez-vous pour continuer dans votre espace SaharaX.'
-                  )}
+                  {loginBrand.heroBody}
                 </p>
               </div>
             </div>
@@ -284,16 +340,13 @@ const Login = () => {
               </Link>
               <div className="mb-8">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-                  {tr('Account Access', 'Accès compte')}
+                  {loginBrand.introEyebrow}
                 </p>
                 <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-900">
                   {tr('Sign in to continue', 'Connectez-vous pour continuer')}
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-slate-500">
-                  {tr(
-                    'Use your SaharaX account to continue.',
-                    'Utilisez votre compte SaharaX pour continuer.'
-                  )}
+                  {loginBrand.introBody}
                 </p>
               </div>
 

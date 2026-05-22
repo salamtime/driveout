@@ -22,6 +22,7 @@ const PhotoCapture = ({
   loadingLabel = 'Initializing camera...',
   importLabel = '',
   onImportClick = null,
+  flush = false,
 }) => {
   const [stream, setStream] = useState(null);
   const [capturedPhotos, setCapturedPhotos] = useState([]);
@@ -199,12 +200,12 @@ const PhotoCapture = ({
   const maxPhotos = requirements?.maxPhotos || 5;
   const canSubmit = capturedPhotos.length >= minPhotos;
   const resolvedSubtitle = subtitle || `Capture ${minPhotos}-${maxPhotos} photos • ${capturedPhotos.length}/${maxPhotos} taken`;
-  const resolvedSubmitLabel = submitLabel || `Submit Photos (${capturedPhotos.length})`;
-  const previewClassName = squarePreview ? 'aspect-square' : '';
+  const resolvedSubmitLabel = submitLabel || `Save photos (${capturedPhotos.length}/${minPhotos})`;
+  const previewClassName = squarePreview ? 'aspect-square' : flush ? 'h-[320px] sm:h-[380px] lg:h-[440px]' : '';
   const shouldShowImport = typeof onImportClick === 'function';
 
   return (
-    <div className="w-full max-w-md mx-auto bg-white rounded-lg shadow-lg overflow-hidden">
+    <div className={flush ? 'w-full overflow-hidden bg-white' : 'w-full max-w-md mx-auto bg-white rounded-lg shadow-lg overflow-hidden'}>
       {/* Header */}
       {!hideHeader ? (
         <div className="bg-green-600 text-white p-4">
@@ -221,7 +222,7 @@ const PhotoCapture = ({
       ) : null}
 
       {/* Camera Preview */}
-      <div className={`relative bg-black ${previewClassName}`} style={squarePreview ? undefined : { height: '280px' }}>
+      <div className={`relative bg-black ${previewClassName}`} style={squarePreview || flush ? undefined : { height: '280px' }}>
         <video
           ref={videoRef}
           autoPlay
@@ -276,14 +277,18 @@ const PhotoCapture = ({
       )}
 
       {/* Controls */}
-      <div className="p-4 space-y-3">
+      <div className={flush ? 'space-y-3 p-4 sm:p-5' : 'p-4 space-y-3'}>
         {/* Capture Button */}
         {stream && capturedPhotos.length < maxPhotos && (
           <div className="space-y-2">
             <button
               onClick={capturePhoto}
               disabled={disabled || isCapturing}
-              className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-3 px-4 rounded-lg flex items-center justify-center font-medium"
+              className={`w-full py-3 px-4 flex items-center justify-center font-medium transition disabled:bg-gray-400 ${
+                flush
+                  ? 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700'
+                  : 'bg-green-600 hover:bg-green-700 text-white rounded-lg'
+              }`}
             >
               <Camera className="mr-2" size={20} />
               {isCapturing ? 'Capturing...' : captureLabel}
@@ -305,19 +310,31 @@ const PhotoCapture = ({
         {/* Action Buttons */}
         {capturedPhotos.length > 0 && (
           <div className="space-y-2">
-            {canSubmit && (
-              <button
-                onClick={submitPhotos}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg flex items-center justify-center font-medium"
-              >
-                <CheckCircle className="mr-2" size={20} />
-                {resolvedSubmitLabel}
-              </button>
-            )}
+            <button
+              onClick={submitPhotos}
+              disabled={disabled || !canSubmit}
+              className={`w-full py-3 px-4 flex items-center justify-center font-medium transition disabled:cursor-not-allowed ${
+                flush
+                  ? 'rounded-2xl bg-slate-950 text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-500'
+                  : 'rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-600'
+              }`}
+            >
+              <CheckCircle className="mr-2" size={20} />
+              {resolvedSubmitLabel}
+            </button>
+            {!canSubmit ? (
+              <p className="text-center text-xs font-medium text-slate-500">
+                Take {Math.max(0, minPhotos - capturedPhotos.length)} more photo{minPhotos - capturedPhotos.length === 1 ? '' : 's'} to save.
+              </p>
+            ) : null}
             
             <button
               onClick={retakeAllPhotos}
-              className="w-full bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-lg flex items-center justify-center font-medium"
+              className={`w-full py-2 px-4 flex items-center justify-center font-medium transition ${
+                flush
+                  ? 'rounded-2xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  : 'bg-gray-600 hover:bg-gray-700 text-white rounded-lg'
+              }`}
             >
               <Trash2 className="mr-2" size={16} />
               {retakeLabel}

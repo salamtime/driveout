@@ -11,6 +11,7 @@ import WebsiteBookingExpiryService from '../../services/WebsiteBookingExpiryServ
 import appWarmupService from '../../services/AppWarmupService';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { getTaskStats } from '../../services/TaskService';
+import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../services/systemSettingsApi';
 import { prefetchAdminModuleChunk, prewarmAdminModuleChunks } from '../../utils/adminModulePreloader';
 import { isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
@@ -112,7 +113,7 @@ const AdminLayout = () => {
   const activeLanguage = isFrench ? 'fr' : 'en';
   const inheritedTenantLogoUrl = getTenantLogoFallback();
   const hostContext = getHostContext();
-  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !isSaharaXBrandingHost(hostContext);
+  const isIsolatedTenantWorkspace = shouldScopeSharedTenantData(hostContext);
   const resolvedTenantSettings =
     tenantSettings && typeof tenantSettings === 'object'
       ? tenantSettings

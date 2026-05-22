@@ -11,12 +11,15 @@ import RouteLoadingFallback from './components/navigation/RouteLoadingFallback';
 import AdminDashboard from './pages/admin/Dashboard';
 import {
   buildHostUrl,
+  buildLocalTenantUrl,
   getHostContext,
   isFirstPartyStorefrontPath,
   isFirstPartyTenantHost,
   isFirstPartyUnifiedPath,
   isPreviewHost,
+  isSaharaXBrandingHost,
 } from './utils/hostContext';
+import { shouldScopeSharedTenantData } from './services/OrganizationService';
 import { configureMasterSupabaseClient, configureSupabaseClient } from './lib/supabase';
 import i18n from './i18n';
 import TenantWorkspaceContext, { getDefaultTenantPublicFeatures, useTenantWorkspaceContext } from './contexts/TenantWorkspaceContext';
@@ -93,6 +96,14 @@ const buildMarketplaceLoginHandoffUrl = ({ email = '', redirect = '/customer/das
   if (email) params.set('email', email);
   if (redirect) params.set('redirect', redirect);
   params.set('tenantAccess', 'marketplace-customer');
+
+  const host = getHostContext();
+  if (host?.isLocal) {
+    return buildLocalTenantUrl({
+      pathname: '/login',
+      search: `?${params.toString()}`,
+    });
+  }
 
   return buildHostUrl({
     kind: 'public',
@@ -177,16 +188,25 @@ const applyWorkspaceDocumentBranding = ({ tenant = null, host = {} } = {}) => {
     tenant?.tenantSettings && typeof tenant.tenantSettings === 'object'
       ? tenant.tenantSettings
       : {};
-  const workspaceLabel = buildFallbackWorkspaceLabel(tenant, host) || 'Driveout';
-  const isAdminHost = String(window.location.pathname || '').startsWith('/admin');
+  const currentPathname = String(window.location.pathname || '');
+  const isLocalSaharaXAdminWorkspace =
+    Boolean(host?.isLocal) &&
+    host?.kind === 'admin' &&
+    currentPathname.startsWith('/admin');
+  const isSaharaXBrand = isSaharaXBrandingHost(host) || isLocalSaharaXAdminWorkspace;
+  const workspaceLabel = buildFallbackWorkspaceLabel(tenant, host) || (isSaharaXBrand ? 'SaharaX' : 'Driveout');
+  const isAdminHost = currentPathname.startsWith('/admin');
   const title = isAdminHost
     ? `${workspaceLabel} Admin`
     : `${workspaceLabel} Workspace`;
   const description = isAdminHost
     ? `Manage rentals, fleet, customers, and operations for ${workspaceLabel}.`
     : `Open the ${workspaceLabel} workspace on Driveout.`;
-  const logoUrl = String(tenantSettings.logo_url || '').trim();
-  const faviconHref = logoUrl || buildBrandMonogramDataUrl(workspaceLabel);
+  const logoUrl = String(tenantSettings.logo_url || '').trim() || (isSaharaXBrand ? '/assets/logo.png' : '');
+  const isDriveoutBrand = !isSaharaXBrand && workspaceLabel.toLowerCase() === 'driveout';
+  const fallbackMonogramHref = buildBrandMonogramDataUrl(workspaceLabel);
+  const faviconHref = logoUrl || (isDriveoutBrand ? '/assets/driveout-mark.svg' : fallbackMonogramHref);
+  const socialImageHref = logoUrl || (isDriveoutBrand ? 'https://driveout.io/assets/driveout-share.svg' : fallbackMonogramHref);
 
   document.title = title;
 
@@ -222,8 +242,8 @@ const applyWorkspaceDocumentBranding = ({ tenant = null, host = {} } = {}) => {
   ensureMeta('meta[name="twitter:description"]', { name: 'twitter:description' }).setAttribute('content', description);
 
   if (faviconHref) {
-    ensureMeta('meta[property="og:image"]', { property: 'og:image' }).setAttribute('content', faviconHref);
-    ensureMeta('meta[name="twitter:image"]', { name: 'twitter:image' }).setAttribute('content', faviconHref);
+    ensureMeta('meta[property="og:image"]', { property: 'og:image' }).setAttribute('content', socialImageHref);
+    ensureMeta('meta[name="twitter:image"]', { name: 'twitter:image' }).setAttribute('content', socialImageHref);
     const faviconLink = ensureLink('link[rel="icon"]', { rel: 'icon', type: 'image/png' });
     faviconLink.setAttribute('href', faviconHref);
   }
@@ -367,7 +387,7 @@ const TenantWorkspaceBoot = ({ children }) => {
   }), [state.effectiveFeatureAccess, state.featureAccess, state.publicFeatures, state.status, state.tenant]);
 
   useEffect(() => {
-    if (host.kind !== 'tenant' || state.status !== 'ready') {
+    if (state.status !== 'ready') {
       return;
     }
 
@@ -601,7 +621,7 @@ const HomeRedirect = () => {
       })
     : null;
 
-  if (host.kind === 'tenant' && role === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
+  if (shouldScopeSharedTenantData(host) && role === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
     return (
       <ExternalRedirect
         to={buildMarketplaceLoginHandoffUrl({
@@ -871,6 +891,7 @@ function App() {
                   <Route path="marketplace/vehicles/:vehicleId" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="marketplace/vehicles/:vehicleId/profile" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="vehicles" element={<AccountMarketplace />} />
+                  <Route path="operations/:vehicleId" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="vehicles/:vehicleId" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="vehicles/:vehicleId/profile" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="messages" element={<AccountMessages />} />

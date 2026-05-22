@@ -183,6 +183,81 @@ const buildVerificationThreadKey = ({ entityType, entityId }) =>
 const buildVerificationCaseThreadKey = (caseId = '') =>
   ['verification', String(caseId || '').trim()].join(':');
 
+const ensureVerificationFallbackThreadState = async (adminClient, {
+  entityType,
+  entityId,
+  ownerUserId,
+  tenantScope = null,
+  workflowStatus = 'active',
+} = {}) => {
+  const normalizedEntityType = String(entityType || '').trim().toLowerCase();
+  const normalizedEntityId = String(entityId || '').trim();
+  const normalizedOwnerUserId = String(ownerUserId || '').trim();
+  if (!normalizedEntityType || !normalizedEntityId || !normalizedOwnerUserId) return null;
+
+  const threadKey = buildVerificationThreadKey({
+    entityType: normalizedEntityType,
+    entityId: normalizedEntityId,
+  });
+
+  try {
+    const { data, error } = await adminClient
+      .from(SHARED_MESSAGE_THREADS_TABLE)
+      .upsert(stampTenantPayload({
+        thread_key: threadKey,
+        family: 'verification',
+        thread_type: 'verification',
+        entity_type: normalizedEntityType,
+        entity_id: normalizedEntityId,
+        context_type: 'verification',
+        context_id: normalizedEntityId,
+        sender_user_id: normalizedOwnerUserId,
+        recipient_user_id: normalizedOwnerUserId,
+        priority: 'normal',
+        waiting_on: workflowStatus === 'resolved' ? null : 'admin',
+        workflow_status: workflowStatus,
+        visibility_scope: 'mixed',
+        metadata: {
+          ownerUserId: normalizedOwnerUserId,
+          entityType: normalizedEntityType,
+          entityId: normalizedEntityId,
+          fallbackVerificationThread: true,
+        },
+        updated_at: new Date().toISOString(),
+      }, tenantScope), {
+        onConflict: 'thread_key',
+      })
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSharedMessageThreadsSchemaUnavailable(error)) {
+        return {
+          caseId: null,
+          threadId: null,
+          threadKey,
+        };
+      }
+      throw error;
+    }
+
+    return {
+      caseId: null,
+      threadId: data?.id ? String(data.id) : null,
+      threadKey: String(data?.thread_key || threadKey),
+    };
+  } catch (error) {
+    if (isSharedMessageThreadsSchemaUnavailable(error)) {
+      return {
+        caseId: null,
+        threadId: null,
+        threadKey,
+      };
+    }
+    throw error;
+  }
+};
+
 const isVerificationCasesSchemaUnavailable = (error) => {
   const code = String(error?.code || '').trim().toUpperCase();
   const message = String(error?.message || '').toLowerCase();
@@ -227,17 +302,38 @@ const ensureVerificationCaseThread = async (adminClient, {
       .single();
 
     if (error) {
-      if (isVerificationCasesSchemaUnavailable(error)) return null;
+      if (isVerificationCasesSchemaUnavailable(error)) {
+        return ensureVerificationFallbackThreadState(adminClient, {
+          entityType: normalizedEntityType,
+          entityId: normalizedEntityId,
+          ownerUserId: normalizedOwnerUserId,
+          tenantScope,
+        });
+      }
       throw error;
     }
 
     caseRow = data || null;
   } catch (error) {
-    if (isVerificationCasesSchemaUnavailable(error)) return null;
+    if (isVerificationCasesSchemaUnavailable(error)) {
+      return ensureVerificationFallbackThreadState(adminClient, {
+        entityType: normalizedEntityType,
+        entityId: normalizedEntityId,
+        ownerUserId: normalizedOwnerUserId,
+        tenantScope,
+      });
+    }
     throw error;
   }
 
-  if (!caseRow?.id) return null;
+  if (!caseRow?.id) {
+    return ensureVerificationFallbackThreadState(adminClient, {
+      entityType: normalizedEntityType,
+      entityId: normalizedEntityId,
+      ownerUserId: normalizedOwnerUserId,
+      tenantScope,
+    });
+  }
 
   const threadKey = String(caseRow.thread_key || '').trim() || buildVerificationCaseThreadKey(caseRow.id);
   const workflowStatus = String(caseRow.case_status || '').trim().toLowerCase() === 'approved' ? 'resolved' : 'active';
@@ -560,9 +656,26 @@ const resolveVehicleVerificationAliases = async (adminClient, { entityId, ownerU
   if (!normalizedEntityId && !normalizedOwnerUserId) return aliasSet;
 
   try {
+    let fleetVehicleForEntity = null;
+    if (!normalizedOwnerUserId && /^\d+$/.test(normalizedEntityId)) {
+      const { data: fleetVehicle, error: fleetVehicleError } = await adminClient
+        .from(VEHICLES_TABLE)
+        .select('id, owner_user_id, plate_number')
+        .eq('id', Number(normalizedEntityId))
+        .maybeSingle();
+
+      if (!fleetVehicleError && fleetVehicle?.id) {
+        fleetVehicleForEntity = fleetVehicle;
+      }
+    }
+
     let profileQuery = adminClient.from(VEHICLE_PROFILES_TABLE).select('*');
     if (normalizedOwnerUserId) {
       profileQuery = profileQuery.eq('owner_id', normalizedOwnerUserId);
+    } else if (fleetVehicleForEntity?.owner_user_id && fleetVehicleForEntity?.plate_number) {
+      profileQuery = profileQuery
+        .eq('owner_id', fleetVehicleForEntity.owner_user_id)
+        .eq('plate_number', fleetVehicleForEntity.plate_number);
     } else if (normalizedEntityId) {
       profileQuery = profileQuery.eq('id', normalizedEntityId);
     }
@@ -603,11 +716,14 @@ const resolveVehicleVerificationAliases = async (adminClient, { entityId, ownerU
       if (plateNumber) plateNumbers.add(plateNumber);
     });
 
-    if (normalizedOwnerUserId && plateNumbers.size) {
+    if (plateNumbers.size) {
+      const ownerIds = [...new Set(matchingProfiles.map((profile) => normalizeIdentifier(profile?.owner_id)).filter(Boolean))];
+      if (!ownerIds.length) return aliasSet;
+
       const { data: fleetRows, error: fleetError } = await adminClient
         .from(VEHICLES_TABLE)
         .select('id, owner_user_id, plate_number')
-        .eq('owner_user_id', normalizedOwnerUserId)
+        .in('owner_user_id', ownerIds)
         .in('plate_number', [...plateNumbers]);
 
       if (!fleetError) {
@@ -889,7 +1005,7 @@ const handleGet = async (req, res) => {
     const { adminClient, user, tenantRuntime } = auth;
     const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime });
     const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
-    if (!userInScope) {
+    if (!userInScope && req.query?.entityType !== 'vehicle') {
       return sendJson(res, 403, { error: 'You do not have access to this workspace' });
     }
     const entityType = assertString(req.query.entityType, 'entityType');
@@ -899,15 +1015,19 @@ const handleGet = async (req, res) => {
       return sendJson(res, 400, { error: 'Invalid entityType' });
     }
 
-    const rowsQuery = applyTenantQueryScope(
-      adminClient
+    const vehicleAliasSet = entityType === 'vehicle'
+      ? await resolveVehicleVerificationAliases(adminClient, { entityId })
+      : new Set([entityId]);
+    const entityIds = entityType === 'vehicle'
+      ? [...vehicleAliasSet].filter(Boolean)
+      : [entityId];
+
+    const rowsQuery = adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .select('*')
       .eq('entity_type', entityType)
-      .eq('entity_id', entityId)
-      .order('created_at', { ascending: false }),
-      tenantScope
-    );
+      .in('entity_id', entityIds.length ? entityIds : [entityId])
+      .order('created_at', { ascending: false });
 
     const { data, error } = await rowsQuery;
     if (error) {
@@ -930,12 +1050,16 @@ const handleGet = async (req, res) => {
     const historyRows = rows.filter((row) => isArchivedVerificationRow(row));
     let summary = null;
     try {
-      summary = await refreshEntityVerificationSummary(adminClient, entityType, entityId);
+      const refreshEntityId = entityType === 'vehicle' && rows.length > 0
+        ? String(rows[0]?.entity_id || entityId)
+        : entityId;
+      summary = await refreshEntityVerificationSummary(adminClient, entityType, refreshEntityId);
     } catch (refreshError) {
       if (isVerificationSchemaUnavailable(refreshError)) {
-        summary = buildVerificationSummary(data || [], entityType);
+        summary = buildVerificationSummary(rows, entityType);
       } else {
-        return sendJson(res, 500, { error: refreshError.message || 'Unable to refresh verification summary' });
+        console.warn('Unable to refresh persisted verification summary:', refreshError.message || refreshError);
+        summary = buildVerificationSummary(rows, entityType);
       }
     }
 
@@ -1396,12 +1520,22 @@ const handleDelete = async (req, res) => {
     .from(VERIFICATION_REQUESTS_TABLE)
     .select('*')
     .eq('id', id)
-    .single(),
+    .maybeSingle(),
     tenantScope
   );
 
-  if (loadError || !existing) {
-    return sendJson(res, 404, { error: loadError?.message || 'Verification request not found' });
+  if (loadError) {
+    return sendJson(res, 500, { error: loadError.message || 'Unable to load verification request' });
+  }
+
+  if (!existing) {
+    return sendJson(res, 200, {
+      success: true,
+      removedId: id,
+      removedIds: [id],
+      alreadyRemoved: true,
+      summary: null,
+    });
   }
 
   const actorRole = await getActorRole(adminClient, user);

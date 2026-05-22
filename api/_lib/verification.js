@@ -10,10 +10,18 @@ export const VERIFICATION_ENTITY_TYPES = new Set(['user', 'vehicle']);
 
 const VEHICLE_REQUIRED_TYPES = ['vehicle_registration', 'vehicle_insurance'];
 const USER_REQUIRED_TYPES = ['profile_id', 'driver_license'];
+const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 
 const getRequiredTypes = (entityType) => (
   entityType === 'vehicle' ? VEHICLE_REQUIRED_TYPES : USER_REQUIRED_TYPES
 );
+
+const getVehicleProfileVerificationStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'approved') return 'verified';
+  if (normalized === 'pending') return 'pending_verification';
+  return normalized || 'pending_verification';
+};
 
 const isVerificationPersistenceUnavailable = (error) => {
   const code = String(error?.code || '').trim();
@@ -166,7 +174,11 @@ export const refreshEntityVerificationSummary = async (adminClient, entityType, 
     String(Math.trunc(numericVehicleEntityId)) === normalizedEntityId;
 
   if (entityType === 'vehicle') {
-    if (canPersistOnFleetVehicle) {
+    const persistFleetVehicleSummary = async (vehicleId) => {
+      if (!vehicleId && vehicleId !== 0) return;
+      const numericVehicleId = Number(vehicleId);
+      if (!Number.isFinite(numericVehicleId)) return;
+
       const { error } = await adminClient
         .from(VEHICLES_TABLE)
         .update({
@@ -175,7 +187,7 @@ export const refreshEntityVerificationSummary = async (adminClient, entityType, 
           insurance_expires_at: summary.insuranceExpiresAt,
           is_listable: summary.complete,
         })
-        .eq('id', numericVehicleEntityId);
+        .eq('id', numericVehicleId);
 
       if (error) {
         if (isVerificationPersistenceUnavailable(error)) {
@@ -184,8 +196,67 @@ export const refreshEntityVerificationSummary = async (adminClient, entityType, 
           throw error;
         }
       }
+    };
+
+    if (canPersistOnFleetVehicle) {
+      await persistFleetVehicleSummary(numericVehicleEntityId);
     } else {
-      console.warn('Skipping fleet vehicle verification summary persistence for non-numeric vehicle entity id:', normalizedEntityId);
+      const { data: profile, error: profileError } = await adminClient
+        .from(VEHICLE_PROFILES_TABLE)
+        .select('*')
+        .eq('id', normalizedEntityId)
+        .maybeSingle();
+
+      if (profileError) {
+        if (isVerificationPersistenceUnavailable(profileError)) {
+          console.warn('Vehicle profile verification summary persistence unavailable:', profileError.message || profileError);
+        } else {
+          throw profileError;
+        }
+      }
+
+      if (profile?.id) {
+        const { error: profileUpdateError } = await adminClient
+          .from(VEHICLE_PROFILES_TABLE)
+          .update({
+            verification_status: getVehicleProfileVerificationStatus(summary.status),
+          })
+          .eq('id', profile.id);
+
+        if (profileUpdateError && !isVerificationPersistenceUnavailable(profileUpdateError)) {
+          throw profileUpdateError;
+        }
+
+        const directFleetId =
+          profile.linked_fleet_vehicle_id ||
+          profile.fleet_vehicle_id ||
+          (/^\d+$/.test(String(profile.vehicle_ref_id || '').trim()) ? profile.vehicle_ref_id : null);
+
+        if (directFleetId) {
+          await persistFleetVehicleSummary(directFleetId);
+        } else if (profile.owner_id && profile.plate_number) {
+          const { data: fleetVehicle, error: fleetLookupError } = await adminClient
+            .from(VEHICLES_TABLE)
+            .select('id')
+            .eq('owner_user_id', profile.owner_id)
+            .eq('plate_number', profile.plate_number)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (fleetLookupError) {
+            if (isVerificationPersistenceUnavailable(fleetLookupError)) {
+              console.warn('Linked fleet vehicle lookup unavailable:', fleetLookupError.message || fleetLookupError);
+            } else {
+              throw fleetLookupError;
+            }
+          }
+
+          if (fleetVehicle?.id) {
+            await persistFleetVehicleSummary(fleetVehicle.id);
+          }
+        }
+      }
     }
   }
 

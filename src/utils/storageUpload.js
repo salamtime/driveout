@@ -132,8 +132,12 @@ export const sanitizeStorageSegment = (value, fallback = 'default') => {
 };
 
 export const buildTenantStoragePrefix = (organizationId, pathPrefix = '') => {
-  const tenantRoot = `tenant/${sanitizeStorageSegment(organizationId, 'unknown-org')}`;
   const normalizedPrefix = sanitizeStorageSegment(pathPrefix, '');
+  if (!organizationId) {
+    return normalizedPrefix;
+  }
+
+  const tenantRoot = `tenant/${sanitizeStorageSegment(organizationId, 'unknown-org')}`;
   return normalizedPrefix ? `${tenantRoot}/${normalizedPrefix}` : tenantRoot;
 };
 
@@ -150,9 +154,15 @@ export const buildTenantScopedStoragePath = ({
 export const buildStoragePathCandidates = (organizationId, pathPrefix = '') => {
   const scopedPrefix = buildTenantStoragePrefix(organizationId, pathPrefix);
   const normalizedLegacyPrefix = sanitizeStorageSegment(pathPrefix, '');
-  return normalizedLegacyPrefix
-    ? [scopedPrefix, normalizedLegacyPrefix]
-    : [scopedPrefix];
+  const unknownOrgLegacyPrefix = normalizedLegacyPrefix
+    ? `tenant/unknown-org/${normalizedLegacyPrefix}`
+    : '';
+
+  return [...new Set([
+    scopedPrefix,
+    normalizedLegacyPrefix,
+    unknownOrgLegacyPrefix,
+  ].filter(Boolean))];
 };
 
 export const optimizeFileForUpload = async (file, options = {}) => {

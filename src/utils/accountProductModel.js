@@ -106,9 +106,9 @@ export const getEffectiveMarketplaceJourneyState = ({
   const normalizedModeration = String(moderationStatus || '').trim().toLowerCase();
 
   if (!hasStartedDraft) return 'not_started';
-  if (!marketplaceVerificationReady) return 'verification_required';
   if (normalizedListing === 'live') return 'live';
   if (normalizedListing === 'approved' || normalizedReview === 'approved') return 'approved';
+  if (normalizedModeration === 'changes_requested') return 'changes_requested';
   if (
     normalizedListing === 'pending_review' ||
     normalizedReview === 'pending_review' ||
@@ -116,9 +116,9 @@ export const getEffectiveMarketplaceJourneyState = ({
   ) {
     return 'pending_review';
   }
-  if (normalizedModeration === 'changes_requested') return 'changes_requested';
   if (normalizedListing === 'rejected' || normalizedReview === 'rejected') return 'rejected';
-      return 'draft';
+  if (!marketplaceVerificationReady) return 'verification_required';
+  return 'draft';
 };
 
 export const getPrimaryAccountWorkspaceSectionIds = ({

@@ -94,6 +94,17 @@ export const buildOwnerListingSetupProgress = ({
   const reviewPublishComplete = Boolean(listingLive);
   const reviewPublishWaiting = Boolean(listingReviewSubmitted && !listingApproved && !listingLive);
   const reviewPublishActive = Boolean(canSendFullReview || listingApproved);
+  const reviewPublishState = reviewPublishComplete
+    ? 'live'
+    : listingApproved
+      ? 'approved'
+      : listingIssue
+        ? 'changes_requested'
+        : listingReviewSubmitted
+          ? 'waiting_for_admin'
+          : canSendFullReview
+            ? 'ready_for_review'
+            : 'blocked';
 
   const tasks = [
     buildTask({
@@ -161,7 +172,7 @@ export const buildOwnerListingSetupProgress = ({
     buildTask({
       key: OWNER_LISTING_SETUP_TASK_KEYS.publish,
       done: listingLive,
-      label: tr('Go live', 'Mettre en ligne'),
+      label: tr('Publish now', 'Publier maintenant'),
       tab: 'listing',
       section: 'listing-journey',
     }),
@@ -259,7 +270,9 @@ export const buildOwnerListingSetupProgress = ({
       key: OWNER_LISTING_SETUP_STEP_KEYS.reviewPublish,
       stepNumber: 6,
       title: tr('Review & publish', 'Revue & publication'),
-      detail: reviewPublishWaiting
+      detail: listingIssue
+        ? tr('Review feedback is waiting in support. Update the listing, then send it again.', 'Le retour de revue vous attend dans le support. Mettez l’annonce à jour, puis renvoyez-la.')
+        : reviewPublishWaiting
         ? tr('The full package is with admin.', 'Le dossier complet est chez l’admin.')
         : tr('Submit for review, then publish when approved.', 'Envoyez en revue, puis publiez après approbation.'),
       status: getActionStatus({
@@ -272,13 +285,13 @@ export const buildOwnerListingSetupProgress = ({
       ctaLabel: listingLive
         ? tr('Manage listing', "Gérer l'annonce")
         : listingApproved
-          ? tr('Go live', 'Mettre en ligne')
+          ? tr('Publish now', 'Publier maintenant')
+          : listingIssue
+            ? tr('Open support', 'Ouvrir le support')
           : listingReviewSubmitted
-            ? tr('Track review', 'Suivre la revue')
+            ? tr('Open support', 'Ouvrir le support')
             : tr('Open review step', "Ouvrir l'étape de revue"),
-      actionMode: canSendFullReview && !listingReviewSubmitted && !listingApproved && !listingLive
-        ? 'submit-review'
-        : 'navigate',
+      actionMode: 'navigate',
       target: buildStepTarget({ vehicleId: safeVehicleId, tab: 'listing', section: 'listing-journey', currentPath }),
       taskKeys: [
         OWNER_LISTING_SETUP_TASK_KEYS.listingReview,
@@ -321,5 +334,6 @@ export const buildOwnerListingSetupProgress = ({
     totalTasks: tasks.length,
     incompleteTasks: tasks.filter((task) => !task.done),
     canSendFullReview: Boolean(canSendFullReview),
+    reviewPublishState,
   };
 };

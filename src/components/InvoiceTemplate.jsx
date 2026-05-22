@@ -1,7 +1,9 @@
-import { forwardRef } from "react";
+import { forwardRef, useEffect, useState } from "react";
 import i18n from "../i18n";
 import { captureElementToCanvas } from "../utils/pdfCapture";
 import { isPackagePricingEnabled } from "../utils/simpleRentalPricing";
+import { fetchSystemSettings } from "../services/systemSettingsApi";
+import { formatDailyReturnPolicyTime, isDailyRentalType, normalizeDailyReturnPolicy } from "../utils/dailyReturnPolicy";
 
 const loadPdfTools = async () => {
   const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
@@ -73,6 +75,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
   if (!rental) {
     return <div ref={ref}>{tr('No rental data available.', 'Aucune donnée de location disponible.')}</div>;
   }
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
 
   const {
     id,
@@ -191,6 +194,38 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
   };
 
   const finalSignatureUrl = getCorrectSignatureUrl(signature_url);
+  const shouldShowDailyReturnPolicy = isDailyRentalType(rental?.rental_type);
+  const dailyReturnTimeLabel = formatDailyReturnPolicyTime(dailyReturnPolicy, isFrench ? 'fr-MA' : 'en-US');
+  const dailyReturnPolicyHeadline = tr(
+    `Back before ${dailyReturnTimeLabel} the next day`,
+    `Retour avant ${dailyReturnTimeLabel} le lendemain`
+  );
+  const dailyReturnPolicyBody = tr(
+    `Late return: ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD per extra hour. After ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours, a full extra day is charged.`,
+    `Retour tardif : ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire. Après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures, une journée complète est facturée.`
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDailyReturnPolicy = async () => {
+      try {
+        const data = await fetchSystemSettings();
+        if (!cancelled && data) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy(data));
+        }
+      } catch {
+        if (!cancelled) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy());
+        }
+      }
+    };
+
+    loadDailyReturnPolicy();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleDownloadPdf = async () => {
     const input = document.getElementById("rental-contract-to-print");
@@ -293,6 +328,15 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
                 <p><strong>{tr('Start:', 'Début :')}</strong> {start_date || tr("N/A", "N/D")}</p>
                 <p><strong>{tr('End:', 'Fin :')}</strong> {end_date || tr("N/A", "N/D")}</p>
               </div>
+              {shouldShowDailyReturnPolicy && (
+                <div className="mt-2 rounded-md border border-violet-200 bg-violet-50 p-2 text-[10px] leading-4 text-violet-900">
+                  <p className="font-semibold uppercase tracking-[0.18em] text-violet-700">
+                    {tr('Daily return rule', 'Règle retour journée')}
+                  </p>
+                  <p className="mt-1 font-semibold text-gray-900">{dailyReturnPolicyHeadline}</p>
+                  <p className="mt-1 text-violet-800">{dailyReturnPolicyBody}</p>
+                </div>
+              )}
             </div>
           </section>
           
@@ -476,9 +520,9 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
                 </div>
                 <div className="mb-1">
                   <h4 className="font-bold mb-0.5">Art. 5 - Durée de Location et Retards</h4>
-                  <p>5.1. Le quad doit être restitué à l'heure et au lieu convenus dans le contrat.</p>
-                  <p>5.2. Les retards entraînent des frais de 100 MAD par heure.</p>
-                  <p>5.3. Si le quad est restitué après 12h00 le lendemain, il sera considéré comme une location de 24 heures complètes et facturé en conséquence.</p>
+                  <p>5.1. Les locations journalières doivent être restituées avant {dailyReturnTimeLabel} le lendemain.</p>
+                  <p>5.2. Les retards entraînent des frais de {dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire.</p>
+                  <p>5.3. Après {dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures de retard, une journée complète supplémentaire est facturée.</p>
                   <p>5.4. La société se réserve le droit de mettre fin immédiatement à la location en cas de non-respect des présentes conditions.</p>
                 </div>
                 <div className="mb-1">
@@ -522,9 +566,9 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
                 </div>
                 <div className="mb-1">
                   <h4 className="font-bold mb-0.5">المادة 5 - مدة الايجار والرسوم الإضافية</h4>
-                  <p>5.1. يجب إعادة الدراجة في الوقت والمكان المتفق عليهما في عقد الإيجار.</p>
-                  <p>5.2. يتم فرض رسوم تأخير قدرها 100 درهم مغربي لكل ساعة.</p>
-                  <p>5.3. إذا تمت إعادة الدراجة بعد الساعة 12:00 ظهراً من اليوم التالي، فسيتم احتسابها كإيجار لمدة 24 ساعة كاملة ويتوجب دفع تكلفة يوم كامل.</p>
+                  <p>5.1. يجب إرجاع الكراء اليومي قبل {dailyReturnTimeLabel} من اليوم التالي.</p>
+                  <p>5.2. يتم فرض رسوم تأخير قدرها {dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} درهم مغربي لكل ساعة إضافية.</p>
+                  <p>5.3. بعد تأخير يتجاوز {dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} ساعات، يتم احتساب يوم إضافي كامل.</p>
                   <p>5.4. تحتفظ الشركة بحق إنهاء عقد الإيجار فوراً في حال خرق أي بند من هذه الشروط.</p>
                 </div>
                 <div className="mb-1">

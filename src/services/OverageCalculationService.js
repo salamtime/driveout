@@ -9,6 +9,56 @@ const VEHICLES_TABLE = 'saharax_0u4w4d_vehicles';
 const PACKAGES_TABLE = 'app_4c3a7a6153_rental_km_packages';
 const BASE_PRICES_TABLE = 'app_4c3a7a6153_base_prices';
 
+const toMoneyNumber = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const hasUnlimitedPackageSnapshot = (rentalData = {}) => {
+  const packageName = String(
+    rentalData.selected_package_name ||
+    rentalData.package_name ||
+    rentalData.package?.name ||
+    rentalData.package?.package_name ||
+    ''
+  ).toLowerCase();
+  const selectedLimit =
+    rentalData.selected_package_included_km ??
+    rentalData.package_included_km_per_unit ??
+    rentalData.package_total_included_km ??
+    rentalData.package?.included_kilometers;
+  const selectedRate =
+    rentalData.selected_package_extra_rate ??
+    rentalData.package_extra_rate ??
+    rentalData.package?.extra_km_rate;
+  const hasPackageAmount = toMoneyNumber(
+    rentalData.selected_package_fixed_amount ||
+    rentalData.package_rate_per_unit ||
+    rentalData.package?.fixed_amount
+  ) > 0;
+  const parsedLimit = Number(selectedLimit);
+  const noFiniteLimit =
+    selectedLimit == null ||
+    selectedLimit === '' ||
+    (Number.isFinite(parsedLimit) && parsedLimit <= 0);
+
+  return (
+    packageName.includes('unlimited') ||
+    packageName.includes('unlimted') ||
+    packageName.includes('illimité') ||
+    (hasPackageAmount && noFiniteLimit && toMoneyNumber(selectedRate) <= 0)
+  );
+};
+
+const getPackageSnapshotAmount = (rentalData = {}) =>
+  toMoneyNumber(rentalData.selected_package_fixed_amount) ||
+  toMoneyNumber(rentalData.package_rate_per_unit) ||
+  toMoneyNumber(rentalData.package?.fixed_amount) ||
+  toMoneyNumber(rentalData.unit_price_mad) ||
+  toMoneyNumber(rentalData.subtotal_mad) ||
+  toMoneyNumber(rentalData.unit_price) ||
+  toMoneyNumber(rentalData.total_amount);
+
 export default class OverageCalculationService {
   static async scopeQuery(query, tableName, message) {
     return scopeTenantOwnedQuery(query, tableName, { message });
@@ -204,12 +254,18 @@ export default class OverageCalculationService {
       // STEP 4: Calculate distance and overage
       const startOdometer = parseFloat(rentalData.start_odometer || 0);
       const totalDistance = parseFloat(endOdometer) - startOdometer;
-      const includedKilometers = parseFloat(rentalData.included_kilometers || 0);
+      const isUnlimitedPackageRental = hasUnlimitedPackageSnapshot(rentalData);
+      const includedKilometers = isUnlimitedPackageRental
+        ? Number.POSITIVE_INFINITY
+        : parseFloat(rentalData.included_kilometers || 0);
       
       let overageCharge = 0;
       let hasOverage = false;
       
-      if (totalDistance > includedKilometers && includedKilometers > 0) {
+      if (isUnlimitedPackageRental) {
+        rentalTypePrice = getPackageSnapshotAmount(rentalData) || rentalTypePrice;
+        console.log('✅ Unlimited package selected - skipping kilometer overage calculation');
+      } else if (totalDistance > includedKilometers && includedKilometers > 0) {
         const extraKms = totalDistance - includedKilometers;
         const extraKmRate = parseFloat(rentalData.extra_km_rate_applied || 0);
         overageCharge = extraKms * extraKmRate;
@@ -243,8 +299,10 @@ export default class OverageCalculationService {
           total_kilometers_driven: totalDistance,
           overage_charge: overageCharge,
           has_kilometer_overage: hasOverage,
-          unit_price: rentalTypePrice, // ✅ CORRECT: Rental type price (e.g., 1500 MAD daily), not package price (400 MAD)
-          total_amount: correctTotal, // ✅ CORRECT: Rental type price + overage
+          included_kilometers_applied: isUnlimitedPackageRental ? null : includedKilometers,
+          extra_km_rate_applied: isUnlimitedPackageRental ? 0 : rentalData.extra_km_rate_applied,
+          unit_price: rentalTypePrice, // Base charge from the selected package/rental type.
+          total_amount: correctTotal, // Base charge plus any allowed kilometer overage.
           updated_at: new Date().toISOString()
         })
         .eq('id', rentalId)

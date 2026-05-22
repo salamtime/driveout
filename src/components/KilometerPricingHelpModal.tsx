@@ -5,9 +5,14 @@ import i18n from '../i18n';
 interface KilometerPricingHelpModalProps {
   isOpen: boolean;
   onClose: () => void;
+  dailyReturnHelpText?: string;
 }
 
-const KilometerPricingHelpModal: React.FC<KilometerPricingHelpModalProps> = ({ isOpen, onClose }) => {
+const KilometerPricingHelpModal: React.FC<KilometerPricingHelpModalProps> = ({
+  isOpen,
+  onClose,
+  dailyReturnHelpText,
+}) => {
   if (!isOpen) return null;
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en: string, fr: string) => (isFrench ? fr : en);
@@ -269,7 +274,12 @@ const KilometerPricingHelpModal: React.FC<KilometerPricingHelpModalProps> = ({ i
               </div>
               <div className="bg-white rounded-lg p-3 border border-gray-200">
                 <p className="font-medium text-gray-900 mb-1">📅 {tr('Daily', 'Journalier')}</p>
-                <p className="text-gray-700">{tr('24-hour rentals with kilometer limits (e.g., 200km/day)', 'Locations de 24 heures avec limites kilométriques (ex. 200 km/jour)')}</p>
+                <p className="text-gray-700">
+                  {dailyReturnHelpText || tr(
+                    'Daily rentals use kilometer limits and a fixed next-day return time.',
+                    'Les locations journalières utilisent des limites kilométriques et une heure fixe de retour le lendemain.'
+                  )}
+                </p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-gray-200">
                 <p className="font-medium text-gray-900 mb-1">📆 {tr('Weekly', 'Hebdomadaire')}</p>

@@ -12,6 +12,7 @@ import {
   resolvePermissionKey,
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
+import { shouldScopeSharedTenantData } from '../services/OrganizationService';
 import { resolveUserEntry } from '../utils/tenantEntryResolver';
 import { getHostContext, isFirstPartyTenantHost } from '../utils/hostContext';
 import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../config/tenantPlans';
@@ -127,11 +128,7 @@ const buildPreferredOAuthUrl = (oauthUrl, redirectTo) => {
     const preferredUrl = new URL(oauthUrl);
 
     const normalizedRedirectTo = redirectTo.trim();
-    const currentRedirectTo = preferredUrl.searchParams.get('redirect_to');
-
-    if (currentRedirectTo && currentRedirectTo !== normalizedRedirectTo) {
-      preferredUrl.searchParams.set('redirect_to', normalizedRedirectTo);
-    }
+    preferredUrl.searchParams.set('redirect_to', normalizedRedirectTo);
 
     return preferredUrl.toString();
   } catch (error) {
@@ -514,7 +511,12 @@ export const AuthProvider = ({ children }) => {
         authUser.app_metadata?.role ||
         null;
       const localStorageRole =
-        typeof window !== 'undefined' ? window.localStorage.getItem('saharax_user_role') : null;
+        typeof window !== 'undefined'
+          ? (
+            window.localStorage.getItem('driveout_user_role') ||
+            window.localStorage.getItem('saharax_user_role')
+          )
+          : null;
       const appRecordRole = String(appUserRecord?.role || '').trim().toLowerCase() || null;
       const normalizedMetadataRole = String(metadataRole || '').trim().toLowerCase() || null;
       const normalizedLocalStorageRole = String(localStorageRole || '').trim().toLowerCase() || null;
@@ -606,8 +608,10 @@ export const AuthProvider = ({ children }) => {
 
       if (typeof window !== 'undefined') {
         if (appRecordRole || normalizedMetadataRole) {
+          window.localStorage.removeItem('driveout_user_role');
           window.localStorage.removeItem('saharax_user_role');
         } else if (userRole && userRole !== 'customer') {
+          window.localStorage.setItem('driveout_user_role', userRole);
           window.localStorage.setItem('saharax_user_role', userRole);
         }
       }
@@ -1205,7 +1209,7 @@ export const AuthProvider = ({ children }) => {
     const enforceTenantFeatureAccess =
       !isFirstPartyWorkspace && (
         String(userProfile.role || '').toLowerCase() === 'business_owner'
-        || hostContext.kind === 'tenant'
+        || shouldScopeSharedTenantData(hostContext)
       );
     const resolvedModuleKey = resolvePermissionKey(moduleName);
     const normalizedPlatformPermissions =
@@ -1324,6 +1328,9 @@ export const AuthProvider = ({ children }) => {
       return null;
     }
     const host = getHostContext();
+    if (host?.isLocal && host?.kind === 'admin') {
+      return null;
+    }
     const normalizedRole = String(userProfile?.role || session?.user?.user_metadata?.role || session?.user?.app_metadata?.role || '').trim().toLowerCase();
     if (host.kind === 'tenant' && ['owner', 'admin', 'employee', 'guide'].includes(normalizedRole)) {
       return null;

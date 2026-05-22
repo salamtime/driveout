@@ -23,7 +23,7 @@ import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import { useAuth } from '../../contexts/AuthContext';
 import { PLATFORM_OWNER_EMAILS } from '../../utils/accountType';
-import { buildHostUrl, getHostContext } from '../../utils/hostContext';
+import { buildHostUrl, buildLocalAdminUrl, buildLocalTenantUrl, getHostContext } from '../../utils/hostContext';
 import {
   applyTenantSchemaUpgrade,
   completeTenantProvisioning,
@@ -305,7 +305,38 @@ const LOCAL_FIRST_PARTY_SUPABASE_URL = normalizeUrl(import.meta.env.VITE_SUPABAS
 const LOCAL_FIRST_PARTY_SUPABASE_ANON_KEY = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 const LOCAL_FIRST_PARTY_PROJECT_REF = getProjectRefFromSupabaseUrl(LOCAL_FIRST_PARTY_SUPABASE_URL);
 
-const buildWorkspaceAccessUrls = (tenant = {}) => {
+const getTenantSlugFromWorkspace = (tenant = {}) => {
+  const directSlug = String(tenant?.tenant_slug || tenant?.tenantSlug || '').trim().toLowerCase();
+  if (directSlug) return directSlug;
+
+  const appUrl = normalizeUrl(tenant?.tenant_app_url || tenant?.tenantAppUrl || '');
+  if (!appUrl) return '';
+
+  try {
+    const hostname = new URL(appUrl).hostname.toLowerCase();
+    if (!hostname.endsWith('.driveout.io')) return '';
+    const slug = hostname.replace(/\.driveout\.io$/, '');
+    return ['www', 'admin', 'app'].includes(slug) ? '' : slug;
+  } catch {
+    return '';
+  }
+};
+
+const buildWorkspaceAccessUrls = (tenant = {}, hostContext = {}) => {
+  if (hostContext?.isLocal) {
+    const tenantSlug = getTenantSlugFromWorkspace(tenant);
+    return {
+      storefrontUrl: buildLocalTenantUrl({
+        tenantSlug,
+        pathname: '/',
+      }),
+      workspaceUrl: buildLocalTenantUrl({
+        tenantSlug,
+        pathname: '/admin',
+      }),
+    };
+  }
+
   const storefrontUrl = normalizeUrl(tenant?.tenant_app_url || '');
   const workspaceUrl = storefrontUrl ? `${storefrontUrl.replace(/\/$/, '')}/admin` : '';
 
@@ -1371,8 +1402,8 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   }), [draft, workspace?.tenant]);
 
   const { storefrontUrl, workspaceUrl } = useMemo(
-    () => buildWorkspaceAccessUrls(effectiveConnectionConfig),
-    [effectiveConnectionConfig]
+    () => buildWorkspaceAccessUrls(effectiveConnectionConfig, hostContext),
+    [effectiveConnectionConfig, hostContext]
   );
 
   const healthReport = useMemo(
@@ -3320,8 +3351,12 @@ const Workspaces = () => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const platformWorkspaceUrl = useMemo(
-    () => buildHostUrl({ kind: 'admin', pathname: '/admin/workspaces' }),
-    []
+    () => (
+      hostContext.isLocal
+        ? buildLocalAdminUrl({ pathname: '/admin/workspaces' })
+        : buildHostUrl({ kind: 'admin', pathname: '/admin/workspaces' })
+    ),
+    [hostContext.isLocal]
   );
 
   useEffect(() => {

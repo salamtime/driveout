@@ -27,4 +27,6 @@ create index if not exists wallet_topups_status_idx
 create index if not exists wallet_topups_user_email_idx
   on public.wallet_topups(lower(user_email));
 
+grant select, insert, update, delete on public.wallet_topups to service_role;
+
 notify pgrst, 'reload schema';

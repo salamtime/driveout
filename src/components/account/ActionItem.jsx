@@ -12,6 +12,7 @@ const ActionItem = ({
   icon: Icon,
   tone = 'amber',
   emphasis = false,
+  disabled = false,
 }) => {
   const toneClass = {
     amber: 'border-amber-100 bg-amber-50 text-amber-900',
@@ -23,7 +24,7 @@ const ActionItem = ({
   const emphasisClass = emphasis
     ? 'shadow-[0_16px_34px_rgba(79,70,229,0.14)] hover:-translate-y-1 hover:shadow-[0_20px_38px_rgba(79,70,229,0.18)] active:translate-y-0 active:scale-[0.99]'
     : 'hover:shadow-sm';
-  const baseClass = `flex items-center justify-between gap-3 rounded-[1.45rem] border p-4 transition duration-200 ${toneClass} ${emphasisClass}`;
+  const baseClass = `flex items-center justify-between gap-3 rounded-[1.45rem] border p-4 transition duration-200 ${toneClass} ${disabled ? 'cursor-not-allowed opacity-70' : emphasisClass}`;
 
   const content = (
     <>
@@ -41,6 +42,14 @@ const ActionItem = ({
       <ArrowRight className="h-4 w-4 flex-shrink-0 opacity-70" />
     </>
   );
+
+  if (disabled) {
+    return (
+      <div className={baseClass} aria-disabled="true">
+        {content}
+      </div>
+    );
+  }
 
   if (href) {
     return (

@@ -21,42 +21,12 @@ import {
   normalizeTenantPlanType,
 } from '../../src/config/tenantPlans.js';
 import { buildLegacyDedicatedInfrastructure } from './legacyDedicatedTenant.js';
-
-const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
-const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
-const LOCAL_TENANT_PORT_MAP = Object.freeze({
-  '5174': 'offroad',
-});
+import { getTenantSlugFromHostname, normalizeHostname } from './tenantHostResolution.js';
 
 const isAutomaticSignupModeEnabled = () => {
   const signupMode = String(process.env.TENANT_SIGNUP_MODE || 'automatic').trim().toLowerCase();
   const autoProvisioningEnabled = String(process.env.TENANT_AUTO_PROVISIONING_ENABLED || 'true').trim().toLowerCase();
   return signupMode !== 'manual' && autoProvisioningEnabled !== 'false';
-};
-
-const normalizeHostname = (value = '') => {
-  const trimmed = String(value || '').trim().toLowerCase();
-  if (!trimmed) return '';
-
-  try {
-    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
-  } catch {
-    return trimmed.split('/')[0].split(':')[0].toLowerCase();
-  }
-};
-
-const getTenantSlugFromHostname = (hostname = '') => {
-  const rawHostname = String(hostname || '').trim().toLowerCase();
-  const normalizedHostname = normalizeHostname(hostname);
-  const localPort = rawHostname.split(':')[1] || '';
-  if ((normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[localPort]) {
-    return LOCAL_TENANT_PORT_MAP[localPort];
-  }
-
-  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
-
-  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
-  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
 };
 
 const isRetryableTenantBootstrapFailure = (tenant = {}, provisioningJob = null) => {

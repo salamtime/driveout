@@ -683,14 +683,14 @@ const updateListingStatus = async ({
       suggestions: normalizedSuggestions,
       send_to_owner: shouldSendToOwner,
     };
-    if (shouldSendToOwner && normalizedFeedback) {
+    if (shouldSendToOwner) {
       ownerMessagePayload = {
         listing_id: listing.id,
         owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'approval',
-        body: normalizedFeedback,
+        body: normalizedFeedback || 'Your listing was approved. You can publish it when ready.',
         metadata: { action: 'approve' },
       };
     }
@@ -720,14 +720,18 @@ const updateListingStatus = async ({
       suggestions: normalizedSuggestions,
       send_to_owner: shouldSendToOwner,
     };
-    if (shouldSendToOwner && (normalizedMessageBody || normalizedFeedback || normalizedReason)) {
+    if (shouldSendToOwner) {
       ownerMessagePayload = {
         listing_id: listing.id,
         owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'changes_requested',
-        body: normalizedMessageBody || normalizedFeedback || normalizedReason,
+        body:
+          normalizedMessageBody ||
+          normalizedFeedback ||
+          normalizedReason ||
+          'Changes were requested. Review this thread, update the listing, then send it again.',
         metadata: {
           action: 'request_changes',
           reason: normalizedReason || null,
@@ -802,14 +806,14 @@ const updateListingStatus = async ({
       suggestions: normalizedSuggestions,
       send_to_owner: shouldSendToOwner,
     };
-    if (shouldSendToOwner && normalizedFeedback) {
+    if (shouldSendToOwner) {
       ownerMessagePayload = {
         listing_id: listing.id,
         owner_id: resolvedOwnerUserId,
         sender_id: userId,
         sender_type: 'admin',
         message_type: 'publish_notice',
-        body: normalizedFeedback,
+        body: normalizedFeedback || 'Your listing is now live on the marketplace.',
         metadata: { action: 'publish' },
       };
     }

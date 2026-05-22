@@ -3,8 +3,13 @@ import { normalizePaymentStatus } from '../config/statusColors';
 import VehicleDispositionService from './VehicleDispositionService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { fetchTourBookings } from './tourBookingService';
-import { getRentalCollectedAmount } from '../utils/rentalFinancials';
 import {
+  getRentalCollectedAmountInWindow,
+  getRentalCollectedEntries,
+  getRentalCustomerPaidAmount,
+} from '../utils/rentalFinancials';
+import {
+  clearOrganizationContextCache,
   scopeTenantOwnedQuery,
   shouldScopeSharedTenantData,
   requireCurrentOrganizationId,
@@ -13,8 +18,16 @@ import {
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
+const FINANCE_OVERVIEW_SUMMARY_CACHE_NAMESPACE = 'finance-overview-summary-v6';
+const FINANCE_BUSINESS_DAY_START_HOUR = 10;
+const FINANCE_BUSINESS_DAY_END_HOUR = 3;
+const FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS = {
+  skipTenantScope: true,
+  skipTenantVerification: true,
+} as const;
 const FINANCE_RENTAL_COLUMNS = [
   'id',
+  'organization_id',
   'rental_id',
   'linked_display_id',
   'customer_id',
@@ -58,12 +71,12 @@ const FINANCE_RENTAL_COLUMNS = [
   'linked_fuel_consumed_liters',
   'linked_fuel_average_unit_cost',
 ].join(',');
-const FINANCE_VEHICLE_COLUMNS = 'id,name,model,plate_number,status,current_odometer,purchase_cost_mad,purchase_date,purchase_supplier,sold_date,sale_price_mad';
-const FINANCE_MAINTENANCE_COLUMNS = 'id,vehicle_id,service_date,completed_date,created_at,description,parts_cost_mad,labor_rate_mad,external_cost_mad,tax_mad,cost,status,rental_id';
-const FINANCE_MAINTENANCE_PART_COLUMNS = 'maintenance_id,unit_cost_mad,quantity,item_id,notes';
+const FINANCE_VEHICLE_COLUMNS = 'id,organization_id,name,model,plate_number,status,current_odometer,purchase_cost_mad,purchase_date,purchase_supplier,sold_date,sale_price_mad';
+const FINANCE_MAINTENANCE_COLUMNS = 'id,organization_id,vehicle_id,service_date,completed_date,created_at,description,parts_cost_mad,labor_rate_mad,external_cost_mad,tax_mad,cost,status,rental_id';
+const FINANCE_MAINTENANCE_PART_COLUMNS = 'maintenance_id,organization_id,unit_cost_mad,quantity,item_id,notes';
 const FINANCE_FUEL_REFILL_COLUMNS = '*';
 const FINANCE_FUEL_WITHDRAWAL_COLUMNS = 'id,vehicle_id,withdrawal_date,created_at,liters_taken,unit_price,total_cost';
-const FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS = 'rental_id,linked_fuel_consumed_liters,linked_fuel_average_unit_cost,linked_fuel_expense_total,linked_fuel_synced_at';
+const FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS = 'rental_id,organization_id,linked_fuel_consumed_liters,linked_fuel_average_unit_cost,linked_fuel_expense_total,linked_fuel_synced_at';
 const FINANCE_EXPENSE_COLUMNS = 'id,category,subcategory,description,amount,expense_date,status,created_by,invoice_url,reference_type,reference_id,notes,created_at,updated_at,organization_id,workspace_id,vehicle_id';
 
 export interface Vehicle {
@@ -93,6 +106,9 @@ export interface FinanceFiltersV2 {
 
 export interface KPIData {
   totalRevenue: number;
+  totalCollected: number;
+  totalOutstanding: number;
+  netCash: number;
   totalExpenses: number;
   maintenanceCosts: number;
   fuelCosts: number;
@@ -103,6 +119,9 @@ export interface KPIData {
   damageRecoveryRevenue: number;
   partsMarginRevenue: number;
   revenueChange: number;
+  collectedChange: number;
+  outstandingChange: number;
+  netCashChange: number;
   expensesChange: number;
   taxesChange: number;
   profitChange: number;
@@ -469,12 +488,15 @@ export interface FinancePaymentProofQueueRow {
   status: string;
   amount: number;
   customerName: string;
+  customerUserId?: string;
+  customerEmail?: string;
   ownerLabel: string;
   bookingReference: string | null;
   submittedAt: string | null;
   methodLabel: string;
   href?: string;
   proofUrl?: string;
+  customerNote?: string;
   reviewNote?: string;
 }
 
@@ -581,6 +603,40 @@ class FinanceApiServiceV2 {
   private financeOverviewContextPromise: Promise<FinanceContext> | null = null;
   private financeOverviewContextLoadedAt = 0;
 
+  invalidateCaches() {
+    this.financeContextPromise = null;
+    this.financeContextLoadedAt = 0;
+    this.financeOverviewContextPromise = null;
+    this.financeOverviewContextLoadedAt = 0;
+    sharedQueryCacheService.invalidateNamespace(FINANCE_OVERVIEW_SUMMARY_CACHE_NAMESPACE);
+  }
+
+  private async ensureTenantWorkspaceReady(label: string) {
+    if (!shouldScopeSharedTenantData()) {
+      return;
+    }
+
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await requireCurrentOrganizationId(
+          `Workspace organization context is required to load ${label}.`
+        );
+        return;
+      } catch (error) {
+        lastError = error as Error;
+        clearOrganizationContextCache();
+
+        if (attempt < 4) {
+          await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+        }
+      }
+    }
+
+    throw lastError || new Error(`Workspace organization context is required to load ${label}.`);
+  }
+
   private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -642,6 +698,20 @@ class FinanceApiServiceV2 {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return null;
     return date.toISOString().split('T')[0];
+  }
+
+  private getRentalCollectedWindowRange(filters: FinanceFiltersV2) {
+    const start = new Date(`${filters.startDate}T00:00:00.000`);
+    start.setHours(FINANCE_BUSINESS_DAY_START_HOUR, 0, 0, 0);
+
+    const end = new Date(`${filters.endDate}T00:00:00.000`);
+    end.setDate(end.getDate() + 1);
+    end.setHours(FINANCE_BUSINESS_DAY_END_HOUR, 0, 0, 0);
+
+    return {
+      start: start.toISOString(),
+      end: end.toISOString(),
+    };
   }
 
   private getFuelLiters(row: any): number {
@@ -739,6 +809,41 @@ class FinanceApiServiceV2 {
       raw?.updated_at ||
       null
     );
+  }
+
+  private toValidDate(value: any): Date | null {
+    const parsed = value ? new Date(value) : null;
+    return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null;
+  }
+
+  private getRentalOperationalWindowForCollected(rental: any) {
+    const start =
+      this.toValidDate(rental?.startAt) ||
+      this.toValidDate(rental?.raw?.rental_start_date) ||
+      this.toValidDate(rental?.raw?.created_at);
+    const end =
+      this.toValidDate(rental?.closedAt) ||
+      this.toValidDate(rental?.endAt) ||
+      this.toValidDate(rental?.raw?.updated_at) ||
+      start;
+
+    return { start, end };
+  }
+
+  private doesRentalIntersectCollectedWindow(rental: any, startDate: string, endDate: string) {
+    const windowStart = this.toValidDate(startDate);
+    const windowEnd = this.toValidDate(endDate);
+    const { start, end } = this.getRentalOperationalWindowForCollected(rental);
+
+    if (!windowStart || !windowEnd) return false;
+    if (!start && !end) return false;
+
+    const effectiveStart = start || end;
+    const effectiveEnd = end || start;
+
+    if (!effectiveStart || !effectiveEnd) return false;
+
+    return effectiveStart < windowEnd && effectiveEnd >= windowStart;
   }
 
   private getRentalSecuritySnapshot(raw: any) {
@@ -1383,14 +1488,31 @@ class FinanceApiServiceV2 {
     return Math.round(((currentValue - previousValue) / previousValue) * 1000) / 10;
   }
 
-  private async safeLoadTable(tableName: string, columns: string = '*', maxRows: number = 5000): Promise<any[]> {
+  private async safeLoadTable(
+    tableName: string,
+    columns: string = '*',
+    maxRows: number = 5000,
+    options: {
+      skipTenantScope?: boolean;
+      skipTenantVerification?: boolean;
+    } = {}
+  ): Promise<any[]> {
     if (this.tableExistenceCache.get(tableName) === false) return [];
 
     try {
+      const {
+        skipTenantScope = false,
+        skipTenantVerification = false,
+      } = options;
+      if (!skipTenantScope) {
+        await this.ensureTenantWorkspaceReady(tableName);
+      }
       let query = supabase.from(tableName).select(columns).limit(maxRows);
-      query = await scopeTenantOwnedQuery(query, tableName, {
-        message: `Workspace organization context is required to load ${tableName}.`,
-      });
+      if (!skipTenantScope) {
+        query = await scopeTenantOwnedQuery(query, tableName, {
+          message: `Workspace organization context is required to load ${tableName}.`,
+        });
+      }
 
       const { data, error } = await query;
       if (error) {
@@ -1399,9 +1521,11 @@ class FinanceApiServiceV2 {
           this.tableExistenceCache.set(tableName, false);
         } else if (columns !== '*' && /column|schema cache|could not find/i.test(error.message || '')) {
           let fallbackQuery = supabase.from(tableName).select('*').limit(maxRows);
-          fallbackQuery = await scopeTenantOwnedQuery(fallbackQuery, tableName, {
-            message: `Workspace organization context is required to load ${tableName}.`,
-          });
+          if (!skipTenantScope) {
+            fallbackQuery = await scopeTenantOwnedQuery(fallbackQuery, tableName, {
+              message: `Workspace organization context is required to load ${tableName}.`,
+            });
+          }
           const fallback = await fallbackQuery;
           if (!fallback.error) {
             this.tableExistenceCache.set(tableName, true);
@@ -1411,9 +1535,11 @@ class FinanceApiServiceV2 {
         return [];
       }
       this.tableExistenceCache.set(tableName, true);
-      await verifyTenantOwnedRows(data || [], tableName, {
-        message: `${tableName} returned rows outside the active workspace.`,
-      });
+      if (!skipTenantVerification) {
+        await verifyTenantOwnedRows(data || [], tableName, {
+          message: `${tableName} returned rows outside the active workspace.`,
+        });
+      }
       return data || [];
     } catch (error) {
       console.warn(`Unable to load ${tableName}:`, error);
@@ -1423,6 +1549,7 @@ class FinanceApiServiceV2 {
 
   private async loadRentalFuelSnapshots(limit = 250): Promise<any[]> {
     try {
+      await this.ensureTenantWorkspaceReady('rental fuel snapshots');
       let query = supabase
         .from('app_4c3a7a6153_rentals')
         .select(FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS)
@@ -1667,15 +1794,21 @@ class FinanceApiServiceV2 {
           linkedMaintenance
         );
         const billedAmount = Math.max(0, Math.round(this.toNumber(revenueBreakdown.total)));
-        const collectedAmount = Math.max(0, Math.round(this.toNumber(getRentalCollectedAmount(rental))));
+        const collectedAmount = Math.max(0, Math.round(this.toNumber(getRentalCustomerPaidAmount(rental))));
         const recognizedAt = this.getRecognizedIncomingDate(
           rental,
           rental.rental_start_date || rental.created_at
         );
+        const hasStoredRemainingAmount =
+          rental.remaining_amount !== null &&
+          rental.remaining_amount !== undefined &&
+          rental.remaining_amount !== '';
         const remainingAmount = Math.max(
           0,
           Math.round(
-            this.toNumber(rental.remaining_amount) || Math.max(0, billedAmount - collectedAmount)
+            hasStoredRemainingAmount
+              ? this.toNumber(rental.remaining_amount)
+              : Math.max(0, billedAmount - collectedAmount)
           )
         );
 
@@ -1765,7 +1898,12 @@ class FinanceApiServiceV2 {
           billedAmount,
           recognizedAt: this.getRecognizedIncomingDate(row, meta.scheduledStartAt || row.created_at),
           paidAmount: Math.max(0, this.toNumber(row.deposit_amount)),
-          remainingAmount: Math.max(0, this.toNumber(row.remaining_amount) || (billedAmount - recognizedAmount)),
+          remainingAmount: Math.max(
+            0,
+            row.remaining_amount !== null && row.remaining_amount !== undefined && row.remaining_amount !== ''
+              ? this.toNumber(row.remaining_amount)
+              : (billedAmount - recognizedAmount)
+          ),
           refundAmount: normalizePaymentStatus(row.payment_status, row.remaining_amount) === 'refunded' ? this.toNumber(row.total_amount) : 0,
           startAt: meta.scheduledStartAt || row.rental_start_date || row.created_at,
           financeDate:
@@ -1831,7 +1969,9 @@ class FinanceApiServiceV2 {
           this.loadOptionalContextSlice(
             this.safeLoadTable(
               'app_4c3a7a6153_rentals',
-              FINANCE_RENTAL_COLUMNS
+              FINANCE_RENTAL_COLUMNS,
+              5000,
+              { skipTenantVerification: true }
             ),
             [],
             'overview rentals'
@@ -1845,7 +1985,12 @@ class FinanceApiServiceV2 {
             'overview vehicles'
           ),
           this.loadOptionalContextSlice(
-            this.safeLoadTable(VEHICLE_REPORTS_TABLE),
+            this.safeLoadTable(
+              VEHICLE_REPORTS_TABLE,
+              '*',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
             [],
             'overview vehicle reports'
           ),
@@ -1866,7 +2011,12 @@ class FinanceApiServiceV2 {
             'overview maintenance parts'
           ),
           this.loadOptionalContextSlice(
-            this.safeLoadTable('saharax_0u4w4d_inventory_items', 'id,price_mad'),
+            this.safeLoadTable(
+              'saharax_0u4w4d_inventory_items',
+              'id,price_mad',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
             [],
             'overview inventory items'
           ),
@@ -1896,7 +2046,12 @@ class FinanceApiServiceV2 {
             'overview rental fuel snapshots'
           ),
           this.loadOptionalContextSlice(
-            this.safeLoadTable('tour_vehicle_snapshots'),
+            this.safeLoadTable(
+              'tour_vehicle_snapshots',
+              '*',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
             [],
             'overview tour vehicle snapshots'
           ),
@@ -1952,18 +2107,54 @@ class FinanceApiServiceV2 {
           rawTourVehicleSnapshots,
           rawTourBookings
         ] = await Promise.all([
-          this.loadOptionalContextSlice(this.safeLoadTable('app_4c3a7a6153_rentals', FINANCE_RENTAL_COLUMNS), [], 'rentals'),
+          this.loadOptionalContextSlice(
+            this.safeLoadTable(
+              'app_4c3a7a6153_rentals',
+              FINANCE_RENTAL_COLUMNS,
+              5000,
+              { skipTenantVerification: true }
+            ),
+            [],
+            'rentals'
+          ),
           this.loadOptionalContextSlice(this.safeLoadTable('saharax_0u4w4d_vehicles', FINANCE_VEHICLE_COLUMNS), [], 'vehicles'),
-          this.loadOptionalContextSlice(this.safeLoadTable(VEHICLE_REPORTS_TABLE), [], 'vehicle reports'),
+          this.loadOptionalContextSlice(
+            this.safeLoadTable(
+              VEHICLE_REPORTS_TABLE,
+              '*',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
+            [],
+            'vehicle reports'
+          ),
           this.loadOptionalContextSlice(this.safeLoadTable('app_687f658e98_maintenance', FINANCE_MAINTENANCE_COLUMNS), [], 'maintenance'),
           this.loadOptionalContextSlice(this.safeLoadTable('app_687f658e98_maintenance_parts', FINANCE_MAINTENANCE_PART_COLUMNS), [], 'maintenance parts'),
-          this.loadOptionalContextSlice(this.safeLoadTable('saharax_0u4w4d_inventory_items'), [], 'inventory items'),
+          this.loadOptionalContextSlice(
+            this.safeLoadTable(
+              'saharax_0u4w4d_inventory_items',
+              '*',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
+            [],
+            'inventory items'
+          ),
           this.loadOptionalContextSlice(this.safeLoadTable('finance_expenses', FINANCE_EXPENSE_COLUMNS), [], 'finance expenses'),
           this.loadOptionalContextSlice(Promise.resolve([]), [], 'fuel refills'),
           this.loadOptionalContextSlice(this.safeLoadTable('vehicle_fuel_refills', FINANCE_FUEL_REFILL_COLUMNS), [], 'vehicle fuel refills'),
           this.loadOptionalContextSlice(this.safeLoadTable('fuel_withdrawals', FINANCE_FUEL_WITHDRAWAL_COLUMNS), [], 'fuel withdrawals'),
           this.loadOptionalContextSlice(this.loadRentalFuelSnapshots(), [], 'rental fuel snapshots'),
-          this.loadOptionalContextSlice(this.safeLoadTable('tour_vehicle_snapshots'), [], 'tour vehicle snapshots'),
+          this.loadOptionalContextSlice(
+            this.safeLoadTable(
+              'tour_vehicle_snapshots',
+              '*',
+              5000,
+              FINANCE_OPTIONAL_UNSCOPED_TABLE_OPTIONS
+            ),
+            [],
+            'tour vehicle snapshots'
+          ),
           this.loadOptionalContextSlice(fetchTourBookings().catch(() => []), [], 'tour bookings'),
         ]);
         this.financeContextLoadedAt = Date.now();
@@ -2027,6 +2218,28 @@ class FinanceApiServiceV2 {
     const categoryLabel = [category, subcategory].filter(Boolean).join(' • ');
     if (categoryLabel) parts.push(categoryLabel);
     return parts.join(' • ');
+  }
+
+  private isOverviewExpenseRow(row: any): boolean {
+    if (row?.direction !== 'outgoing') return false;
+
+    const sourceType = String(row?.sourceType || '');
+    return [
+      'fuel',
+      'tank_in',
+      'direct_fill',
+      'transfer',
+      'finance_expense',
+      'expense',
+      'manual_expense',
+      'expense_manual',
+    ].includes(sourceType);
+  }
+
+  private sumOverviewExpenses(rows: any[] = []): number {
+    return rows
+      .filter((row) => this.isOverviewExpenseRow(row))
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
   }
 
   private rentalMatchesFilters(rental: any, filters: FinanceFiltersV2, lifetime = false) {
@@ -2241,20 +2454,41 @@ class FinanceApiServiceV2 {
     const fuelCosts = ledger.rows
       .filter((row) => row.direction === 'outgoing' && ['fuel', 'tank_in', 'direct_fill', 'transfer'].includes(String(row.sourceType || '')))
       .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
-    const otherCosts = ledger.rows
-      .filter((row) => row.direction === 'outgoing' && ['purchase', 'disposed'].includes(String(row.sourceType || '')))
+    const financeExpenseCosts = ledger.rows
+      .filter((row) => row.direction === 'outgoing' && ['finance_expense', 'expense', 'manual_expense', 'expense_manual'].includes(String(row.sourceType || '')))
       .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
     const damageRecoveryRevenue = ledger.rows
       .filter((row) => row.direction === 'incoming' && row.sourceType === 'damage_recovery')
       .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
     const partsMarginRevenue = maintenanceRows.reduce((sum: number, row: any) => sum + row.partsMargin, 0);
+    const collectedWindow = this.getRentalCollectedWindowRange(filters);
+    const rentalCollected = context.rentals
+      .filter((rental) => this.rentalMatchesFilters(rental, filters, true))
+      .filter((rental) => this.doesRentalIntersectCollectedWindow(rental, collectedWindow.start, collectedWindow.end))
+      .reduce((sum, rental) => {
+        const windowCollected = getRentalCollectedAmountInWindow(
+          rental.raw || {},
+          collectedWindow.start,
+          collectedWindow.end
+        );
+        return sum + this.toNumber(windowCollected);
+      }, 0);
+    const totalCollected = rentalCollected;
+    const totalOutstanding = rentalRows.reduce((sum, row) => sum + this.toNumber(row.remainingAmount), 0)
+      + tourRows.reduce((sum, row) => sum + this.toNumber(row.remainingAmount), 0);
+    const totalExpenses = this.sumOverviewExpenses(ledger.rows);
+    const netCash = totalCollected - totalExpenses - ledger.taxesTotal;
+
     return {
       totalRevenue: Math.round(ledger.incomingTotal),
-      totalExpenses: Math.round(ledger.outgoingTotal),
+      totalCollected: Math.round(totalCollected),
+      totalOutstanding: Math.round(totalOutstanding),
+      netCash: Math.round(netCash),
+      totalExpenses: Math.round(totalExpenses),
       maintenanceCosts: Math.round(maintenanceCosts),
       fuelCosts: Math.round(fuelCosts),
       inventoryCosts: Math.round(inventoryCosts),
-      otherCosts: Math.round(otherCosts),
+      otherCosts: Math.round(financeExpenseCosts),
       taxes: Math.round(ledger.taxesTotal),
       grossProfit: Math.round(ledger.netTotal),
       damageRecoveryRevenue: Math.round(damageRecoveryRevenue),
@@ -2298,7 +2532,7 @@ class FinanceApiServiceV2 {
       entry.fuelCosts += row.fuelCosts;
       entry.inventoryCosts += row.inventoryCosts;
       entry.taxes += row.taxes;
-      entry.expenses += row.totalCosts;
+      entry.expenses += row.fuelCosts;
       entry.grossRevenue += row.revenue;
       entry.netRevenue += row.grossProfit;
     });
@@ -2310,7 +2544,7 @@ class FinanceApiServiceV2 {
         const entry = ensureDay(date);
         entry.revenue += tour.revenue;
         entry.fuelCosts += tour.fuelCosts;
-        entry.expenses += tour.totalCosts;
+        entry.expenses += tour.fuelCosts;
         entry.grossRevenue += tour.revenue;
         entry.netRevenue += tour.grossProfit;
       });
@@ -2325,20 +2559,39 @@ class FinanceApiServiceV2 {
         entry.maintenanceCosts += record.maintenanceCost;
         entry.inventoryCosts += record.inventoryCost;
         entry.taxes += record.tax;
-        entry.expenses += record.maintenanceCost + record.inventoryCost;
         entry.revenue += record.billedRevenue;
         entry.grossRevenue += record.billedRevenue;
         entry.netRevenue += record.billedRevenue - record.maintenanceCost - record.inventoryCost - record.tax;
       });
 
-    context.vehicles.forEach((vehicle: any) => {
-      const date = this.normalizeDate(vehicle.purchase_date);
+    context.financeExpenses
+      .filter((expense: any) => String(expense?.status || 'active').toLowerCase() !== 'reversed')
+      .filter((expense: any) => this.isDateInRange(expense.expense_date || expense.created_at, filters.startDate, filters.endDate))
+      .filter((expense: any) => {
+        if (filters.vehicleIds.length === 0) return true;
+        return expense.vehicle_id && filters.vehicleIds.map(String).includes(String(expense.vehicle_id));
+      })
+      .forEach((expense: any) => {
+        const date = this.normalizeDate(expense.expense_date || expense.created_at);
+        if (!date || !daily.has(date)) return;
+        const amount = Math.round(this.toNumber(expense.amount));
+        if (amount <= 0) return;
+        const entry = ensureDay(date);
+        entry.expenses += amount;
+        entry.netRevenue -= amount;
+      });
+
+    context.fuelRefills.forEach((row: any) => {
+      const date = this.normalizeDate(row.refill_date || row.created_at);
       if (!date || !daily.has(date)) return;
-      if (selectedVehicleIds.length > 0 && !selectedVehicleIds.includes(String(vehicle.id))) return;
-      const amount = this.toNumber(vehicle.purchase_cost_mad);
+      if (selectedVehicleIds.length > 0) {
+        if (!row.vehicle_id || !selectedVehicleIds.includes(String(row.vehicle_id))) return;
+      }
+      const amount = this.getFuelAmount(row, context.averageTankUnitCost);
       if (amount <= 0) return;
       const entry = ensureDay(date);
       entry.expenses += amount;
+      entry.fuelCosts += amount;
       entry.netRevenue -= amount;
     });
 
@@ -2351,9 +2604,6 @@ class FinanceApiServiceV2 {
         entry.revenue += amount;
         entry.grossRevenue += amount;
         entry.netRevenue += amount;
-      } else {
-        entry.expenses += amount;
-        entry.netRevenue -= amount;
       }
     });
 
@@ -2550,6 +2800,33 @@ class FinanceApiServiceV2 {
         }
       });
 
+    context.financeExpenses
+      .filter((expense: any) => String(expense?.status || 'active').toLowerCase() !== 'reversed')
+      .filter((expense: any) => this.isDateInRange(expense.expense_date || expense.created_at, filters.startDate, filters.endDate))
+      .filter((expense: any) => {
+        if (filters.vehicleIds.length === 0) return true;
+        return expense.vehicle_id && filters.vehicleIds.map(String).includes(String(expense.vehicle_id));
+      })
+      .forEach((expense: any) => {
+        const amount = Math.round(this.toNumber(expense.amount));
+        if (amount <= 0) return;
+        rows.push({
+          id: `ledger-finance-expense-${expense.id}`,
+          title: expense.description || 'Manual expense',
+          subtitle: this.buildExpenseSubtitle(expense, context),
+          amount,
+          direction: 'outgoing',
+          date: this.normalizeDate(expense.expense_date || expense.created_at),
+          sourceType: 'finance_expense',
+          vehicleId: expense.vehicle_id ? String(expense.vehicle_id) : undefined,
+          href: '/admin/finance',
+          meta: {
+            category: expense.category || '',
+            subcategory: expense.subcategory || ''
+          }
+        });
+      });
+
     context.fuelRefills
       .filter((row: any) => this.isDateInRange(row.refill_date || row.created_at, filters.startDate, filters.endDate))
       .filter((row: any) => {
@@ -2576,7 +2853,7 @@ class FinanceApiServiceV2 {
       });
 
     const incomingTotal = rows.filter((row) => row.direction === 'incoming').reduce((sum, row) => sum + row.amount, 0);
-    const outgoingTotal = rows.filter((row) => row.direction === 'outgoing').reduce((sum, row) => sum + row.amount, 0);
+    const outgoingTotal = this.sumOverviewExpenses(rows);
     const taxesTotal = rows.filter((row) => row.direction === 'tax').reduce((sum, row) => sum + row.amount, 0);
 
     rows.sort((a, b) => {
@@ -3024,9 +3301,10 @@ class FinanceApiServiceV2 {
   }
 
   async getVehicles(orgId: string = 'current'): Promise<Vehicle[]> {
+    await this.ensureTenantWorkspaceReady('vehicles');
     let query = supabase
       .from('saharax_0u4w4d_vehicles')
-      .select('id, name, model, plate_number, purchase_cost_mad, purchase_date, purchase_supplier')
+      .select('id, organization_id, name, model, plate_number, purchase_cost_mad, purchase_date, purchase_supplier')
       .order('name', { ascending: true });
     query = await scopeTenantOwnedQuery(query, 'saharax_0u4w4d_vehicles', {
       message: 'Workspace organization context is required to load vehicles.',
@@ -3059,6 +3337,9 @@ class FinanceApiServiceV2 {
 
   async getCustomers(orgId: string = 'current'): Promise<Customer[]> {
     const requireScopedCustomers = shouldScopeSharedTenantData();
+    if (requireScopedCustomers) {
+      await this.ensureTenantWorkspaceReady('customers');
+    }
     const scopedOrgId = requireScopedCustomers
       ? await requireCurrentOrganizationId('Workspace organization context is required to load customers.')
       : null;
@@ -3067,18 +3348,12 @@ class FinanceApiServiceV2 {
       scopeTenantOwnedQuery(
         supabase
         .from('app_4c3a7a6153_rentals')
-        .select('customer_id, customer_name, customer_email')
+        .select('customer_id, customer_name, customer_email, organization_id')
         .not('customer_id', 'is', null),
         'app_4c3a7a6153_rentals',
         { organizationId: scopedOrgId, message: 'Workspace organization context is required to load customers.' }
       ).then((query) => query),
-      scopeTenantOwnedQuery(
-        supabase
-        .from('app_687f658e98_tour_bookings')
-        .select('customer_name, customer_email'),
-        'app_687f658e98_tour_bookings',
-        { organizationId: scopedOrgId, message: 'Workspace organization context is required to load customers.' }
-      ).then((query) => query),
+      fetchTourBookings(),
     ]);
 
     const grouped = new Map<string, Customer>();
@@ -3109,12 +3384,8 @@ class FinanceApiServiceV2 {
       ingestRows(rentalsResult.value.data || []);
     }
 
-    if (toursResult.status === 'fulfilled' && !toursResult.value.error) {
-      await verifyTenantOwnedRows(toursResult.value.data || [], 'app_687f658e98_tour_bookings', {
-        organizationId: scopedOrgId,
-        message: 'Finance customer tours returned rows outside the active workspace.',
-      });
-      ingestRows(toursResult.value.data || []);
+    if (toursResult.status === 'fulfilled') {
+      ingestRows(Array.isArray(toursResult.value) ? toursResult.value : []);
     }
 
     return Array.from(grouped.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -3146,6 +3417,9 @@ class FinanceApiServiceV2 {
     return {
       ...current,
       revenueChange: this.calculateChange(current.totalRevenue, previous.totalRevenue),
+      collectedChange: this.calculateChange(current.totalCollected, previous.totalCollected),
+      outstandingChange: this.calculateChange(current.totalOutstanding, previous.totalOutstanding),
+      netCashChange: this.calculateChange(current.netCash, previous.netCash),
       expensesChange: this.calculateChange(current.totalExpenses, previous.totalExpenses),
       taxesChange: this.calculateChange(current.taxes, previous.taxes),
       profitChange: this.calculateChange(current.grossProfit, previous.grossProfit),
@@ -3156,7 +3430,7 @@ class FinanceApiServiceV2 {
 
   async getOverviewSummaryData(filters: FinanceFiltersV2): Promise<FinanceOverviewSummaryData> {
     return sharedQueryCacheService.fetchQuery(
-      'finance-overview-summary-v2',
+      FINANCE_OVERVIEW_SUMMARY_CACHE_NAMESPACE,
       filters,
       async () => {
         const context = await this.getFinanceOverviewContext();
@@ -3175,6 +3449,9 @@ class FinanceApiServiceV2 {
           kpiData: {
             ...current,
             revenueChange: this.calculateChange(current.totalRevenue, previous.totalRevenue),
+            collectedChange: this.calculateChange(current.totalCollected, previous.totalCollected),
+            outstandingChange: this.calculateChange(current.totalOutstanding, previous.totalOutstanding),
+            netCashChange: this.calculateChange(current.netCash, previous.netCash),
             expensesChange: this.calculateChange(current.totalExpenses, previous.totalExpenses),
             taxesChange: this.calculateChange(current.taxes, previous.taxes),
             profitChange: this.calculateChange(current.grossProfit, previous.grossProfit),
@@ -3187,7 +3464,7 @@ class FinanceApiServiceV2 {
       },
       {
         ttlMs: 45 * 1000,
-        staleWhileRevalidate: true,
+        staleWhileRevalidate: false,
         maxStaleMs: 3 * 60 * 1000,
       }
     );
@@ -3505,7 +3782,7 @@ class FinanceApiServiceV2 {
       .filter((row) => row.direction === 'incoming')
       .reduce((sum, row) => sum + row.amount, 0);
     const outgoingTotal = rows
-      .filter((row) => row.direction === 'outgoing')
+      .filter((row) => this.isOverviewExpenseRow(row))
       .reduce((sum, row) => sum + row.amount, 0);
     const taxesTotal = rows
       .filter((row) => row.direction === 'tax')
@@ -4377,11 +4654,16 @@ class FinanceApiServiceV2 {
           status,
           amount: Math.round(Math.max(0, this.toNumber(row.amount || row.claimed_amount || row.expected_amount))),
           customerName,
+          customerUserId: String(row.customer_user_id || row.user_id || row.customer_id || ''),
+          customerEmail: String(row.customer_email || row.email || ''),
           ownerLabel,
           bookingReference: bookingRef ? bookingReferenceMap.get(String(bookingRef)) || String(bookingRef) : null,
           submittedAt: row.submitted_at || row.created_at || row.uploaded_at || null,
           methodLabel: String(methodLabel).replace(/_/g, ' '),
-          href: bookingRef ? `/admin/rentals/${bookingRef}` : proofType === 'wallet' ? '/admin/user-management' : undefined
+          href: bookingRef ? `/admin/rentals/${bookingRef}` : proofType === 'wallet' ? '/admin/user-management' : undefined,
+          proofUrl: row.proof_url || row.file_url || row.receipt_url || row.attachment_url || row.document_url || '',
+          customerNote: row.note || row.message || row.customer_note || '',
+          reviewNote: row.review_note || row.rejection_reason || '',
         };
       })
     const walletProofQueue: FinancePaymentProofQueueRow[] = walletTopups
@@ -4391,13 +4673,16 @@ class FinanceApiServiceV2 {
         status: String(row.status || 'pending').toLowerCase(),
         amount: Math.round(Math.max(0, this.toNumber(row.amount))),
         customerName: String(row.user_name || row.user_email || 'Unknown customer'),
+        customerUserId: String(row.user_id || ''),
+        customerEmail: String(row.user_email || ''),
         ownerLabel: row.reviewed_by || 'Customer wallet',
         bookingReference: null,
         submittedAt: row.created_at || row.updated_at || null,
         methodLabel: 'bank transfer',
-        href: '/account/revenue',
+        href: '/admin/finance?tab=alerts',
         proofUrl: row.proof_url || '',
-        reviewNote: row.review_note || row.note || '',
+        customerNote: row.note || '',
+        reviewNote: row.review_note || '',
       }));
     const paymentProofQueue: FinancePaymentProofQueueRow[] = [...bookingProofQueue, ...walletProofQueue]
       .sort((a, b) => {
@@ -4927,7 +5212,7 @@ class FinanceApiServiceV2 {
     });
 
     const incomingTotal = rows.filter((row) => row.direction === 'incoming').reduce((sum, row) => sum + row.amount, 0);
-    const outgoingTotal = rows.filter((row) => row.direction === 'outgoing').reduce((sum, row) => sum + row.amount, 0);
+    const outgoingTotal = this.sumOverviewExpenses(rows);
     const taxesTotal = rows.filter((row) => row.direction === 'tax').reduce((sum, row) => sum + row.amount, 0);
 
     return {
@@ -4957,6 +5242,71 @@ class FinanceApiServiceV2 {
   async getCostBreakdown(type: string, filters: FinanceFiltersV2): Promise<FinanceBreakdownData> {
     const context = await this.getFinanceContext();
     const period = `${filters.startDate} – ${filters.endDate}`;
+    const buildCollectedRows = () => {
+      const collectedWindow = this.getRentalCollectedWindowRange(filters);
+      const windowStart = this.toValidDate(collectedWindow.start);
+      const windowEnd = this.toValidDate(collectedWindow.end);
+      return context.rentals
+        .filter((rental) => this.rentalMatchesFilters(rental, filters, true))
+        .filter((rental) => this.doesRentalIntersectCollectedWindow(rental, collectedWindow.start, collectedWindow.end))
+        .map((rental) => {
+          const raw = rental.raw || {};
+          const entries = getRentalCollectedEntries(raw).filter((entry: any) => {
+            if (!entry?.at || !windowStart || !windowEnd) return false;
+            return entry.at >= windowStart && entry.at <= windowEnd;
+          });
+          const amount = entries.reduce((sum: number, entry: any) => sum + this.toNumber(entry.amount), 0);
+          if (amount <= 0) return null;
+
+          const customerPaid = entries
+            .filter((entry: any) => entry?.type !== 'seized_security_deposit')
+            .reduce((sum: number, entry: any) => sum + this.toNumber(entry.amount), 0);
+          const securityApplied = Math.max(0, amount - customerPaid);
+          const latestEntryAt = entries
+            .map((entry: any) => entry?.at)
+            .filter(Boolean)
+            .sort((left: Date, right: Date) => right.getTime() - left.getTime())[0];
+
+          return {
+            id: `collected-rental-${rental.id}`,
+            title: `Rental ${rental.rentalId}`,
+            subtitle: `${rental.customerName} • ${rental.vehicleDisplay}`,
+            amount: Math.round(this.toNumber(amount)),
+            direction: 'incoming' as const,
+            date: this.normalizeDate(latestEntryAt || rental.recognizedAt || rental.financeDate || rental.closedAt),
+            sourceType: 'rental',
+            rentalId: rental.rentalId,
+            vehicleId: rental.vehicleId,
+            href: `/admin/rentals/${rental.id}`,
+            status: rental.paymentStatus,
+            meta: {
+              paymentStatus: rental.paymentStatus,
+              status: rental.status,
+              customerPaid: Math.round(customerPaid),
+              securityApplied: Math.round(securityApplied),
+            },
+          };
+        })
+        .filter(Boolean)
+        .sort((a: any, b: any) => {
+          const dateA = a.date || '';
+          const dateB = b.date || '';
+          if (dateA !== dateB) return dateB.localeCompare(dateA);
+          return (b.amount || 0) - (a.amount || 0);
+        });
+    };
+
+    if (type === 'collected') {
+      const rows = buildCollectedRows();
+
+      return {
+        type,
+        title: 'Collected',
+        total: rows.reduce((sum, row) => sum + row.amount, 0),
+        period,
+        rows,
+      };
+    }
 
     if (['revenue', 'incoming', 'expenses', 'outgoing', 'profit', 'net', 'tax', 'taxes'].includes(type)) {
       const ledger = this.getUnifiedLedgerFromContext(context, filters);
@@ -4977,7 +5327,7 @@ class FinanceApiServiceV2 {
       }
 
       if (type === 'expenses' || type === 'outgoing') {
-        const rows = normalizedRows.filter((row) => row.direction === 'outgoing');
+        const rows = normalizedRows.filter((row) => this.isOverviewExpenseRow(row));
         return {
           type,
           title: type === 'outgoing' ? 'Outgoing' : 'Expenses',
@@ -4998,9 +5348,31 @@ class FinanceApiServiceV2 {
         };
       }
 
+      if (type === 'net') {
+        const metrics = this.getPeriodMetricsFromContext(context, filters);
+        const rows = [
+          ...buildCollectedRows(),
+          ...normalizedRows.filter((row) => this.isOverviewExpenseRow(row)),
+          ...normalizedRows.filter((row) => row.direction === 'tax'),
+        ].sort((a: any, b: any) => {
+          const dateA = a.date || '';
+          const dateB = b.date || '';
+          if (dateA !== dateB) return dateB.localeCompare(dateA);
+          return (b.amount || 0) - (a.amount || 0);
+        });
+
+        return {
+          type,
+          title: 'Net Cash Breakdown',
+          total: Math.round(metrics.netCash),
+          period,
+          rows,
+        };
+      }
+
       return {
         type,
-        title: type === 'net' ? 'Net Breakdown' : 'Net Profit Breakdown',
+        title: 'Net Profit Breakdown',
         total: Math.round(ledger.netTotal),
         period,
         rows: normalizedRows,

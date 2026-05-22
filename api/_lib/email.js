@@ -46,7 +46,7 @@ const renderShell = ({ preview, title, eyebrow, bodyHtml, footerNote, brand = {}
                         <tr>
                           <td style="vertical-align:top;">
                             <div style="display:inline-flex;align-items:center;gap:10px;border-radius:999px;padding:8px 14px;background:rgba(255,255,255,0.16);color:#ede9fe;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">
-                              ${mergedBrand.logoUrl ? `<img src="${escapeHtml(mergedBrand.logoUrl)}" alt="${escapeHtml(mergedBrand.companyName)}" style="height:20px;width:20px;border-radius:999px;display:block;" />` : ''}
+                              ${mergedBrand.logoUrl ? `<img src="${escapeHtml(mergedBrand.logoUrl)}" alt="${escapeHtml(mergedBrand.companyName)}" style="height:24px;width:24px;border-radius:999px;display:block;background:#ffffff;padding:2px;" />` : ''}
                               <span>${safeEyebrow}</span>
                             </div>
                             <h1 style="margin:18px 0 0 0;font-size:30px;line-height:1.1;font-weight:700;color:white;">${safeTitle}</h1>
@@ -212,25 +212,24 @@ export const buildBookingConfirmationEmail = ({
   const subtitle = isTour
     ? 'Your SaharaX tour request is confirmed and ready to follow.'
     : 'Your SaharaX rental booking is confirmed and ready to follow.';
-
-  const secondaryActionHtml = hasAccount
+  const accountActionHtml = hasAccount
     ? signInUrl
-      ? `<div style="margin-top:12px;">${renderSecondaryButton(isTour ? 'Open my tour' : 'Open my booking', signInUrl)}</div>`
+      ? `<p style="margin:14px 0 0 0;font-size:13px;line-height:21px;color:rgba(255,255,255,0.84);">Need the account view? <a href="${escapeHtml(signInUrl)}" style="color:#ffffff;font-weight:700;text-decoration:none;">Open from my account</a>.</p>`
       : ''
     : signUpUrl
-      ? `<div style="margin-top:12px;">${renderSecondaryButton('Create account to follow this booking', signUpUrl)}</div>`
+      ? `<p style="margin:14px 0 0 0;font-size:13px;line-height:21px;color:rgba(255,255,255,0.84);">Want account access too? <a href="${escapeHtml(signUpUrl)}" style="color:#ffffff;font-weight:700;text-decoration:none;">Create your SaharaX account</a>.</p>`
       : '';
 
-  const documentLinks = [
+  const documentCards = [
     contractUrl
       ? `
         <tr>
-          <td style="padding:0 0 12px 0;">
-            <div style="border:1px solid #e2e8f0;border-radius:18px;padding:16px;background:#fff;">
-              <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#64748b;">Document</div>
-              <div style="margin-top:8px;font-size:16px;font-weight:700;color:#111827;">Contract</div>
-              <div style="margin-top:6px;font-size:13px;line-height:21px;color:#64748b;">Open the latest contract copy for this booking.</div>
-              <div style="margin-top:14px;">${renderSecondaryButton('Open contract', contractUrl)}</div>
+          <td style="padding:0 0 12px 0;vertical-align:top;">
+            <div style="border:1px solid #e9d5ff;border-radius:20px;padding:18px;background:#ffffff;box-sizing:border-box;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#7c3aed;">Contract</div>
+            <div style="margin-top:10px;font-size:20px;font-weight:700;color:#111827;">Rental contract</div>
+            <div style="margin-top:8px;font-size:13px;line-height:21px;color:#64748b;">Review the latest signed contract for this booking.</div>
+            <div style="margin-top:18px;">${renderSecondaryButton('Open contract', contractUrl)}</div>
             </div>
           </td>
         </tr>
@@ -239,20 +238,30 @@ export const buildBookingConfirmationEmail = ({
     receiptUrl
       ? `
         <tr>
-          <td style="padding:0 0 12px 0;">
-            <div style="border:1px solid #ede9fe;border-radius:18px;padding:16px;background:#faf5ff;">
-              <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#8b5cf6;">Receipt</div>
-              <div style="margin-top:8px;font-size:16px;font-weight:700;color:#111827;">Booking receipt</div>
-              <div style="margin-top:6px;font-size:13px;line-height:21px;color:#64748b;">Open the latest receipt copy for this booking.</div>
-              <div style="margin-top:14px;">${renderSecondaryButton('Open receipt', receiptUrl)}</div>
+          <td style="padding:0 0 12px 0;vertical-align:top;">
+            <div style="border:1px solid #e9d5ff;border-radius:20px;padding:18px;background:#fbfaff;box-sizing:border-box;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#7c3aed;">Receipt</div>
+            <div style="margin-top:10px;font-size:20px;font-weight:700;color:#111827;">Booking receipt</div>
+            <div style="margin-top:8px;font-size:13px;line-height:21px;color:#64748b;">Open the latest receipt copy with the confirmed amount and booking details.</div>
+            <div style="margin-top:18px;">${renderSecondaryButton('Open receipt', receiptUrl)}</div>
             </div>
           </td>
         </tr>
       `
       : '',
-  ]
-    .filter(Boolean)
-    .join('');
+  ].filter(Boolean).join('');
+
+  const documentsSectionHtml = documentCards
+    ? `
+      <div style="margin-top:28px;border-top:1px solid #ede9fe;padding-top:24px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#8b5cf6;">Booking documents</div>
+        <div style="margin-top:8px;font-size:15px;line-height:24px;color:#64748b;">Everything important is gathered here so the customer can open the contract or receipt in one tap.</div>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:18px;">
+          ${documentCards}
+        </table>
+      </div>
+    `
+    : '';
 
   return {
     subject: `${title}${safeReference ? ` • ${safeReference}` : ''}`,
@@ -265,20 +274,31 @@ export const buildBookingConfirmationEmail = ({
       footerNote: 'This confirmation was sent automatically by SaharaX Bookings.',
       bodyHtml: `
         <p style="margin:0 0 8px 0;font-size:15px;line-height:24px;color:#475569;">Hello ${safeCustomerName},</p>
-        <p style="margin:0 0 20px 0;font-size:15px;line-height:24px;color:#475569;">${escapeHtml(subtitle)}</p>
-        ${safeReference ? `<div style="margin:0 0 18px 0;display:inline-flex;align-items:center;border-radius:999px;background:#f5f3ff;padding:8px 14px;font-size:12px;font-weight:700;color:#7c3aed;">Reference: ${safeReference}</div>` : ''}
-        <div style="margin:0 0 22px 0;border:1px solid #ede9fe;border-radius:22px;padding:18px;background:linear-gradient(180deg,#ffffff 0%,#faf5ff 100%);">
+        <p style="margin:0 0 18px 0;font-size:17px;line-height:28px;color:#334155;">${escapeHtml(subtitle)}</p>
+        ${safeReference ? `<div style="margin:0 0 20px 0;display:inline-flex;align-items:center;border-radius:999px;background:linear-gradient(135deg,#f5f3ff 0%,#ede9fe 100%);padding:9px 16px;font-size:12px;font-weight:800;letter-spacing:0.04em;color:#6d28d9;">Reference: ${safeReference}</div>` : ''}
+        <div style="margin:0 0 24px 0;border:1px solid #ede9fe;border-radius:24px;padding:22px;background:linear-gradient(180deg,#ffffff 0%,#faf7ff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.9);">
           <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#8b5cf6;">Confirmation summary</div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:16px;">${renderDetailRows(summaryRows)}</table>
         </div>
-        ${openBookingUrl ? `<div style="margin:0 0 12px 0;">${renderPrimaryButton(hasAccount ? (isTour ? 'Open my tour' : 'Open my booking') : 'Open confirmation', openBookingUrl)}</div>` : ''}
-        ${secondaryActionHtml}
+        ${
+          openBookingUrl
+            ? `
+              <div style="margin:0;padding:22px;border-radius:24px;background:linear-gradient(135deg,#7c3aed 0%,#6366f1 100%);box-shadow:0 18px 34px rgba(99,102,241,0.18);">
+                <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.72);">Quick access</div>
+                <div style="margin-top:8px;font-size:24px;line-height:1.2;font-weight:800;color:#ffffff;">${hasAccount ? (isTour ? 'Open your tour details' : 'Open your booking details') : 'Open your confirmation'}</div>
+                <div style="margin-top:8px;font-size:14px;line-height:22px;color:rgba(255,255,255,0.82);">Use the main link below to review the reservation, timing, and the latest shared documents in one place.</div>
+                <div style="margin-top:18px;">${renderPrimaryButton(hasAccount ? (isTour ? 'Open my tour' : 'Open my booking') : 'Open confirmation', openBookingUrl)}</div>
+                ${accountActionHtml}
+              </div>
+            `
+            : accountActionHtml
+        }
         ${
           !hasAccount && signInUrl
             ? `<p style="margin:16px 0 0 0;font-size:13px;line-height:21px;color:#64748b;">Already have a SaharaX account? <a href="${escapeHtml(signInUrl)}" style="color:#7c3aed;font-weight:700;text-decoration:none;">Sign in and open this booking</a>.</p>`
             : ''
         }
-        ${documentLinks ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:22px;">${documentLinks}</table>` : ''}
+        ${documentsSectionHtml}
       `,
     }),
   };

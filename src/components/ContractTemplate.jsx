@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { supabase } from '../lib/supabase';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
 import i18n from '../i18n';
+import { fetchSystemSettings } from '../services/systemSettingsApi';
+import { formatDailyReturnPolicyTime, isDailyRentalType, normalizeDailyReturnPolicy } from '../utils/dailyReturnPolicy';
 
 const getRentalDurationUnits = (rental) =>
   rental?.rental_type === 'hourly'
@@ -46,16 +48,77 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const isFrench = language === 'fr';
   if (!rental) return <div className="p-10 text-center">{isFrench ? 'Aucune donnée de location disponible.' : 'No rental data available.'}</div>;
   const tr = (en, fr) => (isFrench ? fr : en);
+  const isDriveOutMarketplaceContract = Boolean(
+    rental?.is_driveout_marketplace_document ||
+    rental?.source_type === 'driveout_marketplace' ||
+    rental?.source_context === 'driveout_marketplace_request' ||
+    rental?.contract_document_mode === 'driveout_marketplace_no_pricing'
+  );
+  const hideContractPricing = Boolean(rental?.hide_contract_pricing || isDriveOutMarketplaceContract);
+  const brandName = isDriveOutMarketplaceContract ? 'DriveOut' : (rental?.company_name || 'SaharaX Rentals');
+  const brandLegalName = isDriveOutMarketplaceContract ? 'DriveOut Marketplace' : (rental?.company_legal_name || 'SaharaX Rentals Morocco');
+  const brandAddress = isDriveOutMarketplaceContract
+    ? tr('Marketplace rental agreement', 'Contrat de location marketplace')
+    : 'Ave. Mohammed El Yazidi 43 Sect. 12 Bur. 34-3 Riad Rabat';
+  const brandContact = rental?.company_contact || (
+    isDriveOutMarketplaceContract
+      ? 'www.driveout.io'
+      : 'contact@saharax.co | +212658888852'
+  );
+  const normalizedLogoUrl = String(logoUrl || '').trim();
+  const normalizedLogoKey = normalizedLogoUrl.toLowerCase();
+  const isLegacySaharaXLogo =
+    normalizedLogoKey.includes('saharax') ||
+    (normalizedLogoKey.includes('/assets/logo.jpg') && !normalizedLogoKey.includes('driveout')) ||
+    normalizedLogoKey === 'logo.jpg';
+  const resolvedLogoUrl = isDriveOutMarketplaceContract
+    ? (normalizedLogoUrl && !isLegacySaharaXLogo ? normalizedLogoUrl : '/assets/driveout-mark.svg')
+    : (normalizedLogoUrl || '/assets/logo.jpg');
+  const representativeLabel = isDriveOutMarketplaceContract
+    ? tr('DriveOut Representative', 'Représentant DriveOut')
+    : tr('SaharaX Representative', 'Représentant SaharaX');
+  const travelAreaRuleEn = isDriveOutMarketplaceContract
+    ? 'This vehicle must remain within the approved pickup area during the rental. Route changes require approval from the owner or DriveOut support before departure.'
+    : 'This vehicle must remain inside Tangier during the rental. Leaving Tangier is not allowed unless SaharaX staff gives approval first. If the customer needs to leave Tangier for any reason, they must contact a staff member before departure to receive authorization.';
+  const travelAreaRuleFr = isDriveOutMarketplaceContract
+    ? 'Ce véhicule doit rester dans la zone de prise en charge approuvée pendant toute la durée de la location. Tout changement d’itinéraire nécessite l’accord du propriétaire ou du support DriveOut avant le départ.'
+    : 'Ce véhicule doit rester à Tanger pendant toute la durée de la location. Il est interdit de quitter Tanger sans autorisation préalable de l’équipe SaharaX. Si le client doit quitter Tanger pour quelque raison que ce soit, il doit contacter un membre du staff avant le départ afin d’obtenir une autorisation.';
+  const travelAreaRuleAr = isDriveOutMarketplaceContract
+    ? 'يجب أن تبقى هذه المركبة داخل منطقة الاستلام المتفق عليها طوال مدة الكراء. أي تغيير في المسار يتطلب موافقة المالك أو دعم DriveOut قبل الانطلاق.'
+    : 'يجب أن تبقى هذه المركبة داخل مدينة طنجة طوال مدة الكراء. يمنع الخروج من طنجة إلا بعد الحصول على موافقة مسبقة من فريق SaharaX. إذا احتاج الزبون إلى مغادرة طنجة لأي سبب، فيجب عليه التواصل مع أحد أعضاء الطاقم قبل المغادرة للحصول على الترخيص.';
 
   const [basePrices, setBasePrices] = useState([]);
   const [kilometerPackages, setKilometerPackages] = useState([]);
-  const [loadingPrices, setLoadingPrices] = useState(true);
+  const [loadingPrices, setLoadingPrices] = useState(() => !hideContractPricing);
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
   const vehicleName = rental.vehicle?.name || rental.vehicle_details?.name || "N/A";
   const plateNumber = rental.vehicle?.plate_number || rental.vehicle_details?.plate_number || "N/A";
   const vehicleModelId = rental.vehicle?.vehicle_model?.id || rental.vehicle?.vehicle_model_id;
+  const shouldShowDailyReturnPolicy = isDailyRentalType(rental?.rental_type);
+  const dailyReturnTimeLabel = formatDailyReturnPolicyTime(dailyReturnPolicy, isFrench ? 'fr-MA' : 'en-US');
+  const dailyReturnPolicyHeadline = tr(
+    `Back before ${dailyReturnTimeLabel} the next day`,
+    `Retour avant ${dailyReturnTimeLabel} le lendemain`
+  );
+  const dailyReturnPolicyBody = hideContractPricing
+    ? tr(
+        'Return timing is recorded in this agreement. Any settlement or refund is documented on the final receipt.',
+        'Le timing de retour est enregistré dans ce contrat. Tout règlement ou remboursement est documenté sur le reçu final.'
+      )
+    : tr(
+        `Late return: ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD per extra hour. After ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours, a full extra day is charged.`,
+        `Retour tardif : ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire. Après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures, une journée complète est facturée.`
+      );
 
   // Fetch base prices from database
   useEffect(() => {
+    if (hideContractPricing) {
+      setBasePrices([]);
+      setKilometerPackages([]);
+      setLoadingPrices(false);
+      return undefined;
+    }
+
     const loadBasePrices = async () => {
       try {
         const [
@@ -94,10 +157,33 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     };
 
     loadBasePrices();
-  }, [vehicleModelId]);
+  }, [hideContractPricing, vehicleModelId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDailyReturnPolicy = async () => {
+      try {
+        const data = await fetchSystemSettings();
+        if (!cancelled && data) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy(data));
+        }
+      } catch {
+        if (!cancelled) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy());
+        }
+      }
+    };
+
+    loadDailyReturnPolicy();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Data mapping logic
   const customerName = rental.customer_name || rental.linkedCustomerProfile?.full_name || rental.linkedCustomerProfile?.name || "N/A";
+  const customerEmail = rental.customer_email || rental.linkedCustomerProfile?.email || "";
   const customerPhone =
     rental.customer_phone ||
     rental.phone ||
@@ -109,7 +195,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const endDate = rental.rental_end_date || rental.actual_end_date || rental.end_date;
   
   // Check if rental has a package
-  const hasPackage = isPackagePricingEnabled(rental) && !!(rental.package || rental.package_id);
+  const hasPackage = !hideContractPricing && isPackagePricingEnabled(rental) && !!(rental.package || rental.package_id);
   
   // Odometer values
   const startOdo = rental.start_odometer || "N/A";
@@ -247,7 +333,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
         if (duration === 2) return tr("2-hour special rate", "Tarif spécial 2 heures");
         if (duration === 3) return tr("3-hour package deal", "Offre package 3 heures");
         if (duration >= 4 && duration < 24) return isFrench ? `Pack ${duration} heures` : `${duration}-hour bundle`;
-        if (duration >= 24) return tr("Daily package (24h)", "Package journalier (24h)");
+        if (duration >= 24) return tr("Daily package", "Package journalier");
         return isFrench ? `Pack ${duration} heures` : `${duration}-hour package`;
       } else {
         if (duration === 1) return tr("1-day standard rate", "Tarif standard 1 jour");
@@ -643,7 +729,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     );
   };
 
-  if (loadingPrices) {
+  if (loadingPrices && !hideContractPricing) {
     return (
       <div style={{
         display: 'flex',
@@ -921,8 +1007,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
           }}>
             <div style={{ minWidth: 0, flex: 1 }}>
               <img 
-                src={logoUrl || "/assets/logo.jpg"} 
-                alt="Logo" 
+                src={resolvedLogoUrl}
+                alt={brandName}
                 className="header-logo"
                 style={{ maxWidth: '220px', width: '100%', height: 'auto', objectFit: 'contain' }}
                 onError={(e) => e.target.style.display = 'none'}
@@ -939,13 +1025,13 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                 whiteSpace: 'normal',
                 wordBreak: 'break-word'
               }}>
-                SaharaX Rentals
+                {brandName}
               </h1>
               <p style={{ fontSize: '11px', color: '#718096', margin: '2px 0', whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                Ave. Mohammed El Yazidi 43 Sect. 12 Bur. 34-3 Riad Rabat
+                {brandAddress}
               </p>
               <p style={{ fontSize: '11px', color: '#718096', margin: 0, whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                contact@saharax.co | +212658888852
+                {brandContact}
               </p>
             </div>
           </div>
@@ -1059,6 +1145,12 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                   <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('Phone Number', 'Numéro de téléphone')}</div>
                   <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{customerPhone}</div>
                 </div>
+                {isDriveOutMarketplaceContract && customerEmail && (
+                  <div>
+                    <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('Email', 'Email')}</div>
+                    <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{customerEmail}</div>
+                  </div>
+                )}
                 <div>
                   <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('License Number', 'Numéro de permis')}</div>
                   <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{license}</div>
@@ -1111,14 +1203,34 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                       <span style={{ fontWeight: '600' }}>{formatContractScheduleDateTime(endDate)}</span>
                     </div>
                   </div>
+                  {shouldShowDailyReturnPolicy && (
+                    <div style={{
+                      marginTop: '12px',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: '1px solid #c4b5fd',
+                      background: '#f5f3ff',
+                    }}>
+                      <div style={{ fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#6d28d9', marginBottom: '4px' }}>
+                        {tr('Daily return rule', 'Règle retour journée')}
+                      </div>
+                      <div style={{ fontSize: '13px', fontWeight: '700', color: '#111827' }}>
+                        {dailyReturnPolicyHeadline}
+                      </div>
+                      <div style={{ marginTop: '4px', fontSize: '11px', lineHeight: '1.5', color: '#5b21b6' }}>
+                        {dailyReturnPolicyBody}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </div>
 
-          <RentalFlowDisplay />
+          {!hideContractPricing && <RentalFlowDisplay />}
 
           {/* ODOMETER SECTION - Enhanced */}
+          {!isDriveOutMarketplaceContract && (
           <div style={{
             background: 'linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%)',
             borderRadius: '12px',
@@ -1178,9 +1290,10 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
               </div>
             )}
           </div>
+          )}
 
           {/* FUEL LEVEL SECTION - Enhanced matching ReceiptTemplate */}
-          {startFuel !== "N/A" && (
+          {!isDriveOutMarketplaceContract && startFuel !== "N/A" && (
             <div style={{
               background: 'linear-gradient(135deg, #fefcbf 0%, #faf089 100%)',
               borderRadius: '12px',
@@ -1351,7 +1464,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
               color: '#2d3748',
               marginTop: '8px'
             }}>
-              {tr('SaharaX Representative', 'Représentant SaharaX')}
+              {representativeLabel}
             </div>
           </div>
         </div>
@@ -1365,7 +1478,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
           borderTop: '1px solid #e2e8f0',
           paddingTop: '16px'
         }}>
-          <span style={{ fontWeight: '600' }}>SaharaX Rentals Morocco</span> • Page 1/2
+          <span style={{ fontWeight: '600' }}>{brandLegalName}</span> • Page 1/2
         </div>
       </div>
 
@@ -1428,8 +1541,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                 </div>
                 <div>
                   {tr(
-                    'This vehicle must remain inside Tangier during the rental. Leaving Tangier is not allowed unless SaharaX staff gives approval first. If the customer needs to leave Tangier for any reason, they must contact a staff member before departure to receive authorization.',
-                    'Ce véhicule doit rester à Tanger pendant toute la durée de la location. Il est interdit de quitter Tanger sans autorisation préalable de l’équipe SaharaX. Si le client doit quitter Tanger pour quelque raison que ce soit, il doit contacter un membre du staff avant le départ afin d’obtenir une autorisation.'
+                    travelAreaRuleEn,
+                    travelAreaRuleFr
                   )}
                 </div>
               </div>
@@ -1444,7 +1557,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                   هام
                 </div>
                 <div>
-                  يجب أن تبقى هذه المركبة داخل مدينة طنجة طوال مدة الكراء. يمنع الخروج من طنجة إلا بعد الحصول على موافقة مسبقة من فريق SaharaX. إذا احتاج الزبون إلى مغادرة طنجة لأي سبب، فيجب عليه التواصل مع أحد أعضاء الطاقم قبل المغادرة للحصول على الترخيص.
+                  {travelAreaRuleAr}
                 </div>
               </div>
             </div>
@@ -1496,14 +1609,29 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                 <div style={{ marginBottom: '16px' }}>
                   <h4 style={{ fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', color: '#2d3748' }}>Art. 4 - Carburant et Accessoires</h4>
                   <p style={{ margin: '0 0 4px 0' }}>4.1. Restitution avec le même niveau de carburant, sous peine de frais de ravitaillement.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>4.2. Les frais de carburant sont calculés sur la base d'un système de 8 lignes à {fuelPricePerLine} MAD par ligne déficitaire.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>4.3. Pénalité de 2000 MAD en cas de perte, vol ou détérioration des documents du véhicule.</p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '4.2. Tout écart de carburant sera documenté séparément dans le reçu final.'
+                      : `4.2. Les frais de carburant sont calculés sur la base d'un système de 8 lignes à ${fuelPricePerLine} MAD par ligne déficitaire.`}
+                  </p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '4.3. Toute perte, vol ou détérioration des documents du véhicule sera documenté dans le dossier de location.'
+                      : '4.3. Pénalité de 2000 MAD en cas de perte, vol ou détérioration des documents du véhicule.'}
+                  </p>
                 </div>
 
                 <div>
                   <h4 style={{ fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', color: '#2d3748' }}>Art. 5 - Durée et Retards</h4>
-                  <p style={{ margin: '0 0 4px 0' }}>5.2. Les retards entraînent des frais de 100 MAD par heure.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>5.3. Après 12h00 le lendemain, facturation d'une journée complète (24h).</p>
+                  <p style={{ margin: '0 0 4px 0' }}>5.1. Les locations journalières doivent être restituées avant {dailyReturnTimeLabel} le lendemain.</p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '5.2. Tout retard sera enregistré dans l’historique de location et traité dans le reçu final.'
+                      : `5.2. Les retards entraînent des frais de ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire.`}
+                  </p>
+                  {!hideContractPricing && (
+                    <p style={{ margin: '0 0 4px 0' }}>5.3. Après {dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures de retard, une journée complète supplémentaire est facturée.</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1547,14 +1675,29 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                 <div style={{ marginBottom: '16px' }}>
                   <h4 style={{ fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', color: '#2d3748' }}>المادة 4 - الوقود والإكسسوارات</h4>
                   <p style={{ margin: '0 0 4px 0' }}>4.1. يجب إعادة الدراجة بنفس مستوى الوقود كما كانت عند الاستلام.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>4.2. يتم حساب رسوم الوقود على أساس نظام من 8 خطوط بسعر {fuelPricePerLine} درهم مغربي لكل خط ناقص.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>4.3. غرامة 2000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف أي من وثائق المركبة.</p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '4.2. يتم توثيق أي فرق في مستوى الوقود بشكل منفصل في الوصل النهائي.'
+                      : `4.2. يتم حساب رسوم الوقود على أساس نظام من 8 خطوط بسعر ${fuelPricePerLine} درهم مغربي لكل خط ناقص.`}
+                  </p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '4.3. يتم توثيق أي فقدان أو سرقة أو إتلاف لوثائق المركبة في ملف الكراء.'
+                      : '4.3. غرامة 2000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف أي من وثائق المركبة.'}
+                  </p>
                 </div>
 
                 <div>
                   <h4 style={{ fontSize: '11px', fontWeight: '700', margin: '0 0 6px 0', color: '#2d3748' }}>المادة 5 - مدة الايجار والرسوم الإضافية</h4>
-                  <p style={{ margin: '0 0 4px 0' }}>5.2. يتم فرض رسوم تأخير قدرها 100 درهم مغربي لكل ساعة.</p>
-                  <p style={{ margin: '0 0 4px 0' }}>5.3. بعد الساعة 12:00 ظهراً من اليوم التالي، يتم احتساب تكلفة يوم كامل.</p>
+                  <p style={{ margin: '0 0 4px 0' }}>5.1. يجب إرجاع الكراء اليومي قبل {dailyReturnTimeLabel} من اليوم التالي.</p>
+                  <p style={{ margin: '0 0 4px 0' }}>
+                    {hideContractPricing
+                      ? '5.2. يتم تسجيل أي تأخير في سجل الكراء ومعالجته في الوصل النهائي.'
+                      : `5.2. يتم فرض رسوم تأخير قدرها ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} درهم مغربي لكل ساعة إضافية.`}
+                  </p>
+                  {!hideContractPricing && (
+                    <p style={{ margin: '0 0 4px 0' }}>5.3. بعد تأخير يتجاوز {dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} ساعات، يتم احتساب يوم إضافي كامل.</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1586,7 +1729,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
           borderTop: '1px solid #e2e8f0',
           paddingTop: '16px'
         }}>
-          <span style={{ fontWeight: '600' }}>SaharaX Rentals Morocco</span> • Page 2/2
+          <span style={{ fontWeight: '600' }}>{brandLegalName}</span> • Page 2/2
         </div>
       </div>
     </div>

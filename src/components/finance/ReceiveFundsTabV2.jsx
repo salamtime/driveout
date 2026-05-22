@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardList,
+  Fuel,
   Landmark,
   Loader2,
   Pencil,
@@ -30,6 +31,7 @@ import { uploadFile } from '../../utils/storageUpload';
 import { buildStaffDisplayMap, buildStaffDisplayName, normalizeAdminRecipients } from '../../utils/receiveFundsUi';
 import { buildExpenseNote, loadExpenseLabelPresets, saveExpenseLabelPresets, uniqueLabels } from '../../utils/expenseLabels';
 import PhotoCapture from '../video/PhotoCapture';
+import AddFuelTransactionModal from '../fuel/AddFuelTransactionModal';
 import i18n from '../../i18n';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
@@ -168,7 +170,14 @@ const getEntryVisual = (entry) => {
   };
 };
 
-const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, openExpenseComposerRequest = 0, openEditComposerRequest = null }) => {
+const ReceiveFundsTabV2 = ({
+  filters,
+  refreshTrigger,
+  openComposerRequest = 0,
+  openExpenseComposerRequest = 0,
+  openEditComposerRequest = null,
+  onFinanceRefresh = null,
+}) => {
   const { userProfile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -204,6 +213,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   const [receiptFile, setReceiptFile] = useState(null);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState('');
   const [showReceiptCapture, setShowReceiptCapture] = useState(false);
+  const [showFuelTankTopUpModal, setShowFuelTankTopUpModal] = useState(false);
   const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
   const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
   const [newExpenseLabel, setNewExpenseLabel] = useState('');
@@ -687,6 +697,13 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     return formatDateLabel(form.receivedDate, { weekday: 'short', month: 'short', day: 'numeric' });
   }, [form.receivedDate]);
 
+  const handleFuelTankTopUpSuccess = async () => {
+    await loadDashboard();
+    if (typeof onFinanceRefresh === 'function') {
+      onFinanceRefresh();
+    }
+  };
+
   const handleReverseEntry = async (entry) => {
     const reversalNote = window.prompt(
       tr(
@@ -787,7 +804,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   }
 
   return (
-    <div className="space-y-5 rounded-[34px] bg-[radial-gradient(circle_at_top_left,#ede9fe_0%,#f8fafc_40%,#ffffff_100%)] p-4 sm:p-6">
+    <div className="space-y-5">
       <section className="rounded-[28px] border border-white/80 bg-white px-5 py-5 shadow-[0_22px_60px_rgba(15,23,42,0.08)] sm:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -837,7 +854,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3 xl:min-w-[620px]">
+          <div className="grid gap-4 sm:grid-cols-3 xl:w-full xl:max-w-[620px]">
             <div className="rounded-[24px] border border-white/80 bg-white/90 px-4 py-4 shadow-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Collected', 'Collecté')}</p>
               <p className="mt-2 text-2xl font-bold tracking-[-0.05em] text-slate-950">{formatMoney(dashboard.summary.totalReceived)}</p>
@@ -1077,7 +1094,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             setShowComposer(true);
           }}
           disabled={!canRecord}
-          className="app-floating-primary fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3.5 text-sm font-semibold text-white shadow-[0_24px_50px_rgba(79,70,229,0.32)] transition hover:scale-[1.01] disabled:opacity-50"
+          className="app-floating-primary fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] right-4 z-40 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3.5 text-sm font-semibold text-white shadow-[0_24px_50px_rgba(79,70,229,0.32)] transition hover:scale-[1.01] disabled:opacity-50 sm:bottom-6 sm:right-6"
         >
           <Plus className="h-4 w-4" />
           {tr('Record Funds', 'Enregistrer des fonds')}
@@ -1094,8 +1111,8 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
           />
 
           <div className="absolute inset-y-0 right-0 flex w-full justify-end">
-            <aside className="relative flex h-full w-full max-w-[560px] flex-col border-l border-violet-100 bg-[linear-gradient(180deg,#f7f2ff_0%,#ffffff_26%)] shadow-[-24px_0_60px_rgba(15,23,42,0.16)]">
-              <div className="border-b border-violet-100 bg-white/88 px-5 py-5 backdrop-blur-xl">
+            <aside className="relative flex h-full w-full max-w-full flex-col border-l border-violet-100 bg-[linear-gradient(180deg,#f7f2ff_0%,#ffffff_26%)] shadow-[-24px_0_60px_rgba(15,23,42,0.16)] sm:max-w-[560px]">
+              <div className="border-b border-violet-100 bg-white/88 px-4 py-4 backdrop-blur-xl sm:px-5 sm:py-5">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
@@ -1122,7 +1139,20 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
 
               </div>
 
-              <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5 pb-32">
+              <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 pb-32 sm:px-5 sm:py-5">
+                {isExpenseMode ? (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowFuelTankTopUpModal(true)}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.24)] transition hover:scale-[1.01]"
+                    >
+                      <Fuel className="h-4 w-4" />
+                      {tr('Open Add to Tank', 'Ouvrir Ajouter au réservoir')}
+                    </button>
+                  </div>
+                ) : null}
+
                 {!isExpenseMode ? (
                   <div className="grid gap-3 sm:grid-cols-2">
                   {METHOD_OPTIONS.filter((option) => {
@@ -1457,7 +1487,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                 </div>
               ) : null}
 
-              <div className="sticky bottom-0 z-10 border-t border-violet-100 bg-white/92 px-5 py-4 backdrop-blur-xl">
+              <div className="sticky bottom-0 z-10 border-t border-violet-100 bg-white/92 px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] backdrop-blur-xl sm:px-5">
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <button
                     type="button"
@@ -1487,6 +1517,14 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
               </div>
             </aside>
           </div>
+          {showFuelTankTopUpModal ? (
+            <AddFuelTransactionModal
+              isOpen={showFuelTankTopUpModal}
+              onClose={() => setShowFuelTankTopUpModal(false)}
+              onSuccess={handleFuelTankTopUpSuccess}
+              transactionType="tank_refill"
+            />
+          ) : null}
         </div>
       ) : null}
     </div>

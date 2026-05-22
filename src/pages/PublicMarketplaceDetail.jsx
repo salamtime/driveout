@@ -52,7 +52,9 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [verificationSummary, setVerificationSummary] = useState(null);
+  const [verificationLoading, setVerificationLoading] = useState(false);
   const [existingRequest, setExistingRequest] = useState(null);
+  const [existingRequestLoading, setExistingRequestLoading] = useState(false);
   const listingOwnerId = resolveListingOwnerId(listing);
   const isOwnerViewingOwnListing = Boolean(user?.id && listingOwnerId && String(user.id) === listingOwnerId);
   const backHref = useMemo(
@@ -106,10 +108,12 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
     const loadVerificationSummary = async () => {
       if (!user?.id) {
         setVerificationSummary(null);
+        setVerificationLoading(false);
         return;
       }
 
       try {
+        setVerificationLoading(true);
         const result = await VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true });
         if (active) {
           setVerificationSummary(result?.summary || null);
@@ -117,6 +121,10 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
       } catch {
         if (active) {
           setVerificationSummary(null);
+        }
+      } finally {
+        if (active) {
+          setVerificationLoading(false);
         }
       }
     };
@@ -134,17 +142,26 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
     const loadExistingRequest = async () => {
       if (!user?.id || !listing?.id || isOwnerViewingOwnListing) {
         setExistingRequest(null);
+        setExistingRequestLoading(false);
         return;
       }
 
       try {
-        const result = await PublicBookingService.getExistingMarketplaceRequest(listing.id);
+        setExistingRequestLoading(true);
+        const result = await PublicBookingService.getExistingMarketplaceRequest(
+          listing?.sourceId || listing?.id,
+          listing?.id
+        );
         if (active) {
           setExistingRequest(result || null);
         }
       } catch {
         if (active) {
           setExistingRequest(null);
+        }
+      } finally {
+        if (active) {
+          setExistingRequestLoading(false);
         }
       }
     };
@@ -165,7 +182,10 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
   const verificationStatus = String(
     verificationSummary?.status || getVerificationStatus(userProfile, user)
   ).trim().toLowerCase();
-  const isVerifiedAccount = Boolean(user?.id) && ['approved', 'verified'].includes(verificationStatus);
+  const isVerifiedAccount = Boolean(user?.id) && (
+    verificationSummary?.complete === true ||
+    ['approved', 'verified'].includes(verificationStatus)
+  );
   const requestPath = listing
     ? embeddedInAccount
       ? `${accountBasePath}/${listing.id}/request`
@@ -206,8 +226,6 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
         source: 'public-share',
       })
     : '';
-  const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(existingRequest || '');
-  const existingRequestDisplay = existingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
   const cachedRequestedState = getCachedMarketplaceRequestForUsers({
     userIds: [
       userProfile?.id || user?.id || '',
@@ -215,12 +233,16 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
     ],
     listingId: listing?.sourceId || listing?.id,
   });
-  const shouldShowRequestedState = Boolean(!isOwnerViewingOwnListing && (existingRequest || cachedRequestedState));
+  const effectiveExistingRequest = existingRequest || cachedRequestedState || null;
+  const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(effectiveExistingRequest || '');
+  const existingRequestDisplay = effectiveExistingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
+  const shouldShowRequestedState = Boolean(!isOwnerViewingOwnListing && effectiveExistingRequest);
   const existingRequestHref = existingRequest?.id
     ? `/account/messages?requestId=${encodeURIComponent(String(existingRequest.id))}`
     : cachedRequestedState?.requestId
       ? `/account/messages?requestId=${encodeURIComponent(String(cachedRequestedState.requestId))}`
       : '';
+  const isResolvingBookingAccess = Boolean(user?.id && !isOwnerViewingOwnListing && (verificationLoading || existingRequestLoading));
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#fcfbff_0%,#f8fafc_45%,#ffffff_100%)]">
@@ -390,6 +412,10 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
                   >
                     Open owner workspace
                   </Link>
+                ) : isResolvingBookingAccess ? (
+                  <span className="inline-flex flex-1 items-center justify-center rounded-2xl border border-slate-300 bg-slate-100 px-5 py-4 text-sm font-black text-slate-500 shadow-[0_10px_24px_rgba(148,163,184,0.10)]">
+                    Checking your booking access...
+                  </span>
                 ) : shouldShowRequestedState ? (
                   <Link
                     to={existingRequestHref || '#'}
@@ -414,7 +440,7 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
                     Open in messages
                   </Link>
                 ) : null}
-                {!isOwnerViewingOwnListing && !existingRequest && whatsappHref ? (
+                {!isOwnerViewingOwnListing && !effectiveExistingRequest && whatsappHref ? (
                   <a
                     href={whatsappHref}
                     target="_blank"

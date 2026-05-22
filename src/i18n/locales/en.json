@@ -2975,7 +2975,9 @@
         "payment_received": "Payment received",
         "rental_overdue": "Rental overdue",
         "rental_cancelled": "Rental cancelled",
-        "deposit_returned": "Deposit returned"
+        "deposit_returned": "Deposit returned",
+        "rental_extension_requested": "Extension approval request",
+        "rental_price_change_requested": "Price change approval request"
       }
     },
     "activity": {

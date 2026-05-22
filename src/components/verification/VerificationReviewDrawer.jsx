@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, ExternalLink, CheckCircle2, Send } from 'lucide-react';
+import { X, ExternalLink, CheckCircle2, Send, ChevronDown, ChevronUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import VerificationStatusBadge from './VerificationStatusBadge';
@@ -7,7 +7,7 @@ import VerificationService from '../../services/VerificationService';
 import MessageService from '../../services/MessageService';
 import { getVerificationTypeLabel } from '../../utils/verificationStatus';
 import { useTranslation } from 'react-i18next';
-import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
+import { MESSAGE_FAMILIES } from '../../utils/messageCenter';
 
 const formatDate = (value) => {
   if (!value) return '—';
@@ -72,8 +72,19 @@ const getDecisionClasses = (value, isActive) => {
     : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-slate-100';
 };
 
+const getReplacementActionClasses = (currentStatus = '') => {
+  const normalizedStatus = String(currentStatus || '').toLowerCase();
+  if (['approved', 'rejected'].includes(normalizedStatus)) {
+    return 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50';
+  }
+  return 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100';
+};
+
 const buildVerificationThreadKey = ({ entityType, entityId }) =>
   ['verification', 'verification', String(entityType || '').trim().toLowerCase(), String(entityId || '').trim()].join(':');
+
+const buildVerificationCaseThreadKey = (caseId = '') =>
+  ['verification', String(caseId || '').trim()].join(':');
 
 const getStatusLabel = (value, tr) => {
   switch (String(value || '').toLowerCase()) {
@@ -89,6 +100,12 @@ const getStatusLabel = (value, tr) => {
     default:
       return tr('Pending review', 'En attente de révision');
   }
+};
+
+const getReplacementActionLabel = (currentStatus, tr) => {
+  return String(currentStatus || '').toLowerCase() === 'rejected'
+    ? tr('Replacement requested', 'Remplacement demandé')
+    : tr('Request replacement', 'Demander remplacement');
 };
 
 const cleanComparisonValue = (value) => {
@@ -342,6 +359,7 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
   const [replacementComposerSubmitting, setReplacementComposerSubmitting] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [bulkSavingStatus, setBulkSavingStatus] = useState('');
+  const [showAdvancedActions, setShowAdvancedActions] = useState(false);
   const reviewNoteRef = useRef(null);
 
   useEffect(() => {
@@ -361,12 +379,49 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
     [documents, replacementComposerDocumentId]
   );
   const threadKey = useMemo(
-    () =>
-      buildVerificationThreadKey({
-        entityType: activeDocument?.entity_type || request?.entity_type || 'user',
-        entityId: activeDocument?.entity_id || request?.entity_id || request?.id,
-      }),
-    [activeDocument?.entity_id, activeDocument?.entity_type, request?.entity_id, request?.entity_type, request?.id]
+    () => {
+      const explicitThreadKey = String(
+        activeDocument?.thread_key ||
+        localRequest?.thread_key ||
+        activeDocument?.workflow_metadata?.canonicalThreadKey ||
+        localRequest?.workflow_metadata?.canonicalThreadKey ||
+        ''
+      ).trim();
+      if (explicitThreadKey) return explicitThreadKey;
+
+      const verificationCaseId = String(
+        activeDocument?.verification_case_id ||
+        localRequest?.verification_case_id ||
+        activeDocument?.workflow_metadata?.verificationCaseId ||
+        localRequest?.workflow_metadata?.verificationCaseId ||
+        ''
+      ).trim();
+      if (verificationCaseId) {
+        return buildVerificationCaseThreadKey(verificationCaseId);
+      }
+
+      return buildVerificationThreadKey({
+        entityType: activeDocument?.entity_type || localRequest?.entity_type || request?.entity_type || 'user',
+        entityId: activeDocument?.entity_id || localRequest?.entity_id || request?.entity_id || request?.id,
+      });
+    },
+    [
+      activeDocument?.entity_id,
+      activeDocument?.entity_type,
+      activeDocument?.thread_key,
+      activeDocument?.verification_case_id,
+      activeDocument?.workflow_metadata?.canonicalThreadKey,
+      activeDocument?.workflow_metadata?.verificationCaseId,
+      localRequest?.entity_id,
+      localRequest?.entity_type,
+      localRequest?.thread_key,
+      localRequest?.verification_case_id,
+      localRequest?.workflow_metadata?.canonicalThreadKey,
+      localRequest?.workflow_metadata?.verificationCaseId,
+      request?.entity_id,
+      request?.entity_type,
+      request?.id,
+    ]
   );
   const profileNavigationState = useMemo(
     () => buildProfileNavigationState(localRequest, documents, activeDocumentId),
@@ -456,6 +511,39 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
     return getStatusLabel(localRequest?.status || 'pending', tr);
   }, [approvedDocuments.length, documents.length, localRequest?.status, pendingDocuments.length, rejectedDocuments.length, tr]);
   const isFullyApproved = documents.length > 0 && approvedDocuments.length === documents.length;
+  const overviewStats = useMemo(
+    () => [
+      {
+        key: 'documents',
+        label: tr('Documents', 'Documents'),
+        value: documentCount,
+        shellClassName: 'border-slate-200 bg-slate-50',
+        labelClassName: 'text-slate-500',
+        valueClassName: 'text-slate-950',
+      },
+      pendingDocuments.length > 0
+        ? {
+            key: 'pending',
+            label: tr('Pending', 'En attente'),
+            value: pendingDocuments.length,
+            shellClassName: 'border-amber-200 bg-amber-50',
+            labelClassName: 'text-amber-700',
+            valueClassName: 'text-amber-900',
+          }
+        : null,
+      approvedDocuments.length > 0
+        ? {
+            key: 'approved',
+            label: tr('Approved', 'Approuvés'),
+            value: approvedDocuments.length,
+            shellClassName: 'border-emerald-200 bg-emerald-50',
+            labelClassName: 'text-emerald-700',
+            valueClassName: 'text-emerald-900',
+          }
+        : null,
+    ].filter(Boolean),
+    [approvedDocuments.length, documentCount, pendingDocuments.length, tr]
+  );
   const timelineItems = useMemo(() => {
     const submissionItems = documents.map((document) => ({
       id: `submission-${document.id}`,
@@ -477,7 +565,7 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
         language
       );
 
-      if (messageType === 'verification_status') {
+      if (['verification_status', 'approval_event', 'rejection_event'].includes(messageType) || (messageType === 'system_event' && status)) {
         if (status === 'approved') {
           return [{
             id: `message-${message.id}`,
@@ -495,6 +583,16 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
             title: `${documentLabel} ${tr('replacement requested', 'replacement requested')}`,
             detail: String(metadata.reviewReason || message.body || '').trim(),
             tone: 'rose',
+            requestId,
+          }];
+        }
+        if (status === 'suspended') {
+          return [{
+            id: `message-${message.id}`,
+            timestamp: message.created_at || null,
+            title: `${documentLabel} ${tr('suspended for follow-up', 'suspendu pour suivi')}`,
+            detail: String(metadata.reviewReason || message.body || '').trim(),
+            tone: 'amber',
             requestId,
           }];
         }
@@ -544,31 +642,67 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
   }, [documents, language, threadMessages, tr]);
   const latestReplacementNote = useMemo(() => {
     if (!activeDocument) return '';
+    const directReason = String(
+      activeDocument?.rejection_reason ||
+      activeDocument?.notes ||
+      ''
+    ).trim();
+    if (directReason) return directReason;
+
     const matchingMessage = threadMessages.find((message) => {
       const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      const messageType = String(message?.message_type || '').toLowerCase();
+      const messageStatus = String(metadata.status || metadata.verificationStatus || '').toLowerCase();
       return (
         String(metadata.verificationRequestId || '') === String(activeDocument.id || '') &&
-        String(message?.message_type || '').toLowerCase() === 'verification_note'
+        (
+          messageType === 'verification_note' ||
+          messageType === 'rejection_event' ||
+          (messageType === 'system_event' && ['rejected', 'suspended'].includes(messageStatus))
+        )
       );
     });
     const metadata = matchingMessage?.metadata && typeof matchingMessage.metadata === 'object' ? matchingMessage.metadata : {};
     return String(metadata.reviewReason || matchingMessage?.body || '').trim();
   }, [activeDocument, threadMessages]);
 
-  if (!request) return null;
-
   const isVehicleVerification =
     String(request?.entity_type || '').toLowerCase() === 'vehicle' ||
     ['vehicle_registration', 'vehicle_insurance', 'proof_of_ownership'].includes(
       String(activeDocument?.verification_type || '').toLowerCase()
     );
+  const reviewKindLabel = isVehicleVerification
+    ? tr('Vehicle verification', 'Vérification véhicule')
+    : tr('Profile verification', 'Vérification du profil');
+  const reviewSubjectLabel = isVehicleVerification
+    ? (
+        localRequest?.display_subtitle ||
+        localRequest?.entity_id ||
+        tr('Vehicle documents', 'Documents véhicule')
+      )
+    : (
+        localRequest?.display_name ||
+        localRequest?.entity_email ||
+        localRequest?.profile_snapshot?.email ||
+        localRequest?.entity_id ||
+        tr('Customer profile', 'Profil client')
+      );
   const feedbackPresets = isVehicleVerification ? VEHICLE_VERIFICATION_PRESETS : GENERAL_VERIFICATION_PRESETS;
 
   const currentStatus = String(activeDocument?.status || 'pending').toLowerCase();
   const hasDecisionSelected = Boolean(decision);
   const hasPendingDecisionChange = hasDecisionSelected && decision !== currentStatus;
   const selectedDecisionLabel = decision ? getStatusLabel(decision, tr) : '';
+  const hasAdvancedDecisionSelected = ADVANCED_DECISIONS.includes(String(decision || '').toLowerCase());
   const detailsOpen = activeDocument && String(detailsDocumentId) === String(activeDocument.id);
+
+  useEffect(() => {
+    if (hasAdvancedDecisionSelected) {
+      setShowAdvancedActions(true);
+    }
+  }, [hasAdvancedDecisionSelected]);
+
+  if (!request) return null;
 
   const refreshThreadMessages = async () => {
     try {
@@ -585,60 +719,6 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
     } catch (threadError) {
       console.warn('Unable to refresh verification thread after status update:', threadError);
     }
-  };
-
-  const sendDecisionMessageToCustomer = async (document, status, reviewReason = '') => {
-    if (!document || !request?.owner_user_id) return;
-
-    const normalizedStatus = String(status || '').toLowerCase();
-    const cleanedReason = String(reviewReason || '').trim();
-    if (!['rejected', 'suspended'].includes(normalizedStatus) || !cleanedReason) {
-      return;
-    }
-
-    const documentLabel = getVerificationTypeLabel(document.verification_type, language);
-    const subject =
-      normalizedStatus === 'rejected'
-        ? tr('Replacement requested', 'Remplacement demandé')
-        : tr('Verification update', 'Mise à jour de vérification');
-    const body =
-      normalizedStatus === 'rejected'
-        ? tr(
-            `${documentLabel}: please upload a replacement document. ${cleanedReason}`,
-            `${documentLabel} : veuillez téléverser un document de remplacement. ${cleanedReason}`
-          )
-        : tr(
-            `${documentLabel}: this document has been suspended for review. ${cleanedReason}`,
-            `${documentLabel} : ce document a été suspendu pour révision. ${cleanedReason}`
-          );
-
-    await MessageService.sendSharedMessage({
-      family: MESSAGE_FAMILIES.verification,
-      threadType: MESSAGE_THREAD_TYPES.verification,
-      threadKey,
-      entityType: request.entity_type || 'user',
-      entityId: request.entity_id || request.id,
-      recipientUserId: request.owner_user_id,
-      recipientRole: request.entity_type === 'vehicle' ? 'owner' : 'customer',
-      senderRole: 'admin',
-      messageType: 'verification_note',
-      subject,
-      body,
-      metadata: {
-        type: 'verification',
-        reviewTitle: tr('Verification review', 'Revue de vérification'),
-        verificationRequestId: document.id,
-        verificationType: document.verification_type,
-        documentType: document.verification_type,
-        verificationStatus: normalizedStatus,
-        status: normalizedStatus,
-        reviewReason: cleanedReason,
-        imageUrl: document.file_url || null,
-        href: '/account/verification',
-        adminHref: '/admin/verification',
-        source: 'verification_status_auto_note',
-      },
-    });
   };
 
   const syncSingleDocumentResult = (result, fallbackStatus = '') => {
@@ -712,14 +792,17 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
         rejectionReason: ['rejected', 'suspended'].includes(normalizedTargetStatus) ? reasonValue : '',
         expiresAt: expiryValue || null,
       });
-      await sendDecisionMessageToCustomer(document, normalizedTargetStatus, reasonValue);
-      await refreshThreadMessages();
       syncSingleDocumentResult(result, normalizedTargetStatus);
       setDecision('');
+      await refreshThreadMessages();
+
       toast.success(
         normalizedTargetStatus === 'rejected'
           ? tr('Replacement requested and customer notified.', 'Remplacement demandé et client notifié.')
-          : tr('Verification updated.', 'Vérification mise à jour.')
+          : tr(
+              `${getVerificationTypeLabel(document.verification_type, language)} approved. ${reviewKindLabel} updated.`,
+              `${getVerificationTypeLabel(document.verification_type, language)} approuvé. ${reviewKindLabel} mise à jour.`
+            )
       );
       return result;
     } catch (error) {
@@ -793,11 +876,6 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
     try {
       setBulkSavingStatus(status);
       const results = await Promise.all(targetDocuments.map((document) => applyDecisionToDocument(document, status)));
-      if (['rejected', 'suspended'].includes(status) && reason.trim()) {
-        await Promise.all(
-          targetDocuments.map((document) => sendDecisionMessageToCustomer(document, status, reason.trim()))
-        );
-      }
       const updatedById = new Map();
       let latestSummary = null;
       results.forEach((result) => {
@@ -840,7 +918,10 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
 
       toast.success(
         status === 'approved'
-          ? tr('All documents approved.', 'Tous les documents ont été approuvés.')
+          ? tr(
+              `${reviewKindLabel} approved. ${targetDocuments.length} document(s) updated.`,
+              `${reviewKindLabel} approuvée. ${targetDocuments.length} document(s) mis à jour.`
+            )
           : tr('Replacement requests sent and customer notified.', 'Demandes de remplacement envoyées et client notifié.')
       );
       setDecision('');
@@ -866,6 +947,11 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
   const openVerificationConversation = () => {
     const searchParams = new URLSearchParams();
     searchParams.set('threadKey', threadKey);
+    searchParams.set('lane', 'reviews');
+    searchParams.set('section', 'customer');
+    if (activeDocument?.id) {
+      searchParams.set('requestId', String(activeDocument.id));
+    }
     navigate(`/admin/messages?${searchParams.toString()}`);
     onClose?.();
   };
@@ -936,9 +1022,11 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2 className="mt-1 truncate text-2xl font-black text-slate-950">
-                {localRequest?.display_name || localRequest?.entity_email || localRequest?.entity_id}
+                {reviewSubjectLabel}
               </h2>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-500">
+                <span>{reviewKindLabel}</span>
+                <span>•</span>
                 <span>{documentCount} {documentCount === 1 ? tr('document', 'document') : tr('documents', 'documents')}</span>
                 <span>•</span>
                 <span>{overallStatusLabel}</span>
@@ -956,11 +1044,11 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                    {tr('Decision block', 'Bloc de décision')}
+                    {tr('Review overview', 'Vue de revue')}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="text-lg font-black text-slate-950">
-                      {tr('Profile verification', 'Vérification du profil')}
+                      {reviewKindLabel}
                     </span>
                     <VerificationStatusBadge status={localRequest?.status} />
                   </div>
@@ -987,147 +1075,190 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
                 </div>
               </div>
 
-              <div className="grid gap-2 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                {documents.map((document) => (
-                  <div key={`summary-${document.id}`} className="flex items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3">
-                    <p className="text-sm font-bold text-slate-900">
-                      {getVerificationTypeLabel(document.verification_type, language)}
-                    </p>
-                    <VerificationStatusBadge status={document.status} />
+              <div className={`grid gap-3 ${overviewStats.length >= 3 ? 'sm:grid-cols-3' : overviewStats.length === 2 ? 'sm:grid-cols-2' : ''}`}>
+                {overviewStats.map((stat) => (
+                  <div key={stat.key} className={`rounded-[24px] border px-4 py-4 ${stat.shellClassName}`}>
+                    <p className={`text-[11px] font-bold uppercase tracking-[0.16em] ${stat.labelClassName}`}>{stat.label}</p>
+                    <p className={`mt-2 text-2xl font-black ${stat.valueClassName}`}>{stat.value}</p>
                   </div>
                 ))}
               </div>
 
-              {!isFullyApproved ? (
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={!!bulkSavingStatus}
-                    onClick={() => applyBulkDecision('approved')}
-                    className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-60"
-                  >
-                    {bulkSavingStatus === 'approved' ? tr('Approving...', 'Approbation...') : tr('Approve all', 'Tout approuver')}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!!bulkSavingStatus}
-                    onClick={() => applyBulkDecision('rejected')}
-                    className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-bold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:opacity-60"
-                  >
-                    {bulkSavingStatus === 'rejected' ? tr('Updating...', 'Mise à jour...') : tr('Request replacements', 'Demander des remplacements')}
-                  </button>
-                </div>
-              ) : (
+              {isFullyApproved ? (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
                   {tr(`${documentCount} documents approved`, `${documentCount} documents approuvés`)}
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
 
-          <div className="grid gap-3">
-            {documents.map((document) => {
-              const normalizedStatus = String(document?.status || 'pending').toLowerCase();
-              const isActive = document.id === activeDocument?.id;
-              return (
-                <div
-                  key={document.id}
-                  className={`rounded-[28px] border bg-white p-4 shadow-sm transition ${isActive ? 'border-violet-300 ring-4 ring-violet-100' : 'border-slate-200'}`}
+          <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                  {tr('Documents in this review', 'Documents dans cette revue')}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-900">
+                  {tr('Select a document, inspect it, then make one decision from the review footer.', 'Sélectionnez un document, inspectez-le, puis prenez une décision depuis le footer de revue.')}
+                </p>
+              </div>
+              {!isFullyApproved ? (
+                <button
+                  type="button"
+                  disabled={!!bulkSavingStatus}
+                  onClick={() => applyBulkDecision('approved')}
+                  className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-60"
                 >
-                  <div className="flex flex-col gap-4 sm:flex-row">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveDocumentId(document.id);
-                        if (document.file_url) {
-                          setDocumentPreviewOpen(true);
-                        }
-                      }}
-                      className="flex h-28 w-full items-center justify-center overflow-hidden rounded-[22px] border border-slate-200 bg-slate-50 sm:w-32"
-                    >
-                      {document.file_url && isPreviewableImage(document) ? (
-                        <img
-                          src={document.file_url}
-                          alt={getVerificationTypeLabel(document.verification_type, language)}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">
-                          {tr('Preview', 'Aperçu')}
-                        </span>
-                      )}
-                    </button>
+                  {bulkSavingStatus === 'approved' ? tr('Approving...', 'Approbation...') : tr('Approve all', 'Tout approuver')}
+                </button>
+              ) : null}
+            </div>
 
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-lg font-black text-slate-950">
-                            {getVerificationTypeLabel(document.verification_type, language)}
-                          </p>
-                          <p className="mt-1 text-sm font-medium text-slate-500">
-                            {document.file_name || tr('Submitted document', 'Document soumis')}
-                          </p>
-                        </div>
-                        <VerificationStatusBadge status={document.status} />
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveDocumentId(document.id);
-                            if (document.file_url) {
-                              setDocumentPreviewOpen(true);
-                            }
-                          }}
-                          className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                        >
-                          {tr('Preview', 'Aperçu')}
-                        </button>
-                        {normalizedStatus !== 'approved' ? (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              setActiveDocumentId(document.id);
-                              await persistDocumentStatus(document, 'approved');
-                            }}
-                            disabled={Boolean(savingStatus || bulkSavingStatus)}
-                            className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition ${getDecisionClasses('approved', decision === 'approved' && isActive)}`}
-                          >
-                            {getDecisionLabel('approved', tr, normalizedStatus)}
-                          </button>
+            <div className="mt-4 space-y-3">
+              {documents.map((document) => {
+                const normalizedStatus = String(document?.status || 'pending').toLowerCase();
+                const isActive = document.id === activeDocument?.id;
+                return (
+                  <button
+                    key={document.id}
+                    type="button"
+                    onClick={() => setActiveDocumentId(document.id)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-[22px] border px-4 py-3 text-left transition ${
+                      isActive
+                        ? 'border-violet-300 bg-violet-50 ring-4 ring-violet-100'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                        {document.file_url && isPreviewableImage(document) ? (
+                          <img
+                            src={document.file_url}
+                            alt={getVerificationTypeLabel(document.verification_type, language)}
+                            className="h-full w-full object-cover"
+                          />
                         ) : (
-                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-600">
-                            {tr('Approved', 'Approuvée')}
-                          </div>
+                          <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                            {tr('Doc', 'Doc')}
+                          </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            openReplacementComposer(document);
-                          }}
-                          disabled={Boolean(savingStatus || bulkSavingStatus)}
-                          className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition ${getDecisionClasses('rejected', decision === 'rejected' && isActive)}`}
-                        >
-                          {getDecisionLabel('rejected', tr, normalizedStatus)}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleDocumentDetails(document)}
-                          className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
-                        >
-                          {detailsOpen && isActive ? tr('Hide details', 'Masquer détails') : tr('View details', 'Voir détails')}
-                        </button>
+                      </div>
+                      <div className="min-w-0 flex-1 text-left">
+                        <p className="text-sm font-black text-slate-950">
+                          {getVerificationTypeLabel(document.verification_type, language)}
+                        </p>
+                        <p className="mt-1 truncate text-sm text-slate-500">
+                          {document.file_name || tr('Submitted document', 'Document soumis')}
+                        </p>
                       </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })}
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <div className="flex items-center gap-2">
+                        {normalizedStatus === 'approved' ? (
+                          <span className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                            {tr('Approved', 'Approuvée')}
+                          </span>
+                        ) : null}
+                        <VerificationStatusBadge status={document.status} />
+                      </div>
+                      {isActive ? (
+                        <span className="text-[11px] font-bold text-violet-700">
+                          {tr('Active document', 'Document actif')}
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {activeDocument && (
             <>
+              <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeDocument.file_url) {
+                        setDocumentPreviewOpen(true);
+                      }
+                    }}
+                    className="flex h-40 w-full items-center justify-center overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50 lg:w-56"
+                  >
+                    {activeDocument.file_url && isPreviewableImage(activeDocument) ? (
+                      <img
+                        src={activeDocument.file_url}
+                        alt={getVerificationTypeLabel(activeDocument.verification_type, language)}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">
+                        {tr('Preview', 'Aperçu')}
+                      </span>
+                    )}
+                  </button>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                          {tr('Active document', 'Document actif')}
+                        </p>
+                        <p className="mt-2 text-xl font-black text-slate-950">
+                          {getVerificationTypeLabel(activeDocument.verification_type, language)}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {activeDocument.file_name || tr('Submitted document', 'Document soumis')}
+                        </p>
+                      </div>
+                      <VerificationStatusBadge status={activeDocument.status} />
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {currentStatus !== 'approved' ? (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await persistDocumentStatus(activeDocument, 'approved');
+                          }}
+                          disabled={Boolean(savingStatus || bulkSavingStatus)}
+                          className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-60"
+                        >
+                          {savingStatus === 'approved' ? tr('Approving...', 'Approbation...') : tr('Approve', 'Approuver')}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeDocument.file_url) {
+                            setDocumentPreviewOpen(true);
+                          }
+                        }}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                      >
+                        {tr('Open preview', 'Ouvrir aperçu')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleDocumentDetails(activeDocument)}
+                        className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
+                      >
+                        {detailsOpen ? tr('Hide details', 'Masquer détails') : tr('View details', 'Voir détails')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openReplacementComposer(activeDocument)}
+                        disabled={Boolean(savingStatus || bulkSavingStatus)}
+                        className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition disabled:opacity-60 ${getReplacementActionClasses(currentStatus)}`}
+                      >
+                        {getReplacementActionLabel(currentStatus, tr)}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {detailsOpen ? (
                 <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
@@ -1227,50 +1358,79 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
 
                   {!isFullyApproved ? (
                     <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-                      <span className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Review controls', 'Contrôles de revue')}</span>
-                      <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-slate-500">
-                            {tr('Current status', 'Statut actuel')}
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <span className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                            {tr('Advanced actions', 'Actions avancées')}
                           </span>
-                          <VerificationStatusBadge status={currentStatus} />
-                          {hasPendingDecisionChange ? (
-                            <>
-                              <span className="text-sm font-semibold text-slate-400">→</span>
-                              <span className="text-sm font-semibold text-slate-500">
-                                {tr('Will change to', 'Passera à')}
-                              </span>
-                              <VerificationStatusBadge status={decision} />
-                            </>
-                          ) : null}
+                          <p className="mt-2 text-sm text-slate-600">
+                            {tr(
+                              'Approve and request changes are the normal review path. Open this only for rare exceptions.',
+                              'Approuver et demander des modifications constituent le parcours normal. Ouvrez ceci uniquement pour les cas exceptionnels.'
+                            )}
+                          </p>
                         </div>
-                        <p className="mt-2 text-sm text-slate-600">
-                          {hasPendingDecisionChange
-                            ? tr(
-                                `Decision selected: ${selectedDecisionLabel}. Save to apply it to this document.`,
-                                `Décision sélectionnée : ${selectedDecisionLabel}. Enregistrez pour l’appliquer à ce document.`
-                              )
-                            : tr(
-                                'Choose an advanced decision only when you need something other than approve or request replacement.',
-                                'Choisissez une décision avancée uniquement si vous avez besoin de plus que approuver ou demander un remplacement.'
-                              )}
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowAdvancedActions((current) => !current)}
+                          className="inline-flex items-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
+                        >
+                          {showAdvancedActions ? (
+                            <ChevronUp className="mr-2 h-4 w-4" />
+                          ) : (
+                            <ChevronDown className="mr-2 h-4 w-4" />
+                          )}
+                          {showAdvancedActions ? tr('Hide advanced', 'Masquer avancé') : tr('More actions', 'Plus d’actions')}
+                        </button>
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {DECISIONS.filter((option) => ADVANCED_DECISIONS.includes(option.value)).map((option) => {
-                          const isActive = decision === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              onClick={() => setDecision(option.value)}
-                              className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition ${getDecisionClasses(option.value, isActive)}`}
-                            >
-                              {getDecisionLabel(option.value, tr, currentStatus)}
-                            </button>
-                          );
-                        })}
-                      </div>
+
+                      {showAdvancedActions ? (
+                        <>
+                          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-semibold text-slate-500">
+                                {tr('Current status', 'Statut actuel')}
+                              </span>
+                              <VerificationStatusBadge status={currentStatus} />
+                              {hasPendingDecisionChange ? (
+                                <>
+                                  <span className="text-sm font-semibold text-slate-400">→</span>
+                                  <span className="text-sm font-semibold text-slate-500">
+                                    {tr('Will change to', 'Passera à')}
+                                  </span>
+                                  <VerificationStatusBadge status={decision} />
+                                </>
+                              ) : null}
+                            </div>
+                            <p className="mt-2 text-sm text-slate-600">
+                              {hasPendingDecisionChange
+                                ? tr(
+                                    `Decision selected: ${selectedDecisionLabel}. Save to apply it to this document.`,
+                                    `Décision sélectionnée : ${selectedDecisionLabel}. Enregistrez pour l’appliquer à ce document.`
+                                  )
+                                : tr(
+                                    'Use these only when you need to suspend verification or mark a document as expired.',
+                                    'Utilisez-les uniquement lorsque vous devez suspendre la vérification ou marquer un document comme expiré.'
+                                  )}
+                            </p>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {DECISIONS.filter((option) => ADVANCED_DECISIONS.includes(option.value)).map((option) => {
+                              const isActive = decision === option.value;
+                              return (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  onClick={() => setDecision(option.value)}
+                                  className={`rounded-2xl border px-4 py-2.5 text-sm font-bold transition ${getDecisionClasses(option.value, isActive)}`}
+                                >
+                                  {getDecisionLabel(option.value, tr, currentStatus)}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -1282,7 +1442,7 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
                       onChange={(event) => setReason(event.target.value)}
                       rows={4}
                       className="mt-2 w-full rounded-[22px] border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
-                      placeholder={tr('Required for rejection or suspension.', 'Requis en cas de rejet ou suspension.')}
+                      placeholder={tr('Used for advanced actions such as suspend or expire.', 'Utilisé pour les actions avancées comme suspendre ou expirer.')}
                     />
                   </label>
 
@@ -1370,19 +1530,34 @@ const VerificationReviewDrawer = ({ request, initialDocumentId = '', onClose, on
               </div>
 
               {detailsOpen ? (
-                <button
-                  type="button"
-                  disabled={!!savingStatus || !hasPendingDecisionChange}
-                  onClick={updateStatus}
-                  className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-[0_18px_34px_rgba(15,23,42,0.20)] transition hover:-translate-y-0.5 hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
-                >
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
-                  {savingStatus
-                    ? tr('Saving decision...', 'Enregistrement...')
-                    : hasPendingDecisionChange
-                      ? tr('Save review decision', 'Enregistrer la décision')
-                      : tr('Select a decision first', 'Sélectionnez une décision')}
-                </button>
+                <div className="sticky bottom-0 z-10 -mx-4 border-t border-slate-200 bg-white/95 px-4 py-4 shadow-[0_-18px_34px_rgba(15,23,42,0.08)] backdrop-blur sm:-mx-6 sm:px-6">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await persistDocumentStatus(activeDocument, 'approved');
+                      }}
+                      disabled={Boolean(savingStatus || bulkSavingStatus) || currentStatus === 'approved'}
+                      className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                      {savingStatus === 'approved' ? tr('Approving...', 'Approbation...') : tr('Approve document', 'Approuver le document')}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!!savingStatus || !hasPendingDecisionChange}
+                      onClick={updateStatus}
+                      className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-[0_18px_34px_rgba(15,23,42,0.20)] transition hover:-translate-y-0.5 hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
+                    >
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                      {savingStatus
+                        ? tr('Saving decision...', 'Enregistrement...')
+                        : hasPendingDecisionChange
+                          ? tr('Save advanced decision', 'Enregistrer la décision avancée')
+                          : tr('Select a decision first', 'Sélectionnez une décision')}
+                    </button>
+                  </div>
+                </div>
               ) : null}
             </>
           )}

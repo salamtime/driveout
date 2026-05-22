@@ -26,6 +26,7 @@ import {
 
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const THREAD_EVENTS_TABLE = 'thread_events';
+const BOOKING_REQUESTS_TABLE = 'app_booking_requests';
 const DEFAULT_MESSAGE_MEDIA_POLICY = {
   messagingPhotoRetentionDays: 7,
 };
@@ -354,7 +355,117 @@ const loadMessagesForThreadStates = async (adminClient, threadStateRows = [], sc
   return dedupeRowsById(rows);
 };
 
-const buildThreadsFromThreadStates = async (adminClient, threadStateRows = [], messageRows = [], currentUserId = '') => {
+const normalizeMarketplaceThreadStatus = (requestRow = {}) => {
+  const normalizedStatus = String(requestRow?.request_status || requestRow?.requestStatus || requestRow?.status || 'pending')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]+/g, '')
+    .replace(/\s+/g, '_');
+  const counterOffer = requestRow?.counter_offer && typeof requestRow.counter_offer === 'object'
+    ? requestRow.counter_offer
+    : requestRow?.counterOffer && typeof requestRow.counterOffer === 'object'
+      ? requestRow.counterOffer
+      : {};
+  const platformFeeStatus = String(counterOffer?.platform_fee_status || counterOffer?.platformFeeStatus || '').trim().toLowerCase();
+  const depositStatus = String(counterOffer?.damage_deposit_status || counterOffer?.damageDepositStatus || '').trim().toLowerCase();
+  const hasFinalApproval = Boolean(
+    requestRow?.approved_at ||
+    requestRow?.approvedAt ||
+    counterOffer?.chat_unlocked_at ||
+    counterOffer?.chatUnlockedAt ||
+    counterOffer?.owner_fee_reserved_at ||
+    counterOffer?.ownerFeeReservedAt ||
+    counterOffer?.customer_deposit_held_at ||
+    counterOffer?.customerDepositHeldAt
+  ) || platformFeeStatus === 'reserved' || ['held', 'not_required', 'released', 'seized'].includes(depositStatus);
+
+  if (['accepted', 'pre_approved', 'approved', 'expired'].includes(normalizedStatus) && hasFinalApproval) {
+    return 'approved';
+  }
+
+  if (normalizedStatus === 'confirmed') return 'approved';
+  if (normalizedStatus === 'cancelled' || normalizedStatus === 'canceled') return 'declined';
+  return normalizedStatus;
+};
+
+const hydrateMarketplaceThreads = async (adminClient, threads = [], tenantScope = null) => {
+  const marketplaceThreads = (threads || []).filter((thread) =>
+    String(thread?.family || '').trim().toLowerCase() === 'marketplace' &&
+    String(thread?.entity_type || '').trim().toLowerCase() === 'marketplace_request' &&
+    String(thread?.entity_id || '').trim()
+  );
+
+  if (!marketplaceThreads.length) {
+    return threads;
+  }
+
+  const requestIds = [...new Set(marketplaceThreads.map((thread) => String(thread.entity_id || '').trim()).filter(Boolean))];
+  const { data: requestRows, error } = await applyTenantQueryScope(
+    adminClient
+      .from(BOOKING_REQUESTS_TABLE)
+      .select('id, owner_id, customer_id, customer_name, customer_email, listing_id, vehicle_public_profile_id, request_reference, request_status, requested_start_at, requested_end_at, rental_type, duration, approved_at, accepted_at, counter_offer, currency_code, quoted_amount')
+      .in('id', requestIds),
+    tenantScope
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  const requestMap = new Map((requestRows || []).map((row) => [String(row.id || '').trim(), row]));
+
+  return (threads || []).map((thread) => {
+    const requestId = String(thread?.entity_id || '').trim();
+    const requestRow = requestMap.get(requestId);
+    if (!requestRow) return thread;
+
+    const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
+    const counterOffer = requestRow?.counter_offer && typeof requestRow.counter_offer === 'object' ? requestRow.counter_offer : {};
+    const lifecycleStatus = normalizeMarketplaceThreadStatus(requestRow);
+    const threadType = String(thread?.thread_type || '').trim().toLowerCase();
+    const href = threadType === 'marketplace_owner_request'
+      ? `/account/vehicles?requestId=${encodeURIComponent(requestId)}#requests`
+      : `/account/rentals/requests/${encodeURIComponent(requestId)}`;
+
+    return {
+      ...thread,
+      status: lifecycleStatus,
+      metadata: {
+        ...metadata,
+        type: 'marketplace_request',
+        href,
+        requestId,
+        requestReference: String(requestRow?.request_reference || metadata.requestReference || '').trim() || undefined,
+        requestStatus: lifecycleStatus,
+        status: lifecycleStatus,
+        ownerUserId: String(requestRow?.owner_id || metadata.ownerUserId || '').trim() || undefined,
+        customerUserId: String(requestRow?.customer_id || metadata.customerUserId || '').trim() || undefined,
+        customerName: String(requestRow?.customer_name || metadata.customerName || '').trim() || undefined,
+        customerEmail: String(requestRow?.customer_email || metadata.customerEmail || '').trim() || undefined,
+        listingId: String(requestRow?.listing_id || metadata.listingId || '').trim() || undefined,
+        vehiclePublicProfileId: String(requestRow?.vehicle_public_profile_id || metadata.vehiclePublicProfileId || '').trim() || undefined,
+        requestedStartAt: requestRow?.requested_start_at || metadata.requestedStartAt || null,
+        requestedEndAt: requestRow?.requested_end_at || metadata.requestedEndAt || null,
+        rentalType: String(requestRow?.rental_type || metadata.rentalType || '').trim() || undefined,
+        duration: Number(requestRow?.duration || metadata.duration || 0) || undefined,
+        currencyCode: String(requestRow?.currency_code || metadata.currencyCode || 'MAD').trim() || 'MAD',
+        estimatedAmount: Number(counterOffer?.price_amount ?? requestRow?.quoted_amount ?? metadata.estimatedAmount ?? 0) || 0,
+        priceAmount: Number(counterOffer?.price_amount ?? requestRow?.quoted_amount ?? metadata.priceAmount ?? 0) || 0,
+        platformFeeAmount: Number(counterOffer?.platform_fee_amount ?? metadata.platformFeeAmount ?? 0) || 0,
+        damageDepositAmount: Number(counterOffer?.damage_deposit_amount ?? metadata.damageDepositAmount ?? 0) || 0,
+        approvedAt: requestRow?.approved_at || metadata.approvedAt || null,
+        chatUnlockedAt: counterOffer?.chat_unlocked_at || metadata.chatUnlockedAt || requestRow?.approved_at || null,
+        chatGraceExpiresAt: counterOffer?.chat_grace_expires_at || metadata.chatGraceExpiresAt || null,
+        replyEnabled: ['approved', 'active', 'completed'].includes(lifecycleStatus),
+        readOnlyReason: ['approved', 'active', 'completed'].includes(lifecycleStatus)
+          ? ''
+          : (metadata.readOnlyReason || ''),
+      },
+    };
+  });
+};
+
+const buildThreadsFromThreadStates = async (adminClient, threadStateRows = [], messageRows = [], currentUserId = '', tenantScope = null) => {
   const stateThreads = await buildStateOnlyThreads(adminClient, threadStateRows, currentUserId);
   const threadMap = new Map(
     (stateThreads || []).map((thread) => [String(thread?.thread_key || '').trim(), thread])
@@ -413,7 +524,13 @@ const buildThreadsFromThreadStates = async (adminClient, threadStateRows = [], m
     }
   });
 
-  return Array.from(threadMap.values())
+  const hydratedThreads = await hydrateMarketplaceThreads(
+    adminClient,
+    Array.from(threadMap.values()),
+    tenantScope
+  );
+
+  return hydratedThreads
     .map((thread) => ({
       ...thread,
       messages: [...(thread.messages || [])].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()),
@@ -780,6 +897,41 @@ const buildCanonicalContextThreadKey = ({
   senderUserId: 'canonical',
 });
 
+const buildBootstrapThreadKey = ({
+  family = '',
+  threadType = '',
+  entityType = '',
+  entityId = '',
+  recipientUserId = '',
+  senderUserId = '',
+} = {}) => {
+  const normalizedFamily = String(family || '').trim().toLowerCase();
+  const normalizedThreadType = String(threadType || '').trim().toLowerCase();
+  const normalizedEntityType = String(entityType || '').trim().toLowerCase();
+
+  if (
+    normalizedFamily === 'marketplace' &&
+    isMarketplaceConversationThreadType(normalizedThreadType) &&
+    normalizedEntityType === 'marketplace_request'
+  ) {
+    return buildThreadKey({
+      family,
+      threadType,
+      entityType,
+      entityId,
+      recipientUserId,
+      senderUserId,
+    });
+  }
+
+  return buildCanonicalContextThreadKey({
+    family,
+    threadType,
+    entityType,
+    entityId,
+  });
+};
+
 const canBootstrapContextThreadState = ({
   family = '',
   threadType = '',
@@ -798,9 +950,15 @@ const canBootstrapContextThreadState = ({
   }
 
   return (
-    normalizedFamily === 'account_trust' &&
-    normalizedThreadType === 'account_status' &&
-    normalizedEntityType === 'user'
+    (
+      normalizedFamily === 'account_trust' &&
+      normalizedThreadType === 'account_status' &&
+      normalizedEntityType === 'user'
+    ) || (
+      normalizedFamily === 'marketplace' &&
+      isMarketplaceConversationThreadType(normalizedThreadType) &&
+      normalizedEntityType === 'marketplace_request'
+    )
   );
 };
 
@@ -819,7 +977,7 @@ const bootstrapContextThreadState = async (
     metadata = {},
   } = {}
 ) => {
-  const shouldUseCanonicalThreadKey = canBootstrapContextThreadState({
+  const shouldBootstrapThreadState = canBootstrapContextThreadState({
     family,
     threadType,
     entityType,
@@ -827,12 +985,19 @@ const bootstrapContextThreadState = async (
     recipientUserId,
   });
 
-  if (!shouldUseCanonicalThreadKey) {
+  if (!shouldBootstrapThreadState) {
     return null;
   }
 
   const threadKey = String(
-    buildCanonicalContextThreadKey({ family, threadType, entityType, entityId })
+    buildBootstrapThreadKey({
+      family,
+      threadType,
+      entityType,
+      entityId,
+      recipientUserId,
+      senderUserId,
+    })
   ).trim();
 
   if (!threadKey) return null;
@@ -870,7 +1035,14 @@ const buildEphemeralContextThreadState = ({
   }
 
   const threadKey = String(
-    buildCanonicalContextThreadKey({ family, threadType, entityType, entityId })
+    buildBootstrapThreadKey({
+      family,
+      threadType,
+      entityType,
+      entityId,
+      recipientUserId,
+      senderUserId,
+    })
   ).trim();
 
   if (!threadKey) return null;
@@ -1262,7 +1434,7 @@ const handleGet = async (req, res) => {
     tenantScope
   );
   const decorated = await decorateMessages(adminClient, rawMessages || []);
-  const mergedThreads = await buildThreadsFromThreadStates(adminClient, filteredThreadStateRows, decorated, user.id);
+  const mergedThreads = await buildThreadsFromThreadStates(adminClient, filteredThreadStateRows, decorated, user.id, tenantScope);
   const threadEvents = await loadThreadEvents(
     adminClient,
     mergedThreads.map((thread) => thread?.thread_row_id).filter(Boolean),
@@ -1588,7 +1760,7 @@ const handlePost = async (req, res) => {
   const threadStateRows = await loadThreadStates(adminClient, [threadKey], 'admin', user.id, tenantScope);
   const threadMessages = await loadMessagesForThreadStates(adminClient, threadStateRows, 'admin', user.id, 200, tenantScope);
   const decoratedThreadMessages = await decorateMessages(adminClient, threadMessages || []);
-  const [thread] = await buildThreadsFromThreadStates(adminClient, threadStateRows, decoratedThreadMessages, user.id);
+  const [thread] = await buildThreadsFromThreadStates(adminClient, threadStateRows, decoratedThreadMessages, user.id, tenantScope);
   return sendJson(res, 201, { message, thread });
 };
 

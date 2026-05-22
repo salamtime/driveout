@@ -156,6 +156,179 @@ const buildFleetVehiclePayload = (formData = {}, fallbackName = '', ownerId = nu
   notes: String(formData.fullDescription || '').trim() || null,
 });
 
+const resolveLinkedFleetVehicleId = (profile = {}, formData = null) => {
+  const directId =
+    profile?.linked_fleet_vehicle_id ||
+    profile?.fleet_vehicle_id ||
+    profile?.vehicle_ref_id ||
+    formData?.vehicleRefId ||
+    formData?.rawFleetVehicle?.id ||
+    null;
+
+  if (directId === null || directId === undefined || directId === '') {
+    return null;
+  }
+
+  const numericId = Number(directId);
+  if (Number.isFinite(numericId)) {
+    return numericId;
+  }
+
+  return String(directId || '').trim() || null;
+};
+
+const fetchLinkedFleetVehicleRecord = async ({ adminClient, profile, ownerId, tenantScope = null }) => {
+  const linkedFleetVehicleId = resolveLinkedFleetVehicleId(profile);
+  if (linkedFleetVehicleId) {
+    const { data, error } = await applyTenantQueryScope(
+      adminClient
+        .from(VEHICLES_TABLE)
+        .select('*')
+        .eq('id', linkedFleetVehicleId)
+        .maybeSingle(),
+      tenantScope
+    );
+
+    if (!error && data) {
+      return data;
+    }
+
+    const { data: legacyData, error: legacyError } = await adminClient
+      .from(VEHICLES_TABLE)
+      .select('*')
+      .eq('id', linkedFleetVehicleId)
+      .eq('owner_user_id', ownerId)
+      .maybeSingle();
+
+    if (!legacyError && legacyData) {
+      return legacyData;
+    }
+  }
+
+  const fallbackPlateNumber = String(profile?.plate_number || '').trim();
+  if (!fallbackPlateNumber || !ownerId) {
+    return null;
+  }
+
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLES_TABLE)
+      .select('*')
+      .eq('plate_number', fallbackPlateNumber)
+      .eq('owner_user_id', ownerId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (error) {
+    const { data: legacyVehicle, error: legacyVehicleError } = await adminClient
+      .from(VEHICLES_TABLE)
+      .select('*')
+      .eq('plate_number', fallbackPlateNumber)
+      .eq('owner_user_id', ownerId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    return legacyVehicleError ? null : legacyVehicle || null;
+  }
+
+  if (data) return data;
+
+  const { data: legacyVehicle, error: legacyVehicleError } = await adminClient
+    .from(VEHICLES_TABLE)
+    .select('*')
+    .eq('plate_number', fallbackPlateNumber)
+    .eq('owner_user_id', ownerId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return legacyVehicleError ? null : legacyVehicle || null;
+};
+
+const loadOwnerProfileByFleetVehicle = async ({ adminClient, ownerId, fleetVehicleId, tenantScope = null }) => {
+  const numericFleetVehicleId = Number(fleetVehicleId);
+  if (!ownerId || !Number.isFinite(numericFleetVehicleId)) {
+    return null;
+  }
+
+  const { data: fleetVehicle, error: fleetVehicleError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLES_TABLE)
+      .select('id, owner_user_id, plate_number')
+      .eq('id', numericFleetVehicleId)
+      .eq('owner_user_id', ownerId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  let resolvedFleetVehicle = fleetVehicle || null;
+
+  if (fleetVehicleError || !resolvedFleetVehicle?.id) {
+    const { data: legacyFleetVehicle, error: legacyFleetVehicleError } = await adminClient
+      .from(VEHICLES_TABLE)
+      .select('id, owner_user_id, plate_number')
+      .eq('id', numericFleetVehicleId)
+      .eq('owner_user_id', ownerId)
+      .maybeSingle();
+
+    if (legacyFleetVehicleError || !legacyFleetVehicle?.id) {
+      return null;
+    }
+
+    resolvedFleetVehicle = legacyFleetVehicle;
+  }
+
+  const { data: profileByRef, error: profileByRefError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('vehicle_ref_id', String(resolvedFleetVehicle.id))
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (profileByRefError && !setupErrorCodes.has(String(profileByRefError.code || ''))) {
+    throw profileByRefError;
+  }
+
+  if (profileByRef?.id) {
+    return { profile: profileByRef, fleetVehicle: resolvedFleetVehicle };
+  }
+
+  const plateNumber = String(resolvedFleetVehicle.plate_number || '').trim();
+  if (!plateNumber) {
+    return { profile: null, fleetVehicle: resolvedFleetVehicle };
+  }
+
+  const { data: profileByPlate, error: profileByPlateError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('plate_number', plateNumber)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (profileByPlateError && !setupErrorCodes.has(String(profileByPlateError.code || ''))) {
+    throw profileByPlateError;
+  }
+
+  return {
+    profile: profileByPlate || null,
+    fleetVehicle: resolvedFleetVehicle,
+  };
+};
+
 const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitForReview = false, existingListing = null }) => {
   const cleanMedia = toArrayMedia(formData.media);
   const coverImageUrl = String(formData.coverImageUrl || '').trim() || cleanMedia[0]?.url || null;
@@ -185,6 +358,12 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     vehicle_condition: String(formData.vehicleCondition || '').trim() || null,
     color: String(formData.color || '').trim() || null,
     extras: toStringArray(formData.extras),
+    registration_number: String(formData.registrationNumber || '').trim() || null,
+    registration_date: optionalDateString(formData.registrationDate),
+    registration_expiry_date: optionalDateString(formData.registrationExpiryDate),
+    insurance_policy_number: String(formData.insurancePolicyNumber || '').trim() || null,
+    insurance_provider: String(formData.insuranceProvider || '').trim() || null,
+    insurance_expiry_date: optionalDateString(formData.insuranceExpiryDate),
     fuel_policy: String(formData.fuelPolicy || '').trim() || 'return_same_level',
     deposit_amount: optionalNumber(formData.depositAmount),
     mileage_limit_km: optionalInteger(formData.mileageLimitKm),
@@ -483,6 +662,23 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     }
   }
 
+  if (submitForReview) {
+    const persistedListingStatus = normalizeStatus(savedListing?.listing_status || '', 'draft');
+    const persistedReviewStatus = normalizeStatus(savedListing?.review_status || '', 'not_submitted');
+    const persistedModerationStatus = normalizeStatus(savedListing?.moderation_status || '', 'not_reviewed');
+    const reviewWasPersisted = (
+      persistedListingStatus === 'pending_review' ||
+      persistedReviewStatus === 'pending_review' ||
+      persistedModerationStatus === 'pending_review' ||
+      persistedListingStatus === 'approved' ||
+      persistedListingStatus === 'live'
+    );
+
+    if (!reviewWasPersisted) {
+      throw new Error('Review submission did not persist. Please try again.');
+    }
+  }
+
   return {
     profile: {
       ...savedProfile,
@@ -495,12 +691,143 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
   };
 };
 
+const loadVehicleRecord = async ({ adminClient, ownerId, vehicleId, tenantScope = null }) => {
+  if (!ownerId || !vehicleId) {
+    return null;
+  }
+
+  let { data: profile, error: profileError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('id', vehicleId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (profileError) {
+    throw profileError;
+  }
+
+  if (!profile) {
+    const fleetResolution = await loadOwnerProfileByFleetVehicle({
+      adminClient,
+      ownerId,
+      fleetVehicleId: vehicleId,
+      tenantScope,
+    });
+
+    if (!fleetResolution?.profile) {
+      return null;
+    }
+
+    profile = fleetResolution.profile;
+  }
+
+  const { data: listing, error: listingError } = await applyTenantQueryScope(
+    adminClient
+      .from(MARKETPLACE_LISTINGS_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('vehicle_public_profile_id', profile.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (listingError && !setupErrorCodes.has(String(listingError.code || ''))) {
+    throw listingError;
+  }
+
+  const fleetVehicle = await fetchLinkedFleetVehicleRecord({
+    adminClient,
+    profile,
+    ownerId,
+    tenantScope,
+  });
+
+  return {
+    profile,
+    listing: listing || null,
+    fleetVehicle: fleetVehicle || null,
+  };
+};
+
+const publishOwnerListing = async ({ adminClient, ownerId, vehicleId, tenantScope = null }) => {
+  const vehicle = await loadVehicleRecord({
+    adminClient,
+    ownerId,
+    vehicleId,
+    tenantScope,
+  });
+
+  const listing = vehicle?.listing || null;
+  const profile = vehicle?.profile || null;
+  if (!listing?.id || !profile?.id) {
+    const error = new Error('This listing needs to be saved before it can be published.');
+    error.status = 400;
+    throw error;
+  }
+
+  const listingStatus = normalizeStatus(listing.listing_status || listing.status || 'draft');
+  const reviewStatus = normalizeStatus(listing.review_status || 'not_submitted');
+  if (listingStatus === 'live') {
+    return vehicle;
+  }
+
+  if (listingStatus !== 'approved' && reviewStatus !== 'approved') {
+    const error = new Error('Admin approval is required before publishing this listing.');
+    error.status = 409;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const listingUpdates = {
+    listing_status: 'live',
+    review_status: 'approved',
+    moderation_status: 'approved',
+    published_at: now,
+    unpublished_at: null,
+    updated_at: now,
+  };
+  const profileUpdates = {
+    marketplace_visible: true,
+    is_active: true,
+    updated_at: now,
+  };
+
+  const { error: listingError } = await applyTenantQueryScope(
+    adminClient
+      .from(MARKETPLACE_LISTINGS_TABLE)
+      .update(stampTenantPayload(listingUpdates, tenantScope))
+      .eq('id', listing.id)
+      .eq('owner_id', ownerId),
+    tenantScope
+  );
+  if (listingError) throw listingError;
+
+  const { error: profileError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .update(stampTenantPayload(profileUpdates, tenantScope))
+      .eq('id', profile.id)
+      .eq('owner_id', ownerId),
+    tenantScope
+  );
+  if (profileError) throw profileError;
+
+  return loadVehicleRecord({
+    adminClient,
+    ownerId,
+    vehicleId: profile.id,
+    tenantScope,
+  });
+};
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
-
-  if (req.method !== 'POST') {
-    return json(res, 405, { error: 'Method not allowed' });
-  }
 
   const auth = await authenticateRequest(req);
   if (auth.error) {
@@ -510,12 +837,14 @@ export default async function handler(req, res) {
   const { adminClient, user, tenantRuntime } = auth;
 
   try {
-    const body = parseBody(req.body);
-    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+    const requestPayload = req.method === 'GET' ? (req.query || {}) : parseBody(req.body);
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: requestPayload });
     const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
-    if (!userInScope) {
+    const requestAction = String(requestPayload.action || '').trim().toLowerCase();
+    if (!userInScope && req.method !== 'GET' && requestAction !== 'publish_listing') {
       return json(res, 403, { error: 'You do not have access to this workspace' });
     }
+    const effectiveTenantScope = userInScope ? tenantScope : null;
     const ownerId = user.id;
     const { data: profile } = await adminClient
       .from(APP_USERS_TABLE)
@@ -528,22 +857,65 @@ export default async function handler(req, res) {
       return json(res, 403, { error: 'Account access required' });
     }
 
+    if (req.method === 'GET') {
+      const vehicleId = String(req.query?.vehicleId || '').trim();
+      if (!vehicleId) {
+        return json(res, 400, { error: 'vehicleId is required' });
+      }
+
+      const vehicle = await loadVehicleRecord({
+        adminClient,
+        ownerId,
+        vehicleId,
+        tenantScope: effectiveTenantScope,
+      });
+
+      return json(res, 200, {
+        success: true,
+        vehicle,
+      });
+    }
+
+    if (req.method !== 'POST') {
+      return json(res, 405, { error: 'Method not allowed' });
+    }
+
+    if (requestAction === 'publish_listing') {
+      const vehicleId = String(requestPayload.vehicleId || '').trim();
+      if (!vehicleId) {
+        return json(res, 400, { error: 'vehicleId is required' });
+      }
+
+      const vehicle = await publishOwnerListing({
+        adminClient,
+        ownerId,
+        vehicleId,
+        tenantScope: effectiveTenantScope,
+      });
+
+      return json(res, 200, {
+        success: true,
+        vehicle,
+        published: true,
+      });
+    }
+
     const result = await saveVehicleRecord({
       adminClient,
       ownerId,
-      accountType: body.accountType,
-      metadata: body.metadata || {},
-      vehicleId: body.vehicleId || null,
-      formData: body.formData || {},
-      submitForReview: Boolean(body.submitForReview),
-      saveListing: Boolean(body.saveListing),
-      tenantScope,
+      accountType: requestPayload.accountType,
+      metadata: requestPayload.metadata || {},
+      vehicleId: requestPayload.vehicleId || null,
+      formData: requestPayload.formData || {},
+      submitForReview: Boolean(requestPayload.submitForReview),
+      saveListing: Boolean(requestPayload.saveListing),
+      tenantScope: effectiveTenantScope,
     });
 
     return json(res, 200, {
       success: true,
       vehicle: result,
-      submitted: Boolean(body.submitForReview),
+      submitted: Boolean(requestPayload.submitForReview),
     });
   } catch (error) {
     console.error('Owner vehicle save failed:', {
@@ -553,6 +925,6 @@ export default async function handler(req, res) {
       hint: error?.hint,
       status: error?.status,
     });
-    return json(res, 500, { error: error?.message || 'Unable to save vehicle right now.' });
+    return json(res, error?.status || 500, { error: error?.message || 'Unable to save vehicle right now.' });
   }
 }

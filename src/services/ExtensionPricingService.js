@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import {
   applyOrganizationScope,
+  canReadFirstPartyLegacyNullOrgRows,
   isTenantOwnedSharedTable,
   matchTenantOwnedPayload,
   requireCurrentOrganizationId,
@@ -24,11 +25,21 @@ export class ExtensionPricingService {
     return verifyTenantOwnedRows(rows, tableName, { message });
   }
 
+  static async assertRentalInActiveWorkspace(rentalId, message) {
+    if (!shouldScopeSharedTenantData()) {
+      return null;
+    }
+
+    return this.loadRentalWithVehicle(rentalId, message);
+  }
+
   static async scopedMaybeSingle(query, tableName, message) {
     let scopedQuery = query;
     if (shouldScopeSharedTenantData() && isTenantOwnedSharedTable(tableName)) {
       const organizationId = await requireCurrentOrganizationId(message);
-      scopedQuery = applyOrganizationScope(scopedQuery, organizationId);
+      scopedQuery = canReadFirstPartyLegacyNullOrgRows(tableName)
+        ? scopedQuery.or(`organization_id.is.null,organization_id.eq.${organizationId}`)
+        : applyOrganizationScope(scopedQuery, organizationId);
     }
     return scopedQuery.maybeSingle();
   }
@@ -37,7 +48,9 @@ export class ExtensionPricingService {
     let scopedQuery = query;
     if (shouldScopeSharedTenantData() && isTenantOwnedSharedTable(tableName)) {
       const organizationId = await requireCurrentOrganizationId(message);
-      scopedQuery = applyOrganizationScope(scopedQuery, organizationId);
+      scopedQuery = canReadFirstPartyLegacyNullOrgRows(tableName)
+        ? scopedQuery.or(`organization_id.is.null,organization_id.eq.${organizationId}`)
+        : applyOrganizationScope(scopedQuery, organizationId);
     }
     return scopedQuery.single();
   }
@@ -92,7 +105,7 @@ export class ExtensionPricingService {
   static async getApprovedExtensionSummary(rentalId) {
     let query = supabase
       .from(RENTAL_EXTENSIONS_TABLE)
-      .select('id, organization_id, extension_hours, extension_price, status, created_at, approved_at')
+      .select('id, extension_hours, extension_price, status, created_at, approved_at')
       .eq('rental_id', rentalId)
       .eq('status', 'approved')
       .order('approved_at', { ascending: false, nullsFirst: false })
@@ -1062,6 +1075,11 @@ export class ExtensionPricingService {
     if (extension.status !== 'pending') {
       throw new Error('Extension is not pending approval');
     }
+
+    await this.assertRentalInActiveWorkspace(
+      extension.rental_id,
+      'Workspace organization context is required to approve rental extensions.'
+    );
     
     // Update extension status
     const { error: updateError } = await supabase
@@ -1089,14 +1107,35 @@ export class ExtensionPricingService {
    * Reject a pending extension
    */
   static async rejectExtension(extensionId, rejecterId, reason = null) {
+    const { data: extension, error: extensionError } = await supabase
+      .from('rental_extensions')
+      .select('rental_id')
+      .eq('id', extensionId)
+      .maybeSingle();
+
+    if (extensionError) throw extensionError;
+    if (!extension) {
+      throw new Error('Extension not found');
+    }
+
+    await this.assertRentalInActiveWorkspace(
+      extension.rental_id,
+      'Workspace organization context is required to reject rental extensions.'
+    );
+
+    const rejectionNote = String(reason || '').trim();
+    const updatePayload = {
+      status: 'rejected',
+      updated_at: new Date().toISOString()
+    };
+
+    if (rejectionNote) {
+      updatePayload.notes = rejectionNote;
+    }
+
     const { error } = await supabase
       .from('rental_extensions')
-      .update({
-        status: 'rejected',
-        rejected_by: rejecterId,
-        rejected_at: new Date().toISOString(),
-        rejection_reason: reason
-      })
+      .update(updatePayload)
       .eq('id', extensionId);
     
     if (error) throw error;
@@ -1124,6 +1163,11 @@ export class ExtensionPricingService {
     if (!['approved', 'active', 'completed'].includes(String(extension.status || '').toLowerCase())) {
       throw new Error('Only approved extensions can be voided');
     }
+
+    await this.assertRentalInActiveWorkspace(
+      extension.rental_id,
+      'Workspace organization context is required to void rental extensions.'
+    );
 
     const payload = {
       status: 'voided',
@@ -1159,40 +1203,9 @@ export class ExtensionPricingService {
   static async getExtensionHistory(rentalId) {
     const { data, error } = await supabase
       .from('rental_extensions')
-      .select(`
-        *,
-        requester:requested_by(full_name, email),
-        approver:approved_by(full_name, email),
-        rejecter:rejected_by(full_name, email)
-      `)
+      .select('*')
       .eq('rental_id', rentalId)
       .order('requested_at', { ascending: false });
-    
-    if (error) {
-      const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
-      if (
-        Number(error?.status) === 400 ||
-        error?.code === 'PGRST200' ||
-        error?.code === 'PGRST201' ||
-        message.includes('rejected_by') ||
-        message.includes('rejecter') ||
-        message.includes('relationship') ||
-        message.includes('schema cache')
-      ) {
-        const fallback = await supabase
-          .from('rental_extensions')
-          .select(`
-            *,
-            requester:requested_by(full_name, email),
-            approver:approved_by(full_name, email)
-          `)
-          .eq('rental_id', rentalId)
-          .order('requested_at', { ascending: false });
-
-        if (fallback.error) throw fallback.error;
-        return fallback.data || [];
-      }
-    }
 
     if (error) throw error;
     return data || [];

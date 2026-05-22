@@ -23,20 +23,27 @@ import MessageService from '../../services/MessageService';
 import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import VerificationService from '../../services/VerificationService';
+import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
-import { getHostContext } from '../../utils/hostContext';
+import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
 import {
   buildTenantEffectiveFeatureAccess,
   isTenantModuleEnabled,
 } from '../../utils/tenantFeatureAccess';
 
 const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
+const DRIVEOUT_BRAND_NAME = 'Driveout';
 const WEBSITE_HOME_HREF = '/website';
 const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
 const ACCOUNT_RETURN_PATH_KEY = 'saharax_account_return_path';
-const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
-const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
-const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'driveout_owner_vehicle_ids';
+const OWNER_STORAGE_LEGACY_KEYS = Object.freeze({
+  [LAST_OWNER_VEHICLE_ID_KEY]: 'saharax_last_owner_vehicle_id',
+  [LAST_OWNER_VEHICLE_COUNT_KEY]: 'saharax_last_owner_vehicle_count',
+  [OWNER_VEHICLE_IDS_KEY]: 'saharax_owner_vehicle_ids',
+});
 const NAV_GROUPS = [
   { id: 'workspace', label: { en: 'Workspace', fr: 'Espace' }, items: ['overview', 'marketplace', 'messages', 'rentals', 'revenue'] },
   { id: 'account', label: { en: 'Account', fr: 'Compte' }, items: ['settings'] },
@@ -47,20 +54,37 @@ const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
 };
 
+const buildOwnerVehicleStorageKeys = (baseKey, userId = '') => {
+  const primaryKey = buildOwnerVehicleStorageKey(baseKey, userId);
+  const legacyBaseKey = OWNER_STORAGE_LEGACY_KEYS[baseKey];
+  const legacyKey = legacyBaseKey ? buildOwnerVehicleStorageKey(legacyBaseKey, userId) : null;
+  return [primaryKey, legacyKey].filter(Boolean);
+};
+
+const readOwnerVehicleStorageValue = (baseKey, userId = '', fallbackValue = null) => {
+  if (typeof window === 'undefined') return fallbackValue;
+  const storageKeys = buildOwnerVehicleStorageKeys(baseKey, userId);
+  for (const storageKey of storageKeys) {
+    const nextValue = window.localStorage.getItem(storageKey);
+    if (nextValue !== null) return nextValue;
+  }
+  return fallbackValue;
+};
+
 const getKnownOwnerVehicleCount = (userId = '') => {
   if (typeof window === 'undefined') return 0;
 
   try {
     const savedCount = Number.parseInt(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_COUNT_KEY, userId, '0') || '0',
       10
     );
     const savedIds = JSON.parse(
-      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+      readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]'
     );
     const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
     const hasLastVehicle = Boolean(
-      String(window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId)) || '').trim()
+      String(readOwnerVehicleStorageValue(LAST_OWNER_VEHICLE_ID_KEY, userId, '') || '').trim()
     );
     return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount, hasLastVehicle ? 1 : 0);
   } catch {
@@ -90,6 +114,14 @@ const AccountWorkspaceLayout = () => {
     hasWalletActivity: false,
   });
   const hostContext = useMemo(() => getHostContext(), []);
+  const accountBrand = useMemo(() => {
+    const isSaharaXBrand = isSaharaXBrandingHost(hostContext);
+    return {
+      name: isSaharaXBrand ? 'SaharaX' : DRIVEOUT_BRAND_NAME,
+      logoSrc: isSaharaXBrand ? SAHARAX_LOGO_SRC : '',
+      monogram: isSaharaXBrand ? 'SX' : 'D',
+    };
+  }, [hostContext]);
 
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
@@ -175,7 +207,7 @@ const AccountWorkspaceLayout = () => {
     tenantSession?.tenant?.metadata?.feature_access,
   ]);
   const shouldApplyTenantModuleFiltering =
-    managedAccountType === 'business_owner' || hostContext.kind === 'tenant';
+    managedAccountType === 'business_owner' || shouldScopeSharedTenantData(hostContext);
   const baseVisibleSections = useMemo(
     () =>
       getAccountWorkspaceSectionsForMode(workspaceMode).filter((section) => {
@@ -223,6 +255,7 @@ const AccountWorkspaceLayout = () => {
     currentSectionId
   );
   const isMessagesSection = currentSectionId === 'messages';
+  const isOperationsSection = location.pathname.includes('/account/operations/');
   const accountLabel = userProfile?.fullName || userProfile?.email || user?.email || tr('Signed in', 'Connecté');
   const accountAvatarUrl = String(
     userProfile?.profile_picture_url ||
@@ -565,7 +598,11 @@ const AccountWorkspaceLayout = () => {
 
   return (
     <div
-      className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_44%,#ffffff_100%)]"
+      className={
+        isOperationsSection
+          ? 'min-h-screen bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_48%,#ffffff_100%)]'
+          : 'min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_44%,#ffffff_100%)]'
+      }
       style={{ '--workspace-mobile-header-offset': '5rem' }}
     >
       <header className="fixed inset-x-0 top-0 z-[80] border-b border-violet-100/80 bg-white/88 backdrop-blur-xl">
@@ -592,13 +629,19 @@ const AccountWorkspaceLayout = () => {
                 </button>
 
                 <Link to={accountHomeHref} className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
-                  <img src={SAHARAX_LOGO_SRC} alt="SaharaX" className="h-full w-full object-contain" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
-                  <p className="text-sm text-slate-500">{tr('Account workspace', 'Espace compte')}</p>
-                </div>
+                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
+                    {accountBrand.logoSrc ? (
+                      <img src={accountBrand.logoSrc} alt={accountBrand.name} className="h-full w-full object-contain" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center rounded-xl bg-gradient-to-br from-slate-950 via-violet-900 to-violet-600 text-lg font-black tracking-tight text-white">
+                        {accountBrand.monogram}
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">{accountBrand.name}</p>
+                    <p className="text-sm text-slate-500">{tr('Account workspace', 'Espace compte')}</p>
+                  </div>
                 </Link>
               </div>
             </div>
@@ -607,7 +650,7 @@ const AccountWorkspaceLayout = () => {
       </header>
 
       <div className="mx-auto max-w-7xl px-4 pb-[calc(env(safe-area-inset-bottom,0px)+4.5rem)] pt-[calc(var(--workspace-mobile-header-offset)+1rem)] sm:px-6 sm:pb-6 sm:pt-24">
-        {isMessagesSection ? (
+        {isMessagesSection || isOperationsSection ? (
           <main className="min-w-0">
             <Outlet />
           </main>
@@ -636,10 +679,16 @@ const AccountWorkspaceLayout = () => {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[1rem] border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
-                    <img src={SAHARAX_LOGO_SRC} alt="SaharaX" className="h-full w-full object-contain" />
+                    {accountBrand.logoSrc ? (
+                      <img src={accountBrand.logoSrc} alt={accountBrand.name} className="h-full w-full object-contain" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center rounded-xl bg-gradient-to-br from-slate-950 via-violet-900 to-violet-600 text-base font-black tracking-tight text-white">
+                        {accountBrand.monogram}
+                      </span>
+                    )}
                   </div>
                   <div>
-                    <div className="text-[15px] font-semibold text-slate-900">SaharaX</div>
+                    <div className="text-[15px] font-semibold text-slate-900">{accountBrand.name}</div>
                   </div>
                 </div>
                 <button

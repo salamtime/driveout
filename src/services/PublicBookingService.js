@@ -62,9 +62,12 @@ class PublicBookingService {
     return requestPublicBookingApi('create-marketplace', payload, 'POST');
   }
 
-  static async getExistingMarketplaceRequest(listingId) {
-    if (!listingId) return null;
-    return requestPublicBookingLookup('existing-marketplace', { listingId });
+  static async getExistingMarketplaceRequest(listingId, fallbackListingId = '') {
+    if (!listingId && !fallbackListingId) return null;
+    return requestPublicBookingLookup('existing-marketplace', {
+      listingId,
+      fallbackListingId,
+    });
   }
 
   static async getExistingMarketplaceRequests() {

@@ -20,6 +20,11 @@ import {
   resolveRequestTenantScope,
   stampTenantPayload,
 } from './sharedTenantIsolation.js';
+import {
+  addConfiguredRentalDuration,
+  normalizeDailyReturnPolicy,
+} from '../../src/utils/dailyReturnPolicy.js';
+import { normalizeMarketplaceRequestLifecycleStatus } from '../../src/utils/marketplaceRequestState.js';
 
 const WEBSITE_BOOKING_SOURCE = 'website';
 const WEBSITE_BLOCKING_STATUSES = ['verified', 'awaiting_payment', 'payment_submitted', 'confirmed'];
@@ -27,6 +32,9 @@ const WEBSITE_ACTIVE_DEDUPE_STATUSES = ['pending', 'verified', 'awaiting_payment
 const REAL_BLOCKING_RENTAL_STATUSES = ['scheduled', 'confirmed', 'active', 'in_progress', 'checked_out'];
 const DEFAULT_BUFFER_MINUTES = 60;
 const DEFAULT_SCHEDULED_GRACE_MINUTES = 120;
+const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
+const SETTINGS_ROW_ID = 1;
+const OPEN_MARKETPLACE_REQUEST_STATUSES = new Set(['pending', 'countered', 'pre_approved', 'approved', 'active', 'completed']);
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -431,17 +439,32 @@ const toIsoDateTime = (date, time = '10:00') => {
   return value.toISOString();
 };
 
-const addDuration = (startIso, duration, rentalType) => {
+const loadDailyReturnPolicy = async (adminClient) => {
+  try {
+    const { data, error } = await adminClient
+      .from(SETTINGS_TABLE)
+      .select('daily_return_fixed_time, daily_late_return_hourly_penalty_mad, daily_late_return_full_day_threshold_hours')
+      .eq('id', SETTINGS_ROW_ID)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    return normalizeDailyReturnPolicy({
+      dailyReturnFixedTime: data?.daily_return_fixed_time,
+      dailyLateReturnHourlyPenaltyMad: data?.daily_late_return_hourly_penalty_mad,
+      dailyLateReturnFullDayThresholdHours: data?.daily_late_return_full_day_threshold_hours,
+    });
+  } catch (error) {
+    console.warn('public-booking daily return policy fallback:', error?.message || error);
+    return normalizeDailyReturnPolicy();
+  }
+};
+
+const addDuration = (startIso, duration, rentalType, policy = null) => {
   const start = new Date(startIso);
   if (Number.isNaN(start.getTime())) return null;
-
-  if (rentalType === 'hourly') {
-    start.setMinutes(start.getMinutes() + (Number(duration || 1) * 60));
-  } else {
-    start.setDate(start.getDate() + Number(duration || 1));
-  }
-
-  return start.toISOString();
+  const end = addConfiguredRentalDuration(start, duration, rentalType, normalizeDailyReturnPolicy(policy || {}));
+  return end ? end.toISOString() : null;
 };
 
 const toLocalTimeValue = (date) => {
@@ -1158,6 +1181,28 @@ const createRequestReference = () => {
   return `RQ-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 };
 
+const createRentalReferenceCandidate = () => {
+  const year = new Date().getFullYear();
+  const slug = randomUUID().replace(/-/g, '').slice(0, 9).toUpperCase();
+  return `RNT-${year}-${slug}`;
+};
+
+const createUniqueRentalReference = async (adminClient) => {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = createRentalReferenceCandidate();
+    const { data, error } = await adminClient
+      .from('app_4c3a7a6153_rentals')
+      .select('id')
+      .eq('rental_id', candidate)
+      .limit(1);
+
+    if (error) throw error;
+    if (!Array.isArray(data) || data.length === 0) return candidate;
+  }
+
+  throw createHttpError(500, 'Unable to generate a unique rental contract reference.');
+};
+
 const isUuid = (value = '') => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
 const isRqReference = (value = '') => String(value || '').toLowerCase().startsWith('rq_');
 const sanitizeUuid = (value) => (isUuid(value) ? String(value) : null);
@@ -1343,8 +1388,9 @@ const createCertifiedBooking = async (adminClient, payload, { user = null, tenan
     rentalType === 'hourly' ? 0.5 : 1,
     Number(durationUnits || packageSelection?.durationUnits || 1)
   );
+  const dailyReturnPolicy = await loadDailyReturnPolicy(adminClient);
   const startIso = toIsoDateTime(startDate, startTime);
-  const endIso = addDuration(startIso, normalizedDurationUnits, rentalType);
+  const endIso = addDuration(startIso, normalizedDurationUnits, rentalType, dailyReturnPolicy);
   const localStart = startIso ? new Date(startIso) : null;
   const localEnd = endIso ? new Date(endIso) : null;
 
@@ -1407,6 +1453,7 @@ const createCertifiedBooking = async (adminClient, payload, { user = null, tenan
     ].filter(Boolean).join('\n')
   );
   const basePayload = stampTenantPayload({
+    rental_id: await createUniqueRentalReference(adminClient),
     customer_id: cleanValue(linkedCustomer.customerId),
     customer_name: resolvedCustomerName,
     customer_email: resolvedCustomerEmail,
@@ -1530,8 +1577,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
   } = payload;
 
   const normalizedRentalType = rentalType === 'half_day' ? 'hourly' : rentalType;
+  const dailyReturnPolicy = await loadDailyReturnPolicy(adminClient);
   const startIso = toIsoDateTime(startDate, startTime);
-  const endIso = addDuration(startIso, duration, normalizedRentalType);
+  const endIso = addDuration(startIso, duration, normalizedRentalType, dailyReturnPolicy);
   if (!startIso || !endIso) {
     throw createHttpError(400, 'Please choose a valid requested start date, time, and duration.');
   }
@@ -2098,28 +2146,36 @@ export default async function publicBookingHandler(req, res) {
     }
 
     if (req.method === 'GET' && action === 'existing-marketplace') {
-      const listingId = String(req.query?.listingId || '').trim();
+      const requestedListingIds = [
+        String(req.query?.listingId || '').trim(),
+        String(req.query?.fallbackListingId || '').trim(),
+      ].filter(Boolean);
       const authenticatedUser = await getAuthenticatedUser(req);
       const authenticatedUserId = authenticatedUser?.id || null;
       const authenticatedUserEmail = String(authenticatedUser?.email || '').trim().toLowerCase();
 
-      if (!listingId || (!authenticatedUserId && !authenticatedUserEmail)) {
+      const candidateListingIds = [...new Set(
+        requestedListingIds
+          .map((value) => sanitizeUuid(value))
+          .filter(Boolean)
+      )];
+
+      if (!candidateListingIds.length || (!authenticatedUserId && !authenticatedUserEmail)) {
         return json(res, 200, null);
       }
 
       const { data, error } = await adminClient
         .from('app_booking_requests')
         .select('*')
-        .eq('listing_id', sanitizeUuid(listingId))
+        .in('listing_id', candidateListingIds)
         .order('created_at', { ascending: false })
         .limit(25);
 
       if (error) throw error;
 
-      const openRequestStatuses = new Set(['pending', 'countered', 'pre_approved', 'approved']);
       const existingRequest = (Array.isArray(data) ? data : []).find((row) => {
-        const requestStatus = String(row?.request_status || '').trim().toLowerCase();
-        if (!openRequestStatuses.has(requestStatus)) return false;
+        const requestStatus = normalizeMarketplaceRequestLifecycleStatus(row || 'pending');
+        if (!OPEN_MARKETPLACE_REQUEST_STATUSES.has(requestStatus)) return false;
 
         const rowCustomerId = cleanValue(row?.customer_id);
         const rowCustomerExtId = cleanValue(row?.customer_ext_id);
@@ -2152,12 +2208,11 @@ export default async function publicBookingHandler(req, res) {
 
       if (error) throw error;
 
-      const openRequestStatuses = new Set(['pending', 'countered', 'pre_approved', 'approved']);
       const requestsByListing = new Map();
 
       (Array.isArray(data) ? data : []).forEach((row) => {
-        const requestStatus = String(row?.request_status || '').trim().toLowerCase();
-        if (!openRequestStatuses.has(requestStatus)) return;
+        const requestStatus = normalizeMarketplaceRequestLifecycleStatus(row || 'pending');
+        if (!OPEN_MARKETPLACE_REQUEST_STATUSES.has(requestStatus)) return;
 
         const rowCustomerId = cleanValue(row?.customer_id);
         const rowCustomerExtId = cleanValue(row?.customer_ext_id);

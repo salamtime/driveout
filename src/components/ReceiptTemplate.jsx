@@ -4,6 +4,8 @@ import { formatMaintenanceReference } from '../utils/maintenanceReference';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
 import { buildRentalBookedPackageSnapshot } from '../utils/rentalPackageSnapshot';
 import i18n from '../i18n';
+import { fetchSystemSettings } from '../services/systemSettingsApi';
+import { formatDailyReturnPolicyTime, isDailyRentalType, normalizeDailyReturnPolicy } from '../utils/dailyReturnPolicy';
 
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
 
@@ -394,13 +396,41 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const isFrench = language === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   if (!rental) return <div className="p-10 text-center">{tr('No rental data available.', 'Aucune donnée de location disponible.')}</div>;
+  const normalizedReceiptLogoUrl = String(logoUrl || '').trim().toLowerCase();
+  const normalizedReceiptBrand = String(rental?.document_brand || rental?.company_name || rental?.company_legal_name || '').trim().toLowerCase();
+  const isDriveOutMarketplaceReceipt = Boolean(
+    rental?.is_driveout_marketplace_document ||
+    rental?.source_type === 'driveout_marketplace' ||
+    rental?.source_context === 'driveout_marketplace_request' ||
+    rental?.marketplace_request_id ||
+    rental?.marketplace_request_reference ||
+    normalizedReceiptBrand.includes('driveout') ||
+    normalizedReceiptLogoUrl.includes('driveout')
+  );
+  const receiptBrandName = isDriveOutMarketplaceReceipt ? 'DriveOut' : (rental?.company_name || 'SaharaX Rentals');
+  const receiptBrandLegalName = isDriveOutMarketplaceReceipt ? 'DriveOut Marketplace' : (rental?.company_legal_name || 'SaharaX Rentals Morocco');
+  const receiptBrandContact = isDriveOutMarketplaceReceipt ? 'www.driveout.io' : (rental?.company_contact || 'contact@saharax.co | +212 658 888 852');
+  const resolvedReceiptLogoUrl = isDriveOutMarketplaceReceipt
+    ? (normalizedReceiptLogoUrl && !normalizedReceiptLogoUrl.includes('saharax') && !normalizedReceiptLogoUrl.includes('logo.jpg')
+        ? logoUrl
+        : '/assets/driveout-mark.svg')
+    : (logoUrl || '/assets/logo.jpg');
+  const getReceiptSignatureUrl = (url) => {
+    if (!url) return null;
+    if (String(url).startsWith('http')) return url;
+    const supabaseProjectUrl = import.meta.env.VITE_SUPABASE_URL || supabase?.supabaseUrl;
+    return supabaseProjectUrl
+      ? `${supabaseProjectUrl}/storage/v1/object/public/signatures/${url}`
+      : url;
+  };
 
   const [basePrices, setBasePrices] = useState([]);
   const [kilometerPackages, setKilometerPackages] = useState([]);
-  const [loadingPrices, setLoadingPrices] = useState(true);
+  const [loadingPrices, setLoadingPrices] = useState(() => !isDriveOutMarketplaceReceipt);
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= 640 : false
   );
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
   const vehicleName = (
     rental.vehicle?.name ||
     rental.vehicle?.model ||
@@ -432,9 +462,26 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const receiptSubtitle = isFinalPaymentReceipt
     ? tr('Official Payment Receipt • Valid for Accounting', 'Reçu de paiement officiel • Valable pour la comptabilité')
     : tr('Estimated Charges Preview • Subject to Final Release', 'Aperçu des frais estimés • Sous réserve de la libération finale');
+  const shouldShowDailyReturnPolicy = isDailyRentalType(rental?.rental_type);
+  const dailyReturnTimeLabel = formatDailyReturnPolicyTime(dailyReturnPolicy, isFrench ? 'fr-MA' : 'en-US');
+  const dailyReturnPolicyHeadline = tr(
+    `Back before ${dailyReturnTimeLabel} the next day`,
+    `Retour avant ${dailyReturnTimeLabel} le lendemain`
+  );
+  const dailyReturnPolicyBody = tr(
+    `Late return: ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD per extra hour. After ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours, a full extra day is charged.`,
+    `Retour tardif : ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire. Après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures, une journée complète est facturée.`
+  );
   
   // Fetch base prices from database
   useEffect(() => {
+    if (isDriveOutMarketplaceReceipt) {
+      setBasePrices([]);
+      setKilometerPackages([]);
+      setLoadingPrices(false);
+      return undefined;
+    }
+
     const loadBasePrices = async () => {
       try {
         const [
@@ -473,7 +520,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     };
 
     loadBasePrices();
-  }, [vehicleModelId]);
+  }, [isDriveOutMarketplaceReceipt, vehicleModelId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -485,6 +532,28 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     handleResize();
     window.addEventListener('resize', handleResize, { passive: true });
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDailyReturnPolicy = async () => {
+      try {
+        const data = await fetchSystemSettings();
+        if (!cancelled && data) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy(data));
+        }
+      } catch {
+        if (!cancelled) {
+          setDailyReturnPolicy(normalizeDailyReturnPolicy());
+        }
+      }
+    };
+
+    loadDailyReturnPolicy();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Data Fetching logic
@@ -648,7 +717,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         if (duration === 2) return tr("2-hour special rate", "Tarif spécial 2 heures");
         if (duration === 3) return tr("3-hour package deal", "Offre package 3 heures");
         if (duration >= 4 && duration < 24) return isFrench ? `Pack ${duration} heures` : `${duration}-hour bundle`;
-        if (duration >= 24) return tr("Daily package (24h)", "Package journalier (24h)");
+        if (duration >= 24) return tr("Daily package", "Package journalier");
         return isFrench ? `Pack ${duration} heures` : `${duration}-hour package`;
       } else {
         if (duration === 1) return tr("1-day standard rate", "Tarif standard 1 jour");
@@ -1699,6 +1768,347 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     );
   };
 
+  if (isDriveOutMarketplaceReceipt) {
+    const customerName = rental.customer_name || rental.linkedCustomerProfile?.full_name || rental.linkedCustomerProfile?.name || tr('Customer', 'Client');
+    const customerPhone = rental.customer_phone || rental.phone || rental.linkedCustomerProfile?.phone || '';
+    const customerEmail = rental.customer_email || rental.linkedCustomerProfile?.email || '';
+    const customerLicenseNumber = rental.customer_license_number || rental.customer_licence_number || '';
+    const requestReference = rental.marketplace_request_reference || rental.rental_id || rental.id;
+    const startDate = rental.started_at || rental.rental_start_date || rental.start_date;
+    const endDate = rental.actual_end_date || rental.rental_end_date || rental.end_date;
+    const scheduledReturnDate = rental.rental_end_date || rental.end_date;
+    const currencyCode = rental.currency_code || 'MAD';
+    const finalRentalAmount = Math.max(0, Number(rental.total_amount || 0) || 0);
+    const securityDepositAmount = Math.max(0, Number(rental.damage_deposit || rental.deposit_amount || 0) || 0);
+    const refundAmount = Math.max(0, Number(rental.deposit_return_amount || 0) || 0);
+    const depositOutcome = String(rental.deposit_outcome || '').trim().toLowerCase();
+    const refundSignatureUrl = getReceiptSignatureUrl(
+      rental.deposit_return_signature_url ||
+      rental.depositRefundSignatureUrl ||
+      rental.owner_execution?.depositRefundSignatureUrl
+    );
+    const refundSignedAt =
+      rental.deposit_returned_at ||
+      rental.depositRefundSignedAt ||
+      rental.owner_execution?.depositRefundSignedAt ||
+      null;
+    const refundSignedBy =
+      rental.deposit_refund_signed_by ||
+      rental.depositRefundSignedBy ||
+      customerName;
+    const startOdometer = rental.start_odometer || rental.owner_execution?.startOdometer || '';
+    const endOdometer = rental.ending_odometer || rental.owner_execution?.returnOdometer || '';
+    const startFuelLevel = rental.start_fuel_level ?? rental.owner_execution?.startFuelLevel ?? '';
+    const endFuelLevel = rental.end_fuel_level ?? rental.owner_execution?.returnFuelLevel ?? '';
+    const evidence = rental.evidence || {};
+    const handoffPhotoCount = Array.isArray(evidence.handoffPhotos) ? evidence.handoffPhotos.length : 0;
+    const returnPhotoCount = Array.isArray(evidence.returnPhotos) ? evidence.returnPhotos.length : 0;
+    const legalDocsPhotoCount = Array.isArray(evidence.legalDocsPhotos) ? evidence.legalDocsPhotos.length : 0;
+    const hasRefundSignature = Boolean(refundSignatureUrl);
+    const hasClosedRental = Boolean(rental.actual_end_date || rental.owner_execution?.returnSavedAt);
+    const depositStatusLabel = depositOutcome === 'refund_full'
+      ? (hasRefundSignature ? tr('Refund in full • Signature saved', 'Remboursement total • Signature enregistrée') : tr('Refund in full • Signature missing', 'Remboursement total • Signature manquante'))
+      : depositOutcome
+        ? tr('Deposit outcome recorded', 'Résultat de caution enregistré')
+        : tr('Deposit outcome pending', 'Résultat de caution en attente');
+    const formatReceiptMoney = (amount) => `${formatCurrency(amount)} ${currencyCode}`;
+
+    return (
+      <div id="receipt-to-print" className="receipt-container page-container">
+        <style>{`
+          .receipt-container {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            color: #0f172a;
+            background: white;
+            width: 100%;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 32px;
+            border-radius: 18px;
+            box-shadow: 0 20px 44px rgba(15, 23, 42, 0.08);
+          }
+          .receipt-container * {
+            box-sizing: border-box;
+            max-width: 100%;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+          }
+          .driveout-receipt-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+          }
+          .driveout-receipt-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 18px;
+            background: #ffffff;
+            padding: 18px;
+          }
+          .driveout-receipt-label {
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.16em;
+            color: #94a3b8;
+            margin-bottom: 8px;
+          }
+          @media screen and (max-width: 720px) {
+            .receipt-container {
+              padding: 18px;
+              border-radius: 0;
+              box-shadow: none;
+            }
+            .driveout-receipt-grid {
+              grid-template-columns: 1fr;
+            }
+          }
+          @media print {
+            @page { size: A4; margin: 1.5cm; }
+            .receipt-container {
+              max-width: none;
+              margin: 0;
+              padding: 0;
+              box-shadow: none;
+              border-radius: 0;
+            }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
+        `}</style>
+
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          flexWrap: 'wrap',
+          gap: '20px',
+          paddingBottom: '24px',
+          marginBottom: '28px',
+          borderBottom: '3px solid #7c3aed',
+        }}>
+          <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+            <img
+              src={resolvedReceiptLogoUrl}
+              alt={receiptBrandName}
+              style={{ maxWidth: '190px', width: '100%', height: 'auto', objectFit: 'contain' }}
+              onError={(event) => { event.currentTarget.style.display = 'none'; }}
+            />
+            <div style={{ marginTop: '12px', fontSize: '13px', color: '#64748b', lineHeight: 1.6 }}>
+              <div style={{ fontWeight: 800, color: '#0f172a' }}>{receiptBrandLegalName}</div>
+              <div>{receiptBrandContact}</div>
+            </div>
+          </div>
+
+          <div style={{ minWidth: 0, flex: '1 1 280px', textAlign: 'right' }}>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              borderRadius: '999px',
+              background: '#dcfce7',
+              color: '#166534',
+              padding: '7px 12px',
+              fontSize: '12px',
+              fontWeight: 800,
+              marginBottom: '12px',
+            }}>
+              {tr('Receipt', 'Reçu')}
+            </div>
+            <h1 style={{
+              fontSize: 'clamp(26px, 5vw, 38px)',
+              lineHeight: 1.05,
+              margin: 0,
+              letterSpacing: '-0.05em',
+              color: '#020617',
+            }}>
+              {hasClosedRental ? tr('Rental closed', 'Location clôturée') : tr('Rental in progress', 'Location en cours')}
+            </h1>
+            <div style={{ marginTop: '10px', fontSize: '13px', color: '#64748b' }}>
+              {tr('Receipt #:', 'Reçu n° :')} <strong style={{ color: '#0f172a' }}>{safeFormatId(requestReference)}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="driveout-receipt-grid" style={{ marginBottom: '18px' }}>
+          <div className="driveout-receipt-card">
+            <div className="driveout-receipt-label">{tr('Customer', 'Client')}</div>
+            <div style={{ fontSize: '22px', fontWeight: 900, letterSpacing: '-0.04em', color: '#020617' }}>{customerName}</div>
+            {customerEmail ? <div style={{ marginTop: '6px', fontSize: '14px', color: '#475569' }}>{customerEmail}</div> : null}
+            {customerPhone ? <div style={{ marginTop: '4px', fontSize: '14px', color: '#475569' }}>{customerPhone}</div> : null}
+            {customerLicenseNumber ? (
+              <div style={{ marginTop: '12px', fontSize: '13px', fontWeight: 800, color: '#6d28d9' }}>
+                {tr('License:', 'Permis :')} {customerLicenseNumber}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="driveout-receipt-card">
+            <div className="driveout-receipt-label">{tr('Vehicle', 'Véhicule')}</div>
+            <div style={{ fontSize: '22px', fontWeight: 900, letterSpacing: '-0.04em', color: '#020617' }}>{vehicleName}</div>
+            <div style={{ marginTop: '8px', fontSize: '14px', color: '#475569' }}>
+              {tr('Plate:', 'Plaque :')} <strong>{plateNumber}</strong>
+            </div>
+            <div style={{ marginTop: '6px', fontSize: '14px', color: '#475569' }}>
+              {rental.pickup_city || rental.pickup_area || ''}
+            </div>
+          </div>
+        </div>
+
+        <div className="driveout-receipt-grid" style={{ marginBottom: '18px' }}>
+          <div className="driveout-receipt-card">
+            <div className="driveout-receipt-label">{tr('Schedule', 'Planning')}</div>
+            <div style={{ display: 'grid', gap: '12px' }}>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('Started', 'Départ')}</div>
+                <div style={{ fontSize: '17px', fontWeight: 800 }}>{formatReceiptScheduleDateTime(startDate, isFrench, tr)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('Expected return', 'Retour prévu')}</div>
+                <div style={{ fontSize: '17px', fontWeight: 800 }}>{formatReceiptScheduleDateTime(scheduledReturnDate, isFrench, tr)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{hasClosedRental ? tr('Closed', 'Clôture') : tr('Return status', 'Statut retour')}</div>
+                <div style={{ fontSize: '17px', fontWeight: 800 }}>
+                  {hasClosedRental ? formatReceiptScheduleDateTime(endDate, isFrench, tr) : tr('Return pending', 'Retour en attente')}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="driveout-receipt-card" style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #f5f3ff 100%)' }}>
+            <div className="driveout-receipt-label">{tr('Payment and deposit', 'Paiement et caution')}</div>
+            <div style={{ display: 'grid', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span style={{ color: '#475569' }}>{hasClosedRental ? tr('Final rental amount', 'Montant final location') : tr('Rental amount', 'Montant location')}</span>
+                <strong>{formatReceiptMoney(finalRentalAmount)}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span style={{ color: '#475569' }}>{tr('Security deposit', 'Caution')}</span>
+                <strong>{formatReceiptMoney(securityDepositAmount)}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span style={{ color: '#047857' }}>{tr('Refunded to renter', 'Remboursé au locataire')}</span>
+                <strong style={{ color: '#047857' }}>{formatReceiptMoney(refundAmount)}</strong>
+              </div>
+              <div style={{
+                marginTop: '8px',
+                borderRadius: '14px',
+                background: hasRefundSignature ? '#dcfce7' : '#f8fafc',
+                color: hasRefundSignature ? '#166534' : '#475569',
+                padding: '12px',
+                fontSize: '13px',
+                fontWeight: 800,
+              }}>
+                {depositStatusLabel}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="driveout-receipt-grid" style={{ marginBottom: '18px' }}>
+          <div className="driveout-receipt-card">
+            <div className="driveout-receipt-label">{tr('Return readings', 'Relevés retour')}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('Start odometer', 'Compteur départ')}</div>
+                <div style={{ fontSize: '18px', fontWeight: 900 }}>{startOdometer ? `${startOdometer} km` : '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('End odometer', 'Compteur retour')}</div>
+                <div style={{ fontSize: '18px', fontWeight: 900 }}>{endOdometer ? `${endOdometer} km` : '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('Start fuel', 'Carburant départ')}</div>
+                <div style={{ fontSize: '18px', fontWeight: 900 }}>{startFuelLevel !== '' ? `${startFuelLevel}/8` : '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>{tr('End fuel', 'Carburant retour')}</div>
+                <div style={{ fontSize: '18px', fontWeight: 900 }}>{endFuelLevel !== '' ? `${endFuelLevel}/8` : '—'}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="driveout-receipt-card">
+            <div className="driveout-receipt-label">{tr('Evidence saved', 'Preuves enregistrées')}</div>
+            <div style={{ display: 'grid', gap: '10px', fontSize: '14px', color: '#475569' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{tr('Pickup inspection photos', 'Photos inspection départ')}</span>
+                <strong>{handoffPhotoCount}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{tr('Return inspection photos', 'Photos inspection retour')}</span>
+                <strong>{returnPhotoCount}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{tr('Registration and insurance photos', 'Photos carte grise et assurance')}</span>
+                <strong>{legalDocsPhotoCount}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="driveout-receipt-card" style={{ marginBottom: '22px' }}>
+          <div className="driveout-receipt-label">{tr('Refund signature', 'Signature remboursement')}</div>
+          {hasRefundSignature ? (
+            <div style={{ display: 'grid', gridTemplateColumns: isMobileLayout ? '1fr' : 'minmax(220px, 340px) minmax(0, 1fr)', gap: '18px', alignItems: 'center' }}>
+              <div style={{
+                minHeight: '120px',
+                borderRadius: '16px',
+                border: '1px solid #e2e8f0',
+                background: '#f8fafc',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '14px',
+              }}>
+                <img
+                  src={refundSignatureUrl}
+                  alt={tr('Refund signature', 'Signature remboursement')}
+                  style={{ maxHeight: '110px', width: '100%', objectFit: 'contain' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: '20px', fontWeight: 900, color: '#047857' }}>
+                  {tr('Refund confirmed by renter', 'Remboursement confirmé par le locataire')}
+                </div>
+                <div style={{ marginTop: '8px', fontSize: '14px', lineHeight: 1.7, color: '#475569' }}>
+                  {tr('Signed by:', 'Signé par :')} <strong>{refundSignedBy}</strong>
+                  <br />
+                  {tr('Signed at:', 'Signé le :')} <strong>{formatReceiptScheduleDateTime(refundSignedAt, isFrench, tr)}</strong>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: '14px', color: '#64748b' }}>
+              {tr('No refund signature has been saved yet.', 'Aucune signature de remboursement n’a encore été enregistrée.')}
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '16px',
+          paddingTop: '20px',
+          borderTop: '1px solid #e2e8f0',
+          fontSize: '12px',
+          color: '#64748b',
+        }}>
+          <div>
+            <strong style={{ color: '#0f172a' }}>{receiptBrandLegalName}</strong>
+            <div>{tr('Rental receipt for DriveOut marketplace operation.', 'Reçu de location pour opération marketplace DriveOut.')}</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div>{tr('DOCUMENT ID', 'ID DOCUMENT')} : {safeFormatId(requestReference)}</div>
+            <div>{tr('Generated:', 'Généré :')} {new Date().toLocaleDateString(isFrench ? 'fr-FR' : 'en-GB')}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loadingPrices) {
     return (
       <div style={{
@@ -1955,7 +2365,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <img
-            src={logoUrl || "/assets/logo.jpg"}
+            src={resolvedReceiptLogoUrl}
             alt="Company Logo"
             className="header-logo"
             style={{ maxWidth: '220px', width: '100%', height: 'auto', objectFit: 'contain' }}
@@ -2316,6 +2726,25 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             </div>
           </div>
         </div>
+        {shouldShowDailyReturnPolicy && (
+          <div style={{
+            marginTop: '16px',
+            padding: '14px 16px',
+            borderRadius: '10px',
+            border: '1px solid #c4b5fd',
+            backgroundColor: '#f5f3ff',
+          }}>
+            <div style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#6d28d9' }}>
+              {tr('Daily return rule', 'Règle retour journée')}
+            </div>
+            <div style={{ marginTop: '6px', fontSize: '14px', fontWeight: '700', color: '#111827' }}>
+              {dailyReturnPolicyHeadline}
+            </div>
+            <div style={{ marginTop: '4px', fontSize: '12px', color: '#5b21b6', lineHeight: 1.5 }}>
+              {dailyReturnPolicyBody}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Distance & Fuel Section */}

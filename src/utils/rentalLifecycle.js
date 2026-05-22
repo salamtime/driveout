@@ -117,20 +117,25 @@ export const deriveEffectiveRentalStatus = (rental, timingSettings = DEFAULT_REN
     return 'impounded';
   }
 
+  if (['completed', 'cancelled', 'expired'].includes(rawStatus) || rental?.completed_at) {
+    return rawStatus === 'cancelled' || rawStatus === 'expired' ? rawStatus : 'completed';
+  }
+
+  if (
+    rental?.started_at ||
+    rental?.rental_started_at ||
+    rental?.actual_start_date ||
+    ['active', 'in_progress', 'checked_out'].includes(rawStatus)
+  ) {
+    return 'active';
+  }
+
   if (websiteBookingStatus === 'expired') {
     return 'expired';
   }
 
   if (websiteBookingStatus === 'cancelled') {
     return 'cancelled';
-  }
-
-  if (['completed', 'cancelled', 'expired'].includes(rawStatus) || rental?.completed_at) {
-    return rawStatus === 'cancelled' || rawStatus === 'expired' ? rawStatus : 'completed';
-  }
-
-  if (rental?.started_at || rental?.actual_start_date) {
-    return 'active';
   }
 
   if (rawStatus === 'scheduled' || rawStatus === 'reserved' || rawStatus === 'confirmed' || !rawStatus) {

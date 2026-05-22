@@ -27,6 +27,7 @@ export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage 
   const snapshotRatePerUnit =
     toPositiveNumber(rentalLike?.package_rate_per_unit) ||
     toPositiveNumber(rentalLike?.selected_package_rate_per_unit) ||
+    toPositiveNumber(rentalLike?.selected_package_fixed_amount) ||
     toPositiveNumber(basePackage?.fixed_amount) ||
     toPositiveNumber(basePackage?.fixedAmount) ||
     toPositiveNumber(rentalLike?.unit_price);

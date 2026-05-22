@@ -6,7 +6,9 @@ export const APP_SHELL_HOSTS = new Set(['app.driveout.io']);
 export const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 export const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
+const LOCAL_ADMIN_PORT = '5175';
 const LOCAL_TENANT_PORT_MAP = {
+  '5173': 'saharax',
   '5174': 'offroad',
 };
 const LOCAL_TENANT_SLUG_PORT_MAP = Object.entries(LOCAL_TENANT_PORT_MAP).reduce((accumulator, [port, slug]) => {
@@ -77,6 +79,10 @@ export const getHostContext = (hostname = getCurrentHostname()) => {
     : '';
 
   if (isLocalHost(normalizedHostname)) {
+    if (getCurrentPort() === LOCAL_ADMIN_PORT) {
+      return { hostname: normalizedHostname, kind: 'admin', tenantSlug: null, isLocal: true };
+    }
+
     const normalizedLocalTenantSlug = String(localTenantSlug || localTenantSlugFromPort || '').trim().toLowerCase();
     if (normalizedLocalTenantSlug && typeof window !== 'undefined') {
       window.sessionStorage.setItem(LOCAL_TENANT_SESSION_KEY, normalizedLocalTenantSlug);
@@ -153,6 +159,15 @@ export const buildLocalTenantUrl = ({
   const query = params.toString();
 
   return `http://localhost:5173${normalizedPath}${query ? `?${query}` : ''}${hash || ''}`;
+};
+
+export const buildLocalAdminUrl = ({
+  pathname = '/admin',
+  search = '',
+  hash = '',
+}) => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+  return `http://localhost:${LOCAL_ADMIN_PORT}${normalizedPath}${search || ''}${hash || ''}`;
 };
 
 export const isTenantWorkspaceHost = (hostname = getCurrentHostname()) =>

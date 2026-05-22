@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Driveout">
+  <defs>
+    <linearGradient id="driveout-mark-gradient" x1="18" y1="14" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827" />
+      <stop offset="0.52" stop-color="#4c1d95" />
+      <stop offset="1" stop-color="#7c3aed" />
+    </linearGradient>
+    <filter id="driveout-mark-shadow" x="-16" y="-12" width="160" height="160" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#4c1d95" flood-opacity="0.26" />
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="34" fill="#f8fafc" />
+  <rect x="16" y="16" width="96" height="96" rx="28" fill="url(#driveout-mark-gradient)" filter="url(#driveout-mark-shadow)" />
+  <path
+    d="M43 35h25.5c18.6 0 31.5 11.8 31.5 29s-12.9 29-31.5 29H43V35Zm24.8 43.3c9.2 0 15.3-5.6 15.3-14.3S77 49.7 67.8 49.7h-8.5v28.6h8.5Z"
+    fill="#fff"
+  />
+  <path d="M33 35h12.5v58H33V35Z" fill="#c4b5fd" />
+</svg>

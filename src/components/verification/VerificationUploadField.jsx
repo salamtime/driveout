@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { UploadCloud, Eye, FileText, ScanLine, Trash2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import VerificationStatusBadge from './VerificationStatusBadge';
@@ -44,7 +44,7 @@ const withUiTimeout = (promise, timeoutMs, errorMessage) => {
   });
 };
 
-const VerificationUploadField = ({
+const VerificationUploadField = forwardRef(({
   entityType,
   entityId,
   ownerUserId,
@@ -57,8 +57,12 @@ const VerificationUploadField = ({
   scanTitle = null,
   currentProfile = null,
   showStatusBadge = true,
-}) => {
+  embedded = false,
+  footerManagedReview = false,
+  onStateChange = null,
+}, ref) => {
   const inputRef = useRef(null);
+  const containerRef = useRef(null);
   const { i18n } = useTranslation();
   const language = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const tr = (en, fr) => (language === 'fr' ? fr : en);
@@ -100,6 +104,9 @@ const VerificationUploadField = ({
   const displayedSourceLabel = optimisticPreview
     ? tr('Just uploaded', 'Téléversé à l’instant')
     : '';
+  const hasPendingReview = Boolean(pendingReview?.file);
+  const hasDocument = Boolean(activePreview?.url || hasPendingReview || request?.id);
+  const canUploadNewDocument = !hasDocument && !disabled && !isBusy;
 
   const releasePreview = (preview) => {
     if (preview?.revokeOnDispose && preview?.url) {
@@ -184,17 +191,76 @@ const VerificationUploadField = ({
     pendingReviewPreviewRef.current = null;
   }, []);
 
+  useEffect(() => {
+    if (typeof onStateChange !== 'function') return;
+    onStateChange({
+      verificationType,
+      hasPendingReview,
+      hasDocument,
+      isBusy,
+      status: effectiveStatus,
+      canUploadNewDocument,
+    });
+  }, [
+    onStateChange,
+    verificationType,
+    hasPendingReview,
+    hasDocument,
+    isBusy,
+    effectiveStatus,
+    canUploadNewDocument,
+  ]);
+
+  const clearLocalDocument = () => {
+    setPendingReview(null);
+    clearPendingReviewPreview();
+    clearOptimisticPreview();
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
+  };
+
+  const handleDiscardDocument = async () => {
+    if (disabled || isBusy || isRemoving) return;
+    if (request?.id) {
+      await handleRemove();
+      return;
+    }
+    clearLocalDocument();
+  };
+
+  useImperativeHandle(ref, () => ({
+    hasPendingReview: () => hasPendingReview,
+    hasDocument: () => hasDocument,
+    focus: () => {
+      containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    },
+    openUpload: () => {
+      inputRef.current?.click();
+    },
+    submitPendingReview: async () => {
+      if (!hasPendingReview || isSubmittingReview) return false;
+      await handleSubmitReviewedScan();
+      return true;
+    },
+  }), [hasDocument, hasPendingReview, isSubmittingReview]);
+
   const mapScanFields = (scanData = {}) => ({
     full_name: scanData?.full_name || scanData?.fullName || scanData?.name || null,
     date_of_birth: scanData?.date_of_birth || scanData?.dateOfBirth || scanData?.customer_dob || null,
     document_number:
       scanData?.document_number ||
+      scanData?.passport_number ||
       scanData?.id_number ||
       scanData?.idNumber ||
       scanData?.licence_number ||
       scanData?.license_number ||
       null,
-    licence_number: scanData?.licence_number || scanData?.license_number || null,
+    licence_number:
+      scanData?.licence_number ||
+      scanData?.license_number ||
+      scanData?.document_number ||
+      null,
     id_number: scanData?.id_number || scanData?.idNumber || null,
     nationality: scanData?.nationality || scanData?.country || null,
     issue_date: scanData?.issue_date || scanData?.issueDate || null,
@@ -220,7 +286,7 @@ const VerificationUploadField = ({
   };
 
   const getReviewFieldConfig = () => {
-    const sharedFields = [
+    const identityFields = [
       { key: 'full_name', label: tr('Full name', 'Nom complet'), type: 'text' },
       { key: 'document_number', label: tr('Document number', 'Numéro du document'), type: 'text' },
       { key: 'date_of_birth', label: tr('Date of birth', 'Date de naissance'), type: 'date' },
@@ -229,15 +295,16 @@ const VerificationUploadField = ({
 
     if (verificationType === 'driver_license') {
       return [
-        ...sharedFields,
+        { key: 'full_name', label: tr('Full name', 'Nom complet'), type: 'text' },
+        { key: 'date_of_birth', label: tr('Date of birth', 'Date de naissance'), type: 'date' },
+        { key: 'nationality', label: tr('Nationality', 'Nationalité'), type: 'text' },
         { key: 'licence_number', label: tr('License number', 'Numéro du permis'), type: 'text' },
         { key: 'expiry_date', label: tr('Expiry date', 'Date d’expiration'), type: 'date' },
       ];
     }
 
     return [
-      ...sharedFields,
-      { key: 'id_number', label: tr('ID number', 'Numéro d’identité'), type: 'text' },
+      ...identityFields,
       { key: 'issue_date', label: tr('Issue date', 'Date d’émission'), type: 'date' },
     ];
   };
@@ -547,10 +614,15 @@ const VerificationUploadField = ({
   return (
     <>
     <div
-      className={`w-full overflow-hidden rounded-[24px] border bg-white p-4 shadow-sm transition hover:border-violet-100 hover:shadow-[0_18px_40px_rgba(15,23,42,0.06)] ${
-        dragActive
-          ? 'border-violet-300 bg-violet-50/40 ring-2 ring-violet-100'
-          : 'border-slate-200'
+      ref={containerRef}
+      className={`w-full overflow-hidden rounded-[24px] ${
+        embedded
+          ? 'bg-transparent p-0 shadow-none'
+          : `border bg-white p-4 shadow-sm transition hover:border-violet-100 hover:shadow-[0_18px_40px_rgba(15,23,42,0.06)] ${
+              dragActive
+                ? 'border-violet-300 bg-violet-50/40 ring-2 ring-violet-100'
+                : 'border-slate-200'
+            }`
       }`}
       onDragEnter={handleDragOver}
       onDragOver={handleDragOver}
@@ -560,7 +632,7 @@ const VerificationUploadField = ({
       <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
           {activePreview?.url ? (
-            <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.1rem] border border-slate-200 bg-slate-50">
+            <div className="relative flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.1rem] border border-slate-200 bg-slate-50">
               {activePreview.kind === 'image' ? (
                 <img
                   src={activePreview.url}
@@ -580,6 +652,15 @@ const VerificationUploadField = ({
                   </span>
                 </div>
               )}
+              <button
+                type="button"
+                disabled={disabled || isBusy || isRemoving}
+                onClick={() => void handleDiscardDocument()}
+                className="absolute right-1 top-1 inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/80 bg-white/95 text-slate-500 shadow-sm transition hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={tr('Remove document', 'Supprimer le document')}
+              >
+                {isRemoving ? <Trash2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+              </button>
             </div>
           ) : null}
         <div className="min-w-0 flex-1">
@@ -634,18 +715,7 @@ const VerificationUploadField = ({
               {tr('View', 'Voir')}
             </button>
           )}
-          {canRemoveRequest ? (
-            <button
-              type="button"
-              disabled={disabled || isBusy || isRemoving}
-              onClick={handleRemove}
-              className="inline-flex min-w-0 items-center justify-center rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Trash2 className="mr-1 inline h-3.5 w-3.5" />
-              {isRemoving ? tr('Removing...', 'Suppression...') : tr('Remove', 'Supprimer')}
-            </button>
-          ) : null}
-          {enableScan && (
+          {enableScan && !hasDocument ? (
             <button
               type="button"
               disabled={disabled || isBusy}
@@ -655,22 +725,26 @@ const VerificationUploadField = ({
               <ScanLine className="mr-1 inline h-3.5 w-3.5" />
               {isReplacementRequested ? tr('Scan replacement', 'Scanner le remplacement') : tr('Scan', 'Scanner')}
             </button>
-          )}
-          <button
-            type="button"
-            disabled={disabled || isBusy}
-            onClick={() => inputRef.current?.click()}
-            className="inline-flex min-w-0 items-center justify-center rounded-2xl bg-slate-950 px-4 py-2 text-center text-xs font-bold text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <UploadCloud className="mr-1 inline h-3.5 w-3.5" />
-            {isUploading
-              ? tr('Uploading...', 'Téléversement...')
-              : isReplacementRequested
-                ? tr('Upload replacement', 'Téléverser le remplacement')
-                : request
-                  ? tr('Replace', 'Remplacer')
+          ) : null}
+          {hasDocument ? (
+            <span className="inline-flex min-w-0 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-center text-xs font-bold text-emerald-700">
+              {pendingReview ? tr('Ready to review', 'Prêt à vérifier') : tr('Uploaded', 'Téléversé')}
+            </span>
+          ) : (
+            <button
+              type="button"
+              disabled={disabled || isBusy}
+              onClick={() => inputRef.current?.click()}
+              className="inline-flex min-w-0 items-center justify-center rounded-2xl bg-violet-700 px-4 py-2 text-center text-xs font-bold text-white shadow-[0_12px_28px_rgba(109,40,217,0.18)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <UploadCloud className="mr-1 inline h-3.5 w-3.5" />
+              {isUploading
+                ? tr('Uploading...', 'Téléversement...')
+                : isReplacementRequested
+                  ? tr('Upload replacement', 'Téléverser le remplacement')
                   : tr('Upload', 'Téléverser')}
-          </button>
+            </button>
+          )}
         </div>
       </div>
       {!activePreview?.url ? (
@@ -682,7 +756,7 @@ const VerificationUploadField = ({
         </p>
       ) : null}
       {pendingReview ? (
-        <div className="mt-4 rounded-[22px] border border-violet-200 bg-violet-50/60 p-4">
+        <div className="mt-4 rounded-[22px] bg-violet-50/70 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
@@ -698,7 +772,7 @@ const VerificationUploadField = ({
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-[13rem_minmax(0,1fr)]">
             {pendingReviewPreview ? (
-              <div className="rounded-[22px] border border-violet-200 bg-white/80 p-3">
+              <div className="rounded-[22px] bg-white/85 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                   {tr('Document preview', 'Aperçu du document')}
                 </p>
@@ -749,15 +823,21 @@ const VerificationUploadField = ({
               ))}
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={isSubmittingReview}
-              onClick={handleSubmitReviewedScan}
-              className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-4 py-2.5 text-xs font-bold text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSubmittingReview ? tr('Submitting...', 'Envoi...') : tr('Submit for review', 'Envoyer pour vérification')}
-            </button>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {footerManagedReview ? (
+              <p className="text-xs font-semibold text-violet-700">
+                {tr('Use the footer button below to submit this document for review.', 'Utilisez le bouton fixe ci-dessous pour envoyer ce document en vérification.')}
+              </p>
+            ) : (
+              <button
+                type="button"
+                disabled={isSubmittingReview}
+                onClick={handleSubmitReviewedScan}
+                className="inline-flex items-center justify-center rounded-2xl bg-violet-700 px-4 py-2.5 text-xs font-bold text-white shadow-[0_12px_28px_rgba(109,40,217,0.18)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSubmittingReview ? tr('Submitting...', 'Envoi...') : tr('Submit for review', 'Envoyer pour vérification')}
+              </button>
+            )}
             <button
               type="button"
               disabled={isSubmittingReview}
@@ -863,6 +943,6 @@ const VerificationUploadField = ({
     ) : null}
     </>
   );
-};
+});
 
 export default VerificationUploadField;

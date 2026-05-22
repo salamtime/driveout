@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, File, RefreshCw, Trash2, AlertTriangle, X } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import DocumentService from '../services/DocumentService';
 import VerificationService from '../services/VerificationService';
 import i18n from '../i18n';
 
-const DELETE_TIMEOUT_MS = 15000;
-const LOAD_TIMEOUT_MS = 12000;
+const LOAD_TIMEOUT_MS = 20000;
 
 const VehicleDocuments = ({ 
   documents = [], 
@@ -14,6 +13,7 @@ const VehicleDocuments = ({
   canDelete = true, 
   className = '', 
   vehicleId, 
+  storageVehicleIds = [],
   loadFromStorage = true,
   syncStorageToParent = true,
   documentStatusMap = {},
@@ -26,14 +26,18 @@ const VehicleDocuments = ({
   const [lastSyncedSignature, setLastSyncedSignature] = useState('');
   const [viewerIndex, setViewerIndex] = useState(null);
   const [storageLoadError, setStorageLoadError] = useState('');
-  
-  // FIXED: Use existing vehicle-documents bucket instead of vehicle-media
-  const BUCKET_NAME = 'vehicle-documents';
+  const storageVehicleIdList = useMemo(() => {
+    const extraIds = Array.isArray(storageVehicleIds) ? storageVehicleIds : [];
+    return [...new Set([vehicleId, ...extraIds]
+      .map((id) => String(id || '').trim())
+      .filter((id) => id && id !== 'null' && id !== 'undefined'))];
+  }, [vehicleId, storageVehicleIds]);
+  const storageVehicleIdSignature = storageVehicleIdList.join('|');
   
   // FIXED: Load documents only for specific vehicle_id from storage
   useEffect(() => {
-    if (loadFromStorage && vehicleId) {
-      console.log('📥 Loading documents from storage for vehicle:', vehicleId);
+    if (loadFromStorage && storageVehicleIdList.length > 0) {
+      console.log('📥 Loading documents from storage for vehicle ids:', storageVehicleIdList);
       loadVehicleMedia();
     } else {
       // Clear storage documents when not loading from storage or no vehicleId
@@ -47,28 +51,29 @@ const VehicleDocuments = ({
       console.log('🧹 Cleaning up storage document state on unmount');
       setVehicleMedia([]);
     };
-  }, [vehicleId, loadFromStorage]);
+  }, [storageVehicleIdSignature, loadFromStorage]);
 
   // FIXED: Load documents from storage with proper vehicle_id scoping
-  const loadVehicleMedia = async () => {
-    if (!vehicleId) {
-      console.warn('⚠️ No vehicleId provided, skipping media load');
+  const loadVehicleMedia = async (options = {}) => {
+    if (storageVehicleIdList.length === 0) {
+      console.warn('⚠️ No vehicle ids provided, skipping media load');
       return;
     }
 
     setLoading(true);
     setStorageLoadError('');
-    console.log('🔄 Loading vehicle documents from storage for vehicle:', vehicleId);
+    console.log('🔄 Loading vehicle documents from storage for vehicle ids:', storageVehicleIdList);
     
     try {
-      // FIXED: List files in vehicle-specific folder using existing bucket
-      const listResult = await Promise.race([
-        supabase.storage
-          .from(BUCKET_NAME)
-          .list(vehicleId.toString(), {
-            limit: 100,
-            offset: 0
-          }),
+      const storedDocumentGroups = await Promise.race([
+        Promise.allSettled(
+          storageVehicleIdList.map((storageVehicleId) =>
+            DocumentService.getVehicleDocuments(storageVehicleId, {
+              forceRefresh: Boolean(options?.forceRefresh),
+              suppressWarnings: safeDocuments.length > 0,
+            })
+          )
+        ),
         new Promise((_, reject) => {
           window.setTimeout(() => {
             reject(new Error('Loading vehicle documents timed out.'));
@@ -76,55 +81,13 @@ const VehicleDocuments = ({
         }),
       ]);
 
-      const { data: files, error } = listResult || {};
+      const documents = Array.isArray(storedDocumentGroups)
+        ? storedDocumentGroups
+            .flatMap((result) => (result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []))
+            .filter(Boolean)
+        : [];
 
-      if (error) {
-        console.error('❌ Storage list error:', error);
-        throw error;
-      }
-
-      console.log('📄 Found files in vehicle storage folder:', files?.length || 0, files);
-
-      if (files && files.length > 0) {
-        // Filter valid files (exclude folders and placeholder files)
-        const validFiles = files.filter(file => 
-          file.name && 
-          !file.name.endsWith('/') && 
-          file.name !== '.emptyFolderPlaceholder'
-        );
-
-        console.log('✅ Valid files after filtering:', validFiles.length, validFiles);
-
-        // Convert files to document objects
-        // CRITICAL: Always ensure array
-        const safeValidFiles = Array.isArray(validFiles) ? validFiles : [];
-        const documents = safeValidFiles.map(file => {
-          const fullPath = `${vehicleId}/${file.name}`;
-          
-          // Get public URL
-          const { data: urlData } = supabase.storage
-            .from(BUCKET_NAME)
-            .getPublicUrl(fullPath);
-
-          // Extract original filename from the timestamp pattern
-          const originalName = extractOriginalFilename(file.name);
-          const fileType = getMimeTypeFromName(originalName);
-          const categoryMeta = getCategoryFromStoredName(file.name, fileType);
-
-          return {
-            id: file.id || `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            name: originalName,
-            type: fileType,
-            size: file.metadata?.size || 0,
-            url: urlData.publicUrl,
-            storagePath: fullPath,
-            uploadedAt: file.created_at || new Date().toISOString(),
-            category: categoryMeta.category,
-            categoryKey: categoryMeta.categoryKey,
-            vehicleId: vehicleId
-          };
-        });
-
+      if (documents.length > 0) {
         console.log('✅ Processed vehicle documents:', documents.length);
         setVehicleMedia(documents);
         if (syncStorageToParent && onDocumentsChange) {
@@ -143,12 +106,8 @@ const VehicleDocuments = ({
           }
         }
       } else {
-        console.log('📭 No documents found for vehicle:', vehicleId);
+        console.log('📭 No documents found for vehicle ids:', storageVehicleIdList);
         setVehicleMedia([]);
-        if (syncStorageToParent && onDocumentsChange && lastSyncedSignature !== '[]') {
-          setLastSyncedSignature('[]');
-          onDocumentsChange([]);
-        }
       }
       
     } catch (error) {
@@ -157,94 +116,23 @@ const VehicleDocuments = ({
         ? tr('Document storage took too long to respond. Existing documents are still shown.', 'Le stockage des documents met trop de temps à répondre. Les documents existants restent affichés.')
         : (error?.message || tr('Unable to load stored vehicle documents.', 'Impossible de charger les documents véhicule stockés.'));
 
-      if (timedOut) {
+      const hasVisibleDocuments = allDocuments.length > 0;
+
+      if (timedOut && hasVisibleDocuments) {
+        console.info('ℹ️ Vehicle document storage refresh timed out; keeping visible documents.');
+      } else if (timedOut) {
         console.warn('⚠️ Vehicle document storage load timed out:', error);
       } else {
         console.error('❌ Error loading vehicle documents:', error);
       }
 
-      setStorageLoadError(message);
-      if (!timedOut) {
+      setStorageLoadError(hasVisibleDocuments ? '' : message);
+      if (!timedOut && !hasVisibleDocuments) {
         setVehicleMedia([]);
-      }
-      if (!timedOut && syncStorageToParent && onDocumentsChange && lastSyncedSignature !== '[]') {
-        setLastSyncedSignature('[]');
-        onDocumentsChange([]);
       }
     } finally {
       setLoading(false);
     }
-  };
-
-  // Extract original filename from stored filename
-  const extractOriginalFilename = (storedName) => {
-    const withoutCategory = String(storedName || '').replace(/^[a-z-]+__/, '');
-    // Handle the pattern: timestamp_randomstring.extension
-    if (/^\d{13}_/.test(withoutCategory)) {
-      const parts = withoutCategory.split('_');
-      if (parts.length >= 2) {
-        // Remove timestamp (first part) and keep the rest
-        return parts.slice(1).join('_');
-      }
-    }
-    
-    if (/^\d+_[a-z0-9]+_/i.test(withoutCategory)) {
-      return withoutCategory.split('_').slice(2).join('_');
-    }
-
-    return withoutCategory;
-  };
-
-  const getCategoryFromStoredName = (storedName, mimeType) => {
-    const categoryKey = String(storedName || '').split('__')[0];
-    const categoryMap = {
-      'legal': tr('Legal file', 'Document légal'),
-      'purchase-invoice': tr('Purchase invoice', "Facture d'achat"),
-      'registration': tr('Registration', 'Immatriculation'),
-      'annual-tax': tr('Annual vehicle tax receipt', 'Reçu de taxe annuelle véhicule'),
-      'insurance': tr('Insurance', 'Assurance'),
-      'maintenance': tr('Maintenance', 'Maintenance'),
-      'other': tr('Other', 'Autre'),
-    };
-
-    if (categoryMap[categoryKey]) {
-      return {
-        category: categoryMap[categoryKey],
-        categoryKey,
-      };
-    }
-
-    return {
-      category: getCategoryFromType(mimeType),
-      categoryKey: null,
-    };
-  };
-
-  const getMimeTypeFromName = (name) => {
-    const extension = name.split('.').pop()?.toLowerCase() || '';
-    const mimeTypes = {
-      'pdf': 'application/pdf',
-      'doc': 'application/msword',
-      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
-      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'txt': 'text/plain',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'webp': 'image/webp'
-    };
-    return mimeTypes[extension] || 'application/octet-stream';
-  };
-
-  const getCategoryFromType = (mimeType) => {
-    if (!mimeType) return 'Other';
-    if (mimeType.startsWith('image/')) return 'Image';
-    if (mimeType === 'application/pdf') return 'PDF';
-    if (mimeType.includes('document') || mimeType.includes('word')) return 'Document';
-    if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return 'Spreadsheet';
-    return 'Other';
   };
 
   // CRITICAL: Safe array access - Combine documents based on loadFromStorage setting
@@ -253,8 +141,10 @@ const VehicleDocuments = ({
   const allDocuments = useMemo(() => {
     const mergedDocuments = loadFromStorage ? [...safeDocuments, ...safeVehicleMedia] : safeDocuments;
     const seenKeys = new Set();
+    const seenIds = new Set();
 
     return mergedDocuments.filter((doc) => {
+      const docId = String(doc?.id || '').trim();
       const source = String(doc?.source || '').trim().toLowerCase();
       const verificationCategoryKey = String(doc?.categoryKey || '').trim().toLowerCase();
       const verificationKey =
@@ -264,14 +154,18 @@ const VehicleDocuments = ({
       const fallbackKey = doc?.storagePath || doc?.url || doc?.id;
       const docKey = verificationKey || fallbackKey;
 
-      if (!docKey || seenKeys.has(docKey)) {
+      if (!docKey || seenKeys.has(docKey) || (docId && seenIds.has(docId))) {
         return false;
       }
 
       seenKeys.add(docKey);
+      if (docId) seenIds.add(docId);
       return true;
     });
   }, [loadFromStorage, safeDocuments, safeVehicleMedia]);
+
+  const getDocumentRenderKey = (doc, index) =>
+    String(doc?.storagePath || doc?.url || doc?.id || `${doc?.categoryKey || 'document'}-${index}`);
   
   const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
@@ -381,41 +275,41 @@ const VehicleDocuments = ({
         const verificationIds = Array.isArray(doc?.verificationRequestIds) && doc.verificationRequestIds.length
           ? doc.verificationRequestIds
           : [doc.id];
+        const isMissingVerificationDeleteError = (error) => (
+          Number(error?.status) === 404 ||
+          /multiple \(or no\) rows returned/i.test(String(error?.message || '')) ||
+          /verification request not found/i.test(String(error?.message || ''))
+        );
+        let shouldDeleteStorageDirectly = false;
 
         console.log('🔄 Deleting verification-backed document set:', verificationIds);
 
         for (const verificationId of verificationIds) {
-          await Promise.race([
-            VerificationService.deleteVerificationRequest({ id: verificationId }),
-            new Promise((_, reject) => {
-              window.setTimeout(() => {
-                reject(new Error('Delete timed out. Please refresh and try again.'));
-              }, DELETE_TIMEOUT_MS);
-            }),
-          ]);
+          try {
+            await VerificationService.deleteVerificationRequest({ id: verificationId });
+          } catch (error) {
+            if (!isMissingVerificationDeleteError(error)) {
+              throw error;
+            }
+
+            shouldDeleteStorageDirectly = Boolean(doc?.storagePath);
+            console.warn('⚠️ Verification row unavailable during delete, falling back to storage cleanup:', {
+              verificationId,
+              message: error?.message || error,
+            });
+          }
+        }
+
+        if (shouldDeleteStorageDirectly && doc.storagePath) {
+          console.log('🧹 Cleaning up verification-backed storage artifact directly:', doc.storagePath);
+          await DocumentService.deleteDocument(doc.storagePath);
         }
 
         console.log('✅ Successfully deleted verification request set');
       } else if (doc.storagePath) {
         // FIXED: Delete from storage using existing bucket
         console.log('🔄 Deleting from storage:', doc.storagePath);
-        const deleteResult = await Promise.race([
-          supabase.storage
-            .from(BUCKET_NAME)
-            .remove([doc.storagePath]),
-          new Promise((_, reject) => {
-            window.setTimeout(() => {
-              reject(new Error('Delete timed out. Please refresh and try again.'));
-            }, DELETE_TIMEOUT_MS);
-          }),
-        ]);
-
-        const { error: storageError } = deleteResult || {};
-
-        if (storageError) {
-          console.error('❌ Storage deletion error:', storageError);
-          throw new Error(`Failed to delete from storage: ${storageError.message}`);
-        }
+        await DocumentService.deleteDocument(doc.storagePath);
         
         console.log('✅ Successfully deleted from storage');
       }
@@ -543,7 +437,7 @@ const VehicleDocuments = ({
           {loadFromStorage && vehicleId && (
             <button
               type="button"
-              onClick={loadVehicleMedia}
+              onClick={() => loadVehicleMedia({ forceRefresh: true })}
               className="mt-2 text-xs text-blue-600 hover:text-blue-700 underline"
             >
               {tr('Refresh', 'Actualiser')}
@@ -572,7 +466,7 @@ const VehicleDocuments = ({
           {loadFromStorage && vehicleId && (
             <button
               type="button"
-              onClick={loadVehicleMedia}
+              onClick={() => loadVehicleMedia({ forceRefresh: true })}
               className="text-xs text-blue-600 hover:text-blue-700 underline flex items-center gap-1"
             >
               <RefreshCw className="w-3 h-3" />
@@ -585,9 +479,9 @@ const VehicleDocuments = ({
           <section className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Images', 'Images')}</p>
             <div className="-mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">
-              {imageDocuments.map((doc) => (
+              {imageDocuments.map((doc, index) => (
                 <div
-                  key={doc.id}
+                  key={getDocumentRenderKey(doc, index)}
                   className="relative h-28 w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm"
                 >
                   <button
@@ -629,8 +523,8 @@ const VehicleDocuments = ({
           <section className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Legal documents', 'Documents légaux')}</p>
             <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-              {legalDocuments.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              {legalDocuments.map((doc, index) => (
+                <div key={getDocumentRenderKey(doc, index)} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
                     {renderDocumentPreview(doc)}
                     <span className="min-w-0">
@@ -658,8 +552,8 @@ const VehicleDocuments = ({
               {tr('Tax receipts', 'Reçus de taxe')} ({taxReceiptDocuments.length})
             </summary>
             <div className="divide-y divide-emerald-100 bg-white">
-              {taxReceiptDocuments.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              {taxReceiptDocuments.map((doc, index) => (
+                <div key={getDocumentRenderKey(doc, index)} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
                     {renderDocumentPreview(doc, 'emerald')}
                     <span className="min-w-0">

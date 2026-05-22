@@ -74,15 +74,19 @@ const ExtensionHistory = ({
   };
 
   const getStatusBadge = (status) => {
+    const normalizedStatus = String(status || 'pending').toLowerCase();
     const statusConfig = {
       pending: { color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle, label: tr('Pending', 'En attente') },
       approved: { color: 'bg-green-100 text-green-800', icon: CheckCircle, label: tr('Approved', 'Approuvée') },
-      rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Rejected', 'Refusée') },
+      rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
+      declined: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
+      cancelled: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
+      canceled: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
       active: { color: 'bg-blue-100 text-blue-800', icon: Clock, label: tr('Active', 'Active') },
       completed: { color: 'bg-gray-100 text-gray-800', icon: CheckCircle, label: tr('Completed', 'Terminée') }
     };
 
-    const config = statusConfig[status] || statusConfig.pending;
+    const config = statusConfig[normalizedStatus] || statusConfig.pending;
     const Icon = config.icon;
 
     return (

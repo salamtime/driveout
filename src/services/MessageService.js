@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient';
 import {
   createMessageThread,
   MESSAGE_FAMILIES,
+  resolveThreadContextTarget,
 } from '../utils/messageCenter';
 import {
   getMarketplaceRequestDisplay,
@@ -107,19 +108,13 @@ const getCurrentWorkspaceRoutePrefix = () => {
 };
 
 const buildThreadHref = (thread = {}) => {
-  const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
-  if (metadata.href) return String(metadata.href);
-
-  const routePrefix = getCurrentWorkspaceRoutePrefix();
-
-  if (thread.family === MESSAGE_FAMILIES.verification) return '/account/verification';
-  if (thread.family === MESSAGE_FAMILIES.bookings && thread.entity_id) return `${routePrefix}/rentals/${encodeURIComponent(String(thread.entity_id))}`;
-  if (thread.family === MESSAGE_FAMILIES.tours && thread.entity_id) return `/account/tours/${encodeURIComponent(String(thread.entity_id))}`;
-  if (thread.family === MESSAGE_FAMILIES.marketplace && thread.entity_id) {
-    return `/account/rentals/requests/${encodeURIComponent(String(thread.entity_id))}`;
-  }
-  if (thread.family === MESSAGE_FAMILIES.marketplace) return '/account/marketplace';
-  return '/account/messages';
+  const workspace = getCurrentWorkspaceRoutePrefix().startsWith('/admin') ? 'admin' : 'account';
+  const target = resolveThreadContextTarget(thread, {
+    workspace,
+    senderRole: String(thread?.sender_role || '').trim().toLowerCase() || 'customer',
+    fallbackHref: workspace === 'admin' ? '/admin/messages' : '/account/messages',
+  });
+  return String(target?.href || '').trim() || (workspace === 'admin' ? '/admin/messages' : '/account/messages');
 };
 
 const recoverMarketplaceRequestId = (thread = {}, metadata = {}) => {

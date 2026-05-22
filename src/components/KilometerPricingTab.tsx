@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Save, AlertCircle, Car, Filter, DollarSign, Clock, Calendar, CalendarDays, CalendarRange, Printer, Download } from 'lucide-react';
@@ -7,7 +7,9 @@ import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { getDepositPresetSettings } from '../services/DepositPresetSettingsService';
+import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../services/systemSettingsApi';
 import { scopeTenantOwnedQuery, shouldScopeSharedTenantData, verifyTenantOwnedRows } from '../services/OrganizationService';
+import { normalizeDailyReturnPolicy } from '../utils/dailyReturnPolicy';
 
 interface RentalPackage {
   id: number;
@@ -19,6 +21,8 @@ interface RentalPackage {
   fixed_amount: number | null;
   fuel_charge_enabled?: boolean;
   rate_type_id: number;
+  duration_units?: number | null;
+  durationUnits?: number | null;
   is_active: boolean;
   show_on_print?: boolean;
   showOnPrint?: boolean;
@@ -66,20 +70,40 @@ interface PackageFormData {
 const HALF_HOUR_SELECTION = 'half_hour';
 const HALF_DAY_SELECTION = 'half_day';
 const MAX_PRINT_PACKAGES_PER_PAGE = 8;
-const detectHalfDayPackage = (pkg?: { name?: string; description?: string } | null) => {
+const detectHalfDayPackage = (
+  pkg?: { name?: string; description?: string; duration_units?: number | null; durationUnits?: number | null } | null
+) => {
   const combinedText = `${pkg?.name || ''} ${pkg?.description || ''}`.toLowerCase();
-  return combinedText.includes('half day') || combinedText.includes('half-day') || combinedText.includes('4 hour');
+  const durationUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+  return (
+    combinedText.includes('half day') ||
+    combinedText.includes('half-day') ||
+    combinedText.includes('halfday') ||
+    combinedText.includes('demi journée') ||
+    combinedText.includes('demi-journée') ||
+    combinedText.includes('4 hour') ||
+    combinedText.includes('4 hours') ||
+    combinedText.includes('4 heure') ||
+    combinedText.includes('4 heures') ||
+    durationUnits === 4
+  );
 };
 
-const detectHalfHourPackage = (pkg?: { name?: string; description?: string } | null) => {
+const detectHalfHourPackage = (
+  pkg?: { name?: string; description?: string; duration_units?: number | null; durationUnits?: number | null } | null
+) => {
   const combinedText = `${pkg?.name || ''} ${pkg?.description || ''}`.toLowerCase();
+  const durationUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
   return (
     combinedText.includes('half hour') ||
     combinedText.includes('half-hour') ||
+    combinedText.includes('demi heure') ||
+    combinedText.includes('demi-heure') ||
     combinedText.includes('30 min') ||
     combinedText.includes('30-minute') ||
     combinedText.includes('30 minute') ||
-    combinedText.includes('30 minutes')
+    combinedText.includes('30 minutes') ||
+    durationUnits === 0.5
   );
 };
 
@@ -186,7 +210,6 @@ const KilometerPricingTab: React.FC = () => {
   const canManageKilometerPackages = hasFeature('pricing_km_packages');
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [packages, setPackages] = useState<RentalPackage[]>([]);
-  const [filteredPackages, setFilteredPackages] = useState<RentalPackage[]>([]);
   const [rateTypes, setRateTypes] = useState<RateType[]>([]);
   const [vehicleModels, setVehicleModels] = useState<VehicleModel[]>([]);
   const [damageDepositPresetsByModelId, setDamageDepositPresetsByModelId] = useState<Record<string, DamageDepositPreset[]>>({});
@@ -199,6 +222,7 @@ const KilometerPricingTab: React.FC = () => {
   const [printToggleLoading, setPrintToggleLoading] = useState<number | null>(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const [exportingPrintPng, setExportingPrintPng] = useState(false);
+  const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
   const marketingPrintPagesRef = useRef<HTMLDivElement | null>(null);
   
   // Form state
@@ -220,9 +244,103 @@ const KilometerPricingTab: React.FC = () => {
   const [packageTypeSelection, setPackageTypeSelection] = useState<string>('1');
   const [isUnlimitedKilometers, setIsUnlimitedKilometers] = useState(false);
   const [fuelLineChargePreview, setFuelLineChargePreview] = useState<number>(0);
+  const formattedDailyReturnTime = useMemo(() => {
+    const safeTime = /^\d{2}:\d{2}$/.test(String(dailyReturnPolicy.dailyReturnFixedTime || ''))
+      ? String(dailyReturnPolicy.dailyReturnFixedTime)
+      : '14:00';
+    const [hours, minutes] = safeTime.split(':').map(Number);
+    const previewTime = new Date(2000, 0, 1, Number.isFinite(hours) ? hours : 14, Number.isFinite(minutes) ? minutes : 0, 0, 0);
+    return new Intl.DateTimeFormat(isFrench ? 'fr-MA' : 'en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(previewTime);
+  }, [dailyReturnPolicy.dailyReturnFixedTime, isFrench]);
+  const dailyReturnPolicyCardTitle = tr('Daily return rule', 'Règle retour journée');
+  const dailyReturnPolicyHeadline = tr(
+    `Back before ${formattedDailyReturnTime} the next day`,
+    `Retour avant ${formattedDailyReturnTime} le lendemain`
+  );
+  const dailyReturnPolicySummary = tr(
+    `${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD / extra hour • full extra day after ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours`,
+    `${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD / heure supp. • journée complète après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} h`
+  );
+  const dailyReturnHelpText = tr(
+    `Daily rentals return before ${formattedDailyReturnTime} the next day. Late return: ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD per extra hour. After ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours, a full extra day applies.`,
+    `Les locations journalières reviennent avant ${formattedDailyReturnTime} le lendemain. Retour tardif : ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire. Après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures, une journée complète s’applique.`
+  );
+
+  const getPackageRateFamily = (pkg: RentalPackage) => {
+    if (detectHalfHourPackage(pkg)) return 'hourly';
+    if (detectHalfDayPackage(pkg)) return 'daily';
+
+    const rateTypeId = Number(pkg?.rate_type_id ?? 0);
+    if (rateTypeId === 1) return 'hourly';
+    if (rateTypeId === 2) return 'daily';
+    if (rateTypeId === 3) return 'weekly';
+    if (rateTypeId === 4) return 'monthly';
+
+    const rateName = String(
+      rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || ''
+    ).toLowerCase();
+
+    if (rateName.includes('hour')) return 'hourly';
+    if (rateName.includes('day')) return 'daily';
+    if (rateName.includes('week')) return 'weekly';
+    if (rateName.includes('month')) return 'monthly';
+    return 'other';
+  };
+
+  const matchesRateTypeFilter = (pkg: RentalPackage, selectedRateTypeId: string) => {
+    if (!selectedRateTypeId) return true;
+
+    const selectedRateTypeIdNumber = Number(selectedRateTypeId);
+    const packageRateFamily = getPackageRateFamily(pkg);
+
+    if (selectedRateTypeIdNumber === 1) return packageRateFamily === 'hourly';
+    if (selectedRateTypeIdNumber === 2) return packageRateFamily === 'daily';
+    if (selectedRateTypeIdNumber === 3) return packageRateFamily === 'weekly';
+    if (selectedRateTypeIdNumber === 4) return packageRateFamily === 'monthly';
+
+    const selectedRateType = rateTypes.find(
+      (rateType) => String(rateType.id) === String(selectedRateTypeId)
+    );
+    const selectedRateName = String(selectedRateType?.name || '').toLowerCase();
+
+    if (selectedRateName.includes('hour')) return packageRateFamily === 'hourly';
+    if (selectedRateName.includes('day')) return packageRateFamily === 'daily';
+    if (selectedRateName.includes('week')) return packageRateFamily === 'weekly';
+    if (selectedRateName.includes('month')) return packageRateFamily === 'monthly';
+
+    return pkg.rate_type_id === selectedRateTypeIdNumber;
+  };
+
+  const getPackageRateTypeDisplayName = (pkg: RentalPackage) => {
+    const packageRateFamily = getPackageRateFamily(pkg);
+    if (packageRateFamily === 'hourly') return tr('Hourly', 'Horaire');
+    if (packageRateFamily === 'daily') return tr('Daily', 'Journalier');
+    if (packageRateFamily === 'weekly') return tr('Weekly', 'Hebdomadaire');
+    if (packageRateFamily === 'monthly') return tr('Monthly', 'Mensuel');
+    return rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || tr('Unknown', 'Inconnu');
+  };
+
+  const shouldShowConfiguredDailyReturnPolicy = (pkg: RentalPackage) =>
+    getPackageRateFamily(pkg) === 'daily' && !detectHalfDayPackage(pkg);
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handleSettingsUpdate = (event: Event) => {
+      setDailyReturnPolicy(normalizeDailyReturnPolicy((event as CustomEvent)?.detail || {}));
+    };
+
+    window.addEventListener(SYSTEM_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
+    return () => {
+      window.removeEventListener(SYSTEM_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
+    };
   }, []);
 
   useEffect(() => {
@@ -236,26 +354,25 @@ const KilometerPricingTab: React.FC = () => {
     };
   }, [showPrintPreview]);
 
-  useEffect(() => {
-    // Apply filters
+  const filteredPackages = useMemo(() => {
     let filtered = packages;
-    
+
     if (filterVehicleModel) {
-      filtered = filtered.filter(pkg => pkg.vehicle_model_id === filterVehicleModel);
+      filtered = filtered.filter((pkg) => String(pkg.vehicle_model_id || '') === String(filterVehicleModel));
     }
-    
+
     if (filterRateType) {
-      filtered = filtered.filter(pkg => pkg.rate_type_id === parseInt(filterRateType));
+      filtered = filtered.filter((pkg) => matchesRateTypeFilter(pkg, filterRateType));
     }
-    
-    setFilteredPackages(filtered);
-  }, [filterVehicleModel, filterRateType, packages]);
+
+    return filtered;
+  }, [filterVehicleModel, filterRateType, packages, rateTypes]);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [packagesData, rateTypesData, vehicleModelsData, depositSettings] = await Promise.all([
+      const [packagesData, rateTypesData, vehicleModelsData, depositSettings, systemSettingsData] = await Promise.all([
         PackageService.getPackages(),
         PackageService.getRateTypes(),
         PackageService.getVehicleModels(),
@@ -263,14 +380,15 @@ const KilometerPricingTab: React.FC = () => {
           vehicleModelPresets: {},
           allowCustomDeposit: true,
         })),
+        fetchSystemSettings().catch(() => null),
       ]);
       setPackages(packagesData);
-      setFilteredPackages(packagesData);
       setRateTypes(rateTypesData);
       setVehicleModels(vehicleModelsData);
       setDamageDepositPresetsByModelId(
         normalizeDamageDepositPresets(depositSettings?.vehicleModelPresets)
       );
+      setDailyReturnPolicy(normalizeDailyReturnPolicy(systemSettingsData || {}));
     } catch (err: any) {
       console.error('Error loading kilometer pricing data:', err);
       setError(err.message || 'Failed to load data');
@@ -752,6 +870,7 @@ const KilometerPricingTab: React.FC = () => {
     String(value || '')
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .replace(/(\d)([A-Za-z])/g, '$1 $2')
+      .replace(/\s*•\s*/g, ' • ')
       .replace(/\bKM(?=per)/gi, 'KM ')
       .replace(/\bper(?=(Hour|Day|Week|Month)\b)/gi, 'per ')
       .replace(/\bKM\b/gi, 'KM')
@@ -777,6 +896,16 @@ const KilometerPricingTab: React.FC = () => {
       .replace(/\bmonthly\b/gi, 'mensuel')
       .replace(/\bunlimited\s+km\b/gi, 'km illimité')
       .replace(/\bunlimited\s+kilometers\b/gi, 'kilométrage illimité')
+      .replace(/\bunlimted\b/gi, 'illimité')
+      .replace(/\bunlimited\b/gi, 'illimité')
+      .replace(/\bhours\b/gi, 'heures')
+      .replace(/\bhour\b/gi, 'heure')
+      .replace(/\bdays\b/gi, 'jours')
+      .replace(/\bday\b/gi, 'jour')
+      .replace(/\bweeks\b/gi, 'semaines')
+      .replace(/\bweek\b/gi, 'semaine')
+      .replace(/\bmonths\b/gi, 'mois')
+      .replace(/\bmonth\b/gi, 'mois')
       .replace(/\bincluded\s+km\b/gi, 'km inclus')
       .replace(/\bextra\s+km\b/gi, 'km supp.');
   };
@@ -835,13 +964,13 @@ const KilometerPricingTab: React.FC = () => {
     if (pkg.included_kilometers !== null && pkg.included_kilometers !== undefined) {
       return `${pkg.included_kilometers} km`;
     }
-    return tr('Unlimited km', 'Km illimité');
+    return tr('Unlimited km', 'KM illimités');
   };
 
   const getPrintFamilyLabel = (pageFamily: 'hourly' | 'daily') =>
     isFrench
       ? pageFamily === 'hourly'
-        ? 'FORFAITS HORAIRES'
+        ? 'FORFAITS HEURE'
         : 'FORFAITS JOURNÉE'
       : pageFamily === 'hourly'
         ? 'HOURLY PACKAGES'
@@ -849,7 +978,7 @@ const KilometerPricingTab: React.FC = () => {
 
   const getPrintPackageBadgeLabel = () => (isFrench ? 'FORFAIT' : 'PACKAGE');
 
-  const getPrintFeaturedLabel = () => 'SPECIAL';
+  const getPrintFeaturedLabel = () => (isFrench ? 'SPÉCIAL' : 'SPECIAL');
 
   const getPrintCountLabel = () => (isFrench ? 'FORFAITS' : 'PACKAGES');
 
@@ -859,18 +988,15 @@ const KilometerPricingTab: React.FC = () => {
   };
 
   const getPrintPageFamily = (pkg: RentalPackage) => {
-    if (detectHalfHourPackage(pkg) || detectHalfDayPackage(pkg)) return 'hourly';
-    const rateName = String(rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || '').toLowerCase();
-    if (rateName.includes('hour')) return 'hourly';
-    if (rateName.includes('day')) return 'daily';
-    return 'other';
+    const rateFamily = getPackageRateFamily(pkg);
+    return rateFamily === 'hourly' || rateFamily === 'daily' ? rateFamily : 'other';
   };
 
   const buildMarketingPrintPages = () => {
     const scopedPackages = packages.filter((pkg) => {
       if (pkg.is_active === false) return false;
       if (filterVehicleModel && String(pkg.vehicle_model_id || '') !== String(filterVehicleModel)) return false;
-      if (filterRateType && Number(pkg.rate_type_id) !== Number(filterRateType)) return false;
+      if (filterRateType && !matchesRateTypeFilter(pkg, filterRateType)) return false;
       return true;
     });
 
@@ -1142,8 +1268,7 @@ const KilometerPricingTab: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredPackages.map((pkg) => {
-            const rateType = rateTypes.find(rt => rt.id === pkg.rate_type_id);
-            const rateTypeName = rateType?.name || tr('Unknown', 'Inconnu');
+            const rateTypeName = getPackageRateTypeDisplayName(pkg);
             const rateTypeColor = getRateTypeColor(rateTypeName);
             const rateTypeIcon = getRateTypeIcon(rateTypeName);
             const showOnPrint = isPrintSelected(pkg);
@@ -1241,6 +1366,15 @@ const KilometerPricingTab: React.FC = () => {
                         : tr('Fuel included', 'Carburant inclus')}
                     </span>
                   </div>
+                  {shouldShowConfiguredDailyReturnPolicy(pkg) && (
+                    <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs">
+                      <p className="font-semibold uppercase tracking-[0.18em] text-violet-700">
+                        {dailyReturnPolicyCardTitle}
+                      </p>
+                      <p className="mt-1 font-semibold text-slate-900">{dailyReturnPolicyHeadline}</p>
+                      <p className="mt-1 text-violet-800">{dailyReturnPolicySummary}</p>
+                    </div>
+                  )}
 
                   {/* Example Calculation for this rate type */}
                   <div className="mt-3 p-2 bg-gray-50 rounded-md text-xs">
@@ -1264,11 +1398,11 @@ const KilometerPricingTab: React.FC = () => {
                   </div>
                 </div>
                 
-                <div className="flex gap-2 mt-4 pt-4 border-t border-gray-200">
+                <div className="mt-4 grid grid-cols-2 gap-2 border-t border-gray-200 pt-4">
                   <button 
                     onClick={() => handleEditPackage(pkg)}
                     disabled={deleteLoading === pkg.id}
-                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors ${
+                    className={`min-w-0 flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
                       deleteLoading === pkg.id 
                         ? 'text-gray-400 bg-gray-100 cursor-not-allowed' 
                         : 'text-blue-600 hover:bg-blue-50'
@@ -1280,7 +1414,7 @@ const KilometerPricingTab: React.FC = () => {
                   <button 
                     onClick={() => handleDeletePackage(pkg.id)}
                     disabled={deleteLoading === pkg.id}
-                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors ${
+                    className={`min-w-0 flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
                       deleteLoading === pkg.id 
                         ? 'text-gray-400 bg-gray-100 cursor-not-allowed' 
                         : 'text-red-600 hover:bg-red-50'
@@ -1291,7 +1425,7 @@ const KilometerPricingTab: React.FC = () => {
                     ) : (
                       <Trash2 className="w-4 h-4" />
                     )}
-                    {tr('Delete', 'Supprimer')}
+                    {tr('Delete', 'Suppr.')}
                   </button>
                 </div>
               </div>
@@ -1554,6 +1688,19 @@ const KilometerPricingTab: React.FC = () => {
                           </div>
                         </div>
                       </header>
+                      {page.pageFamily === 'daily' && (
+                        <div className={`rounded-[18px] border border-violet-200 bg-violet-50/80 ${isDensePrintPage ? 'mt-1.5 px-3 py-1.5' : 'mt-2 px-3.5 py-2'}`}>
+                          <p className={`font-black uppercase tracking-[0.22em] text-violet-700 ${isDensePrintPage ? 'text-[8px]' : 'text-[9px]'}`}>
+                            {dailyReturnPolicyCardTitle}
+                          </p>
+                          <p className={`mt-0.5 font-semibold leading-snug text-slate-900 ${isDensePrintPage ? 'text-[11px]' : 'text-[12px]'}`}>
+                            {dailyReturnPolicyHeadline}
+                          </p>
+                          <p className={`mt-0.5 leading-snug text-violet-800 ${isDensePrintPage ? 'text-[9px]' : 'text-[10px]'}`}>
+                            {dailyReturnPolicySummary}
+                          </p>
+                        </div>
+                      )}
 
                       <div
                         className={`marketing-print-stack grid flex-1 overflow-hidden ${isDensePrintPage ? 'mt-[1.25mm] gap-[1.4mm]' : 'mt-[2mm] gap-[2.5mm]'}`}
@@ -1574,6 +1721,7 @@ const KilometerPricingTab: React.FC = () => {
                           const packageDescription = getMarketingPrintDescription(pkg);
                           const printPrice = formatPrintPrice(pkg.fixed_amount);
                           const hasSeparateFuelCharge = Boolean(pkg.fuel_charge_enabled);
+                          const showDailyReturnPolicy = shouldShowConfiguredDailyReturnPolicy(pkg);
                           return (
                             <article
                               key={pkg.id}
@@ -1687,6 +1835,11 @@ const KilometerPricingTab: React.FC = () => {
                                   <p className={`font-semibold ${isDensePrintPage ? 'mt-0.5 text-[14px]' : 'mt-1 text-[16px]'} ${hasSeparateFuelCharge ? 'text-amber-700' : 'text-emerald-700'}`}>
                                     {tr('Fuel', 'Carburant')}: {hasSeparateFuelCharge ? tr('Not included', 'Non inclus') : tr('Included', 'Inclus')}
                                   </p>
+                                  {showDailyReturnPolicy && (
+                                    <p className={`font-semibold ${isDensePrintPage ? 'mt-0.5 text-[12px]' : 'mt-1 text-[14px]'} text-violet-700`}>
+                                      {tr('Back before', 'Retour avant')} {formattedDailyReturnTime}
+                                    </p>
+                                  )}
                                 </div>
 
                                 <div className={`flex items-center ${isDensePrintPage ? 'min-w-[158px] max-w-[158px]' : 'min-w-[180px] max-w-[180px]'}`}>
@@ -2157,6 +2310,7 @@ const KilometerPricingTab: React.FC = () => {
       <KilometerPricingHelpModal
         isOpen={showHelpModal}
         onClose={() => setShowHelpModal(false)}
+        dailyReturnHelpText={dailyReturnHelpText}
       />
     </div>
   );

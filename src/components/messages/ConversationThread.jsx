@@ -5,10 +5,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   Camera,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   CornerUpLeft,
   Ellipsis,
+  ExternalLink,
   FileBadge,
   ImagePlus,
   PenSquare,
@@ -23,11 +25,17 @@ import {
   getNeedsReplyState,
   getOtherParty,
   getParticipantLabel,
+  getThreadCapabilities,
+  getThreadConversationKind,
+  getThreadSurface,
+  getThreadWorkflowKind,
   getThreadRoleContext,
   getThreadUserProfile,
   getWaitingOnFilterLabel,
 } from './threadHelpers';
+import WorkflowThreadView from './WorkflowThreadView';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
+import { MESSAGE_ATTACHMENT_KINDS, normalizeMessageAttachments, resolveThreadContextTarget } from '../../utils/messageCenter';
 import MessageService from '../../services/MessageService';
 import MessageAttachmentService from '../../services/MessageAttachmentService';
 import MessageMediaRetentionService from '../../services/MessageMediaRetentionService';
@@ -49,6 +57,7 @@ import {
   normalizeRentalThreadContext,
 } from '../../utils/rentalThreadState';
 import { getMarketplaceWalletGuidance, parseMarketplaceWalletAmount } from '../../utils/marketplaceUiGuidance';
+import { buildOwnerExecutionWorkspaceHref, getOwnerExecutionActionConfig } from '../../utils/ownerRentalExecutionLinks';
 import { buildMarketplaceListingPath, buildMarketplaceRequestPath } from '../../utils/marketplaceShareLinks';
 import { getVerificationTypeLabel } from '../../utils/verificationStatus';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
@@ -118,6 +127,7 @@ const ConversationThread = ({
   onClose,
   onDeleteThread,
   threadContextData = null,
+  listingSetupProgress = null,
 }) => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -154,6 +164,7 @@ const ConversationThread = ({
   const [verificationRequests, setVerificationRequests] = useState([]);
   const [showVerificationDocuments, setShowVerificationDocuments] = useState(false);
   const [showHeaderDetails, setShowHeaderDetails] = useState(false);
+  const [showInternalNotes, setShowInternalNotes] = useState(false);
   const [holdNow, setHoldNow] = useState(() => Date.now());
   const [ctaHighlightActive, setCtaHighlightActive] = useState(false);
   const [approvedSummaryExpanded, setApprovedSummaryExpanded] = useState(true);
@@ -276,21 +287,27 @@ const ConversationThread = ({
     return tokens.slice(0, 2).map((part) => part[0]).join('').toUpperCase();
   }, []);
 
+  const threadConversationKind = useMemo(
+    () => getThreadConversationKind(selectedThread),
+    [selectedThread]
+  );
+  const threadCapabilities = useMemo(
+    () => getThreadCapabilities(selectedThread),
+    [selectedThread]
+  );
+
+  const isVisualAttachment = useCallback((attachment) => {
+    const kind = String(attachment?.kind || '').trim().toLowerCase();
+    return [
+      MESSAGE_ATTACHMENT_KINDS.photo,
+      MESSAGE_ATTACHMENT_KINDS.image,
+      MESSAGE_ATTACHMENT_KINDS.video,
+    ].includes(kind);
+  }, []);
+
   const getMessageAttachments = (message) => {
     const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
-    return (Array.isArray(metadata.attachments) ? metadata.attachments : [])
-      .map((attachment, index) => ({
-        id: String(attachment?.id || `${message?.id || 'message'}-attachment-${index}`).trim(),
-        kind: String(attachment?.kind || 'photo').trim().toLowerCase() || 'photo',
-        publicUrl: String(attachment?.publicUrl || attachment?.public_url || '').trim(),
-        thumbnailUrl: String(attachment?.thumbnailUrl || attachment?.thumbnail_url || attachment?.publicUrl || attachment?.public_url || '').trim(),
-        originalFilename: String(attachment?.originalFilename || attachment?.original_filename || '').trim(),
-        fileSize: Number(attachment?.fileSize || attachment?.file_size || 0) || 0,
-        mimeType: String(attachment?.mimeType || attachment?.mime_type || '').trim().toLowerCase(),
-        status: String(attachment?.status || 'active').trim().toLowerCase() || 'active',
-        expiresAt: attachment?.expiresAt || attachment?.expires_at || null,
-      }))
-      .filter((attachment) => attachment.kind === 'photo');
+    return normalizeMessageAttachments(metadata.attachments, message);
   };
 
   const hasPendingMessageSettled = (pendingMessage, persistedMessages = []) => {
@@ -397,6 +414,8 @@ const ConversationThread = ({
   const resolvedThreadKey = String(selectedThread?.thread_key || threadId || '').trim();
   const threadMetadata = selectedThread?.metadata && typeof selectedThread.metadata === 'object' ? selectedThread.metadata : {};
   const normalizedThreadType = String(selectedThread?.thread_type || selectedThread?.threadType || '').trim().toLowerCase();
+  const threadSurface = getThreadSurface(selectedThread);
+  const workflowKind = getThreadWorkflowKind(selectedThread);
   const isRentalThread = Boolean(
     String(contextType || '').trim().toLowerCase() === 'rental' ||
     (selectedThread?.family === 'bookings' && normalizedThreadType === 'rental_booking')
@@ -433,12 +452,77 @@ const ConversationThread = ({
   )
     .trim()
     .toLowerCase();
+  const marketplaceLifecycleSource = useMemo(() => {
+    const bookingRaw = bookingContext?.raw && typeof bookingContext.raw === 'object'
+      ? bookingContext.raw
+      : bookingContext?.rawRequest && typeof bookingContext.rawRequest === 'object'
+        ? bookingContext.rawRequest
+        : {};
+    const bookingCounterOffer = bookingContext?.counterOffer && typeof bookingContext.counterOffer === 'object'
+      ? bookingContext.counterOffer
+      : bookingContext?.counter_offer && typeof bookingContext.counter_offer === 'object'
+        ? bookingContext.counter_offer
+        : {};
+    const threadCounterOffer = threadMetadata.counterOffer && typeof threadMetadata.counterOffer === 'object'
+      ? threadMetadata.counterOffer
+      : threadMetadata.counter_offer && typeof threadMetadata.counter_offer === 'object'
+        ? threadMetadata.counter_offer
+        : {};
+
+    return {
+      request_status:
+        bookingRaw?.request_status ||
+        bookingContext?.requestStatus ||
+        threadMetadata.requestStatus ||
+        threadMetadata.status ||
+        selectedThread?.status ||
+        '',
+      requestStatus:
+        bookingContext?.requestStatus ||
+        bookingRaw?.request_status ||
+        threadMetadata.requestStatus ||
+        threadMetadata.status ||
+        selectedThread?.status ||
+        '',
+      status:
+        bookingContext?.requestStatus ||
+        bookingRaw?.request_status ||
+        threadMetadata.requestStatus ||
+        threadMetadata.status ||
+        selectedThread?.status ||
+        '',
+      approved_at:
+        bookingRaw?.approved_at ||
+        bookingContext?.approvedAt ||
+        bookingContext?.chatUnlockedAt ||
+        threadMetadata.approved_at ||
+        threadMetadata.approvedAt ||
+        threadMetadata.chat_unlocked_at ||
+        threadMetadata.chatUnlockedAt ||
+        null,
+      approvedAt:
+        bookingContext?.approvedAt ||
+        bookingContext?.chatUnlockedAt ||
+        bookingRaw?.approved_at ||
+        threadMetadata.approvedAt ||
+        threadMetadata.approved_at ||
+        threadMetadata.chatUnlockedAt ||
+        threadMetadata.chat_unlocked_at ||
+        null,
+      counter_offer: Object.keys(bookingCounterOffer).length ? bookingCounterOffer : threadCounterOffer,
+      counterOffer: Object.keys(bookingCounterOffer).length ? bookingCounterOffer : threadCounterOffer,
+    };
+  }, [bookingContext, selectedThread?.status, threadMetadata]);
   const rentalState = normalizeRentalState(
-    bookingContext?.requestStatus ||
-    threadMetadata.requestStatus ||
-    threadMetadata.status ||
-    selectedThread?.status ||
-    ''
+    selectedThread?.family === 'marketplace'
+      ? marketplaceLifecycleSource
+      : (
+        bookingContext?.requestStatus ||
+        threadMetadata.requestStatus ||
+        threadMetadata.status ||
+        selectedThread?.status ||
+        ''
+      )
   );
   const marketplaceReplyAllowed =
     selectedThread?.family === 'marketplace'
@@ -747,6 +831,30 @@ const ConversationThread = ({
     threadMetadata.href,
     verificationPosts,
   ]);
+  const threadWorkspaceMode = currentLocationPath.startsWith('/admin') || currentLocationPath.startsWith('/guide')
+    ? 'admin'
+    : 'account';
+  const threadContextTarget = useMemo(
+    () => resolveThreadContextTarget(selectedThread, {
+      workspace: threadWorkspaceMode,
+      senderRole: currentSenderRole,
+      fallbackHref: threadWorkspaceMode === 'admin' ? '/admin/messages' : '/account/messages',
+    }),
+    [currentSenderRole, selectedThread, threadWorkspaceMode]
+  );
+  const threadContextHref = workflowKind === 'identity_review'
+    ? verificationPageHref
+    : String(threadContextTarget?.href || '').trim();
+  const threadContextActionLabel = useMemo(() => {
+    const context = String(threadContextTarget?.context || '').trim().toLowerCase();
+    if (context === 'verification') return tr('Open verification', 'Ouvrir la vérification');
+    if (context === 'listing_review') return tr('Open listing review', "Ouvrir la revue de l'annonce");
+    if (context === 'marketplace_request') return tr('Open request', 'Ouvrir la demande');
+    if (context === 'rental') return tr('Open rental details', 'Ouvrir les détails de la location');
+    if (context === 'tour') return tr('Open tour details', 'Ouvrir les détails du tour');
+    if (context === 'support') return tr('Open support', 'Ouvrir le support');
+    return tr('Open details', 'Ouvrir les détails');
+  }, [threadContextTarget?.context, tr]);
   const buildVerificationDocumentHref = useCallback((post) => {
     const basePath = currentSenderRole === 'admin' ? '/admin/verification' : '/account/verification';
     const params = new URLSearchParams();
@@ -968,6 +1076,7 @@ const ConversationThread = ({
       return marketplaceRoleContext;
     }
     if (
+      marketplaceThreadHref.includes('/account/operations/') ||
       marketplaceThreadHref.includes('/account/vehicles?requestId=') ||
       marketplaceThreadHref.includes('/account/vehicles#requests') ||
       marketplaceThreadHref.includes('/account/vehicles/')
@@ -991,6 +1100,215 @@ const ConversationThread = ({
       String(selectedThread?.entity_type || '').trim().toLowerCase() === 'listing'
     )
   );
+  const marketplaceModerationProgress = useMemo(() => {
+    if (!isMarketplaceModerationThread || currentSenderRole !== 'owner') return null;
+    if (!listingSetupProgress || !Array.isArray(listingSetupProgress.steps)) return null;
+
+    const steps = listingSetupProgress.steps;
+    const ownerStep = steps.find((step) => step.key === 'owner_verification') || null;
+    const documentsStep = steps.find((step) => step.key === 'vehicle_documents') || null;
+    const reviewStep = steps.find((step) => step.key === 'review_publish') || null;
+    const reviewState = String(listingSetupProgress.reviewPublishState || '').trim().toLowerCase() || 'blocked';
+    const ownerStatus = String(ownerStep?.status || '').trim().toLowerCase();
+    const documentsStatus = String(documentsStep?.status || '').trim().toLowerCase();
+    const ownerDone = ownerStatus === 'done';
+    const documentsDone = documentsStatus === 'done';
+
+    const summarizePhase = (step, phase) => {
+      const normalizedStatus = String(step?.status || '').trim().toLowerCase();
+
+      if (phase === 'review') {
+        if (reviewState === 'live') return tr('Published', 'Publiée');
+        if (reviewState === 'approved') return tr('Approved', 'Approuvée');
+        if (reviewState === 'waiting_for_admin') return tr('Waiting for admin', "En attente de l'admin");
+        if (reviewState === 'changes_requested') return tr('Needs changes', 'Corrections requises');
+        if (reviewState === 'ready_for_review') return tr('Ready to send', 'Prête à envoyer');
+      }
+
+      if (normalizedStatus === 'done') return tr('Approved', 'Approuvée');
+      if (normalizedStatus === 'waiting') return tr('Waiting for admin', "En attente de l'admin");
+      if (normalizedStatus === 'issue') return tr('Needs changes', 'Corrections requises');
+      if (normalizedStatus === 'active') return tr('In progress', 'En cours');
+      if (normalizedStatus === 'locked') return tr('Locked', 'Verrouillée');
+      return tr('Todo', 'À faire');
+    };
+
+    const stateTone = (() => {
+      if (reviewState === 'live' || reviewState === 'approved') {
+        return {
+          shell: 'border-emerald-200 bg-emerald-50',
+          chip: 'bg-emerald-100 text-emerald-700',
+          body: 'text-emerald-900',
+          muted: 'text-emerald-700',
+        };
+      }
+      if (reviewState === 'changes_requested') {
+        return {
+          shell: 'border-amber-200 bg-amber-50',
+          chip: 'bg-amber-100 text-amber-700',
+          body: 'text-amber-900',
+          muted: 'text-amber-700',
+        };
+      }
+      if (reviewState === 'waiting_for_admin') {
+        return {
+          shell: 'border-sky-200 bg-sky-50',
+          chip: 'bg-sky-100 text-sky-700',
+          body: 'text-sky-900',
+          muted: 'text-sky-700',
+        };
+      }
+      return {
+        shell: 'border-violet-200 bg-violet-50',
+        chip: 'bg-violet-100 text-violet-700',
+        body: 'text-violet-900',
+        muted: 'text-violet-700',
+      };
+    })();
+
+    const headerStatusSummary = (() => {
+      switch (reviewState) {
+        case 'live':
+          return tr('Live on marketplace', 'En ligne sur la marketplace');
+        case 'approved':
+          return tr('Approved for publication', 'Approuvée pour publication');
+        case 'waiting_for_admin':
+          return tr('Waiting for admin', "En attente de l'admin");
+        case 'changes_requested':
+          return tr('Needs owner updates', 'Corrections du propriétaire requises');
+        case 'ready_for_review':
+          return tr('Ready to send for review', 'Prête pour la revue');
+        default:
+          return tr('Continue listing setup', "Continuer la configuration de l'annonce");
+      }
+    })();
+
+    const statusHistoryItems = [];
+
+    if (ownerDone) {
+      statusHistoryItems.push({
+        key: 'owner-complete',
+        state: 'complete',
+        title: tr('Owner verified', 'Propriétaire vérifié'),
+        body: tr('Your owner profile checks are complete.', 'Les vérifications de votre profil propriétaire sont terminées.'),
+      });
+    }
+
+    if (documentsDone) {
+      statusHistoryItems.push({
+        key: 'documents-complete',
+        state: 'complete',
+        title: tr('Documents ready', 'Documents prêts'),
+        body: tr('Vehicle documents are complete for listing review.', "Les documents du véhicule sont prêts pour la revue de l'annonce."),
+      });
+    }
+
+    switch (reviewState) {
+      case 'live':
+        statusHistoryItems.push({
+          key: 'review-approved',
+          state: 'complete',
+          title: tr('Approved for publication', 'Approuvée pour publication'),
+          body: tr('Admin review finished successfully.', "La revue admin s'est terminée avec succès."),
+        });
+        statusHistoryItems.push({
+          key: 'listing-live',
+          state: 'current',
+          title: tr('Published live', 'Publiée en ligne'),
+          body: tr('The listing is now visible on the marketplace.', "L'annonce est maintenant visible sur la marketplace."),
+        });
+        break;
+      case 'approved':
+        statusHistoryItems.push({
+          key: 'review-approved',
+          state: 'current',
+          title: tr('Approved for publication', 'Approuvée pour publication'),
+          body: tr('Admin review is complete. The next step is publishing the listing.', "La revue admin est terminée. La prochaine étape consiste à publier l'annonce."),
+        });
+        break;
+      case 'waiting_for_admin':
+        statusHistoryItems.push({
+          key: 'review-waiting',
+          state: 'current',
+          title: tr('Waiting for admin review', "En attente de la revue admin"),
+          body: tr('The full listing package is with the review team now.', "Le dossier complet de l'annonce est maintenant chez l'équipe de revue."),
+        });
+        break;
+      case 'changes_requested':
+        statusHistoryItems.push({
+          key: 'review-changes',
+          state: 'current',
+          title: tr('Changes requested', 'Corrections demandées'),
+          body: tr('Update the listing setup, then send the review again.', "Mettez l'annonce à jour, puis renvoyez la revue."),
+        });
+        break;
+      case 'ready_for_review':
+        statusHistoryItems.push({
+          key: 'review-ready',
+          state: 'current',
+          title: tr('Ready to send for review', 'Prête à envoyer en revue'),
+          body: tr('Everything important is ready. Send the listing once to start admin review.', "Tout l'essentiel est prêt. Envoyez l'annonce une seule fois pour démarrer la revue admin."),
+        });
+        break;
+      default:
+        if (!ownerDone) {
+          statusHistoryItems.push({
+            key: 'owner-next',
+            state: 'current',
+            title: ownerStatus === 'issue'
+              ? tr('Owner updates required', 'Corrections propriétaire requises')
+              : tr('Finish owner verification', 'Terminer la vérification propriétaire'),
+            body: ownerStatus === 'issue'
+              ? tr('Fix the owner profile checks first, then continue the listing.', "Corrigez d'abord les vérifications du profil propriétaire, puis continuez l'annonce.")
+              : tr('Complete the owner checks to unlock listing review.', "Terminez les vérifications propriétaire pour débloquer la revue de l'annonce."),
+          });
+        } else if (!documentsDone) {
+          statusHistoryItems.push({
+            key: 'documents-next',
+            state: 'current',
+            title: documentsStatus === 'issue'
+              ? tr('Document updates required', 'Corrections documents requises')
+              : tr('Finish vehicle documents', 'Terminer les documents du véhicule'),
+            body: documentsStatus === 'issue'
+              ? tr('Update the missing or rejected documents, then continue.', 'Mettez à jour les documents manquants ou refusés, puis continuez.')
+              : tr('Complete the vehicle documents to unlock listing review.', "Terminez les documents du véhicule pour débloquer la revue de l'annonce."),
+          });
+        } else {
+          statusHistoryItems.push({
+            key: 'review-setup',
+            state: 'current',
+            title: tr('Continue listing setup', "Continuer la configuration de l'annonce"),
+            body: tr('Finish the remaining setup once, then the review step will unlock.', "Terminez la configuration restante une seule fois, puis l'étape de revue se débloquera."),
+          });
+        }
+        break;
+    }
+
+    const headerNextActionSummary = (() => {
+      switch (reviewState) {
+        case 'live':
+          return tr('No action needed. Your listing is already live.', "Aucune action requise. Votre annonce est déjà en ligne.");
+        case 'approved':
+          return tr('No admin work remains. Publish the listing when you are ready.', "Aucun travail admin restant. Publiez l'annonce quand vous êtes prêt.");
+        case 'waiting_for_admin':
+          return tr('No action needed right now. The review team is checking the full listing package.', "Aucune action requise pour le moment. L'équipe de revue vérifie le dossier complet.");
+        case 'changes_requested':
+          return tr('Update the listing, then send the full review again.', "Mettez l'annonce à jour, puis renvoyez la revue complète.");
+        case 'ready_for_review':
+          return tr('Everything important is ready. Send the full review to start admin approval.', "Tout l'essentiel est prêt. Envoyez la revue complète pour démarrer l'approbation admin.");
+        default:
+          return tr('Finish the earlier steps once, then we will guide you directly into review.', "Terminez d'abord les étapes précédentes, puis nous vous guiderons directement vers la revue.");
+      }
+    })();
+
+    return {
+      reviewState,
+      statusHistoryItems,
+      stateTone,
+      headerStatusSummary,
+      headerNextActionSummary,
+    };
+  }, [currentSenderRole, isMarketplaceModerationThread, listingSetupProgress, tr]);
   const isSelfMarketplaceThread = useMemo(() => {
     if (selectedThread?.family !== 'marketplace') return false;
     const normalizedCurrentUserId = String(currentUserId || '').trim();
@@ -1019,6 +1337,13 @@ const ConversationThread = ({
     isMarketplaceModerationThread &&
     currentSenderRole === 'owner'
   );
+  useEffect(() => {
+    if (!marketplaceModerationProgress) return;
+
+    if (['waiting_for_admin', 'approved', 'live', 'changes_requested'].includes(marketplaceModerationProgress.reviewState)) {
+      setShowHeaderDetails(true);
+    }
+  }, [marketplaceModerationProgress]);
   const hideMarketplacePendingSummaryCard = Boolean(
     showBookingContextCard &&
     isMarketplaceRenterThread &&
@@ -1334,14 +1659,46 @@ const ConversationThread = ({
       : '';
   })();
   const marketplaceOwnerDetailsHref = (() => {
+    const ownerExecutionRequest = {
+      id: marketplaceRequestId,
+      requestStatus:
+        bookingContext?.requestStatus ||
+        threadMetadata.requestStatus ||
+        threadMetadata.request_status ||
+        '',
+      ownerExecution:
+        bookingContext?.ownerExecution ||
+        bookingContext?.raw?.counter_offer?.owner_execution ||
+        threadMetadata.ownerExecution ||
+        {},
+      vehiclePublicProfileId:
+        bookingContext?.vehiclePublicProfileId ||
+        threadMetadata.vehiclePublicProfileId ||
+        threadMetadata.vehicle_public_profile_id ||
+        '',
+    };
+    const shouldFocusExecution = Boolean(getOwnerExecutionActionConfig(ownerExecutionRequest, tr));
+    const ownerExecutionHref = buildOwnerExecutionWorkspaceHref({
+      ...ownerExecutionRequest,
+    }, {
+      focus: shouldFocusExecution ? 'execution' : 'request',
+    });
     if (
+      ownerExecutionHref &&
+      ownerExecutionHref !== '/account/vehicles' &&
+      ownerExecutionHref !== '/account/overview'
+    ) {
+      return ownerExecutionHref;
+    }
+    if (
+      normalizedBookingHref.includes('/account/operations/') ||
       normalizedBookingHref.includes('/account/vehicles?requestId=') ||
       normalizedBookingHref.includes('/account/vehicles/')
     ) {
       return normalizedBookingHref;
     }
     return marketplaceRequestId
-      ? `/account/vehicles?requestId=${encodeURIComponent(marketplaceRequestId)}#requests`
+      ? `/account/rentals/requests/${encodeURIComponent(marketplaceRequestId)}`
       : '';
   })();
   const marketplaceCustomerDetailsHref = marketplaceRequestDetailsHref;
@@ -1355,7 +1712,42 @@ const ConversationThread = ({
   const marketplacePrimaryDetailsHref = isOwnerFacingMarketplaceView
     ? marketplaceOwnerDetailsHref
     : marketplaceCustomerDetailsHref;
-  const marketplacePrimaryDetailsLabel = tr('Open rental details', 'Ouvrir les détails de la location');
+  const marketplaceOwnerExecutionAction = useMemo(
+    () => getOwnerExecutionActionConfig({
+      id: marketplaceRequestId,
+      requestStatus:
+        bookingContext?.requestStatus ||
+        threadMetadata.requestStatus ||
+        threadMetadata.request_status ||
+        '',
+      ownerExecution:
+        bookingContext?.ownerExecution ||
+        bookingContext?.raw?.counter_offer?.owner_execution ||
+        threadMetadata.ownerExecution ||
+        {},
+      vehiclePublicProfileId:
+        bookingContext?.vehiclePublicProfileId ||
+        threadMetadata.vehiclePublicProfileId ||
+        threadMetadata.vehicle_public_profile_id ||
+        '',
+    }, tr),
+    [
+      bookingContext?.ownerExecution,
+      bookingContext?.raw?.counter_offer?.owner_execution,
+      bookingContext?.requestStatus,
+      bookingContext?.vehiclePublicProfileId,
+      marketplaceRequestId,
+      threadMetadata.ownerExecution,
+      threadMetadata.requestStatus,
+      threadMetadata.request_status,
+      threadMetadata.vehiclePublicProfileId,
+      threadMetadata.vehicle_public_profile_id,
+      tr,
+    ]
+  );
+  const marketplacePrimaryDetailsLabel = isOwnerFacingMarketplaceView && marketplaceOwnerExecutionAction?.ctaLabel
+    ? marketplaceOwnerExecutionAction.ctaLabel
+    : tr('Open rental details', 'Ouvrir les détails de la location');
   const requestAgainHref = useMemo(() => {
     const listingId = String(
       bookingContext?.listingId ||
@@ -1492,7 +1884,7 @@ const ConversationThread = ({
         ? (bookingVehicleName || tr('Booking request', 'Demande de réservation'))
         : marketplaceThreadTitle)
     : isVerificationThread
-      ? tr('Verification', 'Vérification')
+      ? (String(threadMetadata.reviewTitle || '').trim() || tr('Identity review', "Révision d'identité"))
       : (contextTitle || otherParty.name || otherParty.email || selectedThread.subject || tr('Conversation', 'Conversation'));
   const bookingHeaderDateRange = bookingDateRange || [threadMetadata.requestedStartLabel, threadMetadata.requestedEndLabel].filter(Boolean).join(' → ');
   const verificationDocumentLabels = useMemo(
@@ -1527,6 +1919,16 @@ const ConversationThread = ({
     : isVerificationThread
       ? verificationHeaderSubtitle
       : (contextSubtitle || otherParty.email || selectedThread.subject || '');
+  const adminCounterpartyEmail = currentSenderRole === 'admin'
+    ? String(otherParty?.email || '').trim()
+    : '';
+  const resolvedHeaderSecondaryLabel = useMemo(() => {
+    if (!adminCounterpartyEmail) return headerSecondaryLabel;
+    const normalizedBase = String(headerSecondaryLabel || '').trim();
+    if (!normalizedBase) return adminCounterpartyEmail;
+    if (normalizedBase.toLowerCase().includes(adminCounterpartyEmail.toLowerCase())) return normalizedBase;
+    return `${normalizedBase} • ${adminCounterpartyEmail}`;
+  }, [adminCounterpartyEmail, headerSecondaryLabel]);
   const counterpartyIdentityLabel = String(otherParty?.name || otherParty?.email || '').trim();
   const verificationNeedsChanges = ['rejected', 'needs_info', 'needs_changes', 'suspended', 'expired'].includes(verificationStatus);
   const verificationStatusLabel =
@@ -1536,7 +1938,7 @@ const ConversationThread = ({
           ? tr('Expired', 'Expiré')
         : verificationNeedsChanges
           ? tr('Needs changes', 'Corrections requises')
-          : tr('Pending review', 'En attente');
+          : tr('In review', 'En révision');
   const pendingVerificationPosts = useMemo(
     () => (
       verificationStatus === 'approved'
@@ -1560,19 +1962,19 @@ const ConversationThread = ({
     : verificationPosts;
   const verificationCaseHeadline = verificationStatus === 'approved'
     ? currentSenderRole === 'admin'
-      ? tr('Verification complete', 'Vérification terminée')
+      ? tr('Identity review complete', "Révision d'identité terminée")
       : ''
     : verificationNeedsChanges
       ? currentSenderRole === 'admin'
-        ? tr('Verification needs updates', 'La vérification nécessite des corrections')
+        ? tr('Identity review needs updates', "La révision d'identité nécessite des corrections")
         : ''
       : currentSenderRole === 'admin'
-        ? tr('Verification case is open', 'Le dossier de vérification est ouvert')
-        : tr('Verification in progress', 'Vérification en cours');
-  const verificationCaseSupportingLine = verificationDocumentLabels.length
+        ? tr('Identity review is open', "La révision d'identité est ouverte")
+        : tr('Identity review in progress', "Révision d'identité en cours");
+  const verificationCaseSupportingLine = verificationDocumentSummary
     ? tr(
-      `${verificationDocumentLabels.length} document${verificationDocumentLabels.length > 1 ? 's' : ''} in this case`,
-      `${verificationDocumentLabels.length} document${verificationDocumentLabels.length > 1 ? 's' : ''} dans ce dossier`
+      `Documents in this review: ${verificationDocumentSummary}`,
+      `Documents dans cette révision : ${verificationDocumentSummary}`
     )
     : '';
   const verificationCaseNextStep = verificationStatus === 'approved'
@@ -1580,18 +1982,18 @@ const ConversationThread = ({
     : verificationNeedsChanges
       ? (isCustomerVerificationView
           ? ''
-          : tr('Review the flagged documents and send an updated version.', 'Vérifiez les documents signalés et envoyez une version mise à jour.'))
+          : tr('Review the flagged identity documents and send an updated version.', "Vérifiez les documents d'identité signalés et envoyez une version mise à jour."))
       : currentSenderRole === 'admin'
-        ? tr('Review the documents below and close the case when ready.', 'Examinez les documents ci-dessous et clôturez le dossier quand vous êtes prêt.')
-        : tr('We’re reviewing the documents in this case now.', 'Nous examinons actuellement les documents de ce dossier.');
+        ? tr('Review the identity documents below and close the case when ready.', "Examinez les documents d'identité ci-dessous et clôturez le dossier quand vous êtes prêt.")
+        : tr('We’re reviewing your identity documents now.', "Nous examinons actuellement vos documents d'identité.");
   const verificationNextStepText = isVerificationThread
     ? verificationStatus === 'approved'
       ? ''
       : verificationNeedsChanges
         ? ''
         : currentSenderRole === 'admin'
-          ? tr('Review the submitted documents and decide.', 'Examinez les documents soumis et décidez.')
-          : tr('Waiting for review.', 'En attente de révision.')
+          ? tr('Review the submitted identity documents and decide.', "Examinez les documents d'identité soumis et décidez.")
+          : tr('Waiting for admin review.', "En attente de la révision admin.")
     : '';
   const nextStepText = showConfirmBookingAction
     ? tr('Next step: confirm your booking to continue', 'Étape suivante : confirmez votre réservation pour continuer')
@@ -1627,6 +2029,22 @@ const ConversationThread = ({
     threadMetadata.directStaffChat ||
     ['admin', 'employee', 'guide', 'owner', 'business_owner', 'staff', 'support'].includes(normalizedCounterpartyRole)
   );
+  useEffect(() => {
+    if (!allowInternalNotes) {
+      setComposerMode('customer');
+      setShowInternalNotes(false);
+      return;
+    }
+
+    if (isDirectStaffThread) {
+      setComposerMode('internal');
+      setShowInternalNotes(true);
+      return;
+    }
+
+    setComposerMode('customer');
+    setShowInternalNotes(false);
+  }, [allowInternalNotes, isDirectStaffThread, selectedThread?.thread_key]);
   const isOperationalRole = ['admin', 'employee', 'guide', 'support', 'owner', 'business_owner', 'staff'].includes(normalizedCurrentSenderRole);
   const formattedCurrentUserLabel = String(currentUserLabel || '')
     .trim()
@@ -1664,7 +2082,15 @@ const ConversationThread = ({
   const composerAttachmentButtonClass = isOperationalRole
     ? 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
     : 'border-violet-100 bg-white/90 text-violet-700 hover:border-violet-200 hover:bg-violet-50';
-  const composerAudienceSummary = '';
+  const composerAudienceSummary = allowInternalNotes
+    ? composerMode === 'internal'
+      ? isDirectStaffThread
+        ? tr('Shared only with the internal team in this thread.', "Partagée uniquement avec l’équipe interne dans ce fil.")
+        : tr('Visible only to admins and staff on this thread.', 'Visible uniquement par les admins et le staff sur ce fil.')
+      : threadConversationKind === 'social_reply'
+        ? tr('Visible inside this shared reply thread and ready for richer consumer chat later.', 'Visible dans ce fil de réponse partagé et prêt pour un chat grand public enrichi plus tard.')
+      : tr('Visible to the customer-facing participants in this thread.', 'Visible par les participants côté client dans ce fil.')
+    : '';
   const showContextualActionBar = Boolean(
     (isVerificationThread && currentSenderRole === 'admin' && nextVerificationPost) ||
     canOwnerModerateRequest ||
@@ -1706,6 +2132,8 @@ const ConversationThread = ({
   );
   const headerStatusSummary = isOwnerMarketplaceDecisionView
     ? tr('Waiting for your decision', 'En attente de votre décision')
+    : marketplaceModerationProgress
+    ? marketplaceModerationProgress.headerStatusSummary
     : isMarketplaceModerationThread && currentSenderRole === 'owner'
     ? tr('Waiting for admin approval', "En attente de l'approbation admin")
     : isVerificationThread
@@ -1727,6 +2155,8 @@ const ConversationThread = ({
       : conversationStatusLabel;
   const headerNextActionSummary = isOwnerMarketplaceDecisionView
     ? ''
+    : marketplaceModerationProgress
+    ? marketplaceModerationProgress.headerNextActionSummary
     : isMarketplaceModerationThread && currentSenderRole === 'owner'
     ? tr('The review team will approve this listing in messages once the full review is complete.', "L'équipe de revue approuvera cette annonce dans les messages une fois la revue complète terminée.")
     : isVerificationThread
@@ -1738,8 +2168,19 @@ const ConversationThread = ({
           ? approvedBookingHelperText
           : nextStepText
       : tr('Continue the conversation here.', 'Continuez la conversation ici.');
+  const defaultConversationNextActionSummary = tr('Continue the conversation here.', 'Continuez la conversation ici.');
+  const compactHeaderNextActionSummary = !showBookingContextCard &&
+    !marketplaceModerationProgress &&
+    !isMarketplaceModerationThread &&
+    !isRentalThread &&
+    !isVerificationThread &&
+    headerNextActionSummary === defaultConversationNextActionSummary
+      ? ''
+      : headerNextActionSummary;
   const compactHeaderToneClass = isOwnerMarketplaceDecisionView
     ? 'border-sky-200 bg-sky-50'
+    : marketplaceModerationProgress
+    ? marketplaceModerationProgress.stateTone.shell
     : isVerificationThread
     ? verificationStatus === 'approved'
       ? 'border-emerald-200 bg-emerald-50'
@@ -1755,8 +2196,16 @@ const ConversationThread = ({
             ? 'border-slate-200 bg-slate-50'
             : 'border-sky-200 bg-sky-50'
       : 'border-slate-200 bg-slate-50';
+  const hasExpandableHeaderDetails = Boolean(
+    marketplaceModerationProgress ||
+    (isRentalThread && rentalContextData) ||
+    (showBookingContextCard && !isOwnerMarketplaceDecisionView && !hideMarketplacePendingSummaryCard)
+  );
   const shouldShowCompactStatusBlock = !isVerificationThread && Boolean(
-    String(headerStatusSummary || '').trim() || String(headerNextActionSummary || '').trim()
+    showBookingContextCard ||
+    marketplaceModerationProgress ||
+    isRentalThread ||
+    String(compactHeaderNextActionSummary || '').trim()
   );
   const compactHeaderStatusIconClass = isVerificationThread
     ? verificationStatus === 'approved'
@@ -1764,6 +2213,8 @@ const ConversationThread = ({
       : verificationNeedsChanges
         ? 'bg-amber-100 text-amber-700'
         : 'bg-slate-200 text-slate-600'
+    : marketplaceModerationProgress
+      ? marketplaceModerationProgress.stateTone.chip
     : showBookingContextCard
       ? bookingUiState === 'approved'
         ? 'bg-violet-100 text-violet-700'
@@ -1792,6 +2243,101 @@ const ConversationThread = ({
       }),
     [locale, marketplaceActionError, tr, walletActionHref]
   );
+  const workflowContextLabel = workflowKind === 'identity_review'
+    ? tr('Open verification', 'Ouvrir la vérification')
+    : workflowKind === 'listing_review'
+      ? tr('Open listing review', "Ouvrir la revue de l'annonce")
+      : threadContextActionLabel;
+  const openWorkflowContext = useCallback(() => {
+    if (workflowKind === 'identity_review') {
+      navigate(verificationPageHref, {
+        state: {
+          from: currentLocationPath,
+          fromLabel: tr('Back to messages', 'Retour aux messages'),
+          threadKey: String(selectedThread?.thread_key || '').trim(),
+          sourceContext: 'messages_verification_thread',
+        },
+      });
+      return;
+    }
+    if (typeof onOpenContext === 'function') {
+      onOpenContext(selectedThread);
+      return;
+    }
+    if (threadContextHref) {
+      navigate(threadContextHref, {
+        state: {
+          from: currentLocationPath,
+        },
+      });
+    }
+  }, [currentLocationPath, navigate, onOpenContext, selectedThread, threadContextHref, verificationPageHref, workflowKind]);
+  const workflowHistoryItems = useMemo(() => {
+    if (threadSurface !== 'workflow') return [];
+
+    const eventItems = threadTimelineEvents
+      .map((event, index) => {
+        const metadata = event?.metadata && typeof event.metadata === 'object' ? event.metadata : {};
+        const state = String(event?.state || metadata.state || event?.type || '').trim().toLowerCase();
+        const title = String(event?.title || event?.label || metadata.title || metadata.label || '').trim();
+        const body = String(event?.description || event?.body || metadata.description || metadata.body || '').trim();
+        const createdAt = event?.created_at || event?.at || metadata.createdAt || null;
+        if (!title && !body) return null;
+        return {
+          id: String(event?.id || `timeline-${index}`).trim(),
+          title: title || tr('Workflow update', 'Mise à jour workflow'),
+          body,
+          createdAt,
+          tone: ['approved', 'verified', 'completed', 'live'].includes(state)
+            ? 'success'
+            : ['rejected', 'needs_changes', 'needs_info', 'suspended', 'expired'].includes(state)
+              ? 'warning'
+              : 'neutral',
+        };
+      })
+      .filter(Boolean);
+
+    const messageItems = conversationMessages
+      .map((message) => {
+        const messageType = String(message?.message_type || '').trim().toLowerCase();
+        const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+        const body = String(message?.body || '').trim();
+        if (!body && !metadata.status && !metadata.verificationStatus) return null;
+        const actor = getParticipantLabel(message, currentUserId, currentUserLabel, tr);
+        const title = ['approval_event', 'verified', 'approved'].includes(messageType)
+          ? tr('Approved', 'Approuvé')
+          : ['rejection_event', 'changes_requested'].includes(messageType)
+            ? tr('Needs changes', 'Corrections requises')
+            : actor || tr('Workflow note', 'Note workflow');
+        const state = String(metadata.status || metadata.verificationStatus || messageType).trim().toLowerCase();
+        return {
+          id: String(message?.id || '').trim(),
+          title,
+          body,
+          createdAt: message?.created_at || null,
+          tone: ['approved', 'verified'].includes(state)
+            ? 'success'
+            : ['rejected', 'needs_changes', 'needs_info', 'suspended', 'expired'].includes(state)
+              ? 'warning'
+              : 'neutral',
+        };
+      })
+      .filter(Boolean);
+
+    return [...eventItems, ...messageItems]
+      .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+  }, [conversationMessages, currentUserId, currentUserLabel, threadSurface, threadTimelineEvents, tr]);
+  const marketplaceHumanConversationCount = useMemo(() => {
+    if (selectedThread?.family !== 'marketplace') return 0;
+    const humanMessageTypes = new Set(['user_message', 'admin_message', 'message', 'note']);
+    return conversationMessages.filter((message) => {
+      const messageType = String(message?.message_type || '').trim().toLowerCase();
+      const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      if (metadata.isInternal || messageType === 'internal_note') return false;
+      if (metadata.autoWelcome || metadata.isSystemSeed) return false;
+      return humanMessageTypes.has(messageType) || (messageType === '' && !metadata.event);
+    }).length;
+  }, [conversationMessages, selectedThread?.family]);
   const displayConversationMessages = useMemo(() => {
     const allowedEvents = new Set(['request_sent', 'approved', 'confirmed', 'started', 'completed']);
     const hasStructuredTimelineEvents = threadTimelineEvents.length > 0;
@@ -1854,7 +2400,8 @@ const ConversationThread = ({
       const isDuplicateApprovedEvent =
         !isHumanMessage &&
         eventName === 'approved' &&
-        ['pre_approved', 'approved'].includes(rentalState);
+        ['pre_approved', 'approved'].includes(rentalState) &&
+        marketplaceHumanConversationCount > 0;
 
       if (isLegacyApprovalHelper || isLegacyNotificationEcho || isLegacyApprovalChatNote) return false;
       if (isDuplicateApprovedEvent) return false;
@@ -2050,6 +2597,7 @@ const ConversationThread = ({
     getVerificationTypeLabel,
     isFrench,
     isCustomerVerificationView,
+    marketplaceHumanConversationCount,
     isRentalThread,
     isVerificationThread,
     selectedThread?.family,
@@ -2068,6 +2616,17 @@ const ConversationThread = ({
       return messageType === '' && !metadata.event;
     });
   }, [displayConversationMessages]);
+  const internalConversationMessages = useMemo(
+    () => visibleMessages.filter((message) => {
+      const messageType = String(message?.message_type || '').trim().toLowerCase();
+      const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      if (!(metadata.isInternal || messageType === 'internal_note')) return false;
+      if (metadata.autoWelcome || metadata.isSystemSeed) return false;
+      return true;
+    }),
+    [visibleMessages]
+  );
+  const hasInternalConversationMessages = internalConversationMessages.length > 0;
   const hasRealConversationMessages = realConversationMessages.length > 0;
   useEffect(() => {
     if (bookingUiState !== 'approved') return;
@@ -2087,6 +2646,51 @@ const ConversationThread = ({
       created_at: message?.created_at,
       payload: message,
     }));
+    const hasApprovedMarketplaceEntry = messageEntries.some((entry) => {
+      const message = entry.payload;
+      const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      const messageType = String(message?.message_type || '').trim().toLowerCase();
+      return messageType === 'approval_event' || String(metadata.event || '').trim().toLowerCase() === 'approved';
+    });
+    const syntheticApprovedMarketplaceEntry = (
+      selectedThread?.family === 'marketplace' &&
+      bookingUiState === 'approved' &&
+      !hasApprovedMarketplaceEntry
+    )
+      ? {
+          kind: 'message',
+          id: `marketplace-approved-${marketplaceRequestId || selectedThread?.thread_key || 'thread'}`,
+          created_at:
+            bookingContext?.approvedAt ||
+            bookingContext?.chatUnlockedAt ||
+            selectedThread?.metadata?.approvedAt ||
+            selectedThread?.metadata?.chatUnlockedAt ||
+            selectedThread?.latest_message_at ||
+            selectedThread?.created_at ||
+            null,
+          payload: {
+            id: `marketplace-approved-${marketplaceRequestId || selectedThread?.thread_key || 'thread'}`,
+            message_type: 'system_event',
+            subject: tr('Booking approved', 'Réservation approuvée'),
+            body: tr('Booking approved and chat is open.', 'Réservation approuvée et chat ouvert.'),
+            created_at:
+              bookingContext?.approvedAt ||
+              bookingContext?.chatUnlockedAt ||
+              selectedThread?.metadata?.approvedAt ||
+              selectedThread?.metadata?.chatUnlockedAt ||
+              selectedThread?.latest_message_at ||
+              selectedThread?.created_at ||
+              null,
+            metadata: {
+              event: 'approved',
+              type: 'marketplace_request',
+              status: 'approved',
+              requestStatus: 'approved',
+              requestId: marketplaceRequestId || undefined,
+            },
+          },
+        }
+      : null;
 
     if (isOwnerMarketplaceDecisionView) {
       const requestSubmittedEntry = messageEntries.find((entry) => {
@@ -2162,10 +2766,13 @@ const ConversationThread = ({
       );
     }
 
-    return [...eventEntries, ...messageEntries].sort(
+    return [...eventEntries, ...messageEntries, ...(syntheticApprovedMarketplaceEntry ? [syntheticApprovedMarketplaceEntry] : [])].sort(
       (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
     );
   }, [
+    bookingContext?.approvedAt,
+    bookingContext?.chatUnlockedAt,
+    bookingUiState,
     bookingContext?.coverImageUrl,
     bookingContext?.createdAt,
     bookingVehicleName,
@@ -2179,10 +2786,13 @@ const ConversationThread = ({
     realConversationMessages,
     selectedThread?.created_at,
     selectedThread?.latest_message_at,
+    selectedThread?.metadata?.approvedAt,
+    selectedThread?.metadata?.chatUnlockedAt,
     selectedThread?.metadata?.coverImageUrl,
     selectedThread?.metadata?.imageUrl,
     selectedThread?.thread_key,
     threadTimelineEvents,
+    tr,
   ]);
   const performMarketplaceAction = async (action, payload = {}) => {
     if (typeof onPerformMarketplaceAction !== 'function' || !selectedThread) return;
@@ -2294,6 +2904,7 @@ const ConversationThread = ({
       const isOwnerView = isMarketplaceOwnerThread || currentSenderRole === 'owner';
       return {
         tone: 'violet',
+        icon: 'approved',
         title: isOwnerView
           ? tr('Booking approved', 'Réservation approuvée')
           : tr('Booking approved', 'Réservation approuvée'),
@@ -2353,6 +2964,31 @@ const ConversationThread = ({
     const groupedVerificationApprovals = Array.isArray(metadata.groupedVerificationApprovals)
       ? metadata.groupedVerificationApprovals.filter(Boolean)
       : [];
+    const rawDocumentActions = [
+      ...(Array.isArray(metadata.documentLinks) ? metadata.documentLinks : []),
+      ...(Array.isArray(metadata.document_links) ? metadata.document_links : []),
+      ...(Array.isArray(metadata.documentActions) ? metadata.documentActions : []),
+      ...(Array.isArray(metadata.document_actions) ? metadata.document_actions : []),
+      ...(Array.isArray(metadata.actions) ? metadata.actions.filter((action) => action?.href || action?.url) : []),
+    ];
+    const seenDocumentActionKeys = new Set();
+    const documentActions = rawDocumentActions
+      .map((action, index) => {
+        if (!action || typeof action !== 'object') return null;
+        const href = String(action.href || action.url || '').trim();
+        if (!href) return null;
+        const label = String(action.label || action.title || '').trim() || tr('Open document', 'Ouvrir le document');
+        const uniqueKey = `${href}::${label}`;
+        if (seenDocumentActionKeys.has(uniqueKey)) return null;
+        seenDocumentActionKeys.add(uniqueKey);
+        return {
+          key: String(action.key || action.kind || action.label || `document-${index}`).trim() || `document-${index}`,
+          label,
+          href,
+          kind: String(action.kind || action.type || action.key || '').trim(),
+        };
+      })
+      .filter(Boolean);
     const eventName = String(metadata.event || '').trim().toLowerCase();
     const eventType = String(metadata.type || '').trim().toLowerCase();
     const normalizedStatus = String(
@@ -2426,6 +3062,7 @@ const ConversationThread = ({
         body: groupedLabel,
         previewSrc: '',
         previewName: '',
+        actions: documentActions,
       };
     }
 
@@ -2445,6 +3082,7 @@ const ConversationThread = ({
         body: groupedLabel,
         previewSrc: '',
         previewName: '',
+        actions: documentActions,
       };
     }
 
@@ -2459,6 +3097,7 @@ const ConversationThread = ({
         previewName,
         previewHref,
         previewActionLabel,
+        actions: documentActions,
       };
     }
 
@@ -2472,6 +3111,7 @@ const ConversationThread = ({
         previewName,
         previewHref,
         previewActionLabel,
+        actions: documentActions,
       };
     }
 
@@ -2485,6 +3125,7 @@ const ConversationThread = ({
         previewName,
         previewHref,
         previewActionLabel,
+        actions: documentActions,
       };
     }
 
@@ -2498,6 +3139,7 @@ const ConversationThread = ({
         previewName,
         previewHref,
         previewActionLabel,
+        actions: documentActions,
       };
     }
 
@@ -2513,6 +3155,7 @@ const ConversationThread = ({
         body: String(message?.body || metadata.detail || metadata.description || '').trim(),
         previewSrc,
         previewName,
+        actions: documentActions,
       };
     }
 
@@ -2525,6 +3168,7 @@ const ConversationThread = ({
           body: '',
           previewSrc: '',
           previewName: '',
+          actions: documentActions,
         };
       }
 
@@ -2536,6 +3180,7 @@ const ConversationThread = ({
           body: String(message?.body || '').trim(),
           previewSrc,
           previewName,
+          actions: documentActions,
         };
       }
 
@@ -2547,6 +3192,7 @@ const ConversationThread = ({
           body: '',
           previewSrc,
           previewName,
+          actions: documentActions,
         };
       }
     }
@@ -2738,10 +3384,13 @@ const ConversationThread = ({
         ? tr('Available to reply', 'Disponible pour répondre')
         : tr('Will reply when available', 'Répondra dès disponibilité');
   const shouldUseFloatingFooter = useFloatingTouchFooter || (compactMode && isMobileComposer);
-  const canSendPhotos = true;
+  const canSendPhotos = Boolean(
+    threadCapabilities.supportsPhotos &&
+    messagingPolicy.messagingPhotoSharingEnabled !== false
+  );
   const maxDraftAttachments = Math.max(1, Number(messagingPolicy.messagingMaxPhotosPerMessage || 3));
-  const headerBlockSpacingClass = showBookingContextCard ? 'mt-2' : 'mt-3';
-  const threadVerticalSpacingClass = showBookingContextCard ? 'space-y-3' : 'space-y-4';
+  const headerBlockSpacingClass = showBookingContextCard ? 'mt-2' : 'mt-2.5';
+  const threadVerticalSpacingClass = showBookingContextCard ? 'space-y-2.5' : 'space-y-3';
   const messageListPaddingClass = shouldUseFloatingFooter
     ? compactMode
       ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
@@ -2775,7 +3424,15 @@ const ConversationThread = ({
       await navigator.clipboard.writeText(absoluteUrl);
       setSendError('');
     } catch {
-      onOpenContext?.(selectedThread);
+      if (typeof onOpenContext === 'function') {
+        onOpenContext(selectedThread);
+      } else if (threadContextHref) {
+        navigate(threadContextHref, {
+          state: {
+            from: currentLocationPath,
+          },
+        });
+      }
     }
   };
 
@@ -3392,7 +4049,7 @@ const ConversationThread = ({
     if (['rejected', 'needs_info', 'needs_changes', 'suspended', 'expired'].includes(status)) {
       return 'bg-amber-100 text-amber-700';
     }
-    return 'bg-slate-100 text-slate-700';
+    return 'bg-amber-100 text-amber-700';
   };
 
   const conversationStatusBadgeClass = () => {
@@ -3406,7 +4063,7 @@ const ConversationThread = ({
     if (['rejected', 'needs_info', 'needs_changes', 'suspended', 'expired'].includes(status)) {
       return tr('Needs changes', 'Corrections requises');
     }
-    return tr('Pending review', 'En attente de révision');
+    return tr('In review', 'En révision');
   };
 
   const verificationSurfaceClasses = (status) => {
@@ -3424,15 +4081,15 @@ const ConversationThread = ({
       };
     }
     return {
-      shell: 'border-violet-200/70 bg-violet-50/70 hover:border-violet-300 hover:bg-violet-50/90',
-      heading: 'text-violet-500',
-      count: 'bg-violet-100 text-violet-700',
-      icon: 'border-violet-200 bg-white text-violet-700',
-      card: 'border-violet-200 bg-white',
-      preview: 'border-violet-100 bg-slate-50',
-      action: 'border-violet-200 bg-violet-50 text-violet-700 hover:border-violet-300 hover:bg-violet-100',
-      helper: 'text-violet-600',
-      divider: 'border-violet-100',
+      shell: 'border-amber-200/80 bg-amber-50/80 hover:border-amber-300 hover:bg-amber-50',
+      heading: 'text-amber-600',
+      count: 'bg-amber-100 text-amber-700',
+      icon: 'border-amber-200 bg-white text-amber-700',
+      card: 'border-amber-200 bg-white',
+      preview: 'border-amber-100 bg-slate-50',
+      action: 'border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100',
+      helper: 'text-amber-700',
+      divider: 'border-amber-100',
     };
   };
 
@@ -3490,6 +4147,88 @@ const ConversationThread = ({
 
   const firstRecentIncomingMessageId = recentIncomingMessageIds[0] || '';
   const cameraSessionToken = `message-camera-${resolvedThreadKey || contextId || 'draft'}`;
+  const imagePreviewModal = activeImagePreview ? (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+      <button
+        type="button"
+        className="absolute inset-0"
+        onClick={() => setActiveImagePreview(null)}
+        aria-label={tr('Close image preview', 'Fermer l’aperçu image')}
+      />
+      <div className="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-[26px] border border-white/15 bg-slate-950 shadow-[0_28px_70px_rgba(15,23,42,0.4)]">
+        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-white">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">
+              {activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
+            </p>
+            <p className="mt-0.5 text-xs text-white/65">{activeImagePreview.caption || ''}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveImagePreview(null)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white transition hover:bg-white/10"
+            aria-label={tr('Close image preview', 'Fermer l’aperçu image')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-3">
+          <img
+            src={activeImagePreview.src}
+            alt={activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
+            className="max-h-[75vh] w-auto max-w-full rounded-[20px] object-contain"
+          />
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  if (threadSurface === 'workflow') {
+    return (
+      <>
+        <WorkflowThreadView
+          compactMode={compactMode}
+          currentSenderRole={currentSenderRole}
+          isFrench={isFrench}
+          tr={tr}
+          workflowKind={workflowKind}
+          selectedThread={selectedThread}
+          headerPrimaryName={headerPrimaryName}
+          headerSecondaryLabel={resolvedHeaderSecondaryLabel}
+          workflowAudienceLabel={counterpartyIdentityLabel}
+          headerStatusSummary={headerStatusSummary}
+          headerNextActionSummary={headerNextActionSummary}
+          openWorkflowContext={openWorkflowContext}
+          workflowContextLabel={workflowContextLabel}
+          canManageThread={currentSenderRole === 'admin'}
+          canDeleteThread={currentSenderRole === 'admin'}
+          isThreadArchived={isThreadArchived}
+          threadArchiveBusy={threadArchiveBusy}
+          threadDeleteBusy={threadDeleteBusy}
+          onToggleArchiveThread={() => void handleToggleArchiveThread()}
+          onDeleteThread={() => void handleDeleteThread()}
+          verificationStatus={verificationStatus}
+          verificationNeedsChanges={verificationNeedsChanges}
+          workflowDocuments={customerVerificationSummaryPosts}
+          primaryVerificationIssue={primaryVerificationIssue}
+          primaryVerificationIssueLabel={primaryVerificationIssueLabel}
+          primaryVerificationIssueReason={primaryVerificationIssueReason}
+          openVerificationDocument={openVerificationDocument}
+          openVerificationPostPreview={openVerificationPostPreview}
+          nextVerificationPost={nextVerificationPost}
+          onApproveVerification={(verificationRequestId) => void handleVerificationAction('approve_verification', verificationRequestId)}
+          onRejectVerification={(verificationRequestId) => void handleVerificationAction('reject_verification', verificationRequestId)}
+          verificationActionBusy={marketplaceActionBusy}
+          workflowActionError={marketplaceActionError}
+          marketplaceModerationProgress={marketplaceModerationProgress}
+          workflowHistoryItems={workflowHistoryItems}
+          onExitReadingMode={onExitReadingMode}
+          floatingBackLabel={floatingBackLabel}
+        />
+        {imagePreviewModal}
+      </>
+    );
+  }
 
   return (
     <div
@@ -3499,8 +4238,8 @@ const ConversationThread = ({
       className="relative flex h-full min-h-0 flex-col overflow-visible rounded-[30px] bg-white sm:rounded-[32px]"
     >
       {!immersiveMode || !readerFocused || compactMode ? (
-        <div className={`rounded-t-[30px] border-b border-slate-200 bg-white/96 backdrop-blur sm:rounded-t-[32px] ${compactMode ? 'sticky top-0 z-20 px-4 py-2.5' : 'px-5 py-3'}`}>
-        <div className="relative flex flex-wrap items-start gap-3 pr-14">
+        <div className={`rounded-t-[30px] border-b border-slate-200 bg-white/98 backdrop-blur sm:rounded-t-[32px] ${compactMode ? 'sticky top-0 z-20 px-4 py-2.5' : 'px-4 py-2.5'}`}>
+        <div className={`relative flex flex-wrap items-start ${hasExpandableHeaderDetails ? 'gap-3 pr-14' : 'gap-3'}`}>
           <div className="min-w-0 flex-1">
             {compactMode ? (
               <div className="mb-3 flex items-center gap-2">
@@ -3552,7 +4291,7 @@ const ConversationThread = ({
               </div>
             ) : null}
             {!(showBookingContextCard && bookingUiState === 'approved' && !isOwnerMarketplaceDecisionView) && shouldShowCompactStatusBlock ? (
-              <div className="mt-3 rounded-[18px] border px-3 py-2.5 ${compactHeaderToneClass}">
+              <div className={`mt-2 rounded-[16px] border px-3 py-2 ${compactHeaderToneClass}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -3563,9 +4302,9 @@ const ConversationThread = ({
                         {headerStatusSummary}
                       </p>
                     </div>
-                    {headerNextActionSummary ? (
+                    {compactHeaderNextActionSummary ? (
                       <p className="mt-1 text-[11px] font-medium text-slate-500">
-                        {headerNextActionSummary}
+                        {compactHeaderNextActionSummary}
                       </p>
                     ) : null}
                   </div>
@@ -3575,20 +4314,87 @@ const ConversationThread = ({
                         {tr('Reference', 'Référence')} {marketplaceRequestReference}
                       </span>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() => setShowHeaderDetails((current) => !current)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                    >
-                      <span>{showHeaderDetails ? tr('Hide details', 'Masquer les détails') : tr('Show details', 'Afficher les détails')}</span>
-                      {showHeaderDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                    </button>
+                    {hasExpandableHeaderDetails ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowHeaderDetails((current) => !current)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                      >
+                        <span>
+                          {showHeaderDetails
+                            ? (
+                                marketplaceModerationProgress
+                                  ? tr('Hide history', "Masquer l'historique")
+                                  : tr('Hide details', 'Masquer les détails')
+                              )
+                            : (
+                                marketplaceModerationProgress
+                                  ? tr('Show history', "Afficher l'historique")
+                                  : tr('Show details', 'Afficher les détails')
+                              )}
+                        </span>
+                        {showHeaderDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
             ) : null}
-            {showHeaderDetails || isVerificationThread ? (
+            {showHeaderDetails ? (
               <>
+            {marketplaceModerationProgress ? (
+              <div className={`${headerBlockSpacingClass} space-y-3`}>
+                <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_24px_rgba(15,23,42,0.06)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">
+                        {tr('Status history', 'Historique du statut')}
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-slate-500">
+                        {tr('This mirrors the real listing review state.', "Ce fil reflète l'état réel de la revue de l'annonce.")}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {marketplaceModerationProgress.statusHistoryItems.map((item, index) => (
+                      <div key={item.key} className="flex items-start gap-3">
+                        <div className="flex w-7 shrink-0 flex-col items-center">
+                          <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-black ${
+                            item.state === 'complete'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : item.state === 'current'
+                                ? `${marketplaceModerationProgress.stateTone.chip}`
+                                : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            {item.state === 'complete' ? '✓' : String(index + 1)}
+                          </span>
+                          {index < marketplaceModerationProgress.statusHistoryItems.length - 1 ? (
+                            <span className="mt-1 h-6 w-px bg-slate-200" />
+                          ) : null}
+                        </div>
+                        <div className="min-w-0 flex-1 rounded-[18px] border border-slate-200 bg-slate-50/70 px-3 py-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-black text-slate-950">
+                              {item.title}
+                            </p>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.14em] ${
+                              item.state === 'complete'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : `${marketplaceModerationProgress.stateTone.chip}`
+                            }`}>
+                              {item.state === 'complete' ? tr('Completed', 'Terminé') : tr('Current', 'Actuel')}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-slate-600">
+                            {item.body}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {isRentalThread && rentalContextData ? (
               <div className={`${headerBlockSpacingClass} space-y-3`}>
                 <div className="rounded-[22px] border border-emerald-200/70 bg-[linear-gradient(180deg,rgba(236,253,245,0.85),rgba(255,255,255,0.98))] px-4 py-4 shadow-[0_12px_24px_rgba(16,185,129,0.08)]">
@@ -4251,19 +5057,27 @@ const ConversationThread = ({
                       : tr('Delete conversation', 'Supprimer la conversation')}
                   </span>
                 </button>
-                {typeof onOpenContext === 'function' ? (
+                {threadContextHref ? (
                   <button
                     type="button"
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
                       setThreadHeaderMenuOpen(false);
-                      onOpenContext(selectedThread);
+                      if (typeof onOpenContext === 'function') {
+                        onOpenContext(selectedThread);
+                      } else {
+                        navigate(threadContextHref, {
+                          state: {
+                            from: currentLocationPath,
+                          },
+                        });
+                      }
                     }}
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                   >
                     <ArrowLeft className="h-4 w-4" />
-                    <span>{tr('Open details page', 'Ouvrir la page de détail')}</span>
+                    <span>{threadContextActionLabel}</span>
                   </button>
                 ) : null}
               </div>
@@ -4367,7 +5181,7 @@ const ConversationThread = ({
         className={`min-h-0 flex-1 overflow-y-auto ${messageListPaddingClass} ${immersiveMode && readerFocused && !compactMode ? 'pt-20' : ''} ${threadVerticalSpacingClass}`}
       >
         {visibleTimelineEntries.length ? (
-          <section className="space-y-3">
+          <section className="space-y-2.5">
             <div className="flex items-center gap-3">
               <div className="h-px flex-1 bg-slate-200" />
               <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-slate-600">
@@ -4380,7 +5194,7 @@ const ConversationThread = ({
               const eventTimestamp = entry.kind === 'event' ? entry.payload?.created_at : entry.payload?.created_at;
               return (
                 <div key={entry.id} className={`${bookingUiState === 'expired' ? 'opacity-50' : ''}`}>
-                  <div className={`rounded-[20px] border px-4 py-3 shadow-sm ${
+                  <div className={`rounded-[20px] border px-3.5 py-3 ${
                     timelineEventCard.tone === 'approval'
                       ? 'border-emerald-200 bg-emerald-50/90'
                       : timelineEventCard.tone === 'rejection'
@@ -4416,7 +5230,7 @@ const ConversationThread = ({
                       </p>
                     </div>
                     {timelineEventCard.previewSrc ? (
-                      <div className="mt-3 flex items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-white px-3 py-2.5">
+                      <div className="mt-2.5 flex items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-white px-3 py-2.5">
                         <div className="flex min-w-0 items-center gap-3">
                           <button
                             type="button"
@@ -4457,6 +5271,22 @@ const ConversationThread = ({
                         </button>
                       </div>
                     ) : null}
+                    {Array.isArray(timelineEventCard.actions) && timelineEventCard.actions.length ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {timelineEventCard.actions.map((action) => (
+                          <a
+                            key={action.key}
+                            href={action.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3.5 py-2 text-[11px] font-black text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-50"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            {action.label}
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               );
@@ -4464,8 +5294,118 @@ const ConversationThread = ({
           </section>
         ) : null}
 
+        {allowInternalNotes && (hasInternalConversationMessages || isDirectStaffThread) ? (
+          <section className={(visibleTimelineEntries.length || chatMessagesForRender.length) ? 'mt-4 space-y-2.5' : 'space-y-2.5'}>
+            <button
+              type="button"
+              onClick={() => setShowInternalNotes((current) => !current)}
+              className="flex w-full items-center justify-between gap-3 rounded-[22px] border border-slate-200 bg-slate-50/90 px-4 py-3 text-left transition hover:border-slate-300 hover:bg-slate-100/90"
+            >
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+                  {tr('Team notes', "Notes d’équipe")}
+                </p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {hasInternalConversationMessages
+                    ? tr(
+                        `${internalConversationMessages.length} internal note${internalConversationMessages.length === 1 ? '' : 's'} available only to staff`,
+                        `${internalConversationMessages.length} note${internalConversationMessages.length === 1 ? '' : 's'} interne${internalConversationMessages.length === 1 ? '' : 's'} visible${internalConversationMessages.length === 1 ? '' : 's'} uniquement par le staff`
+                      )
+                    : tr('Private staff coordination for this thread', 'Coordination privée du staff pour ce fil')}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {hasInternalConversationMessages ? (
+                  <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-black text-white">
+                    {internalConversationMessages.length}
+                  </span>
+                ) : null}
+                {showInternalNotes ? <ChevronUp className="h-4 w-4 text-slate-500" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+              </div>
+            </button>
+            {showInternalNotes ? (
+              <div className="space-y-2.5 rounded-[24px] border border-slate-200 bg-slate-50/70 p-2.5">
+                {hasInternalConversationMessages ? (
+                  internalConversationMessages.map((message) => {
+                    const messageId = String(message?.id || `${message?.created_at || ''}:${message?.body || ''}`);
+                    const noteAttachments = getMessageAttachments(message);
+                    const noteReplyPreview = resolveReplyReference(message);
+                    const noteSenderLabel = getParticipantLabel(message, currentUserId, currentUserLabel, tr);
+                    const isPendingMessage = String(message?.id || '').startsWith('pending-');
+                    return (
+                      <div key={`internal-${messageId}`} className="rounded-[20px] border border-slate-200 bg-white px-4 py-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+                              {tr('Team note', "Note d’équipe")}
+                            </p>
+                            <p className="mt-1 text-sm font-bold text-slate-950">
+                              {noteSenderLabel}
+                            </p>
+                          </div>
+                          <p className="text-xs font-medium text-slate-500">
+                            {isPendingMessage ? tr('Sending…', 'Envoi…') : formatDateTime(message?.created_at, isFrench)}
+                          </p>
+                        </div>
+                        {noteReplyPreview ? (
+                          <div className="mt-2.5 rounded-[16px] border border-slate-200 bg-slate-50 px-3 py-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                              {tr('Reply context', 'Contexte de réponse')}
+                            </p>
+                            <p className="mt-1 line-clamp-2 text-sm text-slate-600">
+                              {noteReplyPreview.body || '—'}
+                            </p>
+                          </div>
+                        ) : null}
+                        <p className="mt-2.5 whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                          {String(message?.body || '').trim() || tr('No text content', 'Aucun contenu texte')}
+                        </p>
+                        {noteAttachments.length ? (
+                          <div className="mt-2.5 flex gap-2 overflow-x-auto pb-1">
+                            {noteAttachments.map((attachment) => (
+                              <button
+                                key={attachment.id || attachment.publicUrl || attachment.thumbnailUrl}
+                                type="button"
+                                onClick={() => {
+                                  if (!isVisualAttachment(attachment) || (!attachment.publicUrl && !attachment.thumbnailUrl)) return;
+                                  setActiveImagePreview({
+                                    src: attachment.publicUrl || attachment.thumbnailUrl,
+                                    name: attachment.originalFilename || tr('Attachment', 'Pièce jointe'),
+                                    caption: formatDateTime(message?.created_at, isFrench),
+                                  });
+                                }}
+                                className="relative h-14 w-14 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100"
+                              >
+                                {isVisualAttachment(attachment) && (attachment.thumbnailUrl || attachment.publicUrl) ? (
+                                  <img
+                                    src={attachment.thumbnailUrl || attachment.publicUrl}
+                                    alt={attachment.originalFilename || tr('Attachment', 'Pièce jointe')}
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  <span className="flex h-full w-full items-center justify-center text-[10px] font-bold text-slate-500">
+                                    {tr('File', 'Fichier')}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[20px] border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-500">
+                    {tr('No internal notes yet. Use Team note when you want to leave private staff context on this thread.', "Aucune note interne pour le moment. Utilisez Note d’équipe pour laisser un contexte privé au staff sur ce fil.")}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         {chatMessagesForRender.length ? (
-          <section className={visibleTimelineEntries.length ? 'mt-5 space-y-4' : 'space-y-4'}>
+          <section className={visibleTimelineEntries.length ? 'mt-4 space-y-3' : 'space-y-3'}>
             <div className="flex items-center gap-3">
               <div className="h-px flex-1 bg-slate-200" />
               <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-slate-600 ring-1 ring-slate-200">
@@ -4548,7 +5488,7 @@ const ConversationThread = ({
                     messageRefs.current.delete(messageId);
                   }
                 }}
-                className={`max-w-[88%] sm:max-w-[84%] lg:max-w-[78%] xl:max-w-[72ch] rounded-[22px] px-4 py-3 shadow-sm ${bubbleMotionClass} ${
+                className={`max-w-[88%] sm:max-w-[84%] lg:max-w-[78%] xl:max-w-[72ch] rounded-[22px] px-4 py-2.5 ${bubbleMotionClass} ${
                 isInternal
                   ? 'border border-amber-200 bg-amber-50 text-amber-950'
                   : isShortMarketplaceChatNote
@@ -4691,7 +5631,7 @@ const ConversationThread = ({
                   <button
                     type="button"
                     onClick={() => scrollToMessage(replyReference.id)}
-                    className={`mt-2 block w-full rounded-[18px] border px-3 py-2 text-left transition ${
+                    className={`mt-1.5 block w-full rounded-[18px] border px-3 py-2 text-left transition ${
                       isInternal
                         ? 'border-amber-200 bg-white/70 hover:bg-white'
                         : normalizedBubbleType === 'admin_message'
@@ -4721,7 +5661,7 @@ const ConversationThread = ({
                 ) : null}
                 {marketplaceStateCard ? (
                   <div
-                    className={`mt-3 rounded-[18px] border px-3 py-3 ${
+                    className={`mt-2.5 rounded-[18px] border px-3 py-2.5 ${
                       marketplaceStateCard.tone === 'emerald'
                         ? normalizedBubbleType === 'admin_message'
                           ? 'border-white/15 bg-white/10'
@@ -4744,6 +5684,18 @@ const ConversationThread = ({
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
+                      {marketplaceStateCard.icon === 'approved' ? (
+                        <span
+                          className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${
+                            normalizedBubbleType === 'admin_message'
+                              ? 'bg-emerald-400/18 text-white'
+                              : 'bg-emerald-100 text-emerald-600'
+                          }`}
+                          aria-hidden="true"
+                        >
+                          <CheckCircle2 className="h-4 w-4" />
+                        </span>
+                      ) : null}
                       <span
                         className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] ${
                           marketplaceStateCard.tone === 'emerald'
@@ -4771,9 +5723,10 @@ const ConversationThread = ({
                   </div>
                 ) : null}
                 {messageAttachments.length ? (
-                  <div className="mt-3 grid gap-2">
+                  <div className="mt-2.5 grid gap-2">
                     {messageAttachments.map((attachment) => {
                       const isExpired = attachment.status === 'expired' || !attachment.publicUrl;
+                      const isVisual = isVisualAttachment(attachment);
                       return (
                         <div
                           key={attachment.id}
@@ -4792,34 +5745,54 @@ const ConversationThread = ({
                               <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${normalizedBubbleType === 'admin_message' ? 'text-white/75' : 'text-amber-500'}`} />
                               <div>
                                 <p className="font-semibold">
-                                  {tr('Photo expired', 'Photo expirée')}
+                                  {isVisual
+                                    ? tr('Media expired', 'Média expiré')
+                                    : tr('Attachment expired', 'Pièce jointe expirée')}
                                 </p>
                                 <p className={`mt-1 text-xs ${normalizedBubbleType === 'admin_message' ? 'text-white/70' : 'text-slate-500'}`}>
-                                  {tr('This chat photo was removed automatically after the retention period.', 'Cette photo de chat a été supprimée automatiquement après la période de conservation.')}
+                                  {isVisual
+                                    ? tr('This shared media item was removed automatically after the retention period.', 'Ce média partagé a été supprimé automatiquement après la période de conservation.')
+                                    : tr('This shared attachment was removed automatically after the retention period.', 'Cette pièce jointe partagée a été supprimée automatiquement après la période de conservation.')}
                                 </p>
                               </div>
                             </div>
-                          ) : (
+                          ) : isVisual ? (
                             <button
                               type="button"
                               onClick={() => setActiveImagePreview({
                                 src: attachment.publicUrl,
-                                name: attachment.originalFilename || tr('Photo attachment', 'Photo jointe'),
+                                name: attachment.originalFilename || tr('Media attachment', 'Média joint'),
                                 caption: formatDateTime(message?.created_at, isFrench),
                               })}
                               className="block w-full text-left"
                             >
                               <img
                                 src={attachment.thumbnailUrl || attachment.publicUrl}
-                                alt={attachment.originalFilename || tr('Chat photo', 'Photo du chat')}
+                                alt={attachment.originalFilename || tr('Chat media', 'Média du chat')}
                                 className="max-h-64 w-full object-cover"
                                 loading="lazy"
                               />
                             </button>
+                          ) : (
+                            <div className={`flex items-start gap-3 px-3 py-3 text-sm ${normalizedBubbleType === 'admin_message' ? 'text-white/88' : 'text-slate-700'}`}>
+                              <div className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${
+                                normalizedBubbleType === 'admin_message' ? 'bg-white/12 text-white' : 'bg-slate-100 text-slate-500'
+                              }`}>
+                                <FileBadge className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate font-semibold">
+                                  {attachment.originalFilename || tr('Attachment', 'Pièce jointe')}
+                                </p>
+                                <p className={`mt-1 text-xs ${normalizedBubbleType === 'admin_message' ? 'text-white/70' : 'text-slate-500'}`}>
+                                  {attachment.mimeType || tr('File attachment', 'Fichier joint')}
+                                </p>
+                              </div>
+                            </div>
                           )}
                           <div className={`flex items-center justify-between gap-3 px-3 py-2 text-[11px] font-semibold ${normalizedBubbleType === 'admin_message' ? 'text-violet-100' : 'text-slate-500'}`}>
                             <span className="truncate">
-                              {attachment.originalFilename || tr('Photo attachment', 'Photo jointe')}
+                              {attachment.originalFilename || (isVisual ? tr('Media attachment', 'Média joint') : tr('Attachment', 'Pièce jointe'))}
                             </span>
                             <span className="shrink-0">
                               {formatAttachmentSize(attachment.fileSize)}
@@ -4830,7 +5803,10 @@ const ConversationThread = ({
                     })}
                   </div>
                 ) : null}
-                {!(marketplaceStateCard?.hideBody || (messageAttachments.length && String(message?.body || '').trim().toLowerCase() === 'photo attachment')) ? (
+                {!(marketplaceStateCard?.hideBody || (
+                  messageAttachments.length &&
+                  ['photo attachment', 'media attachment', 'file attachment'].includes(String(message?.body || '').trim().toLowerCase())
+                )) ? (
                   <p className={`mt-2 whitespace-pre-wrap ${isShortMarketplaceChatNote ? 'chat-copy-body-compact' : 'chat-copy-body'}`}>{message?.body || '—'}</p>
                 ) : null}
                 {isFailedPendingMessage ? (
@@ -5240,29 +6216,35 @@ const ConversationThread = ({
             {allowInternalNotes ? (
               <div className={`mb-3 flex flex-wrap items-center gap-3 ${shouldUseFloatingFooter ? 'justify-start' : ''}`}>
                 <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
-                  {tr('Visibility', 'Visibilité')}
+                  {isDirectStaffThread ? tr('Channel', 'Canal') : tr('Reply type', 'Type de réponse')}
                 </span>
-                <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm">
-                  {[
-                    ['customer', tr('Public message', 'Message public')],
-                    ['internal', tr('Internal note', 'Note interne')],
-                  ].map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setComposerMode(mode)}
-                      className={`inline-flex items-center rounded-full px-3 py-1.5 text-sm font-semibold transition ${
-                        composerMode === mode
-                          ? mode === 'internal'
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-violet-600 text-white'
-                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {isDirectStaffThread ? (
+                  <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+                    {tr('Internal team thread', "Fil d’équipe interne")}
+                  </div>
+                ) : (
+                  <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm">
+                    {[
+                      ['customer', tr('Public reply', 'Réponse publique')],
+                      ['internal', tr('Team note', "Note d’équipe")],
+                    ].map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setComposerMode(mode)}
+                        className={`inline-flex items-center rounded-full px-3 py-1.5 text-sm font-semibold transition ${
+                          composerMode === mode
+                            ? mode === 'internal'
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-violet-600 text-white'
+                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <p className="text-xs font-medium text-slate-500">
                   {composerAudienceSummary}
                 </p>
@@ -5278,10 +6260,30 @@ const ConversationThread = ({
             ) : null}
             {marketplaceModerationChatLocked && !showThreadComposer ? (
               <div className="mb-3 rounded-[20px] border border-sky-200 bg-sky-50/80 px-4 py-3 text-sm font-medium text-sky-900">
-                {tr(
-                  'This listing review thread is read-only until admin approval. You can follow updates here once the review team responds.',
-                  "Ce fil de revue d'annonce est en lecture seule jusqu'à l'approbation admin. Vous pourrez suivre les mises à jour ici dès que l'équipe de revue répondra."
-                )}
+                {marketplaceModerationProgress?.reviewState === 'approved'
+                  ? tr(
+                      'This thread is now a status history. Admin approval is complete, so the next step is publishing the listing.',
+                      "Ce fil est maintenant un historique de statut. L'approbation admin est terminée, la prochaine étape consiste à publier l'annonce."
+                    )
+                  : marketplaceModerationProgress?.reviewState === 'live'
+                    ? tr(
+                        'This thread is now a status history. The listing is already live on the marketplace.',
+                        "Ce fil est maintenant un historique de statut. L'annonce est déjà en ligne sur la marketplace."
+                      )
+                    : marketplaceModerationProgress?.reviewState === 'changes_requested'
+                      ? tr(
+                          'This thread now reflects the latest review feedback. Update the listing from the setup flow, then send the review again.',
+                          "Ce fil reflète maintenant le dernier retour de revue. Mettez l'annonce à jour depuis le parcours, puis renvoyez la revue."
+                        )
+                      : marketplaceModerationProgress?.reviewState === 'ready_for_review'
+                        ? tr(
+                            'This thread will start showing status history after you send the full listing review.',
+                            "Ce fil commencera à afficher l'historique de statut après l'envoi de la revue complète."
+                          )
+                        : tr(
+                            'This thread is read-only while admin review is in progress. Follow the status history here.',
+                            "Ce fil est en lecture seule pendant la revue admin. Suivez ici l'historique de statut."
+                          )}
               </div>
             ) : null}
             {replyModeActive && replyingToMessage ? (
@@ -5491,41 +6493,7 @@ const ConversationThread = ({
         </div>
       ) : null}
 
-      {activeImagePreview ? (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
-          <button
-            type="button"
-            className="absolute inset-0"
-            onClick={() => setActiveImagePreview(null)}
-            aria-label={tr('Close image preview', 'Fermer l’aperçu image')}
-          />
-          <div className="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-[26px] border border-white/15 bg-slate-950 shadow-[0_28px_70px_rgba(15,23,42,0.4)]">
-            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-white">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">
-                  {activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
-                </p>
-                <p className="mt-0.5 text-xs text-white/65">{activeImagePreview.caption || ''}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveImagePreview(null)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white transition hover:bg-white/10"
-                aria-label={tr('Close image preview', 'Fermer l’aperçu image')}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-3">
-              <img
-                src={activeImagePreview.src}
-                alt={activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
-                className="max-h-[75vh] w-auto max-w-full rounded-[20px] object-contain"
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {imagePreviewModal}
     </div>
   );
 };

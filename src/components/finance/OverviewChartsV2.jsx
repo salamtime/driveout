@@ -10,7 +10,8 @@ const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 let financePulseCache = {
   key: null,
-  rows: []
+  rows: [],
+  periodKpis: {}
 };
 
 const getLocalDate = (value) => {
@@ -116,7 +117,26 @@ const pulseBreakdownShortcuts = [
   { key: 'other_costs', label: tr('Other costs', 'Autres coûts') }
 ];
 
-const metricCardButtonClass = 'rounded-2xl p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-slate-200';
+const metricCardButtonClass = 'rounded-[20px] border p-3 text-left transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-slate-200';
+const overviewExpenseSourceTypes = new Set([
+  'fuel',
+  'tank_in',
+  'direct_fill',
+  'transfer',
+  'finance_expense',
+  'expense',
+  'manual_expense',
+  'expense_manual',
+]);
+
+const toFiniteAmount = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const isOverviewExpenseLedgerRow = (row) => (
+  row?.direction === 'outgoing' && overviewExpenseSourceTypes.has(String(row?.sourceType || ''))
+);
 
 /**
  * Enhanced Overview Charts v2 with Modern Animated Charts
@@ -145,6 +165,11 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       : financePulseCache.key === pulseCacheKey
         ? financePulseCache.rows
         : []
+  ));
+  const [pulsePeriodKpis, setPulsePeriodKpis] = useState(() => (
+    financePulseCache.key === pulseCacheKey
+      ? financePulseCache.periodKpis || {}
+      : {}
   ));
   const [pulseLoading, setPulseLoading] = useState(
     Array.isArray(prefetchedPulseRows) && prefetchedPulseRows.length > 0
@@ -185,10 +210,16 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     if (Array.isArray(prefetchedPulseRows) && prefetchedPulseRows.length > 0) {
       setPulseLedgerRows(prefetchedPulseRows);
       setPulseLoading(false);
+      const cachedPeriodKpis = financePulseCache.key === pulseCacheKey ? financePulseCache.periodKpis || {} : {};
       financePulseCache = {
         key: pulseCacheKey,
-        rows: prefetchedPulseRows
+        rows: prefetchedPulseRows,
+        periodKpis: cachedPeriodKpis
       };
+      setPulsePeriodKpis(cachedPeriodKpis);
+      if (!cachedPeriodKpis.today || !cachedPeriodKpis.week || !cachedPeriodKpis.month) {
+        loadPulseTrendData();
+      }
       return;
     }
     loadPulseTrendData();
@@ -232,23 +263,48 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       const currentDate = getPulseAnchorDate(filters);
       const monthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1, 12, 0, 0, 0);
       const selectedStart = getLocalDate(filters?.startDate);
+      const selectedEnd = getLocalDate(filters?.endDate);
+      const pulseActiveRangeKey = getActiveQuickRangeKey(filters, currentDate);
       const effectiveStart =
         selectedStart && selectedStart < monthStart
           ? selectedStart
           : monthStart;
+      const todayStart = pulseActiveRangeKey === 'custom' && selectedStart && selectedEnd
+        ? formatDateKey(selectedStart)
+        : formatDateKey(currentDate);
+      const todayEnd = pulseActiveRangeKey === 'custom' && selectedStart && selectedEnd
+        ? formatDateKey(selectedEnd)
+        : formatDateKey(currentDate);
+      const weekStart = addDays(currentDate, -6);
 
       const pulseFilters = {
         ...filters,
         startDate: formatDateKey(effectiveStart),
         endDate: formatDateKey(currentDate),
       };
+      const getPulseKpi = (range) => financeApiV2.getKPIData({
+        ...filters,
+        ...range,
+      }).catch(() => null);
 
-      const ledger = await financeApiV2.getUnifiedLedger(pulseFilters);
+      const [ledger, todayKpi, weekKpi, monthKpi] = await Promise.all([
+        financeApiV2.getUnifiedLedger(pulseFilters),
+        getPulseKpi({ startDate: todayStart, endDate: todayEnd }),
+        getPulseKpi({ startDate: formatDateKey(weekStart), endDate: formatDateKey(currentDate) }),
+        getPulseKpi({ startDate: formatDateKey(monthStart), endDate: formatDateKey(currentDate) }),
+      ]);
       const rows = Array.isArray(ledger?.rows) ? ledger.rows : [];
+      const periodKpis = {
+        today: todayKpi,
+        week: weekKpi,
+        month: monthKpi,
+      };
       setPulseLedgerRows(rows);
+      setPulsePeriodKpis(periodKpis);
       financePulseCache = {
         key: buildPulseCacheKey(filters, formatDateKey(currentDate)),
-        rows
+        rows,
+        periodKpis
       };
     } catch (err) {
       console.error('❌ Finance pulse trend loading failed:', err);
@@ -361,7 +417,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       .filter((row) => row.direction === 'incoming')
       .reduce((sum, row) => sum + (row.amount || 0), 0);
     const outgoing = rows
-      .filter((row) => row.direction === 'outgoing')
+      .filter((row) => isOverviewExpenseLedgerRow(row))
       .reduce((sum, row) => sum + (row.amount || 0), 0);
     const taxes = rows
       .filter((row) => row.direction === 'tax')
@@ -413,16 +469,51 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       return date && date.getMonth() === month && date.getFullYear() === year;
     });
 
-    return [
-      buildLedgerSummary(
+    const applyOverviewKpiTotals = (summary, overviewKpi, daysCovered = summary.daysCovered) => {
+      if (!overviewKpi) return summary;
+
+      const incoming = Math.round(toFiniteAmount(overviewKpi.totalCollected));
+      const outgoing = Math.round(toFiniteAmount(overviewKpi.totalExpenses));
+      const taxes = Math.round(toFiniteAmount(overviewKpi.taxes));
+      const net = Number.isFinite(Number(overviewKpi.netCash))
+        ? Math.round(Number(overviewKpi.netCash))
+        : incoming - outgoing - taxes;
+
+      return {
+        ...summary,
+        incoming,
+        outgoing,
+        taxes,
+        net,
+        maintenance: Math.round(toFiniteAmount(overviewKpi.maintenanceCosts)),
+        fuel: Math.round(toFiniteAmount(overviewKpi.fuelCosts)),
+        inventory: Math.round(toFiniteAmount(overviewKpi.inventoryCosts)),
+        daysCovered,
+      };
+    };
+
+    const todaySummary = buildLedgerSummary(
         todayRows,
         hasCustomSelectedRange ? tr('Selected Range', 'Plage sélectionnée') : formatPulseCardTitle(pulseAnchorDate, 'today', activeRangeKey),
         hasCustomSelectedRange ? formatRangeLabel(selectedStartDate, selectedEndDate) : formatPeriodLabel(pulseAnchorDate, 'today')
+    );
+    const weekSummary = buildLedgerSummary(weekRows, formatPulseCardTitle(pulseAnchorDate, 'week', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'week'));
+    const monthSummary = buildLedgerSummary(monthRows, formatPulseCardTitle(pulseAnchorDate, 'month', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'month'));
+    const monthStart = new Date(pulseAnchorDate.getFullYear(), pulseAnchorDate.getMonth(), 1);
+    const todayKpi = pulsePeriodKpis.today || (['today', 'yesterday', 'day', 'custom'].includes(activeRangeKey) ? kpiData : null);
+    const weekKpi = pulsePeriodKpis.week || (activeRangeKey === 'last7' ? kpiData : null);
+    const monthKpi = pulsePeriodKpis.month || (activeRangeKey === 'month' ? kpiData : null);
+
+    return [
+      applyOverviewKpiTotals(
+        todaySummary,
+        todayKpi,
+        hasCustomSelectedRange ? selectedRangeDates.size : 1
       ),
-      buildLedgerSummary(weekRows, formatPulseCardTitle(pulseAnchorDate, 'week', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'week')),
-      buildLedgerSummary(monthRows, formatPulseCardTitle(pulseAnchorDate, 'month', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'month'))
+      applyOverviewKpiTotals(weekSummary, weekKpi, 7),
+      applyOverviewKpiTotals(monthSummary, monthKpi, getDatesBetween(monthStart, pulseAnchorDate).length)
     ];
-  }, [pulseLedgerRows, pulseAnchorDate, buildLedgerSummary, activeRangeKey, filters?.startDate, filters?.endDate]);
+  }, [pulseLedgerRows, pulseAnchorDate, buildLedgerSummary, activeRangeKey, filters?.startDate, filters?.endDate, kpiData, pulsePeriodKpis]);
 
   const strongestPeriod = useMemo(() => {
     if (periodSummaries.length === 0) return null;
@@ -468,11 +559,17 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
 
   const handleOpenDetailPage = async (periodType) => {
     const meta = buildDetailMeta(periodType);
+    const detailFilters = {
+      ...filters,
+      startDate: meta.dates[0],
+      endDate: meta.dates[meta.dates.length - 1],
+    };
     setDetailPageCurrentPage(1);
     setDetailPageLoading(true);
     setDetailPageError('');
     setDetailPage({
       ...meta,
+      collectedTotal: 0,
       incomingTotal: 0,
       outgoingTotal: 0,
       taxesTotal: 0,
@@ -482,7 +579,10 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     });
 
     try {
-      const breakdowns = await Promise.all(meta.dates.map((date) => financeApiV2.getDayBreakdown(date, filters)));
+      const [breakdowns, detailKpi] = await Promise.all([
+        Promise.all(meta.dates.map((date) => financeApiV2.getDayBreakdown(date, filters))),
+        financeApiV2.getKPIData(detailFilters),
+      ]);
       const rows = breakdowns
         .flatMap((breakdown) => (breakdown.rows || []).map((row) => ({ ...row, date: row.date || breakdown.date })))
         .sort((a, b) => {
@@ -499,10 +599,11 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
 
       setDetailPage({
         ...meta,
-        incomingTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.incomingTotal || 0), 0),
-        outgoingTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.outgoingTotal || 0), 0),
-        taxesTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.taxesTotal || 0), 0),
-        netTotal: breakdowns.reduce((sum, breakdown) => sum + (breakdown.netTotal || 0), 0),
+        collectedTotal: detailKpi?.totalCollected || 0,
+        incomingTotal: detailKpi?.totalRevenue ?? breakdowns.reduce((sum, breakdown) => sum + (breakdown.incomingTotal || 0), 0),
+        outgoingTotal: detailKpi?.totalExpenses ?? breakdowns.reduce((sum, breakdown) => sum + (breakdown.outgoingTotal || 0), 0),
+        taxesTotal: detailKpi?.taxes ?? breakdowns.reduce((sum, breakdown) => sum + (breakdown.taxesTotal || 0), 0),
+        netTotal: detailKpi?.netCash ?? breakdowns.reduce((sum, breakdown) => sum + (breakdown.netTotal || 0), 0),
         rows,
         sourceTotals
       });
@@ -648,11 +749,11 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <button
                 type="button"
-                onClick={() => onOpenBreakdown?.('incoming')}
+                onClick={() => onOpenBreakdown?.('collected')}
                 className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4 text-left transition hover:border-emerald-200 hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
               >
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Incoming', 'Entrées')}</p>
-                <p className="mt-2 text-2xl font-bold text-emerald-700">{fmtFull(detailPage.incomingTotal)} MAD</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Collected', 'Collecté')}</p>
+                <p className="mt-2 text-2xl font-bold text-emerald-700">{fmtFull(detailPage.collectedTotal || 0)} MAD</p>
               </button>
               <button
                 type="button"
@@ -856,133 +957,172 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[28px] border border-violet-200/90 bg-gradient-to-br from-[#ede9fe] via-[#f8f7ff] to-[#e8efff] p-4 shadow-[0_22px_52px_rgba(76,29,149,0.10)] sm:p-5">
-        <div className="rounded-[24px] border border-white/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,255,255,0.9))] p-5 shadow-[0_18px_38px_rgba(15,23,42,0.08)] sm:p-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <div className="rounded-2xl bg-slate-50 p-3">
-                <WalletCards className="h-6 w-6 text-slate-700" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-slate-900 sm:text-xl">
-                  {tr('Finance pulse', 'Pouls financier')}
-                </h3>
-              </div>
+      <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+              <WalletCards className="h-6 w-6 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Finance Pulse', 'Pouls financier')}
+              </p>
+              <h3 className="mt-2 text-2xl font-bold text-slate-900">
+                {tr('Period comparisons and drilldowns', 'Comparaisons de périodes et accès rapides')}
+              </h3>
+              <p className="mt-2 max-w-3xl text-sm text-slate-500">
+                {tr(
+                  'Compare the selected window against nearby periods, then jump straight into the full finance breakdown.',
+                  'Comparez la fenêtre sélectionnée avec les périodes proches, puis ouvrez directement le détail complet de la finance.'
+                )}
+              </p>
             </div>
           </div>
 
           {strongestPeriod && (
-            <div className={`rounded-2xl border px-4 py-3 text-sm shadow-sm ${strongestPeriod.net >= 0 ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-rose-100 bg-rose-50 text-rose-700'}`}>
+            <div className={`rounded-[24px] border px-4 py-4 shadow-sm xl:max-w-sm ${strongestPeriod.net >= 0 ? 'border-emerald-200 bg-emerald-50/70 text-emerald-700' : 'border-rose-200 bg-rose-50/70 text-rose-700'}`}>
               <p className="text-xs font-semibold uppercase tracking-[0.18em]">
                 {tr('Strongest period', 'Période la plus forte')}
               </p>
-              <p className="mt-1 font-semibold">
-                {strongestPeriod.title} • {strongestPeriod.net >= 0 ? '+' : ''}{formatCurrency(strongestPeriod.net)} MAD
+              <p className="mt-2 text-lg font-semibold">
+                {strongestPeriod.title}
+              </p>
+              <p className="mt-1 text-sm font-medium opacity-80">
+                {strongestPeriod.label}
+              </p>
+              <p className="mt-3 text-xl font-bold">
+                {strongestPeriod.net >= 0 ? '+' : ''}{formatCurrency(strongestPeriod.net)} MAD
               </p>
             </div>
           )}
         </div>
 
-        <div className="mt-5 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(320px,1fr))]">
+        <div className="mt-5 grid gap-4 xl:grid-cols-3">
           {periodSummaries.map((summary, index) => {
             const periodType = index === 0 ? 'today' : index === 1 ? 'week' : 'month';
+            const netPositive = summary.net >= 0;
+
             return (
-            <div
-              key={summary.title}
-              className="rounded-[24px] border border-slate-200/90 bg-white p-5 text-left shadow-[0_18px_38px_rgba(15,23,42,0.08)] transition hover:border-slate-300 hover:shadow-[0_22px_44px_rgba(15,23,42,0.10)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CalendarDays className="h-4 w-4 text-slate-500" />
-                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">{summary.title}</p>
-                  </div>
-                  <div className="mt-3 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 shadow-sm">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-700">{summary.label}</p>
-                  </div>
-                </div>
-                <div className={`rounded-2xl px-3 py-1.5 text-sm font-semibold ${summary.net >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                  {summary.net >= 0 ? '+' : ''}{formatCompact(summary.net)} MAD
-                </div>
-              </div>
-
-              <div className="mt-5 grid grid-cols-3 gap-3">
-                <button
-                  type="button"
-                  onClick={() => onOpenBreakdown?.('incoming')}
-                  className={`${metricCardButtonClass} border border-emerald-100 bg-emerald-50/80 hover:border-emerald-200 hover:bg-emerald-50`}
-                >
-                  <div className="flex min-h-[24px] items-start justify-between gap-3 text-emerald-700">
-                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Incoming', 'Entrées')}</span>
-                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
-                      <ArrowUpRight className="h-3.5 w-3.5" />
-                    </span>
-                  </div>
-                  <p className="mt-2 text-left text-lg font-bold text-emerald-700">
-                    {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.incoming)} MAD`}
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onOpenBreakdown?.('outgoing')}
-                  className={`${metricCardButtonClass} border border-rose-100 bg-rose-50/80 hover:border-rose-200 hover:bg-rose-50`}
-                >
-                  <div className="flex min-h-[24px] items-start justify-between gap-3 text-rose-700">
-                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Outgoing', 'Sorties')}</span>
-                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
-                      <ArrowDownRight className="h-3.5 w-3.5" />
-                    </span>
-                  </div>
-                  <p className="mt-2 text-left text-lg font-bold text-rose-700">
-                    {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.outgoing)} MAD`}
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onOpenBreakdown?.('net')}
-                  className={`${metricCardButtonClass} border border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-slate-100/80`}
-                >
-                  <div className={`flex min-h-[24px] items-start justify-between gap-3 ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Net', 'Net')}</span>
-                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
-                      <Activity className="h-3.5 w-3.5" />
-                    </span>
-                  </div>
-                  <p className={`mt-2 text-left text-lg font-bold ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.net >= 0 ? '+' : ''}${formatCompact(summary.net)} MAD`}
-                  </p>
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleOpenDetailPage(periodType)}
-                className="mt-4 flex w-full items-center justify-between gap-3 border-t border-slate-100 pt-4 text-sm"
+              <div
+                key={summary.title}
+                className="rounded-[24px] border border-slate-200 bg-slate-50/75 p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]"
               >
-                <span className="text-slate-500">
-                  {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.daysCovered} ${tr('day(s)', 'jour(s)')}`}
-                </span>
-                <span className="inline-flex items-center gap-2 font-semibold text-slate-700">
-                  {tr('Open full breakdown', 'Ouvrir le détail complet')}
-                  <ArrowUpRight className="h-4 w-4" />
-                </span>
-              </button>
-            </div>
-          )})}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
+                      <CalendarDays className="h-4 w-4 text-violet-700" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                        {summary.title}
+                      </p>
+                      <h4 className="mt-1 text-lg font-semibold text-slate-900">
+                        {summary.label}
+                      </h4>
+                    </div>
+                  </div>
+
+                  <span className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] ${netPositive ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                    {netPositive ? '+' : ''}{formatCompact(summary.net)} MAD
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3 xl:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={() => onOpenBreakdown?.('collected')}
+                    className={`${metricCardButtonClass} border-emerald-100 bg-white hover:-translate-y-0.5 hover:border-emerald-200 hover:bg-emerald-50/60`}
+                  >
+                    <div className="flex min-h-[24px] items-start justify-between gap-3 text-emerald-700">
+                      <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">
+                        {tr('Collected', 'Collecté')}
+                      </span>
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-50">
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                    <p className="mt-2 text-left text-lg font-bold text-emerald-700">
+                      {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.incoming)} MAD`}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenBreakdown?.('outgoing')}
+                    className={`${metricCardButtonClass} border-rose-100 bg-white hover:-translate-y-0.5 hover:border-rose-200 hover:bg-rose-50/60`}
+                  >
+                    <div className="flex min-h-[24px] items-start justify-between gap-3 text-rose-700">
+                      <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">
+                        {tr('Outgoing', 'Sorties')}
+                      </span>
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-rose-50">
+                        <ArrowDownRight className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                    <p className="mt-2 text-left text-lg font-bold text-rose-700">
+                      {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.outgoing)} MAD`}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenBreakdown?.('net')}
+                    className={`${metricCardButtonClass} border-slate-200 bg-white hover:-translate-y-0.5 hover:border-violet-200 hover:bg-violet-50/45`}
+                  >
+                    <div className={`flex min-h-[24px] items-start justify-between gap-3 ${netPositive ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">
+                        {tr('Net', 'Net')}
+                      </span>
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-50">
+                        <Activity className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                    <p className={`mt-2 text-left text-lg font-bold ${netPositive ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${netPositive ? '+' : ''}${formatCompact(summary.net)} MAD`}
+                    </p>
+                  </button>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 shadow-sm">
+                    {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.daysCovered} ${tr('day(s)', 'jour(s)')}`}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenDetailPage(periodType)}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-200"
+                  >
+                    {tr('Open full breakdown', 'Ouvrir le détail complet')}
+                    <ArrowUpRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        <div className="mt-4 rounded-[1.35rem] border border-slate-200 bg-slate-50/85 px-4 py-3">
+        <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50/85 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Quick drilldowns', 'Détails rapides')}</p>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-500">
+                {tr('Quick drilldowns', 'Détails rapides')}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {tr(
+                  'Jump into the finance buckets that matter most without leaving the overview.',
+                  "Accédez directement aux postes finance les plus utiles sans quitter l'aperçu."
+                )}
+              </p>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               {pulseBreakdownShortcuts.map((shortcut) => (
                 <button
                   key={shortcut.key}
                   type="button"
                   onClick={() => onOpenBreakdown?.(shortcut.key)}
-                  className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-200"
+                  className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-200"
                 >
                   {shortcut.label}
                 </button>
@@ -990,8 +1130,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
             </div>
           </div>
         </div>
-        </div>
-      </div>
+      </section>
 
       {/* Revenue vs Expenses Trend Chart */}
       <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] transition-shadow duration-200 hover:shadow-[0_24px_70px_rgba(15,23,42,0.12)]">

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -14,6 +14,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../lib/supabase';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
@@ -265,42 +266,77 @@ const AccountMarketplaceRequestDetailsPage = () => {
     ? tr('Back to messages', 'Retour aux messages')
     : tr('Back to my profile', 'Retour à mon profil');
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadRequestDetail = useCallback(async ({ silent = false } = {}) => {
+    if (!user || !requestId) {
+      setLoading(false);
+      return null;
+    }
 
-    const load = async () => {
-      if (!user || !requestId) {
-        setLoading(false);
-        return;
-      }
-
-      try {
+    try {
+      if (!silent) {
         setLoading(true);
-        setError('');
-        const [detail, snapshot] = await Promise.all([
-          CustomerExperienceService.getCustomerMarketplaceRequestDetail(user, requestId),
-          CustomerExperienceService.getCustomerAccountSnapshot(user).catch(() => null),
-        ]);
-        if (cancelled) return;
-        setRequest(detail);
-        setWalletBalance(Number(snapshot?.wallet?.balance || 0));
-        setWalletCurrencyCode(String(snapshot?.wallet?.currencyCode || detail?.currencyCode || 'MAD'));
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError?.message || tr('Unable to load this marketplace request right now.', 'Impossible de charger cette demande marketplace pour le moment.'));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
       }
+      setError('');
+      const [detail, snapshot] = await Promise.all([
+        CustomerExperienceService.getCustomerMarketplaceRequestDetail(user, requestId),
+        CustomerExperienceService.getCustomerAccountSnapshot(user).catch(() => null),
+      ]);
+      setRequest(detail);
+      setWalletBalance(Number(snapshot?.wallet?.balance || 0));
+      setWalletCurrencyCode(String(snapshot?.wallet?.currencyCode || detail?.currencyCode || 'MAD'));
+      return detail;
+    } catch (loadError) {
+      setError(loadError?.message || tr('Unable to load this marketplace request right now.', 'Impossible de charger cette demande marketplace pour le moment.'));
+      return null;
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
+  }, [requestId, tr, user]);
+
+  useEffect(() => {
+    void loadRequestDetail();
+  }, [loadRequestDetail]);
+
+  useEffect(() => {
+    if (!requestId) return undefined;
+
+    let reloadTimer = null;
+    const queueReload = () => {
+      if (reloadTimer) {
+        window.clearTimeout(reloadTimer);
+      }
+      reloadTimer = window.setTimeout(() => {
+        void loadRequestDetail({ silent: true });
+      }, 500);
     };
 
-    void load();
+    const bookingChannel = supabase
+      .channel(`account-request-detail:${requestId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'app_booking_requests',
+          filter: `id=eq.${requestId}`,
+        },
+        queueReload
+      )
+      .subscribe();
+
     return () => {
-      cancelled = true;
+      if (reloadTimer) {
+        window.clearTimeout(reloadTimer);
+      }
+      try {
+        supabase.removeChannel(bookingChannel);
+      } catch {
+        // ignore cleanup errors
+      }
     };
-  }, [user?.id, requestId, isFrench]);
+  }, [loadRequestDetail, requestId]);
 
   const handleConfirmRequest = async () => {
     if (!request?.id) return;
@@ -384,6 +420,8 @@ const AccountMarketplaceRequestDetailsPage = () => {
   );
   const canConfirmRequest = canCustomerConfirmMarketplaceRequest(requestStatus) && !approvalHoldState.expired;
   const canSendReminder = canSendMarketplaceRequestReminder(requestStatus, request?.reminderSentAt);
+  const isRentalLive = requestStatus === 'active';
+  const isRentalCompleted = requestStatus === 'completed';
   const money = getMarketplaceMoneyBreakdown({
     estimatedAmount: request?.estimatedAmount,
     commissionAmount: request?.commissionAmount,
@@ -403,12 +441,20 @@ const AccountMarketplaceRequestDetailsPage = () => {
     const end = formatDateTime(request?.requestedEndAt, locale);
     return [start, end].filter((value) => value && value !== '—').join(' → ');
   }, [locale, request?.requestedEndAt, request?.requestedStartAt]);
-  const approvedStatusLabel = tr('Booking confirmed', 'Réservation confirmée');
-  const approvedStatusSubtext = tr('Chat is open with the owner', 'Le chat est ouvert avec le propriétaire');
+  const lifecycleStatusLabel = isRentalCompleted
+    ? tr('Rental completed', 'Location terminée')
+    : isRentalLive
+      ? tr('Rental live', 'Location en cours')
+      : tr('Booking confirmed', 'Réservation confirmée');
+  const lifecycleStatusSubtext = isRentalCompleted
+    ? tr('The rental is closed and the trip is complete.', 'La location est clôturée et le trajet est terminé.')
+    : isRentalLive
+      ? tr('Pickup is complete and the rental is now in progress.', 'La remise est terminée et la location est en cours.')
+      : tr('Chat is open with the owner', 'Le chat est ouvert avec le propriétaire');
   const heroTitle = canConfirmRequest
     ? tr('Pay now to confirm', 'Payez maintenant pour confirmer')
     : chatUnlocked
-      ? approvedStatusLabel
+      ? lifecycleStatusLabel
       : request?.listingTitle || tr('Request details', 'Détails de la demande');
   const heroDescription = canConfirmRequest
     ? [request?.listingTitle, requestDateRange, tr('Approved by owner', 'Approuvée par le propriétaire')].filter(Boolean).join(' • ')
@@ -416,7 +462,7 @@ const AccountMarketplaceRequestDetailsPage = () => {
       ? [
           request?.listingTitle,
           requestDateRange,
-          approvedStatusSubtext,
+          lifecycleStatusSubtext,
         ].filter(Boolean).join(' • ')
       : tr('See the amount, the next step, and the request status in one place.', 'Voyez le montant, la prochaine étape et le statut de la demande au même endroit.');
   const confirmationCtaLabel = hasEnoughWalletBalance
@@ -468,6 +514,16 @@ const AccountMarketplaceRequestDetailsPage = () => {
     [confirmationAmount, request?.id, request?.listingTitle, tr]
   );
   const showConfirmedCompactLayout = chatUnlocked;
+  const nextStepLabel = isRentalCompleted
+    ? tr('Rental completed', 'Location terminée')
+    : isRentalLive
+      ? tr('Rental is live', 'Location en cours')
+      : tr('Next step', 'Étape suivante');
+  const nextStepDescription = isRentalCompleted
+    ? tr('Review the final timeline or reopen chat if you need anything else.', 'Consultez la chronologie finale ou rouvrez le chat si vous avez encore besoin de quelque chose.')
+    : isRentalLive
+      ? tr('Stay in touch with the owner while the rental is active.', 'Restez en contact avec le propriétaire pendant la location.')
+      : tr('Coordinate pickup with the owner', 'Coordonnez la remise avec le propriétaire');
 
   useEffect(() => {
     const shouldTickLegacyHold = requestStatus === 'pre_approved' && request?.holdExpiresAt;
@@ -539,8 +595,8 @@ const AccountMarketplaceRequestDetailsPage = () => {
                     <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {tr('Status', 'Statut')}
                     </p>
-                    <p className="mt-2 text-lg font-black text-slate-950">{approvedStatusLabel}</p>
-                    <p className="mt-1 text-sm text-slate-600">{approvedStatusSubtext}</p>
+                    <p className="mt-2 text-lg font-black text-slate-950">{lifecycleStatusLabel}</p>
+                    <p className="mt-1 text-sm text-slate-600">{lifecycleStatusSubtext}</p>
                   </div>
                 </>
               ) : (
@@ -601,10 +657,10 @@ const AccountMarketplaceRequestDetailsPage = () => {
               {chatUnlocked ? (
                 <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    {tr('Next step', 'Étape suivante')}
+                    {nextStepLabel}
                   </p>
                   <p className="mt-3 text-sm font-medium text-slate-600">
-                    {tr('Coordinate pickup with the owner', 'Coordonnez la remise avec le propriétaire')}
+                    {nextStepDescription}
                   </p>
                   <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <Link
@@ -845,10 +901,10 @@ const AccountMarketplaceRequestDetailsPage = () => {
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                  {canConfirmRequest ? tr('To confirm', 'À confirmer') : chatUnlocked ? tr('Booking confirmed', 'Réservation confirmée') : tr('Booking hold expired', 'Réservation expirée')}
+                  {canConfirmRequest ? tr('To confirm', 'À confirmer') : chatUnlocked ? lifecycleStatusLabel : tr('Booking hold expired', 'Réservation expirée')}
                 </p>
                 <p className="mt-1 truncate text-sm font-bold text-slate-950">
-                  {canConfirmRequest ? confirmationAmount : chatUnlocked ? tr('Chat is now open', 'Le chat est ouvert') : tr('Request again to continue', 'Redemandez pour continuer')}
+                  {canConfirmRequest ? confirmationAmount : chatUnlocked ? lifecycleStatusSubtext : tr('Request again to continue', 'Redemandez pour continuer')}
                 </p>
               </div>
               {canConfirmRequest && approvalHoldState.active ? (

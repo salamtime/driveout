@@ -24,16 +24,39 @@ import MessageWidget from '../../components/messages/MessageWidget';
 import { supabase } from '../../lib/supabase';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
+import { buildOwnerExecutionWorkspaceHref } from '../../utils/ownerRentalExecutionLinks';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 
-const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
-const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
-const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'driveout_owner_vehicle_ids';
+const OWNER_STORAGE_LEGACY_KEYS = Object.freeze({
+  [LAST_OWNER_VEHICLE_ID_KEY]: 'saharax_last_owner_vehicle_id',
+  [LAST_OWNER_VEHICLE_COUNT_KEY]: 'saharax_last_owner_vehicle_count',
+  [OWNER_VEHICLE_IDS_KEY]: 'saharax_owner_vehicle_ids',
+});
 const preloadOwnerVehicleProfileRoute = () => import('./AccountMarketplaceVehicleProfile');
 
 const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
   const normalizedUserId = String(userId || '').trim();
   return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const buildOwnerVehicleStorageKeys = (baseKey, userId = '') => {
+  const primaryKey = buildOwnerVehicleStorageKey(baseKey, userId);
+  const legacyBaseKey = OWNER_STORAGE_LEGACY_KEYS[baseKey];
+  const legacyKey = legacyBaseKey ? buildOwnerVehicleStorageKey(legacyBaseKey, userId) : null;
+  return [primaryKey, legacyKey].filter(Boolean);
+};
+
+const readOwnerVehicleStorageValue = (baseKey, userId = '', fallbackValue = null) => {
+  if (typeof window === 'undefined') return fallbackValue;
+  const storageKeys = buildOwnerVehicleStorageKeys(baseKey, userId);
+  for (const storageKey of storageKeys) {
+    const nextValue = window.localStorage.getItem(storageKey);
+    if (nextValue !== null) return nextValue;
+  }
+  return fallbackValue;
 };
 
 const formatMoney = (amount, currency = 'MAD', locale = 'en') =>
@@ -105,7 +128,7 @@ const readStoredOwnerVehicleIds = (userId = '') => {
   if (typeof window === 'undefined') return [];
 
   try {
-    const raw = JSON.parse(window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]');
+    const raw = JSON.parse(readOwnerVehicleStorageValue(OWNER_VEHICLE_IDS_KEY, userId, '[]') || '[]');
     return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
   } catch {
     return [];
@@ -206,6 +229,7 @@ const getEffectiveVehicleReviewStatus = (vehicle) => {
   const reviewStatus = String(vehicle?.reviewStatus || '').trim().toLowerCase();
   const moderationStatus = String(vehicle?.moderationStatus || '').trim().toLowerCase();
 
+  if (moderationStatus === 'changes_requested') return 'changes_requested';
   if (listingStatus === 'pending_review') return 'pending_review';
   if (reviewStatus) return reviewStatus;
   if (moderationStatus === 'pending_review') return 'pending_review';
@@ -250,11 +274,11 @@ const getOwnerListingJourneyLabel = (vehicle, tr) => {
   if (listingStatus === 'approved' || reviewStatus === 'approved') {
     return tr('Approved for publication', 'Approuvé pour publication');
   }
-  if (listingStatus === 'pending_review' || reviewStatus === 'pending_review' || moderationStatus === 'pending_review') {
-    return tr('Listing review in progress', "Revue de l'annonce en cours");
-  }
   if (moderationStatus === 'changes_requested') {
     return tr('Listing changes requested', "Modifications d'annonce demandées");
+  }
+  if (listingStatus === 'pending_review' || reviewStatus === 'pending_review' || moderationStatus === 'pending_review') {
+    return tr('Waiting for admin approval', "En attente de l'approbation admin");
   }
   if (listingStatus === 'rejected' || reviewStatus === 'rejected') {
     return tr('Listing not approved', 'Annonce non approuvée');
@@ -265,10 +289,12 @@ const getOwnerListingJourneyLabel = (vehicle, tr) => {
 const getOwnerListingStatusLabel = (vehicle, tr) => {
   const listingStatus = String(vehicle?.listingStatus || '').trim().toLowerCase();
   const reviewStatus = String(vehicle?.reviewStatus || '').trim().toLowerCase();
+  const moderationStatus = String(vehicle?.moderationStatus || '').trim().toLowerCase();
 
   if (listingStatus === 'live') return tr('Live', 'En ligne');
   if (listingStatus === 'approved' || reviewStatus === 'approved') return tr('Approved for publication', 'Approuvé pour publication');
-  if (listingStatus === 'pending_review' || reviewStatus === 'pending_review') return tr('Pending listing review', "En attente de revue d'annonce");
+  if (moderationStatus === 'changes_requested') return tr('Changes requested', 'Modifications demandées');
+  if (listingStatus === 'pending_review' || reviewStatus === 'pending_review') return tr('Waiting for admin approval', "En attente de l'approbation admin");
   if (listingStatus === 'rejected' || reviewStatus === 'rejected') return tr('Needs owner update', 'À corriger par le propriétaire');
   if (listingStatus === 'unpublished') return tr('Unpublished', 'Non publiée');
   return tr('Draft', 'Brouillon');
@@ -279,7 +305,8 @@ const getOwnerReviewStatusLabel = (vehicle, tr) => {
   const moderationStatus = String(vehicle?.moderationStatus || '').trim().toLowerCase();
 
   if (reviewStatus === 'approved') return tr('Review passed', 'Revue validée');
-  if (reviewStatus === 'pending_review') return tr('Review in progress', 'Revue en cours');
+  if (reviewStatus === 'changes_requested' || moderationStatus === 'changes_requested') return tr('Feedback waiting on you', 'Retour en attente de votre action');
+  if (reviewStatus === 'pending_review') return tr('Waiting for admin approval', "En attente de l'approbation admin");
   if (moderationStatus === 'changes_requested') return tr('Feedback waiting on you', 'Retour en attente de votre action');
   if (reviewStatus === 'rejected') return tr('Review not approved', 'Revue non approuvée');
   return tr('Not submitted yet', 'Pas encore soumis');
@@ -356,9 +383,17 @@ const OwnerVehicleCard = ({
       };
     }
 
+    if (moderationStatus === 'changes_requested') {
+      return {
+        label: tr('Changes requested', 'Modifications demandées'),
+        tone: 'border-amber-200 bg-amber-50 text-amber-700',
+        action: tr('View details', 'Voir les détails'),
+      };
+    }
+
     if (listingStatus === 'pending_review' || reviewStatus === 'pending_review') {
       return {
-        label: tr('In review', 'En revue'),
+        label: tr('Waiting for admin approval', "En attente de l'approbation admin"),
         tone: 'border-sky-200 bg-sky-50 text-sky-700',
         action: tr('View details', 'Voir les détails'),
       };
@@ -1008,7 +1043,7 @@ const AccountMarketplace = () => {
       latest_message_at: selectedRequestConversation.updatedAt || selectedRequestConversation.createdAt || null,
       unread_count: 0,
       metadata: {
-        href: `/account/vehicles?requestId=${encodeURIComponent(String(selectedRequestConversation.id))}#requests`,
+        href: buildOwnerExecutionWorkspaceHref(selectedRequestConversation, { focus: 'request' }),
         requestId: selectedRequestConversation.id,
         requestStatus: selectedRequestConversation.requestStatus,
         roleContext: 'owner',

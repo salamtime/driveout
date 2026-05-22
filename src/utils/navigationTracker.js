@@ -35,6 +35,7 @@
   // Add emergency methods to window
   window.emergencyAccess = {
     setOwnerRole: () => {
+      localStorage.setItem('driveout_user_role', 'owner');
       localStorage.setItem('saharax_user_role', 'owner');
       console.log('✅ Set owner role in localStorage');
       return 'Owner role set';
