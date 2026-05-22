@@ -1367,6 +1367,21 @@ const calculateHourlyLateReturnFeePreview = ({
   };
 };
 
+const LATE_RETURN_HALF_HOUR_OPTION_AMOUNT = 299;
+const LATE_RETURN_HALF_HOUR_OPTION_MINUTES = 30;
+
+const amountsMatch = (left, right) => (
+  Math.abs((Number(left) || 0) - (Number(right) || 0)) < 0.01
+);
+
+const formatLateReturnFeeAmount = (amount) => (
+  new Intl.NumberFormat('en-US', {
+    style: 'decimal',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Number(amount || 0) || 0)
+);
+
 const normalizeMoneyInputValue = (value) => {
   if (value === null || value === undefined) return '';
 
@@ -8788,6 +8803,55 @@ Click the link above to review and approve the extension.`;
     Number(lateReturnFeePreview?.expectedLateFeeAmount || 0) || 0
   );
 
+  const lateReturnFeeOptions = useMemo(() => {
+    const primaryAmount = Number(lateReturnFeePreview?.expectedLateFeeAmount || 0) || 0;
+    if (primaryAmount <= 0 && rentalBillingSummary.lateFeeAmount <= 0) return [];
+
+    const minutesPastGrace = Math.max(0, Number(lateReturnFeePreview?.minutesPastGrace || 0) || 0);
+    const billableLateHours = Math.max(1, Number(lateReturnFeePreview?.billableLateHours || 1) || 1);
+    const hourlyRate = Math.max(0, Number(lateReturnFeePreview?.hourlyRate || 0) || 0);
+    const thresholdMinutes =
+      lateReturnFeePreview?.thresholdMinutes ??
+      DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes;
+
+    const options = [];
+    if (primaryAmount > 0) {
+      options.push({
+        key: 'extra_hour',
+        amount: primaryAmount,
+        label: tr('Extra hour fee', 'Frais heure supplémentaire'),
+        statusLabel: tr('1-hour option', 'Option 1 heure'),
+        thresholdMinutes,
+        timingLabel: tr(
+          `${formatLateExtensionDuration(minutesPastGrace)} past grace · ${billableLateHours} extra hour${billableLateHours > 1 ? 's' : ''} × ${formatLateReturnFeeAmount(hourlyRate)} MAD`,
+          `${formatLateExtensionDuration(minutesPastGrace)} après grâce · ${billableLateHours} heure${billableLateHours > 1 ? 's' : ''} en plus × ${formatLateReturnFeeAmount(hourlyRate)} MAD`
+        ),
+      });
+    }
+
+    options.push({
+      key: 'half_hour',
+      amount: LATE_RETURN_HALF_HOUR_OPTION_AMOUNT,
+      label: tr('30-minute late fee', 'Frais retard 30 min'),
+      statusLabel: tr('30-minute option', 'Option 30 min'),
+      thresholdMinutes,
+      timingLabel: tr(
+        `${formatLateExtensionDuration(minutesPastGrace)} past grace · ${LATE_RETURN_HALF_HOUR_OPTION_MINUTES} min pack`,
+        `${formatLateExtensionDuration(minutesPastGrace)} après grâce · forfait ${LATE_RETURN_HALF_HOUR_OPTION_MINUTES} min`
+      ),
+    });
+
+    return options;
+  }, [
+    lateReturnFeePreview?.billableLateHours,
+    lateReturnFeePreview?.expectedLateFeeAmount,
+    lateReturnFeePreview?.hourlyRate,
+    lateReturnFeePreview?.minutesPastGrace,
+    lateReturnFeePreview?.thresholdMinutes,
+    rentalBillingSummary.lateFeeAmount,
+    tr,
+  ]);
+
   const dynamicPaymentState = useMemo(() => {
     if (!rental) {
       return {
@@ -14795,12 +14859,15 @@ useEffect(() => {
     });
   };
 
-  const handleLateReturnFeeToggle = useCallback(async (shouldApply) => {
+  const handleLateReturnFeeToggle = useCallback(async (shouldApply, selectedAmount = null) => {
     if (!rental?.id || savingLateReturnFeeToggle) return;
 
     const currentLateFeeAmount = getLateFeeAmount(rental);
     const nextLateFeeAmount = shouldApply
-      ? Number(Math.max(0, lateReturnFeeDisplayAmount || lateReturnFeePreview?.expectedLateFeeAmount || 0).toFixed(2))
+      ? Number(Math.max(
+          0,
+          selectedAmount ?? lateReturnFeeDisplayAmount ?? lateReturnFeePreview?.expectedLateFeeAmount ?? 0
+        ).toFixed(2))
       : 0;
 
     if (shouldApply && nextLateFeeAmount <= 0) {
@@ -17090,74 +17157,94 @@ useEffect(() => {
     canEditLifecycleRentalPrice;
 
   const renderLateReturnFeeControl = ({ compact = false } = {}) => {
-    if (lateReturnFeeDisplayAmount <= 0) return null;
+    if (lateReturnFeeOptions.length === 0) return null;
 
-    const isApplied = rentalBillingSummary.lateFeeAmount > 0;
-    const hasLateTiming = Boolean(lateReturnFeePreview?.isLateAfterGrace);
-    const lateTimingLabel = hasLateTiming
-      ? tr(
-          `${formatLateExtensionDuration(lateReturnFeePreview.minutesPastGrace)} past grace · ${lateReturnFeePreview.billableLateHours} extra hour${lateReturnFeePreview.billableLateHours > 1 ? 's' : ''} × ${formatCurrency(lateReturnFeePreview.hourlyRate)} MAD`,
-          `${formatLateExtensionDuration(lateReturnFeePreview.minutesPastGrace)} après grâce · ${lateReturnFeePreview.billableLateHours} heure${lateReturnFeePreview.billableLateHours > 1 ? 's' : ''} en plus × ${formatCurrency(lateReturnFeePreview.hourlyRate)} MAD`
-        )
-      : tr('Applied manually to this rental.', 'Appliqué manuellement à cette location.');
-    const statusLabel = isApplied
-      ? tr('Applied', 'Appliqué')
-      : tr('Not applied', 'Non appliqué');
+    const appliedLateFeeAmount = rentalBillingSummary.lateFeeAmount;
     const disabled = savingLateReturnFeeToggle || !canToggleLateReturnFee;
+    const renderOption = (option) => {
+      const isApplied = amountsMatch(appliedLateFeeAmount, option.amount);
+      const statusLabel = isApplied
+        ? tr('Applied', 'Appliqué')
+        : tr('Not applied', 'Non appliqué');
+      const toggleOption = () => handleLateReturnFeeToggle(!isApplied, option.amount);
+
+      if (compact) {
+        return (
+          <div
+            key={option.key}
+            className="flex items-start justify-between gap-3 rounded-lg border border-rose-100 bg-rose-50/70 px-3 py-2 text-rose-700"
+          >
+            <div className="min-w-0">
+              <div className="font-medium">{option.label}</div>
+              <div className="mt-0.5 text-[11px] leading-4 text-rose-500">{option.timingLabel}</div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <span className="font-semibold">+{formatCurrency(option.amount)} MAD</span>
+              <button
+                type="button"
+                onClick={toggleOption}
+                disabled={disabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isApplied ? 'bg-rose-500' : 'bg-slate-300'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                title={statusLabel}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isApplied ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div
+          key={option.key}
+          className={`rounded-xl border px-3 py-2 ${isApplied ? 'border-rose-200 bg-rose-50/80' : 'border-amber-200 bg-amber-50/70'}`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-rose-700">
+                <span>{option.label}</span>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${isApplied ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {statusLabel}
+                </span>
+                <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                  {option.statusLabel}
+                </span>
+              </div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                {tr(
+                  `After ${option.thresholdMinutes} min grace: ${option.timingLabel}`,
+                  `Après ${option.thresholdMinutes} min de grâce : ${option.timingLabel}`
+                )}
+              </div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-3">
+              <span className="text-sm font-bold text-rose-700">+{formatCurrency(option.amount)} MAD</span>
+              <button
+                type="button"
+                onClick={toggleOption}
+                disabled={disabled}
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${isApplied ? 'bg-rose-500' : 'bg-slate-300'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                title={statusLabel}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${isApplied ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
 
     if (compact) {
       return (
-        <div className="flex items-start justify-between gap-3 rounded-lg border border-rose-100 bg-rose-50/70 px-3 py-2 text-rose-700">
-          <div className="min-w-0">
-            <div className="font-medium">{tr('Late return fee:', 'Frais de retour tardif :')}</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-rose-500">{lateTimingLabel}</div>
-          </div>
-          <div className="flex flex-shrink-0 items-center gap-2">
-            <span className="font-semibold">+{formatCurrency(lateReturnFeeDisplayAmount)} MAD</span>
-            <button
-              type="button"
-              onClick={() => handleLateReturnFeeToggle(!isApplied)}
-              disabled={disabled}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isApplied ? 'bg-rose-500' : 'bg-slate-300'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-              title={statusLabel}
-            >
-              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isApplied ? 'translate-x-6' : 'translate-x-1'}`} />
-            </button>
-          </div>
+        <div className="space-y-2">
+          {lateReturnFeeOptions.map(renderOption)}
         </div>
       );
     }
 
     return (
-      <div className={`rounded-xl border px-3 py-2 ${isApplied ? 'border-rose-200 bg-rose-50/80' : 'border-amber-200 bg-amber-50/70'}`}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-rose-700">
-              <span>{tr('Late return fee:', 'Frais de retour tardif :')}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${isApplied ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
-                {statusLabel}
-              </span>
-            </div>
-            <div className="mt-1 text-xs leading-5 text-slate-500">
-              {tr(
-                `After ${lateReturnFeePreview?.thresholdMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes} min grace: ${lateTimingLabel}`,
-                `Après ${lateReturnFeePreview?.thresholdMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes} min de grâce : ${lateTimingLabel}`
-              )}
-            </div>
-          </div>
-          <div className="flex flex-shrink-0 items-center gap-3">
-            <span className="text-sm font-bold text-rose-700">+{formatCurrency(lateReturnFeeDisplayAmount)} MAD</span>
-            <button
-              type="button"
-              onClick={() => handleLateReturnFeeToggle(!isApplied)}
-              disabled={disabled}
-              className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 ${isApplied ? 'bg-rose-500' : 'bg-slate-300'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-              title={statusLabel}
-            >
-              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${isApplied ? 'translate-x-6' : 'translate-x-1'}`} />
-            </button>
-          </div>
-        </div>
+      <div className="space-y-2">
+        {lateReturnFeeOptions.map(renderOption)}
       </div>
     );
   };
