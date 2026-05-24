@@ -13,6 +13,39 @@ import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells'
 import { resolveReturnPath } from '../../utils/navigationReturn';
 import { getHostContext } from '../../utils/hostContext';
 
+const resolveRentalMessagingContext = (rental, fallbackRentalId = '') => {
+  const rawRental = rental?.raw && typeof rental.raw === 'object' ? rental.raw : {};
+  const rawMarketplaceRequest =
+    rawRental?.raw_marketplace_request && typeof rawRental.raw_marketplace_request === 'object'
+      ? rawRental.raw_marketplace_request
+      : {};
+  const marketplaceRequestId = String(
+    rawRental?.marketplace_request_id ||
+    rental?.marketplaceRequestId ||
+    rawMarketplaceRequest?.id ||
+    ''
+  ).trim();
+  const marketplaceThreadKey = String(rawMarketplaceRequest?.thread_key || '').trim();
+
+  if (marketplaceRequestId) {
+    return {
+      contextType: 'marketplace_request',
+      contextId: marketplaceRequestId,
+      family: 'marketplace',
+      threadType: 'marketplace_customer_request',
+      preferredThreadKey: marketplaceThreadKey,
+    };
+  }
+
+  return {
+    contextType: 'rental',
+    contextId: String(rental?.id || fallbackRentalId || '').trim(),
+    family: 'bookings',
+    threadType: 'rental_booking',
+    preferredThreadKey: '',
+  };
+};
+
 const AccountRentalDetailsPage = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -52,6 +85,10 @@ const AccountRentalDetailsPage = () => {
     () => RentalThreadTimelineService.buildTimeline(rental),
     [rental]
   );
+  const messagingContext = useMemo(
+    () => resolveRentalMessagingContext(rental, rentalId),
+    [rental, rentalId]
+  );
 
   useEffect(() => {
     if (!shouldRedirectToAdminRental) {
@@ -88,8 +125,8 @@ const AccountRentalDetailsPage = () => {
         setRental(detail);
         setLoading(false);
 
-        const resolvedRentalId = String(detail?.id || rentalId || '').trim();
-        if (!resolvedRentalId) {
+        const nextMessagingContext = resolveRentalMessagingContext(detail, rentalId);
+        if (!nextMessagingContext.contextId) {
           setResolvedThreadKey('');
           setCanonicalThreadStatus('missing');
           setThreadResolutionError(
@@ -102,12 +139,16 @@ const AccountRentalDetailsPage = () => {
         }
 
         setCanonicalThreadStatus('loading');
+        if (nextMessagingContext.preferredThreadKey) {
+          setResolvedThreadKey(nextMessagingContext.preferredThreadKey);
+        }
 
         try {
           const threadResponse = await MessageService.getThreadByContext({
-            contextType: 'rental',
-            contextId: resolvedRentalId,
-            threadType: 'rental_booking',
+            threadKey: nextMessagingContext.preferredThreadKey,
+            contextType: nextMessagingContext.contextType,
+            contextId: nextMessagingContext.contextId,
+            threadType: nextMessagingContext.threadType,
           });
           if (cancelled) return;
 
@@ -118,11 +159,23 @@ const AccountRentalDetailsPage = () => {
             setThreadResolutionError('');
           } else {
             try {
+              if (nextMessagingContext.contextType === 'marketplace_request') {
+                setResolvedThreadKey('');
+                setCanonicalThreadStatus('missing');
+                setThreadResolutionError(
+                  tr(
+                    'The booking conversation is still linking. Messages stay on the original request thread until the live thread finishes syncing.',
+                    'La conversation de réservation est encore en cours de liaison. Les messages restent sur le fil de demande initial tant que le fil actif n’a pas fini de se synchroniser.'
+                  )
+                );
+                return;
+              }
+
               const ensuredThreadResponse = await MessageService.ensureThreadByContext({
-                contextType: 'rental',
-                contextId: resolvedRentalId,
-                family: 'bookings',
-                threadType: 'rental_booking',
+                contextType: nextMessagingContext.contextType,
+                contextId: nextMessagingContext.contextId,
+                family: nextMessagingContext.family,
+                threadType: nextMessagingContext.threadType,
                 senderRole: 'customer',
                 waitingOn: 'owner',
               });
@@ -215,14 +268,14 @@ const AccountRentalDetailsPage = () => {
       {rental ? (
         <MessageWidget
           threadId={resolvedThreadKey}
-          contextType="rental"
-          contextId={String(rental?.id || rentalId || '')}
+          contextType={messagingContext.contextType}
+          contextId={messagingContext.contextId}
           contextLabel={tr('Rental', 'Location')}
           contextTitle={rental?.modelName || rental?.rentalId || tr('Rental conversation', 'Conversation location')}
           contextSubtitle={tr('Booking updates in context', 'Mises à jour de réservation dans le contexte')}
           contextStatus={rental?.status || ''}
-          family="bookings"
-          threadType="rental_booking"
+          family={messagingContext.family}
+          threadType={messagingContext.threadType}
           currentUserId={user?.id}
           currentUserLabel={currentUserLabel}
           currentSenderRole="customer"
@@ -232,11 +285,11 @@ const AccountRentalDetailsPage = () => {
           fallbackTimelineEvents={normalizedRentalTimelineEvents}
           seedThread={{
             id: `rental-${rental?.id || rentalId}`,
-            thread_key: '',
-            family: 'bookings',
-            thread_type: 'rental_booking',
-            entity_type: 'rental',
-            entity_id: String(rental?.id || rentalId || ''),
+            thread_key: messagingContext.preferredThreadKey || '',
+            family: messagingContext.family,
+            thread_type: messagingContext.threadType,
+            entity_type: messagingContext.contextType,
+            entity_id: messagingContext.contextId,
             subject: rental?.modelName || rental?.rentalId || 'Rental booking',
             metadata: {
               href: `/account/rentals/${encodeURIComponent(String(rental?.id || rentalId || ''))}`,

@@ -27,7 +27,7 @@ import ExtensionPricingService from '../../services/ExtensionPricingService';
 import OverageCalculationService from '../../services/OverageCalculationService';
 import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { useAuth } from '../../contexts/AuthContext';
-import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canRequestRentalPriceChange, canEditExtensionHistory, canEditRentalContract, canEditRentalSecurityDeposit, canAdjustRentalBalance, hasPermission } from '../../utils/permissionHelpers';
+import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canRequestRentalPriceChange, canEditExtensionHistory, canEditRentalContract, canEditRentalSecurityDeposit, canAdjustRentalBalance, canRequestRentalBalanceAdjustment, hasPermission } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
 import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator, CarFront, Shield, Trash2 } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
@@ -89,6 +89,12 @@ const PRIMARY_ACTION_BUTTON_CLASS = 'rounded-xl border border-violet-700 bg-viol
 const SECONDARY_ACTION_BUTTON_CLASS = 'rounded-xl border border-slate-200 bg-white px-4 py-2 font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50';
 const WARNING_ACTION_BUTTON_CLASS = 'rounded-xl border border-amber-500 bg-amber-500 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 hover:border-amber-600';
 const SUCCESS_ACTION_BUTTON_CLASS = 'rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 hover:border-emerald-700';
+const BALANCE_APPROVAL_PENDING_BADGE_CLASS = 'border border-amber-300 bg-amber-100/90 text-amber-900 ring-1 ring-amber-200/80 shadow-[0_10px_22px_rgba(245,158,11,0.14)]';
+const DEPOSIT_PENDING_BADGE_CLASS = 'border border-violet-200 bg-violet-50/75 text-violet-700';
+const ADVANCED_DESKTOP_SECTION_SHELL_CLASS = 'mb-6 overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.05)]';
+const ADVANCED_DESKTOP_SECTION_HEADER_CLASS = 'border-b border-slate-200 bg-white/95 pb-4';
+const ADVANCED_DESKTOP_PANEL_CLASS = 'rounded-[20px] border border-slate-200 bg-slate-50/70 p-4';
+const ADVANCED_DESKTOP_SUBPANEL_CLASS = 'rounded-[18px] border border-slate-200 bg-white p-4';
 const MOBILE_FOOTER_SECONDARY_CLASS = rentalFlowMobileFooterSecondaryClass;
 const MOBILE_FOOTER_PRIMARY_CLASS = rentalFlowMobileFooterPrimaryClass;
 const MOBILE_FOOTER_SUCCESS_CLASS = rentalFlowMobileFooterSuccessClass;
@@ -1845,7 +1851,11 @@ const buildAmountDueOverrideReasonString = ({ rentalLike = {}, overrides = {}, c
 
 const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
   const parsedReasonMeta = getAmountDueOverrideReasonPayload(rentalLike);
-  if (parsedReasonMeta?.type === 'billing_correction') {
+  if (
+    parsedReasonMeta?.type === 'billing_correction' ||
+    String(parsedReasonMeta?.requestStatus || '').toLowerCase() === 'pending' ||
+    String(parsedReasonMeta?.pendingBalanceRequest?.requestStatus || '').toLowerCase() === 'pending'
+  ) {
     return null;
   }
   const rawReason =
@@ -1885,6 +1895,34 @@ const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
     paymentReceivedNow,
     companyDiscount,
     editedAt,
+  };
+};
+
+const getPendingAmountDueApprovalMeta = (rentalLike = {}) => {
+  const parsedReasonMeta = getAmountDueOverrideReasonPayload(rentalLike);
+  const pendingRequest =
+    parsedReasonMeta?.pendingBalanceRequest &&
+    typeof parsedReasonMeta.pendingBalanceRequest === 'object'
+      ? parsedReasonMeta.pendingBalanceRequest
+      : null;
+
+  if (!pendingRequest) return null;
+  if (String(pendingRequest?.requestStatus || '').toLowerCase() !== 'pending') return null;
+
+  return {
+    requestStatus: 'pending',
+    requestedById: pendingRequest.requestedById || null,
+    requestedByName: pendingRequest.requestedByName || null,
+    requestedAt: pendingRequest.requestedAt || null,
+    currentAmount: Math.max(0, Number(pendingRequest.currentAmount || 0) || 0),
+    requestedAmount: Math.max(0, Number(pendingRequest.requestedAmount || 0) || 0),
+    paymentReceivedNow: Math.max(0, Number(pendingRequest.paymentReceivedNow || 0) || 0),
+    companyDiscount: Math.max(0, Number(pendingRequest.companyDiscount || 0) || 0),
+    note: String(pendingRequest.note || '').trim(),
+    telegramDeliveryStatus: String(pendingRequest.telegramDeliveryStatus || 'pending').trim().toLowerCase(),
+    telegramDeliveredAt: pendingRequest.telegramDeliveredAt || null,
+    telegramUpdatedAt: pendingRequest.telegramUpdatedAt || null,
+    telegramLastError: String(pendingRequest.telegramLastError || '').trim(),
   };
 };
 
@@ -4065,6 +4103,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     receiptUploadedAt: null,
   });
   const [resendingTelegramEvent, setResendingTelegramEvent] = useState('');
+  const amountDueAutoSuggestedPaymentRef = useRef(null);
 
   // Video refresh trigger
   const [videoRefreshKey, setVideoRefreshKey] = useState(0);
@@ -4300,6 +4339,11 @@ const openReplacementResumeWorkflow = useCallback(() => {
     () => getInlineTransportFeeMeta(rental),
     [rental?.amount_due_override_reason]
   );
+  const pendingAmountDueApprovalMeta = useMemo(
+    () => getPendingAmountDueApprovalMeta(rental),
+    [rental?.amount_due_override_reason]
+  );
+  const hasPendingBalanceApproval = Boolean(pendingAmountDueApprovalMeta);
   const incidentSummaryToneClass = vehicleStillUnderMaintenance
     ? 'border-orange-200 bg-orange-50 text-orange-800'
     : 'border-green-200 bg-green-50 text-green-800';
@@ -7120,6 +7164,10 @@ Click the link above to review and approve the extension.`;
     requestedBy = null,
     currentPrice = null,
     requestedPrice = null,
+    currentAmount = null,
+    requestedAmount = null,
+    paymentReceivedNow = null,
+    companyDiscount = null,
     reason = '',
     extension = null,
     extensionHours = null,
@@ -7137,6 +7185,10 @@ Click the link above to review and approve the extension.`;
     requestedBy: getApprovalActorName(requestedBy || resolvedCurrentUser || currentUser || userProfile),
     currentPrice,
     requestedPrice,
+    currentAmount,
+    requestedAmount,
+    paymentReceivedNow,
+    companyDiscount,
     reason,
     extensionHours: extensionHours ?? extension?.extension_hours,
     extensionPrice: extensionPrice ?? extension?.extension_price,
@@ -12953,6 +13005,20 @@ useEffect(() => {
   }
 }, [isEditingEndOdometer, isLightRentalDetailsMode, showEndOdometerPrompt]);
 
+useEffect(() => {
+  if (!isLightRentalDetailsMode) return;
+  if (showEndEngineHoursPrompt || isEditingEndEngineHours) {
+    setLightRentalInfoOpenSections((prev) => (
+      prev?.media
+        ? {
+            ...prev,
+            media: false,
+          }
+        : prev
+    ));
+  }
+}, [isEditingEndEngineHours, isLightRentalDetailsMode, showEndEngineHoursPrompt]);
+
 
 
 
@@ -13591,6 +13657,10 @@ useEffect(() => {
       const EXPIRY_MINUTES = timingState?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes;
       const SOFT_LOCK_MINUTES = timingState?.softLockMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes;
       const minutesLate = timingState?.minutesLate ?? Math.floor((now - scheduledStart) / 60000);
+      // Fresh rentals often start a few seconds after the scheduled minute
+      // because the saved schedule rounds to :00 seconds. Don't label that as
+      // a meaningful late start in the audit trail or toast.
+      const effectiveLateStartMinutes = minutesLate >= 2 ? minutesLate : 0;
 
       const autoExpireAllowed = shouldAutoExpireScheduledRental(rental);
 
@@ -13670,7 +13740,7 @@ useEffect(() => {
           status_changed_by: currentUser?.full_name || currentUser?.name || currentUser?.email || 'Staff',
           status_change_reason: isReplacementResumeFlow ? 'Rental resumed after vehicle replacement' : 'Rental started by staff',
           quantity_days: duration, quantity_hours: rentalType === 'hourly' ? duration : null,
-          late_start_minutes: !isReplacementResumeFlow && minutesLate > 0 ? minutesLate : 0,
+          late_start_minutes: !isReplacementResumeFlow ? effectiveLateStartMinutes : 0,
           started_by: currentUser?.id || null,
           started_by_name: currentUser?.full_name || currentUser?.email || null,
           replacement_pause_started_at: null,
@@ -13801,8 +13871,8 @@ useEffect(() => {
         toast.success(tr('Rental resumed successfully!', 'Location reprise avec succès !'), {
           id: `start-rental-${rental.id}`,
         });
-      } else if (minutesLate > 0) {
-        toast(`⚠️ Started ${minutesLate} min late — new end: ${new Date(actualEndTime).toLocaleTimeString()}`, {
+      } else if (effectiveLateStartMinutes > 0) {
+        toast(`⚠️ Started ${effectiveLateStartMinutes} min late — new end: ${new Date(actualEndTime).toLocaleTimeString()}`, {
           id: `start-rental-${rental.id}`,
           icon: '⏰',
           duration: 5000,
@@ -15645,6 +15715,7 @@ useEffect(() => {
   const amountDueCompanyDiscountValue = Math.max(0, Number(amountDueCompanyDiscount) || 0);
   const amountDueResolvedTotal = amountDuePaymentReceivedValue + amountDueCompanyDiscountValue;
   const amountDueAutoCalculatedValue = Math.max(0, currentAmountDueForEdit - amountDueResolvedTotal);
+  const amountDuePreviouslyCollectedValue = Math.max(0, Number(rentalBillingSummary?.depositPaid || 0) || 0);
 
   const handleCancelEditPrice = () => {
     setIsEditingPrice(false);
@@ -15660,6 +15731,7 @@ useEffect(() => {
     setAmountDuePaymentReceivedNow('');
     setAmountDueCompanyDiscount('');
     setAmountDueOverrideReason('');
+    amountDueAutoSuggestedPaymentRef.current = null;
     setIsEditingAmountDue(true);
   };
 
@@ -15687,6 +15759,7 @@ useEffect(() => {
     setAmountDuePaymentReceivedNow(currentAmountDue.toString());
     setAmountDueCompanyDiscount('');
     setManualAmountDue('0');
+    amountDueAutoSuggestedPaymentRef.current = currentAmountDue;
     setAmountDueOverrideReason(
       tr(
         'Collected the full remaining balance before closing the rental.',
@@ -16081,6 +16154,153 @@ useEffect(() => {
   }
 };
 
+  const requestRentalBalanceApproval = async ({
+    nextAmountDue,
+    paymentReceivedNow,
+    companyDiscount,
+    reason,
+  }) => {
+    const actingUser = resolvedCurrentUser || currentUser || userProfile;
+    const currentAmountDue = resolvedCurrentAmountDue;
+    const requestedAt = new Date().toISOString();
+    const pendingBalanceRequest = {
+      approvalType: 'balance',
+      requestStatus: 'pending',
+      requestedById: actingUser?.id || null,
+      requestedByName:
+        actingUser?.full_name ||
+        actingUser?.name ||
+        actingUser?.email ||
+        'Staff',
+      requestedAt,
+      currentAmount: currentAmountDue,
+      requestedAmount: nextAmountDue,
+      paymentReceivedNow,
+      companyDiscount,
+      note: String(reason || '').trim(),
+      telegramDeliveryStatus: 'pending',
+      telegramDeliveredAt: null,
+      telegramUpdatedAt: requestedAt,
+      telegramLastError: '',
+    };
+    const persistPendingBalanceRequest = async (requestMeta, updatedAt = new Date().toISOString()) => {
+      const nextReasonString = buildAmountDueOverrideReasonString({
+        rentalLike: rental,
+        overrides: {
+          pendingBalanceRequest: requestMeta,
+        },
+      });
+
+      const { error: updateError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          amount_due_override_reason: nextReasonString,
+          updated_at: updatedAt,
+        })
+        .eq('id', rental.id);
+
+      if (updateError) throw updateError;
+
+      setRental((current) => (
+        current
+          ? {
+              ...current,
+              amount_due_override_reason: nextReasonString,
+              updated_at: updatedAt,
+            }
+          : current
+      ));
+    };
+
+    try {
+      await persistPendingBalanceRequest(pendingBalanceRequest, requestedAt);
+      setIsEditingAmountDue(false);
+      setIsPayingDueBalance(false);
+      setManualAmountDue('');
+      setAmountDuePaymentReceivedNow('');
+      setAmountDueCompanyDiscount('');
+      setAmountDueOverrideReason('');
+
+      try {
+        await notifyRentalTelegramEvent(
+          'rental_price_change_requested',
+          buildApprovalTelegramPayload({
+            approvalType: 'balance',
+            requestId: rental.id,
+            requestedBy: actingUser,
+            currentPrice: currentAmountDue,
+            requestedPrice: nextAmountDue,
+            reason: reason || '',
+            currentAmount: currentAmountDue,
+            requestedAmount: nextAmountDue,
+            paymentReceivedNow,
+            companyDiscount,
+          }),
+          { throwOnError: true }
+        );
+
+        await persistPendingBalanceRequest(
+          {
+            ...pendingBalanceRequest,
+            telegramDeliveryStatus: 'sent',
+            telegramDeliveredAt: new Date().toISOString(),
+            telegramUpdatedAt: new Date().toISOString(),
+            telegramLastError: '',
+          },
+          new Date().toISOString()
+        );
+
+        toast.success(
+          tr(
+            'Balance request saved and admins were notified on Telegram.',
+            'La demande de solde a été enregistrée et les admins ont été notifiés sur Telegram.'
+          )
+        );
+      } catch (telegramError) {
+        const telegramMessage = String(telegramError?.message || '').trim();
+        const telegramDeliveryStatus = /timed out/i.test(telegramMessage) ? 'delayed' : 'failed';
+
+        try {
+          await persistPendingBalanceRequest(
+            {
+              ...pendingBalanceRequest,
+              telegramDeliveryStatus,
+              telegramDeliveredAt: null,
+              telegramUpdatedAt: new Date().toISOString(),
+              telegramLastError: telegramMessage,
+            },
+            new Date().toISOString()
+          );
+        } catch (persistTelegramStateError) {
+          console.warn('⚠️ Unable to persist Telegram delivery state for balance approval request:', persistTelegramStateError);
+        }
+
+        toast.success(
+          telegramDeliveryStatus === 'delayed'
+            ? tr(
+                'Balance request saved. Telegram delivery is delayed.',
+                'La demande de solde a été enregistrée. La livraison Telegram est retardée.'
+              )
+            : tr(
+                'Balance request saved. Telegram delivery needs attention.',
+                'La demande de solde a été enregistrée. La livraison Telegram demande une vérification.'
+              )
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error('❌ Error requesting balance approval:', error);
+      toast.error(
+        tr(
+          `Unable to request balance approval. ${error?.message || ''}`.trim(),
+          `Impossible d’envoyer la demande d’approbation du solde. ${error?.message || ''}`.trim()
+        )
+      );
+      return false;
+    }
+  };
+
   const saveAmountDueResolution = async ({
     nextAmountDue,
     paymentReceivedNow,
@@ -16090,6 +16310,15 @@ useEffect(() => {
   }) => {
     const actingUser = resolvedCurrentUser || currentUser || userProfile;
     if (!canAdjustRentalBalance(actingUser)) {
+      if (canRequestRentalBalanceAdjustment(actingUser)) {
+        return requestRentalBalanceApproval({
+          nextAmountDue,
+          paymentReceivedNow,
+          companyDiscount,
+          reason,
+        });
+      }
+
       toast.error(
         tr(
           'You do not have permission to edit the amount due.',
@@ -16159,6 +16388,7 @@ useEffect(() => {
             transportFeeEditedAt: overrideMeta.transportFeeEditedAt || null,
             transportFeeEditedByName: overrideMeta.transportFeeEditedByName || null,
           },
+          clearKeys: ['pendingBalanceRequest'],
         }),
         amount_due_override_edited_by: overrideMeta.editedById || null,
         amount_due_override_edited_by_name: overrideMeta.editedByName || null,
@@ -16508,6 +16738,96 @@ useEffect(() => {
     }
   };
 
+  const handleApproveBalanceRequest = async () => {
+    if (!pendingAmountDueApprovalMeta) {
+      toast.error(tr('No pending balance request found.', 'Aucune demande de solde en attente.'));
+      return;
+    }
+
+    if (
+      !confirm(
+        tr(
+          `Approve this balance request and set the due amount to ${formatCurrency(pendingAmountDueApprovalMeta.requestedAmount)} MAD?`,
+          `Approuver cette demande et fixer le solde à ${formatCurrency(pendingAmountDueApprovalMeta.requestedAmount)} MAD ?`
+        )
+      )
+    ) {
+      return;
+    }
+
+    await saveAmountDueResolution({
+      nextAmountDue: pendingAmountDueApprovalMeta.requestedAmount,
+      paymentReceivedNow: pendingAmountDueApprovalMeta.paymentReceivedNow,
+      companyDiscount: pendingAmountDueApprovalMeta.companyDiscount,
+      reason: pendingAmountDueApprovalMeta.note || '',
+      isShortcutPayment: false,
+    });
+  };
+
+  const handleDeclineBalanceRequest = async () => {
+    if (!pendingAmountDueApprovalMeta) {
+      toast.error(tr('No pending balance request found.', 'Aucune demande de solde en attente.'));
+      return;
+    }
+
+    if (
+      !confirm(
+        tr(
+          'Decline this balance change request?',
+          'Refuser cette demande de changement du solde ?'
+        )
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const { error: updateError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          amount_due_override_reason: buildAmountDueOverrideReasonString({
+            rentalLike: rental,
+            clearKeys: ['pendingBalanceRequest'],
+          }),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', rental.id);
+
+      if (updateError) throw updateError;
+
+      const { data: updatedRental, error: fetchError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .select(`
+          *,
+          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+            *,
+            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
+          ),
+          package:app_4c3a7a6153_rental_km_packages!package_id(*)
+        `)
+        .eq('id', rental.id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      setRental(updatedRental);
+      toast.success(
+        tr(
+          'Balance change request declined.',
+          'Demande de changement du solde refusée.'
+        )
+      );
+    } catch (error) {
+      console.error('❌ Error declining balance request:', error);
+      toast.error(
+        tr(
+          `Failed to decline the balance request. ${error?.message || ''}`.trim(),
+          `Impossible de refuser la demande de solde. ${error?.message || ''}`.trim()
+        )
+      );
+    }
+  };
+
   const handleVideoUpdate = () => {
     if (RENTAL_DEBUG) console.log('🔄 Video update triggered, refreshing media...');
     loadRentalMedia(rental.id);
@@ -16655,6 +16975,12 @@ useEffect(() => {
       }
 
       const inlineAmountDueOverrideMeta = getInlineAmountDueOverrideMeta(rental);
+      const inlinePendingAmountDueApprovalMeta = getPendingAmountDueApprovalMeta(rental);
+      if (inlinePendingAmountDueApprovalMeta) {
+        if (active) setAmountDueAuditMeta(null);
+        return;
+      }
+
       if (inlineAmountDueOverrideMeta) {
         if (active) setAmountDueAuditMeta(inlineAmountDueOverrideMeta);
         return;
@@ -16835,6 +17161,7 @@ useEffect(() => {
   const pendingSecurityReturnLabel = hasMonetaryDamageDeposit
     ? tr('Deposit Pending', 'Caution en attente')
     : tr('Security Pending', 'Garantie en attente');
+  const pendingSecurityBadgeClass = DEPOSIT_PENDING_BADGE_CLASS;
   const securityOverviewSummary = [
     requiredSecurityAmount > 0 ? `${formatCurrency(requiredSecurityAmount)} MAD` : null,
     securityHoldReceivedMethod ? securityHoldMethodLabel : null,
@@ -17137,6 +17464,7 @@ useEffect(() => {
   const impoundChargeLocked = isCompleted;
   const canEditRentalPriceOverride = canEditRentalPrice(resolvedCurrentUser);
   const canAdjustRentalBalanceForLifecycle = canAdjustRentalBalance(resolvedCurrentUser);
+  const canRequestRentalBalanceForLifecycle = canRequestRentalBalanceAdjustment(resolvedCurrentUser);
   const canRequestRentalPriceOverride = canRequestRentalPriceChange(resolvedCurrentUser);
   const canApplyRentalPriceDirectly =
     canApprovePriceOverrides(resolvedCurrentUser) ||
@@ -17145,6 +17473,9 @@ useEffect(() => {
   const canManageLifecycleRentalBalance =
     currentUserRole === 'owner' ||
     (canAdjustRentalBalanceForLifecycle && ['active', 'completed'].includes(rentalStatusLower));
+  const canRequestLifecycleRentalBalanceAdjustment =
+    currentUserRole === 'owner' ||
+    (canRequestRentalBalanceForLifecycle && ['active', 'completed'].includes(rentalStatusLower));
   const canEditLifecycleRentalPrice =
     currentUserRole === 'owner' ||
     (canEditRentalPriceOverride && ['active', 'completed'].includes(rentalStatusLower));
@@ -17603,6 +17934,18 @@ useEffect(() => {
       }
     }
 
+    if (pendingAmountDueApprovalMeta) {
+      addEvent({
+        key: `balance-request-${rental?.id || 'pending'}`,
+        label: tr('Balance change requested', 'Changement du solde demandé'),
+        actor: pendingAmountDueApprovalMeta.requestedByName,
+        at: pendingAmountDueApprovalMeta.requestedAt,
+        detail: `${formatCurrency(pendingAmountDueApprovalMeta.currentAmount)} MAD → ${formatCurrency(pendingAmountDueApprovalMeta.requestedAmount)} MAD`,
+        tone: 'amber',
+        status: tr('Pending', 'En attente'),
+      });
+    }
+
     (Array.isArray(extensions) ? extensions : []).forEach((extension) => {
       const requesterName =
         extension?.requester?.full_name ||
@@ -17683,6 +18026,7 @@ useEffect(() => {
     createdByDisplay,
     effectivePriceOverrideMeta,
     extensions,
+    pendingAmountDueApprovalMeta,
     priceOverrideRequesterName,
     rental?.approval_status,
     rental?.cancelled_at,
@@ -19385,8 +19729,8 @@ useEffect(() => {
             if (isLightRentalDetailsMode) {
               setLightRentalInfoSectionOpen('media', false);
             }
-            setIsEditingEndOdometer(true);
-            setEndOdometerEditValue(rental?.ending_odometer?.toString() || '');
+            setEndOdometer(rental?.ending_odometer?.toString() || '');
+            setShowEndOdometerPrompt(true);
             return;
           }
           if (isLightRentalDetailsMode) {
@@ -19410,9 +19754,15 @@ useEffect(() => {
           : tr('Add hours', 'Ajouter les heures'),
         onAction: () => {
           if (finishRentalSteps.endEngineHoursComplete) {
-            setIsEditingEndEngineHours(true);
-            setEndEngineHoursEditValue(rental?.end_engine_hours?.toString() || '');
+            if (isLightRentalDetailsMode) {
+              setLightRentalInfoSectionOpen('media', false);
+            }
+            setEndEngineHours(rental?.end_engine_hours?.toString() || '');
+            setShowEndEngineHoursPrompt(true);
             return;
+          }
+          if (isLightRentalDetailsMode) {
+            setLightRentalInfoSectionOpen('media', false);
           }
           setEndEngineHours(
             rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined
@@ -19918,11 +20268,22 @@ useEffect(() => {
             ? `${tr('Due', 'Dû')} ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
             : tr('No balance due', 'Aucun solde dû')}
         </span>
-        {hasPendingSecurityReturn ? (
+        {hasPendingBalanceApproval || hasPendingSecurityReturn ? (
           <>
             <span className="mx-1 text-slate-400">•</span>
-            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-              {pendingSecurityReturnLabel}
+            <span className="inline-flex flex-wrap items-center gap-1.5 align-middle">
+              {hasPendingBalanceApproval ? (
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${BALANCE_APPROVAL_PENDING_BADGE_CLASS}`}>
+                  <Clock className="mr-1 h-3 w-3" />
+                  {tr('Approval pending', 'Approbation en attente')}
+                </span>
+              ) : null}
+              {hasPendingSecurityReturn ? (
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${pendingSecurityBadgeClass}`}>
+                  <Shield className="mr-1 h-3 w-3" />
+                  {pendingSecurityReturnLabel}
+                </span>
+              ) : null}
             </span>
           </>
         ) : null}
@@ -20434,7 +20795,7 @@ useEffect(() => {
   const renderAdvancedPeopleSectionBody = () => (
     <>
       {(createdByDisplay || startedByDisplay || signedByDisplay || closedByDisplay || cancelledByDisplay) && (
-        <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
           <div className="mb-2 flex items-center justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-slate-900">👤 {tr('Rental Staff', 'Personnel de location')}</h3>
@@ -20460,7 +20821,7 @@ useEffect(() => {
             {cancelledByDisplay && <p><strong>{tr('Cancelled by:', 'Annulée par :')}</strong> {cancelledByDisplay}</p>}
           </div>
           {showHistory && (
-            <div className="mt-3 border-t border-violet-100 pt-3">
+            <div className="mt-3 border-t border-slate-200 pt-3">
               <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                 {tr('Staff Timeline', 'Chronologie équipe')}
               </p>
@@ -20470,7 +20831,7 @@ useEffect(() => {
         </div>
       )}
 
-      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+      <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-semibold text-slate-900">{tr('Customer Details', 'Détails client')}</h3>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -20520,11 +20881,11 @@ useEffect(() => {
       {hasSecondDriver && (
         <>
           <Separator className="bg-violet-100" />
-          <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+          <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
             <h3 className="mb-3 text-lg font-semibold">
               {tr('Additional Drivers', 'Conducteurs supplémentaires')} ({secondDriversList.length})
             </h3>
-            <div className="mt-2 rounded-2xl border border-violet-100 bg-slate-50/70 p-4 text-sm text-slate-600">
+            <div className={`mt-2 text-sm text-slate-600 ${ADVANCED_DESKTOP_SUBPANEL_CLASS}`}>
               <p>
                 {secondDriversList.length === 1
                   ? tr('1 additional driver is linked to this rental.', '1 conducteur supplémentaire est lié à cette location.')
@@ -20553,7 +20914,7 @@ useEffect(() => {
 
   const renderAdvancedVehicleSectionBody = () => (
     <>
-      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+      <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle Details', 'Détails véhicule')}</h3>
           {(isScheduled || isActive) && (
@@ -20672,7 +21033,70 @@ useEffect(() => {
             <p><strong>{tr('Start Engine Hours:', 'Heures moteur départ :')}</strong> {Number(rental.start_engine_hours).toFixed(1)} h</p>
           )}
           {(rental.end_engine_hours !== null && rental.end_engine_hours !== undefined) && (
-            <p><strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong> {Number(rental.end_engine_hours).toFixed(1)} h</p>
+            <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+              {isEditingEndEngineHours ? (
+                <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                  <strong className="shrink-0">{tr('End Engine Hours:', 'Heures moteur retour :')}</strong>
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={endEngineHoursEditValue}
+                      onChange={(e) => setEndEngineHoursEditValue(normalizeDecimalInputValue(e.target.value))}
+                      className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                      pattern="[0-9]*[.,]?[0-9]*"
+                      autoFocus
+                    />
+                    <span className="text-sm text-gray-500">h</span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSaveEndEngineHours(endEngineHoursEditValue);
+                        }}
+                        className="h-8 bg-blue-600 px-3 text-xs text-white"
+                      >
+                        {tr('Save', 'Enregistrer')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setIsEditingEndEngineHours(false);
+                          setEndEngineHoursEditValue('');
+                        }}
+                        className="h-8 px-2 text-xs"
+                      >
+                        ✕
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex w-full items-start justify-between gap-2">
+                  <p><strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong> {Number(rental.end_engine_hours).toFixed(1)} h</p>
+                  {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingEndEngineHours(true);
+                        setEndEngineHoursEditValue(rental?.end_engine_hours?.toString() || '');
+                      }}
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 w-6 p-0"
+                      title={tr('Edit end engine hours', 'Modifier les heures moteur de retour')}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {(() => {
             const startHours = rental.start_engine_hours;
@@ -20776,7 +21200,7 @@ useEffect(() => {
         )}
       </div>
 
-      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+      <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle History', 'Historique du véhicule')}</h3>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
@@ -20796,7 +21220,7 @@ useEffect(() => {
                 const isCurrentEntry = index === vehicleReplacementHistory.length - 1 && !entry.ended_at;
                 const entryStartLabel = index === 0 ? tr('Started rental', 'Démarrage de location') : tr('Replaced at', 'Remplacé à');
                 return (
-                  <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                  <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-[18px] border border-slate-200 bg-white px-4 py-3">
                     <div className={`absolute -left-[26px] top-4 h-4 w-4 rounded-full border-4 ${isCurrentEntry ? 'border-violet-500 bg-violet-100' : 'border-slate-300 bg-white'}`} />
                     <div className="flex flex-col gap-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -20992,7 +21416,7 @@ useEffect(() => {
     <>
       <div>
         <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
-        {!isEditingPrice && (canManageLifecycleRentalBalance || canRequestLifecycleRentalPriceChange) && (
+        {!isEditingPrice && (canManageLifecycleRentalBalance || canRequestLifecycleRentalBalanceAdjustment || canRequestLifecycleRentalPriceChange) && (
           <div className="mb-4 flex flex-wrap justify-end gap-2">
             {canManageLifecycleRentalBalance && currentAmountDueForEdit > 0 && (
               <Button
@@ -21022,6 +21446,18 @@ useEffect(() => {
               >
                 <DollarSign className="mr-2 h-4 w-4" />
                 {tr('Adjust Balance', 'Ajuster le solde')}
+              </Button>
+            )}
+            {!canManageLifecycleRentalBalance && canRequestLifecycleRentalBalanceAdjustment && (
+              <Button
+                type="button"
+                onClick={handleEditAmountDue}
+                size="sm"
+                variant="outline"
+                className="border-violet-200 text-violet-700 transition-transform duration-150 hover:bg-violet-50 hover:scale-[1.01] active:scale-[0.97]"
+              >
+                <DollarSign className="mr-2 h-4 w-4" />
+                {tr('Request Balance Change', 'Demander un changement du solde')}
               </Button>
             )}
             {canRequestLifecycleRentalPriceChange && (
@@ -21203,6 +21639,25 @@ useEffect(() => {
             </div>
           </div>
         )}
+
+        {(hasPendingBalanceApproval || hasPendingSecurityReturn) && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/85 px-3 py-3">
+            {hasPendingBalanceApproval ? (
+              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide sm:px-3 ${BALANCE_APPROVAL_PENDING_BADGE_CLASS}`}>
+                <Clock className="mr-1.5 h-3.5 w-3.5" />
+                {tr('Approval pending', 'Approbation en attente')}
+              </span>
+            ) : null}
+            {hasPendingSecurityReturn ? (
+              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${pendingSecurityBadgeClass}`}>
+                <Shield className="mr-1.5 h-3.5 w-3.5" />
+                {pendingSecurityReturnLabel}
+              </span>
+            ) : null}
+          </div>
+        )}
+
+        {renderPendingBalanceApprovalBlock()}
 
         {amountDueAuditMeta && (
           <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
@@ -22558,6 +23013,15 @@ useEffect(() => {
   const renderAmountDueEditorBlock = (editorRef = null) => {
       const finalAmountDueValue = Math.max(0, Number(manualAmountDue) || 0);
       const hasManualFinalOverride = Math.abs(finalAmountDueValue - amountDueAutoCalculatedValue) > 0.01;
+      const amountDueSummaryLabel = amountDuePreviouslyCollectedValue > 0
+        ? tr(
+            `Already collected on this rental: ${formatCurrency(amountDuePreviouslyCollectedValue)} MAD`,
+            `Déjà encaissé sur cette location : ${formatCurrency(amountDuePreviouslyCollectedValue)} MAD`
+          )
+        : tr(
+            'No payment was recorded before this step.',
+            "Aucun paiement n'a été enregistré avant cette étape."
+          );
 
       return (
         <div
@@ -22566,195 +23030,216 @@ useEffect(() => {
         >
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+              <p className="text-xs font-semibold uppercase text-violet-500">
                 {isPayingDueBalance
                   ? tr('Due Balance Payment', 'Paiement du solde restant dû')
-                  : tr('Balance Resolution', 'Résolution du solde')}
+                  : canManageLifecycleRentalBalance
+                    ? tr('Balance Resolution', 'Résolution du solde')
+                    : tr('Balance Change Request', 'Demande de changement du solde')}
               </p>
-              <h4 className="mt-1 text-lg font-semibold text-slate-900">
+              <h4 className="mt-1 text-[1.7rem] font-bold text-slate-900 sm:text-[1.9rem] lg:text-[1.7rem]">
                 {isPayingDueBalance
                   ? tr('Pay Due Balance', 'Payer le solde restant dû')
-                  : tr('Adjust Balance', 'Ajuster le solde')}
+                  : canManageLifecycleRentalBalance
+                    ? tr('Adjust Balance', 'Ajuster le solde')
+                    : tr('Request Balance Change', 'Demander un changement du solde')}
               </h4>
-              <p className="mt-1 text-sm text-slate-500">
-                {isPayingDueBalance
-                  ? tr(
-                      'Confirm what was collected now and the page will calculate the new due instantly.',
-                      'Confirmez ce qui a été encaissé maintenant et la page calculera immédiatement le nouveau solde.'
-                    )
-                  : tr(
-                      'Enter what the customer paid, add any company discount, and confirm the final due.',
-                      'Saisissez ce que le client a payé, ajoutez une remise entreprise si nécessaire, puis confirmez le solde final.'
-                    )}
-              </p>
+              <p className="mt-2 text-sm font-medium text-slate-500 sm:text-xs">{amountDueSummaryLabel}</p>
             </div>
-            <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
-              <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+            <div className="w-full rounded-2xl border border-violet-200 bg-white px-4 py-4 text-left shadow-sm sm:min-w-[220px] sm:w-auto">
+              <span className="block text-sm font-semibold text-slate-500 lg:text-[0.95rem]">
                 {tr('Current due', 'Solde actuel')}
               </span>
-              <span className="mt-1 block text-xl font-extrabold text-slate-900">
+              <span className="mt-2 block text-[1.8rem] leading-none font-extrabold text-red-600 sm:text-[2rem] lg:text-[1.85rem] xl:text-[2rem]">
                 {formatCurrency(currentAmountDueForEdit)} MAD
               </span>
             </div>
           </div>
 
+          <div className="grid gap-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm sm:grid-cols-3">
+            <div className="px-4 py-4 sm:border-r sm:border-slate-100">
+              <p className="text-base font-bold text-slate-500 sm:text-[1.05rem] lg:text-[0.95rem]">
+                {tr('Already collected', 'Déjà encaissé')}
+              </p>
+              <p className="mt-3 whitespace-nowrap text-[1.65rem] leading-none font-extrabold text-slate-950 sm:text-[1.95rem] lg:text-[1.65rem] xl:text-[1.8rem]">
+                {formatCurrency(amountDuePreviouslyCollectedValue)} MAD
+              </p>
+            </div>
+            <div className="border-t border-slate-100 px-4 py-4 sm:border-r sm:border-t-0 sm:border-slate-100">
+              <p className="text-base font-bold text-emerald-700 sm:text-[1.05rem] lg:text-[0.95rem]">
+                {tr('Collect now', 'Encaisser maintenant')}
+              </p>
+              <p className="mt-3 whitespace-nowrap text-[1.65rem] leading-none font-extrabold text-emerald-700 sm:text-[1.95rem] lg:text-[1.65rem] xl:text-[1.8rem]">
+                +{formatCurrency(amountDuePaymentReceivedValue)} MAD
+              </p>
+            </div>
+            <div className="border-t border-slate-100 px-4 py-4 sm:border-t-0">
+              <p className="text-base font-bold text-amber-700 sm:text-[1.05rem] lg:text-[0.95rem]">
+                {tr('Company discount', 'Remise entreprise')}
+              </p>
+              <p className="mt-3 whitespace-nowrap text-[1.65rem] leading-none font-extrabold text-amber-700 sm:text-[1.95rem] lg:text-[1.65rem] xl:text-[1.8rem]">
+                -{formatCurrency(amountDueCompanyDiscountValue)} MAD
+              </p>
+            </div>
+          </div>
+
           <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_340px]">
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
-                    {tr('Customer paid now', 'Client payé maintenant')}
+            <div className="rounded-2xl border border-emerald-200 bg-white px-4 py-4 shadow-sm">
+              <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-start">
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-700">
+                  <CreditCard className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase text-emerald-700">
+                    {tr('Payment', 'Paiement')}
                   </p>
-                  <p className="mt-1 text-xs text-violet-700">
-                    {tr(
-                      'Use the amount actually collected on this step.',
-                      'Utilisez le montant réellement encaissé à cette étape.'
-                    )}
+                  <p className="mt-1 text-lg leading-tight font-bold text-slate-950 sm:text-xl lg:text-base xl:text-lg">
+                    {tr('Collect now', 'Encaisser maintenant')}
                   </p>
                 </div>
-                <div className="rounded-full bg-white px-3 py-1 text-xs font-bold text-violet-700 shadow-sm">
-                  -{formatCurrency(amountDuePaymentReceivedValue)} MAD
+                <div className="col-span-2 whitespace-nowrap pl-[3.75rem] text-left text-2xl font-extrabold text-emerald-700 sm:col-span-1 sm:pl-0 sm:text-right lg:text-lg xl:text-xl">
+                  +{formatCurrency(amountDuePaymentReceivedValue)} MAD
                 </div>
               </div>
-              <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {isPayingDueBalance
-                    ? tr('Amount collected now', 'Montant encaissé maintenant')
-                    : tr('Payment received now', 'Paiement reçu maintenant')}
-                </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-emerald-600">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={amountDuePaymentReceivedNow}
-                    onChange={(e) => {
-                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                      const value = Math.max(0, Number(normalizedValue) || 0);
-                      setAmountDuePaymentReceivedNow(normalizedValue);
-                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
-                    }}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
+              <div className="mt-4 flex items-center gap-3 border-t border-emerald-100 pt-4">
+                <span className="text-sm font-semibold text-emerald-700">MAD</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={amountDuePaymentReceivedNow}
+                  onChange={(e) => {
+                    const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                    const value = Math.max(0, Number(normalizedValue) || 0);
+                    setAmountDuePaymentReceivedNow(normalizedValue);
+                    const previousSuggestedValue = Number(amountDueAutoSuggestedPaymentRef.current);
+                    const matchesPreviousSuggested =
+                      Number.isFinite(previousSuggestedValue) &&
+                      Math.abs(value - previousSuggestedValue) < 0.01;
+                    if (!matchesPreviousSuggested) {
+                      amountDueAutoSuggestedPaymentRef.current = null;
+                    }
+                    setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
+                  }}
+                  placeholder="0"
+                  className="w-full border-0 bg-transparent px-0 py-0 text-xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0 sm:text-2xl"
+                />
               </div>
             </div>
 
-            <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-4 shadow-[0_16px_36px_rgba(245,158,11,0.10)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">
+            <div className="rounded-2xl border border-amber-200 bg-white px-4 py-4 shadow-sm">
+              <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-start">
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 text-amber-700">
+                  <Calculator className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase text-amber-700">
+                    {tr('Discount', 'Remise')}
+                  </p>
+                  <p className="mt-1 text-lg leading-tight font-bold text-slate-950 sm:text-xl lg:text-base xl:text-lg">
                     {tr('Company discount', 'Remise entreprise')}
                   </p>
-                  <p className="mt-1 text-xs text-amber-700">
-                    {tr(
-                      'Only use this when we waive part of the balance.',
-                      'Utilisez ceci uniquement si nous annulons une partie du solde.'
-                    )}
-                  </p>
                 </div>
-                <div className="rounded-full bg-white px-3 py-1 text-xs font-bold text-amber-700 shadow-sm">
+                <div className="col-span-2 whitespace-nowrap pl-[3.75rem] text-left text-2xl font-extrabold text-amber-700 sm:col-span-1 sm:pl-0 sm:text-right lg:text-lg xl:text-xl">
                   -{formatCurrency(amountDueCompanyDiscountValue)} MAD
                 </div>
               </div>
-              <div className="mt-3 rounded-2xl border border-amber-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {tr('Discount amount', 'Montant de la remise')}
-                </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-amber-700">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={amountDueCompanyDiscount}
-                    onChange={(e) => {
-                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                      const value = Math.max(0, Number(normalizedValue) || 0);
-                      setAmountDueCompanyDiscount(normalizedValue);
-                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
-                    }}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
+              <div className="mt-4 flex items-center gap-3 border-t border-amber-100 pt-4">
+                <span className="text-sm font-semibold text-amber-700">MAD</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={amountDueCompanyDiscount}
+                  onChange={(e) => {
+                    const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                    const discountValue = Math.max(0, Number(normalizedValue) || 0);
+                    setAmountDueCompanyDiscount(normalizedValue);
+                    const currentPaymentValue = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
+                    const previousSuggestedValue = Number(amountDueAutoSuggestedPaymentRef.current);
+                    const matchesPreviousSuggested =
+                      Number.isFinite(previousSuggestedValue) &&
+                      Math.abs(currentPaymentValue - previousSuggestedValue) < 0.01;
+                    const shouldAutoSuggestPayment =
+                      amountDuePaymentReceivedNow === '' || matchesPreviousSuggested;
+                    const suggestedCollectionValue = Math.max(0, currentAmountDueForEdit - discountValue);
+
+                    if (shouldAutoSuggestPayment) {
+                      setAmountDuePaymentReceivedNow(
+                        normalizeMoneyInputValue(String(suggestedCollectionValue))
+                      );
+                      amountDueAutoSuggestedPaymentRef.current = suggestedCollectionValue;
+                      setManualAmountDue('0');
+                      return;
+                    }
+
+                    setManualAmountDue(Math.max(0, currentAmountDueForEdit - currentPaymentValue - discountValue).toString());
+                  }}
+                  placeholder="0"
+                  className="w-full border-0 bg-transparent px-0 py-0 text-xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0 sm:text-2xl"
+                />
               </div>
             </div>
 
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/85 p-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
-                    {tr('Final due', 'Solde final')}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {tr(
-                      'Auto-calculated from current due, payment, and discount.',
-                      'Calculé automatiquement à partir du solde actuel, du paiement et de la remise.'
-                    )}
-                  </p>
+            <div className="rounded-2xl border border-blue-200 bg-white px-4 py-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-blue-200 bg-blue-50 text-blue-700">
+                    <CheckCircle className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase text-blue-700">
+                      {tr('Result', 'Résultat')}
+                    </p>
+                    <p className="mt-1 text-lg leading-tight font-bold text-slate-950 sm:text-xl lg:text-base xl:text-lg">
+                      {tr('Final due', 'Solde final')}
+                    </p>
+                  </div>
                 </div>
                 {hasManualFinalOverride ? (
                   <button
                     type="button"
                     onClick={() => setManualAmountDue(amountDueAutoCalculatedValue.toString())}
-                    className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 shadow-sm transition hover:bg-blue-50"
+                    className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-semibold uppercase text-blue-700 transition hover:bg-blue-100"
                   >
                     {tr('Use auto', 'Utiliser auto')}
                   </button>
                 ) : (
-                  <div className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 shadow-sm">
+                  <div className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-semibold uppercase text-blue-700">
                     {tr('Auto', 'Auto')}
                   </div>
                 )}
               </div>
 
-              <div className="mt-3 space-y-2 rounded-2xl border border-blue-200 bg-white px-3 py-3 text-sm">
+              <div className="mt-4 space-y-2 border-t border-blue-100 pt-4 text-sm">
                 <div className="flex items-center justify-between text-slate-600">
                   <span>{tr('Current due', 'Solde actuel')}</span>
-                  <span className="font-semibold text-slate-900">{formatCurrency(currentAmountDueForEdit)} MAD</span>
+                  <span className="font-semibold text-red-600">{formatCurrency(currentAmountDueForEdit)} MAD</span>
                 </div>
                 <div className="flex items-center justify-between text-violet-700">
-                  <span>{tr('Collected now', 'Encaissé maintenant')}</span>
-                  <span className="font-semibold">-{formatCurrency(amountDuePaymentReceivedValue)} MAD</span>
+                  <span>{tr('Collect now', 'Encaisser maintenant')}</span>
+                  <span className="font-semibold">+{formatCurrency(amountDuePaymentReceivedValue)} MAD</span>
                 </div>
                 <div className="flex items-center justify-between text-amber-700">
                   <span>{tr('Discount', 'Remise')}</span>
                   <span className="font-semibold">-{formatCurrency(amountDueCompanyDiscountValue)} MAD</span>
                 </div>
-                <div className="border-t border-blue-100 pt-2">
-                  <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                    <span>{tr('Auto result', 'Résultat auto')}</span>
-                    <span>{formatCurrency(amountDueAutoCalculatedValue)} MAD</span>
-                  </div>
+                <div className="flex items-center justify-between border-t border-blue-100 pt-2 text-[11px] font-semibold uppercase text-slate-400">
+                  <span>{tr('Auto result', 'Résultat auto')}</span>
+                  <span className={amountDueAutoCalculatedValue > 0 ? 'text-red-600' : ''}>
+                    {formatCurrency(amountDueAutoCalculatedValue)} MAD
+                  </span>
                 </div>
               </div>
 
-              <div className="mt-3 rounded-2xl border border-blue-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {isPayingDueBalance
-                    ? tr('Remaining after payment', 'Restant après paiement')
-                    : tr('New amount due', 'Nouveau montant restant dû')}
-                </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-blue-600">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={manualAmountDue}
-                    onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
-                {hasManualFinalOverride ? (
-                  <p className="mt-2 text-xs font-medium text-blue-700">
-                    {tr(
-                      'Final due was adjusted manually from the auto result.',
-                      'Le solde final a été ajusté manuellement à partir du calcul automatique.'
-                    )}
-                  </p>
-                ) : null}
+              <div className="mt-4 flex items-center gap-3 border-t border-blue-100 pt-4">
+                <span className="text-sm font-semibold text-blue-600">MAD</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={manualAmountDue}
+                  onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
+                  placeholder="0"
+                  className={`w-full border-0 bg-transparent px-0 py-0 text-xl font-extrabold placeholder:text-slate-300 focus:outline-none focus:ring-0 sm:text-2xl ${finalAmountDueValue > 0 ? 'text-red-600' : 'text-slate-900'}`}
+                />
               </div>
             </div>
           </div>
@@ -22764,12 +23249,6 @@ useEffect(() => {
               <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                 {tr('Internal reason', 'Raison interne')}
               </label>
-              <span className="text-xs text-slate-500">
-                {tr(
-                  'Short note for staff history',
-                  'Petite note pour l’historique interne'
-                )}
-              </span>
             </div>
             <textarea
               value={amountDueOverrideReason}
@@ -22779,6 +23258,15 @@ useEffect(() => {
               rows={3}
             />
           </div>
+
+          {!canManageLifecycleRentalBalance && canRequestLifecycleRentalBalanceAdjustment && (
+            <p className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+              {tr(
+                'This balance change will be sent to an admin for approval before anything changes on the rental.',
+                "Cette demande de modification du solde sera envoyée à un administrateur pour approbation avant tout changement sur la location."
+              )}
+            </p>
+          )}
 
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
             <Button
@@ -22796,7 +23284,9 @@ useEffect(() => {
                 ? tr('Saving...', 'Enregistrement...')
                 : isPayingDueBalance
                   ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
-                  : tr('Resolve Balance', 'Valider le solde')}
+                  : canManageLifecycleRentalBalance
+                    ? tr('Resolve Balance', 'Valider le solde')
+                    : tr('Request Approval', 'Demander l’approbation')}
             </Button>
             <Button
               onClick={handleCancelEditAmountDue}
@@ -22810,6 +23300,102 @@ useEffect(() => {
           </div>
         </div>
       );
+  };
+
+  const renderPendingBalanceApprovalBlock = () => {
+    if (!pendingAmountDueApprovalMeta) return null;
+
+    const telegramDeliveryStatus = String(pendingAmountDueApprovalMeta.telegramDeliveryStatus || 'pending').toLowerCase();
+    const telegramStatusNote = telegramDeliveryStatus === 'sent'
+      ? {
+          className: 'border-sky-200 bg-sky-50/90 text-sky-800',
+          iconClassName: 'text-sky-600',
+          message: tr('Request sent to admins on Telegram.', 'Demande envoyée aux admins sur Telegram.'),
+        }
+      : telegramDeliveryStatus === 'delayed'
+        ? {
+            className: 'border-sky-200 bg-sky-50/90 text-sky-800',
+            iconClassName: 'text-sky-600',
+            message: tr('Request saved. Telegram delivery is delayed.', 'Demande enregistrée. La livraison Telegram est retardée.'),
+          }
+        : telegramDeliveryStatus === 'failed'
+          ? {
+              className: 'border-rose-200 bg-rose-50/90 text-rose-800',
+              iconClassName: 'text-rose-600',
+              message: tr('Request saved. Telegram delivery needs attention.', 'Demande enregistrée. La livraison Telegram demande une vérification.'),
+            }
+          : {
+              className: 'border-slate-200 bg-slate-50/90 text-slate-700',
+              iconClassName: 'text-slate-500',
+              message: tr('Request saved. Telegram delivery is still updating.', 'Demande enregistrée. La livraison Telegram est en cours de mise à jour.'),
+            };
+
+    return (
+      <Alert className="mb-4 border-amber-200 bg-amber-50/90">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700" />
+            <AlertDescription className="text-amber-900">
+              <p className="font-semibold">{tr('Pending balance approval', 'Approbation du solde en attente')}</p>
+              <p className="mt-1">
+                {tr('Requested final due:', 'Solde final demandé :')} <strong>{formatCurrency(pendingAmountDueApprovalMeta.requestedAmount)} MAD</strong>
+              </p>
+              <p className="mt-1 text-sm">
+                {tr('Current due:', 'Solde actuel :')} {formatCurrency(pendingAmountDueApprovalMeta.currentAmount)} MAD
+              </p>
+              {pendingAmountDueApprovalMeta.paymentReceivedNow > 0 && (
+                <p className="mt-1 text-sm">
+                  {tr('Customer paid now:', 'Client payé maintenant :')} {formatCurrency(pendingAmountDueApprovalMeta.paymentReceivedNow)} MAD
+                </p>
+              )}
+              {pendingAmountDueApprovalMeta.companyDiscount > 0 && (
+                <p className="mt-1 text-sm">
+                  {tr('Discount:', 'Remise :')} -{formatCurrency(pendingAmountDueApprovalMeta.companyDiscount)} MAD
+                </p>
+              )}
+              {pendingAmountDueApprovalMeta.requestedByName && (
+                <p className="mt-1 text-sm">
+                  {tr('Requested by:', 'Demandé par :')} {pendingAmountDueApprovalMeta.requestedByName}
+                </p>
+              )}
+              {pendingAmountDueApprovalMeta.note && (
+                <p className="mt-1 text-sm">
+                  {tr('Reason:', 'Raison :')} {pendingAmountDueApprovalMeta.note}
+                </p>
+              )}
+            </AlertDescription>
+          </div>
+
+          {canManageLifecycleRentalBalance ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={handleApproveBalanceRequest}
+                className="bg-green-600 text-white hover:bg-green-700"
+                size="sm"
+              >
+                <CheckCircle className="mr-2 h-4 w-4" />
+                {tr('Approve', 'Approuver')}
+              </Button>
+              <Button
+                onClick={handleDeclineBalanceRequest}
+                variant="destructive"
+                size="sm"
+              >
+                <XCircle className="mr-2 h-4 w-4" />
+                {tr('Decline', 'Refuser')}
+              </Button>
+            </div>
+          ) : (
+            <div className={`rounded-2xl px-3 py-2.5 text-sm font-semibold shadow-sm ${telegramStatusNote.className}`}>
+              <div className="flex items-center gap-2">
+                <Info className={`h-4 w-4 flex-shrink-0 ${telegramStatusNote.iconClassName}`} />
+                <span>{telegramStatusNote.message}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </Alert>
+    );
   };
 
   const renderPriceEditorBlock = (editorRef = null) => (
@@ -22963,6 +23549,18 @@ useEffect(() => {
                     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${dynamicPaymentState.chipClass}`}>
                       {dynamicPaymentState.label}
                     </span>
+                    {hasPendingBalanceApproval ? (
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide sm:px-3 ${BALANCE_APPROVAL_PENDING_BADGE_CLASS}`}>
+                        <Clock className="mr-1.5 h-3.5 w-3.5" />
+                        {tr('Approval pending', 'Approbation en attente')}
+                      </span>
+                    ) : null}
+                    {hasPendingSecurityReturn ? (
+                      <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${pendingSecurityBadgeClass}`}>
+                        <Shield className="mr-1.5 h-3.5 w-3.5" />
+                        {pendingSecurityReturnLabel}
+                      </span>
+                    ) : null}
                     {rentalSourceChip && (
                       <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${rentalSourceChip.className}`}>
                         {rentalSourceChip.label}
@@ -23479,6 +24077,14 @@ useEffect(() => {
                       ? tr('Paid by bank transfer', 'Payé par virement bancaire')
                       : tr('Paid in cash', 'Payé en espèces')}
                   </p>
+                )}
+                {hasPendingSecurityReturn && (
+                  <div className="mt-2">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${pendingSecurityBadgeClass}`}>
+                      <Shield className="mr-1 h-3 w-3" />
+                      {pendingSecurityReturnLabel}
+                    </span>
+                  </div>
                 )}
                 {hasHeldSecurityDocument && (
                   <p className="mobile-summary-support mt-1 text-xs font-medium text-slate-400">
@@ -25762,8 +26368,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
         ) : (
           <div ref={vehicleReportSectionRef}>
-            <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
-              <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-rose-50/40 to-violet-50/60">
+            <Card className={ADVANCED_DESKTOP_SECTION_SHELL_CLASS}>
+              <CardHeader className={ADVANCED_DESKTOP_SECTION_HEADER_CLASS}>
                 <CardTitle className="flex items-center justify-between gap-3 text-base sm:text-lg">
                   <div className="flex items-center gap-2">
                     <AlertTriangle className="h-4 w-4 text-red-600" />
@@ -25803,26 +26409,28 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
       {/* Extension History Section */}
       {!isLightRentalDetailsMode && extensions.length > 0 && (
-  <div
-    ref={approvalExtensionSectionRef}
-    className={`mb-6 rounded-2xl transition-all duration-300 ${
-      shouldHighlightExtensionApproval ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.16)]' : ''
-    }`}
-  >
-    <ExtensionHistory 
-      extensions={extensions}
-      onApprove={isAdmin ? handleApproveExtension : undefined} // Only pass if admin
-      onReject={isAdmin ? handleRejectExtension : undefined} // Only pass if admin
-      isAdmin={isAdmin}
-      onEdit={canEditExtensionEntries ? handleEditExtension : undefined}
-      canEdit={canEditExtensionEntries}
-      highlightedExtensionId={shouldHighlightExtensionApproval ? highlightedApprovalRequestId : ''}
-      actionLoading={actionLoading}
-    />
+        <div
+          ref={approvalExtensionSectionRef}
+          className={`mb-6 transition-all duration-300 ${
+            shouldHighlightExtensionApproval
+              ? 'rounded-[24px] ring-2 ring-amber-200 shadow-[0_0_0_4px_rgba(251,191,36,0.08)]'
+              : ''
+          }`}
+        >
+          <ExtensionHistory
+            extensions={extensions}
+            onApprove={isAdmin ? handleApproveExtension : undefined}
+            onReject={isAdmin ? handleRejectExtension : undefined}
+            isAdmin={isAdmin}
+            onEdit={canEditExtensionEntries ? handleEditExtension : undefined}
+            canEdit={canEditExtensionEntries}
+            highlightedExtensionId={shouldHighlightExtensionApproval ? highlightedApprovalRequestId : ''}
+            actionLoading={actionLoading}
+          />
 
           {/* Completed Rental Message */}
           {closingMedia.length > 0 && rental.rental_status === 'completed' && (
-            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
+            <div className="mt-4 rounded-[20px] border border-emerald-200 bg-emerald-50/70 p-4">
               <div className="flex items-center gap-2">
                 <CheckCircle className="w-5 h-5 text-green-600" />
                 <div>
@@ -25892,13 +26500,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </Card>
       )}
 
-      <Card className={`mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)] ${isLightRentalDetailsMode ? 'hidden' : ''}`}>
-        <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 pb-4">
+      <Card className={`${ADVANCED_DESKTOP_SECTION_SHELL_CLASS} ${isLightRentalDetailsMode ? 'hidden' : ''}`}>
+        <CardHeader className={ADVANCED_DESKTOP_SECTION_HEADER_CLASS}>
           <CardTitle className="text-xl text-slate-900">{tr('Rental Information', 'Informations de location')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6 p-5 sm:p-6">
           {(createdByDisplay || startedByDisplay || signedByDisplay || closedByDisplay || cancelledByDisplay) && (
-            <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">👤 {tr('Rental Staff', 'Personnel de location')}</h3>
@@ -25922,7 +26530,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {cancelledByDisplay && <p><strong>{tr('Cancelled by:', 'Annulée par :')}</strong> {cancelledByDisplay}</p>}
               </div>
               {showHistory && (
-                <div className="mt-3 border-t border-violet-100 pt-3">
+                <div className="mt-3 border-t border-slate-200 pt-3">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                     {tr('Staff Timeline', 'Chronologie équipe')}
                   </p>
@@ -25931,7 +26539,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               )}
             </div>
           )}
-            <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-lg font-semibold text-slate-900">{tr('Customer Details', 'Détails client')}</h3>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -25970,11 +26578,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           {hasSecondDriver && (
             <>
               <Separator />
-              <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+              <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
                 <h3 className="font-semibold mb-3 text-lg">
                   {tr('Additional Drivers', 'Conducteurs supplémentaires')} ({secondDriversList.length})
                 </h3>
-                <div className="mt-2 rounded-2xl border border-violet-100 bg-slate-50/70 p-4 text-sm text-slate-600">
+                <div className={`mt-2 text-sm text-slate-600 ${ADVANCED_DESKTOP_SUBPANEL_CLASS}`}>
                   <p>
                     {secondDriversList.length === 1
                       ? tr('1 additional driver is linked to this rental.', '1 conducteur supplémentaire est lié à cette location.')
@@ -25992,7 +26600,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             </>
           )}
           <Separator className="bg-violet-100" />
-          <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+          <div className={ADVANCED_DESKTOP_PANEL_CLASS}>
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle Details', 'Détails véhicule')}</h3>
               {(isScheduled || isActive) && (
@@ -26114,10 +26722,73 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 </p>
               )}
               {(rental.end_engine_hours !== null && rental.end_engine_hours !== undefined) && (
-                <p>
-                  <strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong>{' '}
-                  {Number(rental.end_engine_hours).toFixed(1)} h
-                </p>
+                <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+                  {isEditingEndEngineHours ? (
+                    <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                      <strong className="shrink-0">{tr('End Engine Hours:', 'Heures moteur retour :')}</strong>
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={endEngineHoursEditValue}
+                          onChange={(e) => setEndEngineHoursEditValue(normalizeDecimalInputValue(e.target.value))}
+                          className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                          pattern="[0-9]*[.,]?[0-9]*"
+                          autoFocus
+                        />
+                        <span className="text-sm text-gray-500">h</span>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleSaveEndEngineHours(endEngineHoursEditValue);
+                            }}
+                            className="h-8 bg-blue-600 px-3 text-xs text-white"
+                          >
+                            {tr('Save', 'Enregistrer')}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setIsEditingEndEngineHours(false);
+                              setEndEngineHoursEditValue('');
+                            }}
+                            className="h-8 px-2 text-xs"
+                          >
+                            ✕
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex w-full items-start justify-between gap-2">
+                      <p>
+                        <strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong>{' '}
+                        {Number(rental.end_engine_hours).toFixed(1)} h
+                      </p>
+                      {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingEndEngineHours(true);
+                            setEndEngineHoursEditValue(rental?.end_engine_hours?.toString() || '');
+                          }}
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 w-6 p-0"
+                          title={tr('Edit end engine hours', 'Modifier les heures moteur de retour')}
+                        >
+                          <Edit className="h-3 w-3" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
               {(() => {
                 const startHours = rental.start_engine_hours;
@@ -26575,7 +27246,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <Separator className="bg-slate-100" />
           <div>
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
-            {!isEditingPrice && (canManageLifecycleRentalBalance || canRequestLifecycleRentalPriceChange) && (
+            {!isEditingPrice && (canManageLifecycleRentalBalance || canRequestLifecycleRentalBalanceAdjustment || canRequestLifecycleRentalPriceChange) && (
               <div className="mb-4 flex flex-wrap justify-end gap-2">
                 {canManageLifecycleRentalBalance && currentAmountDueForEdit > 0 && (
                   <Button
@@ -26605,6 +27276,18 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   >
                     <DollarSign className="mr-2 h-4 w-4" />
                     {tr('Adjust Balance', 'Ajuster le solde')}
+                  </Button>
+                )}
+                {!canManageLifecycleRentalBalance && canRequestLifecycleRentalBalanceAdjustment && (
+                  <Button
+                    type="button"
+                    onClick={handleEditAmountDue}
+                    size="sm"
+                    variant="outline"
+                    className="border-violet-200 text-violet-700 hover:bg-violet-50"
+                  >
+                    <DollarSign className="mr-2 h-4 w-4" />
+                    {tr('Request Balance Change', 'Demander un changement du solde')}
                   </Button>
                 )}
                 {canRequestLifecycleRentalPriceChange && (
@@ -26802,6 +27485,25 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
     </div>
   )}
+
+  {(hasPendingBalanceApproval || hasPendingSecurityReturn) && (
+    <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/85 px-3 py-3">
+      {hasPendingBalanceApproval ? (
+        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide sm:px-3 ${BALANCE_APPROVAL_PENDING_BADGE_CLASS}`}>
+          <Clock className="mr-1.5 h-3.5 w-3.5" />
+          {tr('Approval pending', 'Approbation en attente')}
+        </span>
+      ) : null}
+      {hasPendingSecurityReturn ? (
+        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${pendingSecurityBadgeClass}`}>
+          <Shield className="mr-1.5 h-3.5 w-3.5" />
+          {pendingSecurityReturnLabel}
+        </span>
+      ) : null}
+    </div>
+  )}
+
+  {renderPendingBalanceApprovalBlock()}
 
   {amountDueAuditMeta && (
     <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
@@ -28207,7 +28909,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     setShowMediaReview(false);
   }
 }}>
-  <DialogContent className="w-[100vw] h-[100vh] sm:w-[90vw] sm:max-w-md sm:h-auto p-0 m-0 rounded-none sm:rounded-lg">
+  <DialogContent aria-describedby={undefined} className="w-[100vw] h-[100vh] sm:w-[90vw] sm:max-w-md sm:h-auto p-0 m-0 rounded-none sm:rounded-lg">
     <DialogHeader className="p-4 pb-2 border-b bg-white sticky top-0 z-10">
       <div className="flex items-center justify-between">
         <DialogTitle className="flex items-center gap-2 text-base">
@@ -28787,7 +29489,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     }
   }
 }}>
-  <DialogContent className="w-[100vw] h-[100vh] sm:w-[90vw] sm:max-w-md sm:h-auto p-0 m-0 rounded-none sm:rounded-lg">
+  <DialogContent aria-describedby={undefined} className="w-[100vw] h-[100vh] sm:w-[90vw] sm:max-w-md sm:h-auto p-0 m-0 rounded-none sm:rounded-lg">
     <DialogHeader className="p-4 pb-2 border-b bg-white sticky top-0 z-10">
       <div className="flex items-center justify-between">
         <DialogTitle className="flex items-center gap-2 text-base">
@@ -29352,7 +30054,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           }
         }}
       >
-        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+        <DialogContent aria-describedby={undefined} className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
           <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
             <div className="flex items-start justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-3">
@@ -29438,7 +30140,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           }
         }}
       >
-        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+        <DialogContent aria-describedby={undefined} className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
           <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-3">

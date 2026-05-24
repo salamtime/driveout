@@ -17,7 +17,11 @@ class ActivityLogService {
       .limit(limit);
 
     const organizationId = await getCurrentOrganizationId();
-    query = applyOrganizationScope(query, organizationId);
+    // The tour activity log table does not have an organization_id column, so
+    // applying the generic workspace scope here causes PostgREST 400 errors.
+    if (ACTIVITY_LOG_TABLE !== 'app_687f658e98_activity_log') {
+      query = applyOrganizationScope(query, organizationId);
+    }
 
     const { data, error } = await query;
     if (error) throw error;
@@ -26,10 +30,13 @@ class ActivityLogService {
 
   async createLog(logData) {
     const organizationId = await getCurrentOrganizationId();
-    const payload = applyOrganizationMatch({
+    const basePayload = {
       ...logData,
       created_at: new Date().toISOString(),
-    }, organizationId);
+    };
+    const payload = ACTIVITY_LOG_TABLE === 'app_687f658e98_activity_log'
+      ? basePayload
+      : applyOrganizationMatch(basePayload, organizationId);
 
     const { data, error } = await supabase
       .from(ACTIVITY_LOG_TABLE)

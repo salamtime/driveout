@@ -254,10 +254,14 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
   const depositHeading = getDepositHeading(rental, tr);
   const depositAmountLabel = getDepositAmountLabel(rental, tr);
   const isLiveRental = ['active', 'ready_to_finish'].includes(statusKey);
+  const isCompletedRental = ['settled', 'cancelled'].includes(canonicalStage) || ['completed', 'closed'].includes(statusKey);
   const approvedExtensions = Array.isArray(rental?.approvedExtensions) ? rental.approvedExtensions : [];
   const ownerExecution = rental?.ownerExecution || rental?.owner_execution || {};
   const handoffPhotos = Array.isArray(ownerExecution?.handoffPhotos) ? ownerExecution.handoffPhotos : [];
   const returnPhotos = Array.isArray(ownerExecution?.returnPhotos) ? ownerExecution.returnPhotos : [];
+  const receiptLink = String(rental?.documentLinks?.receipt || '').trim();
+  const contractLink = String(rental?.documentLinks?.contract || '').trim();
+  const totalMediaCount = handoffPhotos.length + returnPhotos.length;
   const marketplaceRequestId = String(rental?.raw?.marketplace_request_id || rental?.raw?.marketplaceRequestId || '').trim();
   const customerVerificationStatus = String(
     rental?.raw?.customer_verification_status ||
@@ -505,15 +509,69 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
                 </div>
 
                 <div className="min-w-[260px] rounded-[1.5rem] border border-white/70 bg-white/95 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Money', 'Montants')}</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Payment', 'Paiement')}</p>
                   <div className="mt-4 space-y-3">
-                    <DetailRow label={tr('Rental amount', 'Montant location')} value={formatMoney(rental?.total, 'MAD', locale)} />
+                    <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
+                    <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
                     <DetailRow label={tr('Deposit', 'Caution')} value={depositStatusLabel} />
-                    <DetailRow label={tr('Owner payout', 'Versement propriétaire')} value={formatMoney(Math.max(0, Number(rental?.total || 0) - Number(rental?.maintenanceCustomerChargeTotal || 0)), 'MAD', locale)} />
+                    <DetailRow label={tr('Receipt', 'Reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
                   </div>
                 </div>
               </div>
             </section>
+
+            {isCompletedRental ? (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Completed trip', 'Trajet terminé')}</p>
+                <h3 className="mt-2 text-2xl font-bold text-slate-950">{tr('Everything is closed and ready to review', 'Tout est clôturé et prêt à être consulté')}</h3>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+                  {receiptLink ? (
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                      {tr('Receipt ready', 'Reçu prêt')}
+                    </span>
+                  ) : null}
+                  {totalMediaCount > 0 ? (
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                      {tr(`${totalMediaCount} trip media`, `${totalMediaCount} média du trajet`)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  {receiptLink ? (
+                    <a
+                      href={receiptLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(91,33,182,0.28)] transition hover:translate-y-[-1px]"
+                    >
+                      <Receipt className="h-4 w-4" />
+                      {tr('Open receipt', 'Ouvrir le reçu')}
+                    </a>
+                  ) : null}
+                  {contractLink ? (
+                    <a
+                      href={contractLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      <FileText className="h-4 w-4" />
+                      {tr('Open contract', 'Ouvrir le contrat')}
+                    </a>
+                  ) : null}
+                  {marketplaceRequestId ? (
+                    <a
+                      href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      <MessageSquare className="h-4 w-4" />
+                      {tr('Open chat', 'Ouvrir le chat')}
+                    </a>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
 
             {workflowAction ? (
               <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
@@ -618,8 +676,8 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
                 className="flex w-full items-center justify-between gap-4 text-left"
               >
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Money', 'Montants')}</p>
-                  <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Rental money', 'Argent de la location')}</h3>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Payment', 'Paiement')}</p>
+                  <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Final payment summary', 'Résumé final du paiement')}</h3>
                 </div>
                 <span className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition ${showMoneyDetails ? 'rotate-180' : ''}`}>
                   <ChevronDown className="h-5 w-5" />
@@ -627,15 +685,43 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
               </button>
               {showMoneyDetails ? (
                 <div className="mt-5 space-y-3">
-                  <DetailRow label={tr('Rental amount', 'Montant location')} value={formatMoney(rental?.total, 'MAD', locale)} />
-                  <DetailRow label={tr('Platform fee', 'Frais plateforme')} value={rental?.raw?.platform_fee_amount ? formatMoney(rental.raw.platform_fee_amount, 'MAD', locale) : tr('Not recorded', 'Non enregistré')} />
+                  <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
+                  <DetailRow label={tr('Amount paid', 'Montant payé')} value={formatMoney(rental?.paid, 'MAD', locale)} />
+                  <DetailRow label={tr('Still due', 'Reste à payer')} value={formatMoney(rental?.outstanding, 'MAD', locale)} />
+                  <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
                   <DetailRow label={tr('Deposit state', 'État de la caution')} value={depositStatusLabel} />
-                  <DetailRow label={tr('Payout amount', 'Montant du versement')} value={formatMoney(Math.max(0, Number(rental?.total || 0) - Number(rental?.maintenanceCustomerChargeTotal || 0)), 'MAD', locale)} />
-                  <DetailRow label={tr('Payout status', 'Statut du versement')} value={payoutSent ? tr('Sent', 'Envoyé') : tr('Pending', 'En attente')} />
-                  <DetailRow label={tr('Payout date', 'Date du versement')} value={rental?.raw?.owner_payout_at ? formatDateTime(rental.raw.owner_payout_at, locale) : '—'} />
+                  {rental?.totalExtensionFees > 0 ? (
+                    <DetailRow label={tr('Approved extensions', 'Extensions approuvées')} value={formatMoney(rental.totalExtensionFees, 'MAD', locale)} />
+                  ) : null}
+                  {rental?.overageCharge > 0 ? (
+                    <DetailRow label={tr('Extra kilometers', 'Kilomètres supplémentaires')} value={formatMoney(rental.overageCharge, 'MAD', locale)} />
+                  ) : null}
+                  {rental?.fuelCharge > 0 ? (
+                    <DetailRow label={tr('Fuel adjustment', 'Ajustement carburant')} value={formatMoney(rental.fuelCharge, 'MAD', locale)} />
+                  ) : null}
+                  <DetailRow label={tr('Receipt status', 'Statut du reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
                 </div>
               ) : null}
             </section>
+
+            {isCompletedRental ? (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Trip media', 'Médias du trajet')}</p>
+                <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Open and closed media', 'Médias d’ouverture et de clôture')}</h3>
+                <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                  <RentalEvidenceGallery
+                    title={tr('Open media', 'Média ouverture')}
+                    photos={handoffPhotos}
+                    emptyLabel={tr('No opening media saved for this rental.', 'Aucun média d’ouverture enregistré pour cette location.')}
+                  />
+                  <RentalEvidenceGallery
+                    title={tr('Closed media', 'Média clôture')}
+                    photos={returnPhotos}
+                    emptyLabel={tr('No closing media saved for this rental.', 'Aucun média de clôture enregistré pour cette location.')}
+                  />
+                </div>
+              </section>
+            ) : null}
 
             <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Customer', 'Client')}</p>
@@ -661,32 +747,36 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
 
             <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Documents', 'Documents')}</p>
-              <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Contract and receipt', 'Contrat et reçu')}</h3>
+              <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Receipt and contract', 'Reçu et contrat')}</h3>
               <div className="mt-5 grid gap-3 md:grid-cols-2">
-                <a
-                  href={rental?.documentLinks?.contract}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    {tr('Open contract', 'Ouvrir le contrat')}
-                  </span>
-                  <span aria-hidden="true" className="text-xs text-violet-500">{tr('View', 'Voir')}</span>
-                </a>
-                <a
-                  href={rental?.documentLinks?.receipt}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Receipt className="h-4 w-4" />
-                    {tr('Open receipt', 'Ouvrir le reçu')}
-                  </span>
-                  <span aria-hidden="true" className="text-xs text-slate-500">{tr('View', 'Voir')}</span>
-                </a>
+                {contractLink ? (
+                  <a
+                    href={contractLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      {tr('Open contract', 'Ouvrir le contrat')}
+                    </span>
+                    <span aria-hidden="true" className="text-xs text-violet-500">{tr('View', 'Voir')}</span>
+                  </a>
+                ) : null}
+                {receiptLink ? (
+                  <a
+                    href={receiptLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Receipt className="h-4 w-4" />
+                      {tr('Open receipt', 'Ouvrir le reçu')}
+                    </span>
+                    <span aria-hidden="true" className="text-xs text-slate-500">{tr('View', 'Voir')}</span>
+                  </a>
+                ) : null}
               </div>
             </section>
           </>

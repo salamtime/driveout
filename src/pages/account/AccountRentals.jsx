@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowRight, CarFront, ChevronDown, MapPinned, MessageSquare, Users } from 'lucide-react';
+import { AlertCircle, ArrowRight, Camera, CarFront, ChevronDown, MapPinned, MessageSquare, Receipt, Users } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
@@ -102,6 +102,14 @@ const getRentalPackageLabel = (rental, tr) =>
   rental?.packageName ||
   rental?.packageLabel ||
   tr('Certified company booking', 'Réservation entreprise certifiée');
+
+const getRentalReceiptLink = (rental) => String(rental?.documentLinks?.receipt || '').trim();
+
+const getRentalMediaCount = (rental) => {
+  const handoffPhotos = Array.isArray(rental?.ownerExecution?.handoffPhotos) ? rental.ownerExecution.handoffPhotos.length : 0;
+  const returnPhotos = Array.isArray(rental?.ownerExecution?.returnPhotos) ? rental.ownerExecution.returnPhotos.length : 0;
+  return handoffPhotos + returnPhotos;
+};
 
 const MoneyLine = ({ label, value, strong = false }) => (
   <div className="flex items-center justify-between gap-3 text-sm">
@@ -214,6 +222,10 @@ const RentalRow = ({ rental, tr, isFrench, onOpenDetails, historyMode = false })
   const endLabel = formatDateTime(rental?.endDate, locale);
   const isLiveRental = ['active', 'return_due'].includes(rentalPresentation.stage);
   const marketplaceRequestId = rental?.raw?.marketplace_request_id || null;
+  const receiptLink = getRentalReceiptLink(rental);
+  const mediaCount = getRentalMediaCount(rental);
+  const paymentSummary = getRentalPaymentSummaryLabel(rental, { isFrench, tr, locale });
+  const depositSummary = getRentalDepositSummaryLabel(rental, { isFrench, tr, locale });
   const [showDetails, setShowDetails] = useState(false);
 
   if (historyMode) {
@@ -225,9 +237,23 @@ const RentalRow = ({ rental, tr, isFrench, onOpenDetails, historyMode = false })
             <p className="mt-1 text-sm text-slate-500">
               {[startLabel, endLabel].filter(Boolean).join(' → ') || tr('Dates pending', 'Dates en attente')}
             </p>
-            <p className="mt-2 text-sm font-semibold text-slate-700">
-              {tr('Duration', 'Durée')}: {rental?.quantityLabel || tr('Trip completed', 'Trajet terminé')}
-            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-[11px] font-semibold text-violet-700">
+                {rental?.rentalId || tr('Reference pending', 'Référence en attente')}
+              </span>
+              {receiptLink ? (
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700">
+                  {tr('Receipt ready', 'Reçu prêt')}
+                </span>
+              ) : null}
+              {mediaCount > 0 ? (
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-600">
+                  {tr(`${mediaCount} media`, `${mediaCount} média`)}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-3 text-sm font-semibold text-slate-800">{paymentSummary}</p>
+            <p className="mt-1 text-sm text-slate-500">{depositSummary}</p>
           </div>
 
           <div className="text-left sm:min-w-[140px] sm:text-right">
@@ -238,6 +264,17 @@ const RentalRow = ({ rental, tr, isFrench, onOpenDetails, historyMode = false })
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+          {receiptLink ? (
+            <a
+              href={receiptLink}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              <Receipt className="h-4 w-4" />
+              {tr('Open receipt', 'Ouvrir le reçu')}
+            </a>
+          ) : null}
           <button
             type="button"
             onClick={() => onOpenDetails(rental)}
@@ -374,7 +411,7 @@ const RentalSection = ({
   </section>
 );
 
-const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOpenDetails, browseState }) => {
+const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOpenDetails, browseState, sectionRef = null }) => {
   const hasHistory = pastRentals.length > 0 || canceledRentals.length > 0;
   const historyRentals = [...pastRentals, ...canceledRentals];
 
@@ -400,10 +437,10 @@ const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOp
   }
 
   return (
-    <section className="space-y-5">
+    <section ref={sectionRef} className="space-y-5">
       <AccountWorkspaceSectionHeader
         title={tr('Rental history', 'Historique location')}
-        description={tr('Past rentals stay here for reference.', 'Les locations passées restent ici pour référence.')}
+        description={tr('Open any completed trip to review the receipt, media, and final status.', 'Ouvrez n’importe quelle location terminée pour revoir le reçu, les médias et le statut final.')}
         titleClassName="mt-1 text-lg font-bold text-slate-900"
       />
 
@@ -1080,11 +1117,12 @@ const MarketplaceRequestSection = ({
   onConfirmRequest,
   onOpenRequestDetails,
   confirmingRequestId = '',
+  sectionRef = null,
 }) => {
   if (!requests.length) return null;
 
   return (
-    <section className="space-y-4">
+    <section ref={sectionRef} className="space-y-4">
       <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
         <AccountWorkspaceSectionHeader
           title={tr('Requests', 'Demandes')}
@@ -1163,9 +1201,14 @@ const AccountRentals = () => {
   const [confirmingRequestId, setConfirmingRequestId] = useState('');
   const [remindingRequestId, setRemindingRequestId] = useState('');
   const toursSectionRef = useRef(null);
+  const historySectionRef = useRef(null);
   const toursPanelRequested = useMemo(
     () => new URLSearchParams(location.search).get('panel') === 'tours',
     [location.search]
+  );
+  const historyPanelRequested = useMemo(
+    () => location.state?.focusSection === 'history',
+    [location.state]
   );
 
   useEffect(() => {
@@ -1210,6 +1253,12 @@ const AccountRentals = () => {
   }, [user?.id, isFrench]);
 
   const walletBalance = Number(snapshot?.wallet?.balance || 0);
+  const linkedMarketplaceRequestIds = useMemo(() => {
+    const requestIds = rentals
+      .map((rental) => String(rental?.raw?.marketplace_request_id || '').trim())
+      .filter(Boolean);
+    return new Set(requestIds);
+  }, [rentals]);
 
   const rentalBuckets = useMemo(() => {
     const now = new Date();
@@ -1251,14 +1300,22 @@ const AccountRentals = () => {
     [tourBuckets.canceled, tourBuckets.past]
   );
 
-  const primaryMarketplaceRequest = marketplaceRequests.find((request) => isMarketplaceRequestOpen(request?.requestStatus)) || marketplaceRequests[0] || null;
+  const actionableMarketplaceRequests = useMemo(
+    () => marketplaceRequests.filter((request) => {
+      const requestId = String(request?.id || '').trim();
+      if (requestId && linkedMarketplaceRequestIds.has(requestId)) return false;
+      return isMarketplaceRequestOpen(request?.requestStatus);
+    }),
+    [linkedMarketplaceRequestIds, marketplaceRequests]
+  );
+  const primaryMarketplaceRequest = actionableMarketplaceRequests[0] || null;
   const hasCurrentOrUpcomingRental = rentalBuckets.upcoming.length > 0 || rentalBuckets.active.length > 0;
   const hasCurrentOrUpcomingTour = tourBuckets.upcoming.length > 0 || tourBuckets.active.length > 0;
   const hasAnyTourHistory = tours.length > 0;
   const shouldUseMarketplaceFocus = Boolean(primaryMarketplaceRequest && !hasCurrentOrUpcomingRental);
   const additionalMarketplaceRequests = primaryMarketplaceRequest
-    ? marketplaceRequests.filter((request) => String(request?.id || '') !== String(primaryMarketplaceRequest?.id || ''))
-    : marketplaceRequests;
+    ? actionableMarketplaceRequests.filter((request) => String(request?.id || '') !== String(primaryMarketplaceRequest?.id || ''))
+    : actionableMarketplaceRequests;
   const browseMarketplaceState = useMemo(
     () => ({
       from: getCurrentLocationPath(location),
@@ -1270,6 +1327,11 @@ const AccountRentals = () => {
     if (!toursPanelRequested) return;
     toursSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [toursPanelRequested, tours.length]);
+
+  useEffect(() => {
+    if (!historyPanelRequested) return;
+    historySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [historyPanelRequested, rentalBuckets.canceled.length, rentalBuckets.past.length]);
 
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
@@ -1368,8 +1430,8 @@ const AccountRentals = () => {
           eyebrow={tr('Trips', 'Parcours')}
           title={tr('Trips', 'Parcours')}
           description={tr(
-            'Keep rentals, tours, and booking requests in one trip workspace.',
-            'Gardez locations, tours et demandes de réservation dans un seul espace trajets.'
+            'Track active, upcoming, and completed rentals in one place.',
+            'Suivez vos locations actives, à venir et terminées au même endroit.'
           )}
           className="bg-white/95 backdrop-blur"
         />
@@ -1384,77 +1446,79 @@ const AccountRentals = () => {
         </section>
       ) : null}
 
-      {primaryMarketplaceRequest ? (
-        <section className="space-y-3">
-          <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-            <AccountWorkspaceSectionHeader
-              title={shouldUseMarketplaceFocus ? tr('Current request', 'Demande actuelle') : tr('Needs attention', 'Action requise')}
-              description={shouldUseMarketplaceFocus
-                ? tr('Waiting for owner review.', 'En attente de la revue du propriétaire.')
-                : tr('Take the next step to move this booking forward.', 'Passez à l’étape suivante pour faire avancer cette réservation.')}
-              titleClassName="mt-1 text-lg font-bold text-slate-950"
-            />
-          </div>
-          <div id="marketplace-requests">
-            <CurrentRequestHero
-              request={primaryMarketplaceRequest}
-              tr={tr}
-              isFrench={isFrench}
-              walletBalance={walletBalance}
-              onConfirmRequest={handleConfirmMarketplaceRequest}
-              onSendReminder={handleSendMarketplaceReminder}
-              onOpenRequestDetails={handleOpenMarketplaceRequestDetails}
-              confirmingRequestId={confirmingRequestId}
-              remindingRequestId={remindingRequestId}
-              emphasizeMarketplace={shouldUseMarketplaceFocus}
-            />
-          </div>
-        </section>
-      ) : null}
-
-      {featuredUpcomingRental ? (
-        <section id="featured-rental" className="space-y-3">
-          <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-            <AccountWorkspaceSectionHeader
-              title={tr('Current rental focus', 'Focus location')}
-              description={tr('Your next or live rental stays here with quick actions.', 'Votre prochaine location ou location en cours reste ici avec actions rapides.')}
-              titleClassName="mt-1 text-lg font-bold text-slate-950"
-            />
-          </div>
-          <FeaturedUpcomingRental rental={featuredUpcomingRental} tr={tr} isFrench={isFrench} onOpenDetails={handleOpenDetails} />
-        </section>
-      ) : null}
-
       {hasCurrentOrUpcomingRental ? (
         <>
-          {rentalBuckets.upcoming.length > 0 ? (
-            <RentalSection
-              title={tr('Upcoming rentals', 'Locations à venir')}
-              description=""
-              rentals={rentalBuckets.upcoming}
-              emptyTitle={tr('No upcoming rentals yet', 'Aucune location à venir pour le moment')}
-              emptyBody={tr('Your next certified booking will appear here.', 'Votre prochaine réservation certifiée apparaîtra ici.')}
-              tr={tr}
-              isFrench={isFrench}
-              onOpenDetails={handleOpenDetails}
-            />
-          ) : null}
+          <RentalSection
+            title={tr('Active', 'Actives')}
+            description={tr('Rentals that are currently live.', 'Locations actuellement en cours.')}
+            rentals={rentalBuckets.active}
+            emptyTitle={tr('No active rentals right now', 'Aucune location active actuellement')}
+            emptyBody={tr('When a rental is live, it will appear here.', 'Lorsqu’une location est en cours, elle apparaîtra ici.')}
+            tr={tr}
+            isFrench={isFrench}
+            onOpenDetails={handleOpenDetails}
+          />
 
-          {rentalBuckets.active.length > 0 ? (
-            <RentalSection
-              title={tr('Active rentals', 'Locations actives')}
-              description=""
-              rentals={rentalBuckets.active}
-              emptyTitle={tr('No active rentals right now', 'Aucune location active actuellement')}
-              emptyBody={tr('Your live rental will appear here.', 'Votre location en cours apparaîtra ici.')}
-              tr={tr}
-              isFrench={isFrench}
-              onOpenDetails={handleOpenDetails}
-            />
-          ) : null}
+          <RentalSection
+            title={tr('Upcoming', 'À venir')}
+            description={tr('Confirmed rentals scheduled next.', 'Locations confirmées prévues ensuite.')}
+            rentals={rentalBuckets.upcoming}
+            emptyTitle={tr('No upcoming rentals yet', 'Aucune location à venir pour le moment')}
+            emptyBody={tr('Your next confirmed rental will appear here.', 'Votre prochaine location confirmée apparaîtra ici.')}
+            tr={tr}
+            isFrench={isFrench}
+            onOpenDetails={handleOpenDetails}
+          />
         </>
-      ) : !shouldUseMarketplaceFocus && !hasCurrentOrUpcomingTour && !hasAnyTourHistory ? (
+      ) : !hasCurrentOrUpcomingTour && !hasAnyTourHistory && actionableMarketplaceRequests.length === 0 ? (
         <EmptyTripsState tr={tr} browseState={browseMarketplaceState} />
+      ) : null}
+
+      {actionableMarketplaceRequests.length > 0 ? (
+        <div id="marketplace-requests">
+          <section className="space-y-4">
+            <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+              <AccountWorkspaceSectionHeader
+                title={tr('Action needed', 'Action requise')}
+                description={tr(
+                  'Only requests that still need a real next step stay here.',
+                  'Seules les demandes qui nécessitent encore une vraie action restent ici.'
+                )}
+                titleClassName="mt-1 text-lg font-bold text-slate-950"
+              />
+            </div>
+            {primaryMarketplaceRequest ? (
+              <CurrentRequestHero
+                request={primaryMarketplaceRequest}
+                tr={tr}
+                isFrench={isFrench}
+                walletBalance={walletBalance}
+                onConfirmRequest={handleConfirmMarketplaceRequest}
+                onSendReminder={handleSendMarketplaceReminder}
+                onOpenRequestDetails={handleOpenMarketplaceRequestDetails}
+                confirmingRequestId={confirmingRequestId}
+                remindingRequestId={remindingRequestId}
+                emphasizeMarketplace={false}
+              />
+            ) : null}
+            {additionalMarketplaceRequests.length > 0 ? (
+              <div className="space-y-3">
+                {additionalMarketplaceRequests.map((request) => (
+                  <CompactRequestCard
+                    key={request.id}
+                    request={request}
+                    tr={tr}
+                    isFrench={isFrench}
+                    walletBalance={walletBalance}
+                    onConfirmRequest={handleConfirmMarketplaceRequest}
+                    onOpenRequestDetails={handleOpenMarketplaceRequestDetails}
+                    confirmingRequestId={confirmingRequestId}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </div>
       ) : null}
 
       <section ref={toursSectionRef} id="trips-tours" className="space-y-4">
@@ -1486,51 +1550,6 @@ const AccountRentals = () => {
         />
       </section>
 
-      {shouldUseMarketplaceFocus ? (
-        additionalMarketplaceRequests.length > 0 ? (
-          <div id="marketplace-requests">
-            <section className="space-y-4">
-              <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-                <AccountWorkspaceSectionHeader
-                  title={tr('Other requests', 'Autres demandes')}
-                  description={tr(
-                    `${additionalMarketplaceRequests.length} more request(s) still need review`,
-                    `${additionalMarketplaceRequests.length} autre(s) demande(s) doivent encore être examinées`
-                  )}
-                  titleClassName="mt-1 text-lg font-bold text-slate-950"
-                />
-              </div>
-              <div className="space-y-3">
-                {additionalMarketplaceRequests.map((request) => (
-                  <CompactRequestCard
-                    key={request.id}
-                    request={request}
-                    tr={tr}
-                    isFrench={isFrench}
-                    walletBalance={walletBalance}
-                    onConfirmRequest={handleConfirmMarketplaceRequest}
-                    onOpenRequestDetails={handleOpenMarketplaceRequestDetails}
-                    confirmingRequestId={confirmingRequestId}
-                  />
-                ))}
-              </div>
-            </section>
-          </div>
-        ) : null
-      ) : (
-        <div id="marketplace-requests">
-          <MarketplaceRequestSection
-            requests={marketplaceRequests}
-            tr={tr}
-            isFrench={isFrench}
-            walletBalance={walletBalance}
-            onConfirmRequest={handleConfirmMarketplaceRequest}
-            onOpenRequestDetails={handleOpenMarketplaceRequestDetails}
-            confirmingRequestId={confirmingRequestId}
-          />
-        </div>
-      )}
-
       <RentalHistorySection
         pastRentals={rentalBuckets.past}
         canceledRentals={rentalBuckets.canceled}
@@ -1538,6 +1557,7 @@ const AccountRentals = () => {
         isFrench={isFrench}
         onOpenDetails={handleOpenDetails}
         browseState={browseMarketplaceState}
+        sectionRef={historySectionRef}
       />
 
       <TourTripSection

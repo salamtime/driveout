@@ -422,6 +422,9 @@ const AccountMarketplaceRequestDetailsPage = () => {
   const canSendReminder = canSendMarketplaceRequestReminder(requestStatus, request?.reminderSentAt);
   const isRentalLive = requestStatus === 'active';
   const isRentalCompleted = requestStatus === 'completed';
+  const linkedRentalId = String(request?.linkedRentalId || '').trim();
+  const shouldRedirectCompletedRequestToHistory = Boolean(linkedRentalId) && isRentalCompleted;
+  const shouldRedirectToRentalDetail = Boolean(linkedRentalId) && !shouldRedirectCompletedRequestToHistory;
   const money = getMarketplaceMoneyBreakdown({
     estimatedAmount: request?.estimatedAmount,
     commissionAmount: request?.commissionAmount,
@@ -537,7 +540,36 @@ const AccountMarketplaceRequestDetailsPage = () => {
     return () => window.clearInterval(timer);
   }, [request?.chatGraceExpiresAt, request?.holdExpiresAt, requestStatus]);
 
+  useEffect(() => {
+    if (!shouldRedirectCompletedRequestToHistory && !shouldRedirectToRentalDetail) {
+      return;
+    }
+
+    navigate(shouldRedirectCompletedRequestToHistory
+      ? '/account/rentals'
+      : `/account/rentals/${encodeURIComponent(linkedRentalId)}`, {
+      replace: true,
+      state: {
+        ...(location?.state && typeof location.state === 'object' ? location.state : {}),
+        from: backLink,
+        focusSection: shouldRedirectCompletedRequestToHistory ? 'history' : undefined,
+        focusRentalId: shouldRedirectCompletedRequestToHistory ? linkedRentalId : undefined,
+      },
+    });
+  }, [
+    backLink,
+    linkedRentalId,
+    location?.state,
+    navigate,
+    shouldRedirectCompletedRequestToHistory,
+    shouldRedirectToRentalDetail,
+  ]);
+
   if (loading && suppressBlockingLoader) {
+    return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} />;
+  }
+
+  if (shouldRedirectCompletedRequestToHistory || shouldRedirectToRentalDetail) {
     return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} />;
   }
 

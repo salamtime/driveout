@@ -71,7 +71,7 @@ const TELEGRAM_ALERT_EVENT_OPTIONS = [
   { key: 'rental_cancelled', label: 'Rental cancelled' },
   { key: 'deposit_returned', label: 'Deposit returned' },
   { key: 'rental_extension_requested', label: 'Extension approval request' },
-  { key: 'rental_price_change_requested', label: 'Price approval request' },
+  { key: 'rental_price_change_requested', label: 'Price or balance approval request' },
 ];
 
 const buildPermissionPreset = (presetKey) => {
@@ -1604,6 +1604,8 @@ const UserManagement = () => {
   }
 
   if (activeView && activeUser) {
+    const standalonePermissionWorkspace = renderPermissionWorkspace(activeUser, { standalone: true });
+
     return (
       <div className="container mx-auto p-4">
         <div className="mb-6">
@@ -1633,60 +1635,12 @@ const UserManagement = () => {
         {activeView === 'profile' ? (
           <div className="space-y-6">
             <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="flex-1">
+              <div className="space-y-4">
+                <div className="flex min-w-0 flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                   <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-semibold text-slate-700">
                     {activeUser.role}
                   </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Email', 'Email')}</p>
-                      <p className="mt-2 break-all text-sm font-semibold text-slate-900">{activeUser.email}</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Phone', 'Téléphone')}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.phone_number || tr('Not set', 'Non défini')}</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Salary Paid', 'Salaire payé')}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">
-                        {activeUser.salary_amount !== null && activeUser.salary_amount !== undefined && activeUser.salary_amount !== ''
-                          ? `${Number(activeUser.salary_amount).toLocaleString()} MAD`
-                          : tr('Not set', 'Non défini')}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('ID Documents', "Documents d'identité")}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">
-                        {getStaffIdDocumentCount(activeUser)} {tr(getStaffIdDocumentCount(activeUser) === 1 ? 'ID file' : 'ID files', getStaffIdDocumentCount(activeUser) === 1 ? "pièce d'identité" : "pièces d'identité")}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">WhatsApp</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.whatsapp_notifications ? tr('Enabled', 'Activé') : tr('Disabled', 'Désactivé')}</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Telegram</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">
-                        {activeUser.telegram_alerts_allowed
-                          ? tr('Allowed by admin', 'Autorisé par admin')
-                          : tr('Disabled', 'Désactivé')}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {countEnabledTelegramAlertEvents(activeUser.telegram_allowed_event_types)} {tr('event types allowed', "types d'alerte autorisés")}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Created', 'Créé')}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.created_at ? new Date(activeUser.created_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US') : tr('Unknown', 'Inconnu')}</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Updated', 'Mis à jour')}</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.updated_at ? new Date(activeUser.updated_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US') : tr('Unknown', 'Inconnu')}</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 xl:max-w-[32rem] xl:justify-end">
                   <Button type="button" onClick={() => openEditPage(activeUser)} className="rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 text-white">
                     <Pencil className="mr-2 h-4 w-4" />
                     {tr('Edit', 'Modifier')}
@@ -1710,6 +1664,54 @@ const UserManagement = () => {
                   </Button>
                 </div>
               </div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Email', 'Email')}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">{activeUser.email}</p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Phone', 'Téléphone')}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">{activeUser.phone_number || tr('Not set', 'Non défini')}</p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Salary Paid', 'Salaire payé')}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">
+                    {activeUser.salary_amount !== null && activeUser.salary_amount !== undefined && activeUser.salary_amount !== ''
+                      ? `${Number(activeUser.salary_amount).toLocaleString()} MAD`
+                      : tr('Not set', 'Non défini')}
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('ID Documents', "Documents d'identité")}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">
+                    {getStaffIdDocumentCount(activeUser)} {tr(getStaffIdDocumentCount(activeUser) === 1 ? 'ID file' : 'ID files', getStaffIdDocumentCount(activeUser) === 1 ? "pièce d'identité" : "pièces d'identité")}
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">WhatsApp</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">{activeUser.whatsapp_notifications ? tr('Enabled', 'Activé') : tr('Disabled', 'Désactivé')}</p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Telegram</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">
+                    {activeUser.telegram_alerts_allowed
+                      ? tr('Allowed by admin', 'Autorisé par admin')
+                      : tr('Disabled', 'Désactivé')}
+                  </p>
+                  <p className="mt-1 break-words text-xs leading-6 text-slate-500">
+                    {countEnabledTelegramAlertEvents(activeUser.telegram_allowed_event_types)} {tr('event types allowed', "types d'alerte autorisés")}
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Created', 'Créé')}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">{activeUser.created_at ? new Date(activeUser.created_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US') : tr('Unknown', 'Inconnu')}</p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Updated', 'Mis à jour')}</p>
+                  <p className="mt-2 break-words text-sm font-semibold leading-7 text-slate-900">{activeUser.updated_at ? new Date(activeUser.updated_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US') : tr('Unknown', 'Inconnu')}</p>
+                </div>
+              </div>
+            </div>
             </div>
 
             {showProfilePermissions && (
@@ -2073,7 +2075,7 @@ const UserManagement = () => {
             </div>
           </div>
         ) : (
-          renderPermissionWorkspace(activeUser, { standalone: true })
+          <>{standalonePermissionWorkspace}</>
         )}
         {deleteConfirmationDialog}
         {legalIdPreviewOverlay}

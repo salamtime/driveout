@@ -470,7 +470,7 @@ const getTelegramEventLabel = (key, isFrench = false) => {
     rental_cancelled: isFrench ? 'Location annulée' : 'Rental cancelled',
     deposit_returned: isFrench ? 'Caution retournée' : 'Deposit returned',
     rental_extension_requested: isFrench ? 'Demande extension' : 'Extension request',
-    rental_price_change_requested: isFrench ? 'Demande changement prix' : 'Price change request',
+    rental_price_change_requested: isFrench ? 'Demande prix ou solde' : 'Price or balance request',
   };
   return labels[key] || key.replace(/_/g, ' ');
 };
@@ -488,7 +488,7 @@ const getTelegramEventDescription = (key, isFrench = false) => {
     rental_cancelled: isFrench ? 'Lorsqu’une location est annulée.' : 'When a rental is cancelled.',
     deposit_returned: isFrench ? 'Lorsque la caution est retournée.' : 'When a deposit is returned.',
     rental_extension_requested: isFrench ? 'Lorsqu’une extension attend une approbation.' : 'When an extension needs approval.',
-    rental_price_change_requested: isFrench ? 'Lorsqu’un changement de prix attend une approbation.' : 'When a price change needs approval.',
+    rental_price_change_requested: isFrench ? 'Lorsqu’un changement de prix ou de solde attend une approbation.' : 'When a price or balance change needs approval.',
   };
   return descriptions[key] || '';
 };

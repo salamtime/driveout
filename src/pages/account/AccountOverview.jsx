@@ -497,6 +497,12 @@ const AccountOverview = () => {
     latestUserRef.current = user;
   }, [user]);
 
+  const cachedSnapshot = useMemo(
+    () => CustomerExperienceService.readCachedCustomerAccountSnapshot(user),
+    [user]
+  );
+  const resolvedSnapshot = snapshot || cachedSnapshot;
+
   const knownOwnerVehicleCount = useMemo(() => getKnownOwnerVehicleCount(currentUserId), [currentUserId]);
   const effectiveOwnerVehicleCount = Math.max(knownOwnerVehicleCount, dbOwnerVehicleCount);
   const workspaceIdentity = useMemo(
@@ -668,13 +674,20 @@ const AccountOverview = () => {
     };
   }, [loadWorkspaceOverview, user?.id]);
 
-  const profile = snapshot?.profile || {};
+  const profile = resolvedSnapshot?.profile || {};
   const notificationPreferences = useMemo(
     () => getMessageNotificationPreferences({ userProfile, user }),
     [user, userProfile]
   );
-  const activeBookings = snapshot?.active || [];
-  const upcomingBookings = snapshot?.upcoming || [];
+  const activeBookings = resolvedSnapshot?.active || [];
+  const recentBookings = Array.isArray(resolvedSnapshot?.recent) ? resolvedSnapshot.recent : [];
+  const upcomingBookings = resolvedSnapshot?.upcoming || [];
+  const linkedMarketplaceRequestIds = useMemo(() => {
+    const requestIds = [...activeBookings, ...upcomingBookings, ...recentBookings]
+      .map((booking) => String(booking?.raw?.marketplace_request_id || '').trim())
+      .filter(Boolean);
+    return new Set(requestIds);
+  }, [activeBookings, upcomingBookings, recentBookings]);
   const tourRows = Array.isArray(tourBookings) ? tourBookings : [];
 
   const ownerVehicles = ownerData.vehicles || [];
@@ -693,8 +706,12 @@ const AccountOverview = () => {
     [effectiveOwnerRequests]
   );
   const openCustomerRequests = useMemo(
-    () => customerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)),
-    [customerRequests]
+    () => customerRequests.filter((request) => {
+      const requestId = String(request?.id || '').trim();
+      if (requestId && linkedMarketplaceRequestIds.has(requestId)) return false;
+      return isMarketplaceRequestOpen(request?.requestStatus);
+    }),
+    [customerRequests, linkedMarketplaceRequestIds]
   );
   const meaningfulOwnerVehicles = useMemo(
     () => ownerVehicles.filter((vehicle) => isMeaningfulOwnerVehicle(vehicle)),
@@ -860,6 +877,13 @@ const AccountOverview = () => {
     const sorted = [...openCustomerRequests].sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
     return sorted[0] || null;
   }, [openCustomerRequests]);
+  const latestCompletedRental = useMemo(
+    () =>
+      recentBookings.find((booking) =>
+        ['completed', 'closed'].includes(String(booking?.status || '').toLowerCase())
+      ) || null,
+    [recentBookings]
+  );
   const nextOwnerRequest = useMemo(() => {
     if (!effectiveOwnerRequests.length) return null;
     const pending = effectiveOwnerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
@@ -900,7 +924,7 @@ const AccountOverview = () => {
     !hasActiveOwnerExecution &&
     effectiveOwnerRequests.length === 0
   );
-  const walletBalance = Number(snapshot?.wallet?.balance || 0);
+  const walletBalance = Number(resolvedSnapshot?.wallet?.balance || 0);
   const { supportUnreadThreads, customerUnreadThreads } = useMemo(
     () => getUnreadMessageThreadBuckets(messageThreads, notificationPreferences),
     [messageThreads, notificationPreferences]
@@ -1253,6 +1277,24 @@ const AccountOverview = () => {
       };
     }
 
+    if (latestCompletedRental) {
+      return {
+        title: tr('Latest completed rental', 'Dernière location terminée'),
+        detail: [
+          latestCompletedRental?.rentalId,
+          latestCompletedRental?.packageName || latestCompletedRental?.selectedPackageName,
+          formatDateTime(latestCompletedRental?.endDate || latestCompletedRental?.startDate, locale),
+        ]
+          .filter(Boolean)
+          .join(' • '),
+        to: '/account/rentals',
+        state: { from: currentPath },
+        ctaLabel: tr('Open history', "Ouvrir l'historique"),
+        icon: CalendarClock,
+        tone: 'slate',
+      };
+    }
+
     return {
       title: tr('Browse vehicles', 'Explorer les véhicules'),
       detail: tr(
@@ -1286,6 +1328,8 @@ const AccountOverview = () => {
     primaryVehicleProfileHref,
     totalInboxSignalCount,
     tr,
+    latestCompletedRental,
+    locale,
     vehicleVerificationStage,
   ]);
 
@@ -1457,23 +1501,44 @@ const AccountOverview = () => {
     };
   }, [effectiveOwnerVehicleCount, primaryOwnerJourneyState, tr]);
 
-  const vehicleRequestsEntry = useMemo(() => ({
-    value: `${openCustomerRequests.length}`,
-    label:
-      openCustomerRequests.length > 0
-        ? tr('Vehicle requests in progress', 'Demandes de véhicule en cours')
-        : tr('Browse available vehicles', 'Explorer les véhicules disponibles'),
-    to: openCustomerRequests.length === 1
-      ? `/account/rentals/requests/${encodeURIComponent(String(openCustomerRequests[0]?.id || ''))}`
-      : openCustomerRequests.length > 1
-        ? '/account/rentals#marketplace-requests'
-        : '/account/marketplace',
-    ctaLabel: openCustomerRequests.length === 1
-      ? tr('Open request', 'Ouvrir la demande')
-      : openCustomerRequests.length > 1
-        ? tr('Open requests', 'Ouvrir les demandes')
-        : tr('Browse vehicles', 'Explorer les véhicules'),
-  }), [openCustomerRequests, tr]);
+  const customerRequestsEntry = useMemo(() => {
+    if (openCustomerRequests.length > 0) {
+      return {
+        eyebrow: tr('Vehicle requests', 'Demandes véhicule'),
+        value: `${openCustomerRequests.length}`,
+        label: tr('Vehicle requests in progress', 'Demandes de véhicule en cours'),
+        to: openCustomerRequests.length === 1
+          ? `/account/rentals/requests/${encodeURIComponent(String(openCustomerRequests[0]?.id || ''))}`
+          : '/account/rentals#marketplace-requests',
+        ctaLabel: openCustomerRequests.length === 1
+          ? tr('Open request', 'Ouvrir la demande')
+          : tr('Open requests', 'Ouvrir les demandes'),
+      };
+    }
+
+    if (latestCompletedRental) {
+      return {
+        eyebrow: tr('Latest rental', 'Dernière location'),
+        value: tr('Done', 'Terminée'),
+        label: [
+          latestCompletedRental?.rentalId,
+          latestCompletedRental?.packageName || latestCompletedRental?.selectedPackageName,
+        ]
+          .filter(Boolean)
+          .join(' • '),
+        to: '/account/rentals',
+        ctaLabel: tr('Open history', "Ouvrir l'historique"),
+      };
+    }
+
+    return {
+      eyebrow: tr('Vehicle requests', 'Demandes véhicule'),
+      value: '0',
+      label: tr('Browse available vehicles', 'Explorer les véhicules disponibles'),
+      to: '/account/marketplace',
+      ctaLabel: tr('Browse vehicles', 'Explorer les véhicules'),
+    };
+  }, [latestCompletedRental, openCustomerRequests, tr]);
 
   const inboxEntry = useMemo(() => ({
     value: `${pendingOwnerRequests + totalInboxSignalCount}`,
@@ -1514,27 +1579,37 @@ const AccountOverview = () => {
 
     const activeTourCount = tourRows.filter((tour) => !['completed', 'closed', 'cancelled', 'canceled'].includes(String(tour?.status || '').toLowerCase())).length;
     const activeTripCount = activeBookings.length + upcomingBookings.length + activeTourCount;
+    const completedRentalCount = recentBookings.filter((booking) =>
+      ['completed', 'closed'].includes(String(booking?.status || '').toLowerCase())
+    ).length;
+    const totalTripHistoryCount = completedRentalCount + tourRows.filter((tour) =>
+      ['completed', 'closed', 'cancelled', 'canceled'].includes(String(tour?.status || '').toLowerCase())
+    ).length;
     return {
-      value: `${activeTripCount}`,
+      value: `${activeTripCount > 0 ? activeTripCount : totalTripHistoryCount}`,
       label:
         activeTripCount > 0
           ? tr('Confirmed and upcoming trips', 'Parcours confirmés et à venir')
-          : tr('No trips yet', 'Aucun trajet'),
+          : totalTripHistoryCount > 0
+            ? tr(
+                `${completedRentalCount} completed rental${completedRentalCount === 1 ? '' : 's'} in history`,
+                `${completedRentalCount} location${completedRentalCount === 1 ? '' : 's'} terminée${completedRentalCount === 1 ? '' : 's'} dans l'historique`
+              )
+            : tr('No trips yet', 'Aucun trajet'),
       to: '/account/rentals',
       ctaLabel: tr('Open trips', 'Ouvrir les parcours'),
     };
-  }, [activeBookings.length, isOwnerWorkspace, ownerRentalHistoryRows, upcomingBookings.length, tourRows, tr]);
+  }, [activeBookings.length, isOwnerWorkspace, ownerRentalHistoryRows, recentBookings, upcomingBookings.length, tourRows, tr]);
 
   const walletEntry = useMemo(() => ({
-    value: formatMoney(walletBalance, snapshot?.wallet?.currencyCode || 'MAD', locale),
+    value: formatMoney(walletBalance, resolvedSnapshot?.wallet?.currencyCode || 'MAD', locale),
     label: tr('Wallet balance', 'Solde portefeuille'),
     to: '/account/revenue',
     ctaLabel: tr('Open wallet', 'Ouvrir le portefeuille'),
-  }), [walletBalance, snapshot?.wallet?.currencyCode, locale, tr]);
+  }), [walletBalance, resolvedSnapshot?.wallet?.currencyCode, locale, tr]);
 
   const snapshotEntryCards = useMemo(() => {
     const shouldShowListings = isOwnerWorkspace || effectiveOwnerVehicleCount > 0;
-    const shouldShowRequests = !isOwnerWorkspace || openCustomerRequests.length > 0;
     const cards = [];
 
     if (shouldShowListings) {
@@ -1545,11 +1620,11 @@ const AccountOverview = () => {
       });
     }
 
-    if (shouldShowRequests) {
+    if (!isOwnerWorkspace) {
       cards.push({
-        key: 'vehicle-requests',
-        eyebrow: tr('Vehicle requests', 'Demandes véhicule'),
-        entry: vehicleRequestsEntry,
+        key: openCustomerRequests.length > 0 ? 'vehicle-requests' : latestCompletedRental ? 'latest-rental' : 'vehicle-requests',
+        eyebrow: customerRequestsEntry.eyebrow,
+        entry: customerRequestsEntry,
       });
     }
 
@@ -1574,13 +1649,14 @@ const AccountOverview = () => {
     return cards;
   }, [
     effectiveOwnerVehicleCount,
+    customerRequestsEntry,
     inboxEntry,
     isOwnerWorkspace,
+    latestCompletedRental,
     listingsEntry,
     openCustomerRequests.length,
     tripsEntry,
     tr,
-    vehicleRequestsEntry,
     walletEntry,
   ]);
 

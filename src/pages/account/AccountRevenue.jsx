@@ -410,6 +410,11 @@ const AccountRevenue = () => {
   const [creatingShareLink, setCreatingShareLink] = useState(false);
   const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const cachedSnapshot = useMemo(
+    () => CustomerExperienceService.readCachedCustomerAccountSnapshot(user),
+    [user]
+  );
+  const resolvedSnapshot = snapshot || cachedSnapshot;
   const creditsSectionRef = useRef(null);
   const moneyRecordSectionRef = useRef(null);
   const creditsPanelRequested = useMemo(
@@ -542,8 +547,8 @@ const AccountRevenue = () => {
     creditsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [creditsPanelRequested, rewardsSnapshot?.shareLink?.shortUrl]);
 
-  const wallet = snapshot?.wallet || CustomerExperienceService.getEmptyWallet();
-  const walletTransactions = Array.isArray(snapshot?.walletTransactions) ? snapshot.walletTransactions : [];
+  const wallet = resolvedSnapshot?.wallet || CustomerExperienceService.getEmptyWallet();
+  const walletTransactions = Array.isArray(resolvedSnapshot?.walletTransactions) ? resolvedSnapshot.walletTransactions : [];
   const rideCreditsSnapshot = useMemo(
     () =>
       CustomerRewardsService.buildWalletSnapshot({
@@ -565,13 +570,27 @@ const AccountRevenue = () => {
     () => rentals.reduce((sum, rental) => sum + Number(rental?.outstanding || 0), 0),
     [rentals]
   );
+  const linkedMarketplaceRequestIds = useMemo(() => {
+    const requestIds = rentals
+      .map((rental) => String(rental?.marketplaceRequestId || rental?.marketplace_request_id || rental?.raw?.marketplace_request_id || '').trim())
+      .filter(Boolean);
+    return new Set(requestIds);
+  }, [rentals]);
+  const actionableMarketplaceRequests = useMemo(
+    () => marketplaceRequests.filter((request) => {
+      const requestId = String(request?.id || '').trim();
+      if (requestId && linkedMarketplaceRequestIds.has(requestId)) return false;
+      return true;
+    }),
+    [linkedMarketplaceRequestIds, marketplaceRequests]
+  );
 
   const pendingMarketplaceCount = useMemo(
     () =>
-      marketplaceRequests.filter((request) =>
+      actionableMarketplaceRequests.filter((request) =>
         ['pending', 'submitted', 'review', 'countered', 'pre_approved'].includes(String(request?.requestStatus || '').toLowerCase())
       ).length,
-    [marketplaceRequests]
+    [actionableMarketplaceRequests]
   );
 
   const pendingTopups = Number(wallet.pendingTopups || 0);
@@ -907,7 +926,7 @@ const AccountRevenue = () => {
       };
     });
 
-    const requestItems = marketplaceRequests.map((request) => {
+    const requestItems = actionableMarketplaceRequests.map((request) => {
       const requestStatus = String(request?.requestStatus || '').toLowerCase();
       const displayState = getMarketplaceRequestDisplay(request?.requestStatus, tr);
 
@@ -987,7 +1006,7 @@ const AccountRevenue = () => {
     return [...rentalItems, ...requestItems, ...walletItems].sort(
       (left, right) => new Date(right?.at || 0).getTime() - new Date(left?.at || 0).getTime()
     );
-  }, [rentals, marketplaceRequests, walletTransactions, wallet.currencyCode, locale, tr]);
+  }, [rentals, actionableMarketplaceRequests, walletTransactions, wallet.currencyCode, locale, tr]);
 
   const hostingActivity = useMemo(
     () =>
@@ -1429,7 +1448,7 @@ const AccountRevenue = () => {
 
             <WalletDetailSection
               title={tr('Marketplace requests', 'Demandes marketplace')}
-              items={marketplaceRequests}
+              items={actionableMarketplaceRequests}
               renderItem={(item) => {
                 const display = getMarketplaceRequestDisplay(item?.requestStatus, tr);
                 return (

@@ -92,6 +92,7 @@ const normalizeDate = (value) => {
 };
 
 const customerRequestCache = createTimedRequestCache(30000);
+const CUSTOMER_ACCOUNT_SNAPSHOT_STORAGE_PREFIX = 'driveout_customer_account_snapshot';
 
 const buildCustomerCacheIdentity = (user) => {
   const userId = String(user?.id || '').trim();
@@ -102,6 +103,11 @@ const buildCustomerCacheIdentity = (user) => {
 const buildCustomerCacheKey = (scope, user, suffix = '') => {
   const identity = buildCustomerCacheIdentity(user);
   return `${scope}:${identity || 'anonymous'}${suffix ? `:${suffix}` : ''}`;
+};
+
+const buildCustomerAccountSnapshotStorageKey = (user) => {
+  const identity = buildCustomerCacheIdentity(user);
+  return identity ? `${CUSTOMER_ACCOUNT_SNAPSHOT_STORAGE_PREFIX}:${identity}` : '';
 };
 
 const getLoyaltyTier = (points = 0) => {
@@ -260,6 +266,8 @@ const normalizeRentalRecord = (row = {}) => {
   return {
     id: String(row.id),
     rentalId: row.rental_id || `RNT-${row.id}`,
+    marketplaceRequestId: row.marketplace_request_id || null,
+    marketplace_request_id: row.marketplace_request_id || null,
     status,
     sourceType,
     bookingSource: row.booking_source || row.inventory_source || row.booking_mode || '',
@@ -391,6 +399,9 @@ const normalizeMarketplaceRequestRecord = (row = {}) => {
     damageDepositAmount: toNumber(counterOffer?.damage_deposit_amount || row?.damage_deposit || row?.deposit_amount),
     platformFeeStatus: String(counterOffer?.platform_fee_status || '').trim().toLowerCase(),
     damageDepositStatus: String(counterOffer?.damage_deposit_status || '').trim().toLowerCase(),
+    linkedRentalId: row?.linked_rental_id || null,
+    linkedRentalReference: row?.linked_rental_reference || null,
+    linkedRentalStatus: row?.linked_rental_status || null,
     chatUnlockedAt: normalizeDate(counterOffer?.chat_unlocked_at || row?.approved_at),
     chatGraceExpiresAt: normalizeDate(getMarketplaceChatGraceExpiry(counterOffer, row?.approved_at)),
     depositMode: 'external',
@@ -495,6 +506,48 @@ const normalizeTourRecord = (row = {}) => {
 };
 
 class CustomerExperienceService {
+  readCachedCustomerAccountSnapshot(user) {
+    if (typeof window === 'undefined') return null;
+
+    const storageKey = buildCustomerAccountSnapshotStorageKey(user);
+    if (!storageKey) return null;
+
+    try {
+      const rawValue = window.localStorage.getItem(storageKey);
+      if (!rawValue) return null;
+
+      const parsed = JSON.parse(rawValue);
+      if (!parsed || typeof parsed !== 'object') return null;
+
+      return {
+        profile: parsed?.profile && typeof parsed.profile === 'object' ? parsed.profile : {},
+        wallet: parsed?.wallet && typeof parsed.wallet === 'object' ? parsed.wallet : this.getEmptyWallet(),
+        walletTransactions: Array.isArray(parsed?.walletTransactions) ? parsed.walletTransactions : [],
+        loyalty: parsed?.loyalty && typeof parsed.loyalty === 'object'
+          ? parsed.loyalty
+          : this.getEmptySnapshot(user).loyalty,
+        active: Array.isArray(parsed?.active) ? parsed.active : [],
+        recent: Array.isArray(parsed?.recent) ? parsed.recent : [],
+        upcoming: Array.isArray(parsed?.upcoming) ? parsed.upcoming : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  persistCustomerAccountSnapshot(user, snapshot) {
+    if (typeof window === 'undefined' || !snapshot) return;
+
+    const storageKey = buildCustomerAccountSnapshotStorageKey(user);
+    if (!storageKey) return;
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    } catch {
+      // Ignore storage write failures and keep the live response path working.
+    }
+  }
+
   async getCustomerAccessContext(user, options = {}) {
     const authUser = user?.id ? user : null;
     const email = String(authUser?.email || '').trim().toLowerCase();
@@ -605,7 +658,7 @@ class CustomerExperienceService {
       buildCustomerCacheKey('account-snapshot', authUser),
       async () => {
         const response = await adminApiRequest('/api/me?resource=account-snapshot');
-        return {
+        const normalizedSnapshot = {
           profile: response?.profile || {},
           wallet: response?.wallet || this.getEmptyWallet(),
           walletTransactions: Array.isArray(response?.walletTransactions) ? response.walletTransactions : [],
@@ -614,6 +667,8 @@ class CustomerExperienceService {
           recent: Array.isArray(response?.recent) ? response.recent : [],
           upcoming: Array.isArray(response?.upcoming) ? response.upcoming : [],
         };
+        this.persistCustomerAccountSnapshot(authUser, normalizedSnapshot);
+        return normalizedSnapshot;
       },
       { ttl: 25000, forceRefresh: options.forceRefresh }
     );

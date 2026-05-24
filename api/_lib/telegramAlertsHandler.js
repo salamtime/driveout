@@ -389,10 +389,33 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
       ].join('\n');
     }
     case 'rental_price_change_requested': {
+      const approvalType = safeText(data.approvalType || data.requestType || data.type || '').toLowerCase();
       const requestedBy = safeText(data.requestedBy || data.requested_by_name || data.actorName || '');
       const currentPrice = safeText(formatMoney(data.currentPrice || data.current_price || data.total));
       const requestedPrice = safeText(formatMoney(data.requestedPrice || data.requested_price || data.pending_total_request));
+      const currentAmount = safeText(formatMoney(data.currentAmount || data.current_amount || data.remaining));
+      const requestedAmount = safeText(formatMoney(data.requestedAmount || data.requested_amount || data.new_amount_due));
+      const paymentReceivedNow = safeText(formatMoney(data.paymentReceivedNow || data.payment_received_now));
+      const companyDiscount = safeText(formatMoney(data.companyDiscount || data.company_discount));
       const reason = safeText(data.reason || data.price_override_reason || '');
+
+      if (approvalType === 'balance') {
+        return [
+          '💳 Balance Approval Request',
+          '',
+          vehicle,
+          ...(customerLine ? [customerLine] : []),
+          `Current due: ${currentAmount} MAD`,
+          `Requested due: ${requestedAmount} MAD`,
+          ...(Number(data.paymentReceivedNow || 0) > 0 ? [`Collected now: ${paymentReceivedNow} MAD`] : []),
+          ...(Number(data.companyDiscount || 0) > 0 ? [`Discount: ${companyDiscount} MAD`] : []),
+          ...(requestedBy ? [`Requested by: ${requestedBy}`] : []),
+          ...(reason ? [`Reason: ${reason}`] : []),
+          ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+          '',
+          linkLine,
+        ].join('\n');
+      }
 
       return [
         '💰 Price Approval Request',

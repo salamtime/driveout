@@ -134,7 +134,7 @@ const CustomerDetailModal = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-6xl max-h-[95vh] overflow-y-auto p-0">
+      <DialogContent aria-describedby={undefined} className="max-w-6xl max-h-[95vh] overflow-y-auto p-0">
         <DialogHeader className="p-6 pb-4">
           <div className="flex items-center justify-between">
             <DialogTitle className="text-2xl font-bold text-gray-900 flex items-center gap-3">

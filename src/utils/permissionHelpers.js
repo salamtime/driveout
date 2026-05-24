@@ -183,10 +183,30 @@ export const canEditRentalPriceWithoutApproval = (user) => {
 
 export const canAdjustRentalBalance = (user) => {
   const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (
+    role === 'owner' ||
+    role === 'admin' ||
+    role === 'business_owner' ||
+    role === 'business' ||
+    role === 'rental_business' ||
+    role.includes('admin')
+  ) {
+    return true;
+  }
+
+  return hasPermission('Adjust Rental Balance', userProfile);
+};
+
+export const canRequestRentalBalanceAdjustment = (user) => {
+  const userProfile = user || getCurrentUser();
 
   return (
-    canEditRentalPrice(userProfile) ||
-    canRecordReceiveFunds(userProfile)
+    canAdjustRentalBalance(userProfile) ||
+    hasPermission('Rental Management', userProfile) ||
+    hasPermission('Record Receive Funds', userProfile) ||
+    hasPermission('Finance Management', userProfile)
   );
 };
 

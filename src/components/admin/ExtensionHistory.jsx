@@ -5,7 +5,6 @@
 
 import React from 'react';
 import { Badge } from '../ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Clock, CheckCircle, XCircle, AlertCircle, AlertTriangle, Pencil } from 'lucide-react';
 import i18n from '../../i18n';
@@ -25,12 +24,10 @@ const ExtensionHistory = ({
 
   if (!extensions || extensions.length === 0) {
     return (
-      <Card>
-        <CardContent className="py-8 text-center text-gray-500">
+      <section className="rounded-[24px] border border-slate-200 bg-white px-5 py-8 text-center text-gray-500 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
           <Clock className="w-12 h-12 mx-auto mb-3 text-gray-300" />
           <p>{tr('No extension history available', "Aucun historique de prolongation disponible")}</p>
-        </CardContent>
-      </Card>
+      </section>
     );
   }
 
@@ -98,15 +95,14 @@ const ExtensionHistory = ({
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
+    <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+      <div className="border-b border-slate-200 px-5 py-4">
+        <h3 className="flex items-center gap-2 text-xl font-bold text-slate-900">
           <Clock className="w-5 h-5 text-blue-600" />
           {tr('Extension History', 'Historique des prolongations')} ({extensions.length})
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
+        </h3>
+      </div>
+      <div className="space-y-4 px-5 py-5">
           {extensions.map((extension, index) => {
             const isManualExtension = extension.is_custom_price || extension.price_source === 'manual';
             const isHighlighted = String(highlightedExtensionId || '') === String(extension.id || '');
@@ -117,10 +113,16 @@ const ExtensionHistory = ({
               <div
                 key={extension.id}
                 data-extension-id={extension.id}
-                className={`p-4 border rounded-lg transition-all duration-300 ${
-                  isHighlighted ? 'ring-4 ring-amber-300 shadow-[0_0_0_8px_rgba(251,191,36,0.18)] ' : ''
+                className={`rounded-[20px] border p-4 transition-all duration-300 ${
+                  isHighlighted
+                    ? 'border-amber-200 bg-amber-50/30 ring-2 ring-amber-200 shadow-[0_0_0_4px_rgba(251,191,36,0.08)] '
+                    : ''
                 }${
-                  extension.status === 'pending' ? 'border-yellow-300 bg-yellow-50' : 'border-gray-200 bg-white'
+                  extension.status === 'pending'
+                    ? 'border-yellow-300 bg-yellow-50/80'
+                    : isHighlighted
+                      ? ''
+                      : 'border-slate-200 bg-slate-50/70'
                 }`}
               >
                 {/* Header */}
@@ -154,7 +156,7 @@ const ExtensionHistory = ({
                 </div>
 
                 {/* Details Grid */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                    <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                   <div>
                     <p className="text-xs text-gray-600">{tr('Duration', 'Durée')}</p>
                     <p className="text-sm font-medium text-gray-900">
@@ -255,7 +257,7 @@ const ExtensionHistory = ({
                 )}
 
                 {extension.status !== 'pending' && approverName && (
-                  <div className="mt-3 border-t border-gray-100 pt-3 text-xs font-medium text-gray-500">
+                  <div className="mt-3 border-t border-slate-200 pt-3 text-xs font-medium text-gray-500">
                     {extension.status === 'approved'
                       ? tr('Approved by', 'Approuvée par')
                       : tr('Reviewed by', 'Examinée par')}{' '}
@@ -265,9 +267,8 @@ const ExtensionHistory = ({
               </div>
             );
           })}
-        </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 };
 

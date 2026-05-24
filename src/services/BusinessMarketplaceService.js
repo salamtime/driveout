@@ -564,8 +564,8 @@ const normalizeOwnerVehicle = (profile, listing) => {
 
 const normalizeOwnerRequest = (request, listing, profile) => {
   const title =
-    listing?.title ||
     [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
+    listing?.title ||
     'Marketplace request';
   const counterOffer = request?.counter_offer && typeof request.counter_offer === 'object' ? request.counter_offer : {};
   const ownerExecution = normalizeRentalExecutionDraft(counterOffer?.owner_execution);

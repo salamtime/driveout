@@ -676,7 +676,214 @@ const loadCustomerMarketplaceRequests = async (adminClient, user) => {
 
 const loadCustomerMarketplaceRequestDetail = async (adminClient, user, requestId) => {
   const requests = await loadCustomerMarketplaceRequests(adminClient, user);
-  return requests.find((request) => String(request?.id || '') === String(requestId || '')) || null;
+  const request = requests.find((row) => String(row?.id || '') === String(requestId || '')) || null;
+  if (!request) return null;
+
+  const rentalTimingSettings = await loadRentalTimingSettings(adminClient);
+  const rentals = await loadCustomerRentals(adminClient, user, rentalTimingSettings);
+  const linkedRental = rentals.find(
+    (row) => String(row?.marketplace_request_id || '').trim() === String(request?.id || '').trim()
+  ) || null;
+
+  if (!linkedRental) {
+    return request;
+  }
+
+  return {
+    ...request,
+    linked_rental_id: linkedRental.id,
+    linked_rental_reference: linkedRental.rental_id || null,
+    linked_rental_status: linkedRental.status || linkedRental.rental_status || null,
+  };
+};
+
+const buildSyntheticMarketplaceRentalRow = (requestRow = {}, timingSettings = DEFAULT_RENTAL_TIMING_SETTINGS) => {
+  if (!requestRow || typeof requestRow !== 'object') return null;
+
+  const requestId = String(requestRow?.id || '').trim();
+  if (!requestId) return null;
+
+  const counterOffer = requestRow?.counter_offer && typeof requestRow.counter_offer === 'object'
+    ? requestRow.counter_offer
+    : {};
+  const ownerExecution = counterOffer?.owner_execution && typeof counterOffer.owner_execution === 'object'
+    ? counterOffer.owner_execution
+    : {};
+  const listing = requestRow?.listing && typeof requestRow.listing === 'object' ? requestRow.listing : null;
+  const profile = requestRow?.profile && typeof requestRow.profile === 'object' ? requestRow.profile : null;
+
+  const ownerExecutionStartedAt = normalizeTimestampValue(ownerExecution?.startedAt || ownerExecution?.startReadyAt || null);
+  const ownerExecutionCompletedAt = normalizeTimestampValue(
+    ownerExecution?.returnSavedAt ||
+    counterOffer?.final_receipt_generated_at ||
+    requestRow?.closed_at ||
+    null
+  );
+  const approvedLike = isMarketplaceRequestApprovedRecord(requestRow);
+  const requestStatus = normalizeMarketplaceRequestLifecycleStatus(requestRow?.request_status || requestRow);
+  const normalizedSyntheticStatus = ownerExecutionCompletedAt
+    ? 'completed'
+    : ownerExecutionStartedAt
+      ? 'active'
+      : approvedLike
+        ? 'confirmed'
+        : requestStatus;
+
+  const estimatedAmount = Math.max(
+    0,
+    Number(
+      counterOffer?.price_amount ??
+      requestRow?.quoted_amount ??
+      listing?.price_amount ??
+      listing?.daily_price_amount ??
+      listing?.hourly_price_amount ??
+      0
+    ) || 0
+  );
+  const depositAmount = Math.max(0, Number(counterOffer?.damage_deposit_amount || 0) || 0);
+  const vehicleName =
+    String(
+      listing?.title ||
+      profile?.title ||
+      [profile?.brand, profile?.model].filter(Boolean).join(' ') ||
+      [profile?.make, profile?.model].filter(Boolean).join(' ') ||
+      ''
+    ).trim() || 'Marketplace vehicle';
+
+  const syntheticRow = {
+    id: requestId,
+    rental_id: String(requestRow?.request_reference || requestId).trim(),
+    request_status: requestStatus,
+    rental_status: normalizedSyntheticStatus,
+    status: normalizedSyntheticStatus,
+    booking_source: 'website',
+    inventory_source: 'certified_fleet',
+    source_context: 'driveout_marketplace_request',
+    marketplace_request_id: requestId,
+    marketplace_request_reference: String(requestRow?.request_reference || '').trim() || null,
+    customer_id: String(requestRow?.customer_id || requestRow?.customer_ext_id || '').trim() || null,
+    customer_email: String(requestRow?.customer_email || '').trim() || null,
+    customer_name: String(requestRow?.customer_name || '').trim() || null,
+    customer_phone: String(requestRow?.customer_phone || '').trim() || null,
+    vehicle_public_profile_id: String(requestRow?.vehicle_public_profile_id || listing?.vehicle_public_profile_id || profile?.id || '').trim() || null,
+    listing_id: String(requestRow?.listing_id || listing?.id || '').trim() || null,
+    vehicle_name_snapshot: vehicleName,
+    pickup_city: String(profile?.city || profile?.location_city || '').trim() || null,
+    pickup_area: String(profile?.area || profile?.location_area || '').trim() || null,
+    rental_start_date: normalizeTimestampValue(requestRow?.requested_start_at || null),
+    rental_end_date: normalizeTimestampValue(requestRow?.requested_end_at || null),
+    started_at: ownerExecutionStartedAt,
+    actual_end_date: ownerExecutionCompletedAt,
+    approved_at: normalizeTimestampValue(requestRow?.approved_at || null),
+    accepted_at: normalizeTimestampValue(requestRow?.accepted_at || null),
+    closed_at: normalizeTimestampValue(requestRow?.closed_at || null),
+    created_at: normalizeTimestampValue(requestRow?.created_at || null),
+    updated_at: normalizeTimestampValue(requestRow?.updated_at || null),
+    rental_type: String(requestRow?.rental_type || '').trim() || null,
+    duration: Math.max(1, Number(requestRow?.duration || 1) || 1),
+    total_amount: estimatedAmount,
+    base_rental_amount: estimatedAmount,
+    rental_charge_amount: estimatedAmount,
+    unit_price: estimatedAmount,
+    deposit_amount: depositAmount,
+    damage_deposit: depositAmount,
+    currency_code: String(requestRow?.currency_code || 'MAD').trim() || 'MAD',
+    payment_status: ownerExecutionCompletedAt || ownerExecutionStartedAt || approvedLike ? 'paid' : 'pending',
+    contract_signed: Boolean(ownerExecution?.contractSigned || ownerExecution?.contractSignatureUrl),
+    signature_url: String(ownerExecution?.contractSignatureUrl || '').trim() || null,
+    contract_signed_at: normalizeTimestampValue(ownerExecution?.contractSignedAt || null),
+    contract_document_url: String(ownerExecution?.contractDocumentUrl || '').trim() || null,
+    receipt_issued: Boolean(ownerExecution?.finalReceiptGeneratedAt || ownerExecution?.finalReceiptUrl),
+    owner_execution: ownerExecution,
+    marketplace_request_counter_offer: counterOffer,
+    raw_marketplace_request: requestRow,
+    vehicle: profile ? {
+      ...profile,
+      id: profile.id,
+      image_url: profile.image_url || profile.main_image_url || profile.primary_image_url || null,
+    } : null,
+  };
+
+  return {
+    ...syntheticRow,
+    rental_status: normalizeEffectiveRentalStatus(syntheticRow, timingSettings),
+    status: normalizeEffectiveRentalStatus(syntheticRow, timingSettings),
+  };
+};
+
+const loadCustomerMarketplaceRequestReferences = async (adminClient, user, nameCandidates = []) => {
+  const userId = String(user?.id || '').trim();
+  const email = normalizeEmail(user?.email);
+
+  if (!userId && !email && !nameCandidates.length) {
+    return [];
+  }
+
+  const queries = [];
+  const selectFields = 'id, customer_id, customer_ext_id, customer_email, customer_name, created_at, updated_at';
+
+  if (userId) {
+    queries.push(
+      adminClient
+        .from(BOOKING_REQUESTS_TABLE)
+        .select(selectFields)
+        .eq('customer_id', userId)
+        .order('created_at', { ascending: false })
+    );
+    queries.push(
+      adminClient
+        .from(BOOKING_REQUESTS_TABLE)
+        .select(selectFields)
+        .eq('customer_ext_id', userId)
+        .order('created_at', { ascending: false })
+    );
+  }
+
+  if (email) {
+    queries.push(
+      adminClient
+        .from(BOOKING_REQUESTS_TABLE)
+        .select(selectFields)
+        .ilike('customer_email', email)
+        .order('created_at', { ascending: false })
+    );
+  }
+
+  if (nameCandidates.length) {
+    queries.push(
+      adminClient
+        .from(BOOKING_REQUESTS_TABLE)
+        .select(selectFields)
+        .order('created_at', { ascending: false })
+        .limit(80)
+    );
+  }
+
+  const results = await Promise.allSettled(queries);
+  const requestMap = new Map();
+
+  results.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    const { data, error } = result.value;
+    if (error || !Array.isArray(data)) return;
+    data.forEach((row) => requestMap.set(String(row.id), row));
+  });
+
+  return Array.from(requestMap.values())
+    .filter((row) => {
+      const rowCustomerId = String(row?.customer_id || '').trim();
+      const rowCustomerExtId = String(row?.customer_ext_id || '').trim();
+      const rowCustomerEmail = normalizeEmail(row?.customer_email);
+
+      if (userId && (rowCustomerId === userId || rowCustomerExtId === userId)) return true;
+      if (email && rowCustomerEmail && rowCustomerEmail === email) return true;
+      if (!rowCustomerId && !rowCustomerExtId && !rowCustomerEmail && isLikelyCustomerNameMatch(row?.customer_name, nameCandidates)) {
+        return true;
+      }
+
+      return false;
+    })
+    .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime());
 };
 
 const loadCustomerMarketplaceRequestRecovery = async (adminClient, user, requestId) => {
@@ -2050,6 +2257,12 @@ const loadCustomerRentals = async (adminClient, user, timingSettings = DEFAULT_R
     String(identity?.full_name || user?.user_metadata?.full_name || user?.user_metadata?.name || '').trim(),
     email
   );
+  const marketplaceRequests = await loadCustomerMarketplaceRequests(adminClient, user);
+  const linkedMarketplaceRequestIds = new Set(
+    marketplaceRequests
+      .map((row) => String(row?.id || '').trim())
+      .filter(Boolean)
+  );
 
   const queries = [];
 
@@ -2097,12 +2310,14 @@ const loadCustomerRentals = async (adminClient, user, timingSettings = DEFAULT_R
     data.forEach((row) => merged.set(String(row.id), row));
   });
 
-  return Array.from(merged.values())
+  const actualRentals = Array.from(merged.values())
     .filter((row) => {
       const rowCustomerId = String(row?.customer_id || '').trim();
       const rowCustomerEmail = normalizeEmail(row?.customer_email);
+      const rowMarketplaceRequestId = String(row?.marketplace_request_id || '').trim();
       if (customerIdCandidates.includes(rowCustomerId)) return true;
       if (email && rowCustomerEmail && rowCustomerEmail === email) return true;
+      if (rowMarketplaceRequestId && linkedMarketplaceRequestIds.has(rowMarketplaceRequestId)) return true;
       if (!rowCustomerId && !rowCustomerEmail && isLikelyCustomerNameMatch(row?.customer_name, nameCandidates)) return true;
       return false;
     })
@@ -2113,7 +2328,35 @@ const loadCustomerRentals = async (adminClient, user, timingSettings = DEFAULT_R
         rental_status: effectiveStatus,
         status: effectiveStatus,
       };
-    })
+    });
+
+  const actualRentalKeys = new Set(
+    actualRentals.flatMap((row) => ([
+      String(row?.id || '').trim(),
+      String(row?.rental_id || '').trim(),
+      String(row?.marketplace_request_id || '').trim(),
+      String(row?.marketplace_request_reference || '').trim(),
+    ])).filter(Boolean)
+  );
+
+  const syntheticMarketplaceRentals = marketplaceRequests
+    .map((requestRow) => buildSyntheticMarketplaceRentalRow(requestRow, timingSettings))
+    .filter((row) => row && (
+      row?.started_at ||
+      row?.actual_end_date ||
+      ['confirmed', 'active', 'completed'].includes(String(row?.status || '').toLowerCase())
+    ))
+    .filter((row) => {
+      const requestId = String(row?.marketplace_request_id || row?.id || '').trim();
+      const requestReference = String(row?.marketplace_request_reference || row?.rental_id || '').trim();
+      const convertedBookingRefId = String(row?.raw_marketplace_request?.converted_booking_ref_id || '').trim();
+      if (convertedBookingRefId && actualRentalKeys.has(convertedBookingRefId)) return false;
+      if (requestId && actualRentalKeys.has(requestId)) return false;
+      if (requestReference && actualRentalKeys.has(requestReference)) return false;
+      return true;
+    });
+
+  return [...actualRentals, ...syntheticMarketplaceRentals]
     .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 };
 

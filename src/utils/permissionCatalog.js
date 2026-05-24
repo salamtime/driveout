@@ -8,7 +8,7 @@ export const PERMISSION_GROUPS = [
   { module: 'Team Tasks', extras: [] },
   {
     module: 'Rental Management',
-    extras: ['Edit Rental Contract', 'Edit Rental Cost', 'Edit Rental Security Deposit', 'Change Extension Price', 'Require Extension Approval', 'Edit Extension History'],
+    extras: ['Edit Rental Contract', 'Edit Rental Cost', 'Adjust Rental Balance', 'Edit Rental Security Deposit', 'Change Extension Price', 'Require Extension Approval', 'Edit Extension History'],
   },
   {
     module: 'Fleet Management',
@@ -112,6 +112,7 @@ export const buildDefaultPermissionsForRole = (role) => {
 
 export const PERMISSION_ALIASES = {
   'Edit Rental Cost': ['Edit Rental Price', 'Edit Rental Price Without Approval', 'Change Rental Price'],
+  'Adjust Rental Balance': ['Edit Rental Balance', 'Change Rental Balance', 'Resolve Rental Balance', 'Adjust Balance'],
   'Edit Rental Security Deposit': ['Edit Security Deposit', 'Edit Damage Deposit', 'Change Security Deposit'],
 };
 
