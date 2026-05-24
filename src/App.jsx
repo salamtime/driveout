@@ -435,7 +435,7 @@ const PublicHostRoute = ({ children }) => {
   const isFirstPartyStorefrontTenant = shouldUseFirstPartyTenantPublicShell(host, location.pathname);
   const isTenantWebsite = shouldUseTenantWebsiteShell(host, location.pathname);
 
-  if (host.kind === 'public' || host.kind === 'local' || isFirstPartyStorefrontTenant || isTenantWebsite) {
+  if (host.kind === 'public' || host.isLocal || isFirstPartyStorefrontTenant || isTenantWebsite) {
     return children;
   }
 
@@ -519,6 +519,7 @@ const GuideDashboard = lazy(() => import('./pages/guide/Dashboard'));
 const AccountWorkspaceLayout = lazy(() => import('./components/account/AccountWorkspaceLayout'));
 const AccountOverview = lazy(() => import('./pages/account/AccountOverview'));
 const AccountRentals = lazy(() => import('./pages/account/AccountRentals'));
+const AccountRentalHistory = lazy(() => import('./pages/account/AccountRentalHistory'));
 const AccountRentalDetailsPage = lazy(() => import('./pages/account/AccountRentalDetailsPage'));
 const AccountMarketplaceRequestDetailsPage = lazy(() => import('./pages/account/AccountMarketplaceRequestDetailsPage'));
 const AccountMarketplace = lazy(() => import('./pages/account/AccountMarketplace'));
@@ -881,6 +882,7 @@ function App() {
                   <Route index element={<Navigate to="/account/overview" replace />} />
                   <Route path="overview" element={<AccountOverview />} />
                   <Route path="rentals" element={<AccountRentals />} />
+                  <Route path="rental-history" element={<AccountRentalHistory />} />
                   <Route path="rentals/requests/:requestId" element={<AccountMarketplaceRequestDetailsPage />} />
                   <Route path="rentals/:rentalId" element={<AccountRentalDetailsPage />} />
                   <Route path="tours" element={<AccountTours />} />

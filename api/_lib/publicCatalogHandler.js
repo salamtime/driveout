@@ -423,6 +423,7 @@ const buildMarketplaceListing = (listingRow) => {
   const halfDayPrice = formatMoney(halfDayPricing?.price);
   const halfDayMinHours = Number(halfDayPricing?.min_hours || 0) || null;
   const halfDayMaxHours = Number(halfDayPricing?.max_hours || 0) || null;
+  const distancePricing = pricing?.distance && typeof pricing.distance === 'object' ? pricing.distance : {};
 
   return {
     id: `marketplace-${listingRow.id}`,
@@ -453,8 +454,8 @@ const buildMarketplaceListing = (listingRow) => {
     halfDayMinHours,
     halfDayMaxHours,
     depositAmount: formatMoney(listingRow?.deposit_amount),
-    includedKm: formatMoney(listingRow?.included_km),
-    extraKmRate: formatMoney(listingRow?.extra_km_rate),
+    includedKm: formatMoney(listingRow?.included_km ?? distancePricing?.included_km),
+    extraKmRate: formatMoney(listingRow?.extra_km_rate ?? distancePricing?.extra_km_rate),
     currencyCode: safeText(listingRow?.currency_code, DEFAULT_CURRENCY),
     badge: listingRow?.owner_type === 'operator' ? 'Verified Operator' : 'Owner Listing',
     ownerLabel: listingRow?.owner_type === 'operator' ? 'Verified operator listing' : 'Independent owner listing',

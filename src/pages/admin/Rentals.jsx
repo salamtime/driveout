@@ -32,9 +32,9 @@ import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext'
 import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
-  getRentalCustomerPaidAmount as getRentalCustomerPaidAmountShared,
   getRentalCollectedAmountInWindow,
-  getRentalCompanyDiscountAmount,
+  parseAmountDueResolutionMeta,
+  resolveAmountDueBalanceState,
 } from '../../utils/rentalFinancials';
 import {
   readRentalsSchemaCapability,
@@ -781,35 +781,34 @@ const getRentalFinancialSnapshot = (rental) => {
     : (Number(rental?.unit_price) || 0) * quantity;
   const storedTotal = parseFloat(rental?.total_amount) || 0;
   const pendingRequestedTotal = Math.max(0, parseFloat(rental?.pending_total_request || 0) || 0);
-  // Rental Details is the source of truth for saved contract totals.
-  // The rentals list should reflect the stored row values directly and
-  // must not re-run side calculations like fuel stripping or base-price fallbacks
-  // unless the contract total has never been saved.
+  // Rental Details is the source of truth for the contract settlement snapshot.
+  // The rentals list must mirror the saved total / paid / remaining view from
+  // Rental Details instead of replaying its own payment-entry math.
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
-  const companyDiscount = getRentalCompanyDiscountAmount(rental);
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
-  const fallbackGrandTotal = Math.max(0, grossTotal - companyDiscount);
-  const customerPaidAmount = Math.max(0, Number(getRentalCustomerPaidAmountShared(rental) || 0) || 0);
+  const rawDisplayedPaidAmount = Math.max(0, parseFloat(rental?.deposit_amount || 0) || 0);
   const storedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-  // A seized deposit helps settle the balance, but it is not an extra contract charge.
-  // The rentals list must never inflate the contract total by adding the deduction on top
-  // of what the customer already paid plus what is still due.
-  const settlementGrandTotal = Math.max(0, customerPaidAmount + storedRemainingAmount);
-  const balanceDue = storedRemainingAmount;
+  const depositPaid = grossTotal > 0
+    ? Math.min(rawDisplayedPaidAmount, grossTotal)
+    : rawDisplayedPaidAmount;
+  const rawBalanceDue = Math.max(0, grossTotal - depositPaid);
+  const amountDueMeta = parseAmountDueResolutionMeta(rental);
+  const {
+    balanceDue,
+    companyDiscountAmount,
+  } = resolveAmountDueBalanceState({
+    amountDueMeta,
+    rawBalanceDue,
+    storedRemainingAmount,
+    depositPaid,
+  });
+  const finalGrandTotal = Math.max(0, grossTotal - companyDiscountAmount);
+  const customerPaidAmount = Math.max(0, finalGrandTotal - balanceDue);
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,
     balanceDue
   );
-  const shouldTrustSettlementTotals =
-    settlementGrandTotal > 0 &&
-    (
-      customerPaidAmount > 0 ||
-      storedRemainingAmount > 0 ||
-      companyDiscount > 0 ||
-      Boolean(rental?.amount_due_override_reason) ||
-      ['paid', 'partial', 'refunded'].includes(normalizedPaymentStatus)
-    );
-  const grandTotal = shouldTrustSettlementTotals ? settlementGrandTotal : fallbackGrandTotal;
+  const grandTotal = finalGrandTotal;
   const amountPaid = customerPaidAmount;
 
   let status = 'UNPAID';

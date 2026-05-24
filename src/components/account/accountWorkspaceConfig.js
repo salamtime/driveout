@@ -236,6 +236,8 @@ export const getAccountWorkspaceSectionByPath = (pathname = '') => {
   if (
     normalizedPathname === '/account/tours' ||
     normalizedPathname.startsWith('/account/tours/') ||
+    normalizedPathname === '/account/rental-history' ||
+    normalizedPathname.startsWith('/account/rental-history/') ||
     normalizedPathname === '/account/rentals' ||
     normalizedPathname.startsWith('/account/rentals/')
   ) {

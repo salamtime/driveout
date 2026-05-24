@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, MessageSquareText } from 'lucide-react';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
@@ -562,6 +562,7 @@ const AccountMessages = () => {
   const [ownerAccessDetected, setOwnerAccessDetected] = useState(profileSenderRole === 'owner');
   const busyThreadKey = '';
   const [mobileConversationOpen, setMobileConversationOpen] = useState(false);
+  const [mobileHeaderMenuOpen, setMobileHeaderMenuOpen] = useState(false);
   const realtimeReloadTimerRef = useRef(null);
   const repairedOwnerRequestIdsRef = useRef(new Set());
   const messageExperience = getMessageExperience();
@@ -589,6 +590,14 @@ const AccountMessages = () => {
     const params = new URLSearchParams(location.search);
     return String(params.get('requestId') || '').trim();
   }, [location.search]);
+  const requestedInboxLane = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return String(params.get('lane') || '').trim().toLowerCase();
+  }, [location.search]);
+  const preferredReturnInboxLane = useMemo(
+    () => String(location.state?.preferredInboxLane || '').trim().toLowerCase(),
+    [location.state]
+  );
   const directConversationMode = Boolean(requestedThreadKey || requestedBookingId);
   const initialSelectedThreadKey = useMemo(() => {
     const requestedThread = requestedThreadKey
@@ -612,6 +621,17 @@ const AccountMessages = () => {
 
     return String(matchingThread?.thread_key || matchingThread?.id || '').trim();
   }, [effectiveSenderRole, requestedBookingId, requestedThreadKey, threads]);
+  const initialInboxLane = directConversationMode ? '' : (requestedInboxLane || preferredReturnInboxLane);
+  const workspaceRenderKey = useMemo(
+    () => [
+      directConversationMode ? 'direct' : 'list',
+      requestedThreadKey,
+      requestedBookingId,
+      initialSelectedThreadKey,
+      initialInboxLane,
+    ].join(':'),
+    [directConversationMode, initialInboxLane, initialSelectedThreadKey, requestedBookingId, requestedThreadKey]
+  );
   const backLink = useMemo(
     () => resolveReturnPath(location, '/account/overview'),
     [location]
@@ -784,65 +804,24 @@ const AccountMessages = () => {
     () => buildMessageSectionSummary(transactionHubThreads),
     [transactionHubThreads]
   );
-  const inboxOverviewCards = useMemo(
-    () => [
-      {
-        key: 'actions',
-        label: tr('Actions required', 'Actions requises'),
-        value: inboxSectionSummary.actions,
-        helper: tr(
-          'Requests waiting, listing fixes, or verification follow-ups.',
-          'Demandes en attente, corrections d’annonce ou suivis de vérification.'
-        ),
-        icon: AlertCircle,
-        toneClassName: 'bg-amber-50 text-amber-700 ring-amber-100',
-      },
-      {
-        key: 'conversations',
-        label: tr('Live conversations', 'Conversations en direct'),
-        value: inboxSectionSummary.conversations,
-        helper: tr(
-          'Active renter conversations, approvals, and trip coordination.',
-          'Conversations actives avec les locataires, approbations et coordination des trajets.'
-        ),
-        icon: MessageSquareText,
-        toneClassName: 'bg-violet-50 text-violet-700 ring-violet-100',
-      },
-      {
-        key: 'updates',
-        label: tr('Updates', 'Mises à jour'),
-        value: inboxSectionSummary.updates,
-        helper: tr(
-          `${inboxSectionSummary.unreadCount} unread threads to review.`,
-          `${inboxSectionSummary.unreadCount} fils non lus à consulter.`
-        ),
-        icon: CheckCircle2,
-        toneClassName: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
-      },
-    ],
-    [inboxSectionSummary.actions, inboxSectionSummary.conversations, inboxSectionSummary.unreadCount, inboxSectionSummary.updates, tr]
-  );
-  const inboxHero = useMemo(() => {
-    if (effectiveSenderRole === 'owner') {
-      return {
-        eyebrow: tr('Inbox', 'Boîte de réception'),
-        title: tr('Run your vehicle business from here', 'Pilotez votre activité véhicule depuis ici'),
-        description: tr(
-          'Handle booking requests, renter conversations, verification follow-ups, and listing decisions in one place. Pricing, availability, and unlisting still live in Listings.',
-          'Gérez les demandes de réservation, les conversations locataires, les suivis de vérification et les décisions d’annonce au même endroit. Les prix, disponibilités et dépublications restent dans Annonces.'
-        ),
-      };
-    }
-
-    return {
+  const inboxHeader = useMemo(
+    () => ({
       eyebrow: tr('Inbox', 'Boîte de réception'),
-      title: tr('Keep every trip conversation in one place', 'Gardez chaque conversation de trajet au même endroit'),
-      description: tr(
-        'Booking updates, support replies, and verification follow-ups all land here so you always know what to answer next.',
-        'Les mises à jour de réservation, réponses support et suivis de vérification arrivent ici pour que vous sachiez toujours quoi traiter ensuite.'
-      ),
-    };
-  }, [effectiveSenderRole, tr]);
+      title: effectiveSenderRole === 'owner'
+        ? tr('Operations inbox', 'Boîte de réception des opérations')
+        : tr('Trip inbox', 'Boîte de réception des trajets'),
+      description: effectiveSenderRole === 'owner'
+        ? tr(
+            'Open the thread you need and reply right away.',
+            'Ouvrez le fil nécessaire et répondez tout de suite.'
+          )
+        : tr(
+            'See the latest trip updates and reply from one place.',
+            'Consultez les dernières mises à jour et répondez depuis un seul endroit.'
+          ),
+    }),
+    [effectiveSenderRole, tr]
+  );
   const inboxActionLinks = useMemo(() => {
     if (effectiveSenderRole === 'owner') {
       return [
@@ -1174,10 +1153,10 @@ const AccountMessages = () => {
 
   return (
     <div className="min-h-full bg-[linear-gradient(180deg,#f5f3ff_0%,#eef2ff_45%,#ffffff_100%)]">
-      <main className={`mx-auto ${directConversationMode ? 'max-w-5xl px-0 py-0 sm:px-4 sm:py-4 lg:px-6' : 'max-w-7xl px-3 py-6 sm:px-6 lg:px-8'} ${mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-6'}`}>
-        <section className={mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-6'}>
+      <main className={`mx-auto ${directConversationMode ? 'max-w-5xl px-0 py-0 sm:px-4 sm:py-4 lg:px-6' : 'max-w-7xl px-2.5 py-3 sm:px-6 sm:py-6 lg:px-8'} ${mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-4 sm:space-y-6'}`}>
+        <section className={mobileConversationOpen ? 'space-y-3' : directConversationMode ? 'space-y-0' : 'space-y-4 sm:space-y-6'}>
           {!directConversationMode ? (
-          <header className="space-y-5 px-1">
+          <header className="space-y-3 px-0.5 sm:space-y-4 sm:px-1">
             {location.state?.from ? (
               <button
                 type="button"
@@ -1188,67 +1167,84 @@ const AccountMessages = () => {
                 {tr('Back', 'Retour')}
               </button>
             ) : null}
-            <div className="rounded-[32px] border border-violet-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(245,243,255,0.96))] px-5 py-6 shadow-[0_18px_40px_rgba(76,29,149,0.08)] sm:px-7">
-              <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-                <div className="max-w-3xl">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-violet-600">
-                      {inboxHero.eyebrow}
+            <div className="relative z-[90] rounded-[22px] border border-violet-100/90 bg-white/92 px-3.5 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.05)] sm:hidden">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+                      {inboxHeader.eyebrow}
                     </p>
-                    <span className="inline-flex items-center rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-slate-600 ring-1 ring-slate-200">
+                    <span className="inline-flex items-center rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100">
                       {tr(
                         `${inboxSectionSummary.unreadCount} unread`,
                         `${inboxSectionSummary.unreadCount} non lus`
                       )}
                     </span>
                   </div>
-                  <h1 className="mt-3 text-2xl font-black tracking-[-0.03em] text-slate-950 sm:text-[2.2rem]">
-                    {inboxHero.title}
+                  <h1 className="mt-2 truncate text-xl font-bold text-slate-950">
+                    {inboxHeader.title}
                   </h1>
-                  <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-[15px]">
-                    {inboxHero.description}
+                </div>
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setMobileHeaderMenuOpen((current) => !current)}
+                    className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm"
+                    aria-expanded={mobileHeaderMenuOpen}
+                  >
+                    {tr('More', 'Plus')}
+                    <ChevronDown className={`h-3.5 w-3.5 transition ${mobileHeaderMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {mobileHeaderMenuOpen ? (
+                    <div className="absolute right-0 z-[140] mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-[0_22px_54px_rgba(15,23,42,0.22)]">
+                      {inboxActionLinks.map((action) => (
+                        <Link
+                          key={action.key}
+                          to={action.to}
+                          onClick={() => setMobileHeaderMenuOpen(false)}
+                          className="block rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 hover:bg-violet-50 hover:text-violet-700"
+                        >
+                          {action.label}
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden rounded-[28px] border border-violet-100/90 bg-white/92 px-6 py-5 shadow-[0_12px_28px_rgba(15,23,42,0.05)] sm:block">
+              <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+                      {inboxHeader.eyebrow}
+                    </p>
+                    <span className="inline-flex items-center rounded-full bg-violet-50 px-3 py-1 text-[11px] font-semibold text-violet-700 ring-1 ring-violet-100">
+                      {tr(
+                        `${inboxSectionSummary.unreadCount} unread`,
+                        `${inboxSectionSummary.unreadCount} non lus`
+                      )}
+                    </span>
+                  </div>
+                  <h1 className="mt-2 text-xl font-bold text-slate-950">
+                    {inboxHeader.title}
+                  </h1>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {inboxHeader.description}
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 lg:justify-end">
                   {inboxActionLinks.map((action) => (
                     <Link
                       key={action.key}
                       to={action.to}
-                      className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+                      className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
                     >
                       {action.label}
                     </Link>
                   ))}
                 </div>
-              </div>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                {inboxOverviewCards.map((card) => {
-                  const Icon = card.icon;
-                  return (
-                    <div
-                      key={card.key}
-                      className="rounded-[24px] border border-white/80 bg-white/90 px-4 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.05)]"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
-                            {card.label}
-                          </p>
-                          <p className="mt-2 text-3xl font-black tracking-[-0.03em] text-slate-950">
-                            {card.value}
-                          </p>
-                        </div>
-                        <span className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ring-1 ${card.toneClassName}`}>
-                          <Icon className="h-5 w-5" />
-                        </span>
-                      </div>
-                      <p className="mt-3 text-sm leading-6 text-slate-500">
-                        {card.helper}
-                      </p>
-                    </div>
-                  );
-                })}
               </div>
             </div>
           </header>
@@ -1256,6 +1252,7 @@ const AccountMessages = () => {
 
           <div>
             <SharedInboxWorkspace
+              key={workspaceRenderKey}
               {...messageExperience}
               threads={threads}
               loading={loading}
@@ -1263,6 +1260,7 @@ const AccountMessages = () => {
               busyThreadKey={busyThreadKey}
               initialSelectedThreadKey={initialSelectedThreadKey}
               initialSelectedRequestId={requestedBookingId}
+              initialInboxLane={initialInboxLane}
               currentUserId={user?.id}
               currentUserLabel={currentUserLabel}
               currentUserAvatarUrl={currentUserAvatarUrl}
@@ -1280,6 +1278,20 @@ const AccountMessages = () => {
               directThreadMode={directConversationMode}
               workspaceContext={effectiveSenderRole === 'owner' ? 'owner' : 'customer'}
               onMobileConversationStateChange={setMobileConversationOpen}
+              onExitDirectThreadMode={({ thread, preferredInboxLane } = {}) => {
+                const preferredLane = String(preferredInboxLane || '').trim().toLowerCase();
+                const returnOrigin = String(location.state?.from || '').trim() || `${location.pathname}${location.search}${location.hash}`;
+                const nextSearch = preferredLane ? `?lane=${encodeURIComponent(preferredLane)}` : '';
+                navigate({
+                  pathname: '/account/messages',
+                  search: nextSearch,
+                }, {
+                  replace: false,
+                  state: {
+                    from: returnOrigin,
+                  },
+                });
+              }}
               onRefresh={() => loadThreads()}
               onSupportAction={handleOpenSupportThread}
               onOpenContext={(thread) => {

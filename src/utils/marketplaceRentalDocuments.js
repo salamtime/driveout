@@ -21,6 +21,11 @@ const safeNumber = (value, fallback = 0) => {
   return Number.isFinite(nextValue) ? nextValue : fallback;
 };
 
+const positiveNumber = (value) => {
+  const nextValue = safeNumber(value, 0);
+  return nextValue > 0 ? nextValue : 0;
+};
+
 const firstText = (...values) => {
   for (const value of values) {
     const nextValue = cleanText(value);
@@ -58,6 +63,56 @@ const buildMissingFields = (entries = []) =>
   entries
     .filter((entry) => !entry.value)
     .map((entry) => entry.label);
+
+const getListingDistancePricing = ({ request = {}, rawRequest = {}, formData = {} } = {}) => {
+  const rawListing = request.rawListing && typeof request.rawListing === 'object' ? request.rawListing : {};
+  const rawProfile = request.rawProfile && typeof request.rawProfile === 'object' ? request.rawProfile : {};
+  const pricing = rawListing.pricing && typeof rawListing.pricing === 'object' ? rawListing.pricing : {};
+  const distancePricing = pricing.distance && typeof pricing.distance === 'object' ? pricing.distance : {};
+
+  return {
+    includedKm: positiveNumber(
+      request.includedKm ??
+      request.included_km ??
+      rawRequest.included_km ??
+      rawListing.included_km ??
+      distancePricing.included_km ??
+      rawProfile.mileage_limit_km ??
+      formData.mileageLimitKm
+    ),
+    extraKmRate: positiveNumber(
+      request.extraKmRate ??
+      request.extra_km_rate ??
+      rawRequest.extra_km_rate ??
+      rawListing.extra_km_rate ??
+      distancePricing.extra_km_rate ??
+      rawProfile.extra_km_rate ??
+      formData.extraKmRate
+    ),
+  };
+};
+
+const calculateMarketplaceDistanceCharge = ({ request = {}, rawRequest = {}, formData = {}, draft = {} } = {}) => {
+  const { includedKm, extraKmRate } = getListingDistancePricing({ request, rawRequest, formData });
+  const startOdometer = positiveNumber(draft.startOdometer);
+  const returnOdometer = positiveNumber(draft.returnOdometer);
+  const totalKm = startOdometer > 0 && returnOdometer >= startOdometer
+    ? Number((returnOdometer - startOdometer).toFixed(2))
+    : 0;
+  const extraKm = includedKm > 0 ? Number(Math.max(0, totalKm - includedKm).toFixed(2)) : 0;
+  const overageCharge = extraKm > 0 && extraKmRate > 0
+    ? Number((extraKm * extraKmRate).toFixed(2))
+    : 0;
+
+  return {
+    totalKm,
+    includedKm,
+    extraKmRate,
+    extraKm,
+    overageCharge,
+    enabled: includedKm > 0 && extraKmRate > 0,
+  };
+};
 
 const buildCustomerSnapshot = (request = {}) => {
   const rawRequest = request.rawRequest && typeof request.rawRequest === 'object' ? request.rawRequest : {};
@@ -267,6 +322,21 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
   const status = normalizeMarketplaceRequestLifecycleStatus(request.requestStatus || rawRequest.request_status || 'pending');
   const depositOutcome = cleanText(draft.depositOutcome).toLowerCase();
   const depositRefundAmount = Math.max(0, safeNumber(draft.depositRefundAmount || depositAmount));
+  const distanceCharge = calculateMarketplaceDistanceCharge({ request, rawRequest, formData, draft });
+  const mileageOverageSettlement = cleanText(draft.mileageOverageSettlement).toLowerCase();
+  const mileageOverageRawAmount = Math.max(0, distanceCharge.overageCharge);
+  const mileageOverageBillableAmount = mileageOverageSettlement === 'waived' ? 0 : mileageOverageRawAmount;
+  const mileageOverageSettledAmount = ['deduct_deposit', 'paid_separately'].includes(mileageOverageSettlement)
+    ? mileageOverageBillableAmount
+    : 0;
+  const mileageOverageDepositDeductionAmount = mileageOverageSettlement === 'deduct_deposit'
+    ? Math.min(depositAmount || mileageOverageBillableAmount, mileageOverageBillableAmount)
+    : 0;
+  const mileageOverageWaivedAmount = mileageOverageSettlement === 'waived' ? mileageOverageRawAmount : 0;
+  const receiptTotalAmount = Number((estimatedAmount + mileageOverageBillableAmount).toFixed(2));
+  const distancePackageId = distanceCharge.enabled
+    ? buildDocumentId('marketplace-distance', requestReference || requestId)
+    : null;
   const documentArtifacts = {
     contractUrl: cleanText(draft.contractDocumentUrl),
     contractGeneratedAt: draft.contractDocumentGeneratedAt || null,
@@ -315,7 +385,9 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
     rental_type: rentalType,
     duration: durationUnits,
     unit_price: durationUnits > 0 ? Number((estimatedAmount / durationUnits).toFixed(2)) : estimatedAmount,
-    total_amount: estimatedAmount,
+    total_amount: receiptTotalAmount,
+    base_rental_amount: estimatedAmount,
+    rental_charge_amount: estimatedAmount,
     deposit_amount: depositAmount,
     damage_deposit: depositAmount,
     currency_code: currencyCode,
@@ -325,6 +397,47 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
     contract_signed_at: draft.contractSignedAt || null,
     start_odometer: draft.startOdometer || null,
     ending_odometer: draft.returnOdometer || null,
+    total_kilometers_driven: distanceCharge.totalKm || null,
+    total_distance: distanceCharge.totalKm || null,
+    included_kilometers_applied: distanceCharge.enabled ? distanceCharge.includedKm : null,
+    included_kilometers: distanceCharge.enabled ? distanceCharge.includedKm : null,
+    extra_km_rate_applied: distanceCharge.enabled ? distanceCharge.extraKmRate : null,
+    extra_kilometers: distanceCharge.extraKm,
+    overage_kilometers: distanceCharge.extraKm,
+    overage_charge: distanceCharge.overageCharge,
+    has_kilometer_overage: distanceCharge.overageCharge > 0,
+    mileage_overage_settlement: mileageOverageSettlement,
+    mileage_overage_reviewed: Boolean(draft.mileageOverageReviewed),
+    mileage_overage_reviewed_at: draft.mileageOverageReviewedAt || null,
+    mileage_overage_amount: draft.mileageOverageAmount || distanceCharge.overageCharge,
+    mileage_overage_raw_amount: mileageOverageRawAmount,
+    mileage_overage_billable_amount: mileageOverageBillableAmount,
+    mileage_overage_settled_amount: mileageOverageSettledAmount,
+    mileage_overage_deposit_deduction_amount: mileageOverageDepositDeductionAmount,
+    mileage_overage_waived_amount: mileageOverageWaivedAmount,
+    mileage_overage_currency: draft.mileageOverageCurrency || currencyCode,
+    mileage_overage_signature_url: draft.mileageOverageSignatureUrl || null,
+    mileage_overage_signed_at: draft.mileageOverageSignedAt || null,
+    mileage_overage_signed_by: draft.mileageOverageSignedBy || null,
+    mileage_overage_recorded_by: draft.mileageOverageRecordedBy || ownerUserId || null,
+    use_package_pricing: distanceCharge.enabled,
+    package_id: distancePackageId,
+    selected_package_id: distancePackageId,
+    package_name: distanceCharge.enabled ? 'Listing distance rule' : null,
+    selected_package_name: distanceCharge.enabled ? 'Listing distance rule' : null,
+    package_total_included_km: distanceCharge.enabled ? distanceCharge.includedKm : null,
+    selected_package_total_included_km: distanceCharge.enabled ? distanceCharge.includedKm : null,
+    package_extra_rate: distanceCharge.enabled ? distanceCharge.extraKmRate : null,
+    selected_package_extra_rate: distanceCharge.enabled ? distanceCharge.extraKmRate : null,
+    package: distanceCharge.enabled
+      ? {
+          id: distancePackageId,
+          name: 'Listing distance rule',
+          package_name: 'Listing distance rule',
+          extra_km_rate: distanceCharge.extraKmRate,
+          total_included_kilometers_snapshot: distanceCharge.includedKm,
+        }
+      : null,
     start_fuel_level: draft.startFuelLevel || null,
     end_fuel_level: draft.returnFuelLevel || null,
     current_fuel_level: vehicleFuelState?.current_fuel_lines ?? null,
@@ -362,6 +475,10 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
       label: 'refund signature',
       value: !draft.returnSavedAt || depositOutcome !== 'refund_full' || documentArtifacts.refundSignatureUrl,
     },
+    {
+      label: 'extra mileage signature',
+      value: !draft.returnSavedAt || distanceCharge.overageCharge <= 0 || draft.mileageOverageSignatureUrl,
+    },
   ]);
 
   return {
@@ -376,7 +493,26 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
       duration: durationUnits,
       currencyCode,
       estimatedAmount,
+      baseAmount: estimatedAmount,
+      overageAmount: mileageOverageBillableAmount,
+      rawOverageAmount: mileageOverageRawAmount,
+      totalAmount: receiptTotalAmount,
       depositAmount,
+      distance: {
+        includedKm: distanceCharge.includedKm,
+        extraKmRate: distanceCharge.extraKmRate,
+        totalKm: distanceCharge.totalKm,
+        extraKm: distanceCharge.extraKm,
+        overageCharge: distanceCharge.overageCharge,
+        billableOverageCharge: mileageOverageBillableAmount,
+        settledAmount: mileageOverageSettledAmount,
+        depositDeductionAmount: mileageOverageDepositDeductionAmount,
+        waivedAmount: mileageOverageWaivedAmount,
+        settlement: mileageOverageSettlement,
+        settlementReviewed: Boolean(draft.mileageOverageReviewed),
+        signatureUrl: draft.mileageOverageSignatureUrl || '',
+        signedAt: draft.mileageOverageSignedAt || null,
+      },
     },
     customer,
     vehicle,
@@ -415,6 +551,26 @@ export const buildDriveOutMarketplaceRentalDocumentPayload = ({
         signedAt: draft.depositRefundSignedAt || null,
         signedBy: draft.depositRefundSignedBy || customer.id || customer.email || customer.name || '',
         recordedBy: draft.depositRefundRecordedBy || ownerUserId || '',
+      },
+      overage: {
+        settlement: mileageOverageSettlement,
+        reviewed: Boolean(draft.mileageOverageReviewed),
+        reviewedAt: draft.mileageOverageReviewedAt || null,
+        amount: mileageOverageBillableAmount,
+        rawAmount: mileageOverageRawAmount,
+        billableAmount: mileageOverageBillableAmount,
+        settledAmount: mileageOverageSettledAmount,
+        depositDeductionAmount: mileageOverageDepositDeductionAmount,
+        waivedAmount: mileageOverageWaivedAmount,
+        currencyCode: draft.mileageOverageCurrency || currencyCode,
+        totalKm: draft.mileageOverageTotalKm || distanceCharge.totalKm,
+        includedKm: draft.mileageOverageIncludedKm || distanceCharge.includedKm,
+        extraKm: draft.mileageOverageExtraKm || distanceCharge.extraKm,
+        rate: draft.mileageOverageRate || distanceCharge.extraKmRate,
+        signatureUrl: draft.mileageOverageSignatureUrl || '',
+        signedAt: draft.mileageOverageSignedAt || null,
+        signedBy: draft.mileageOverageSignedBy || customer.id || customer.email || customer.name || '',
+        recordedBy: draft.mileageOverageRecordedBy || ownerUserId || '',
       },
       rental: rentalLike,
     },

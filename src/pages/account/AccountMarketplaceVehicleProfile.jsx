@@ -97,12 +97,26 @@ import {
   getOwnerExecutionActionConfig,
 } from '../../utils/ownerRentalExecutionLinks';
 import { buildDriveOutMarketplaceRentalDocumentPayload } from '../../utils/marketplaceRentalDocuments';
+import { buildMarketplaceListingPath } from '../../utils/marketplaceShareLinks';
 import { encodePublicSharePayload } from '../../utils/publicSharePayload';
 
 const formatMoney = (amount, currencyCode = 'MAD', locale = 'en') =>
   new Intl.NumberFormat(locale === 'fr' ? 'fr-MA' : 'en-MA', {
     maximumFractionDigits: 0,
   }).format(Number(amount || 0)) + ` ${currencyCode}`;
+
+const formatDistanceQuantity = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return '';
+  return Number.isInteger(number) ? String(number) : String(number).replace(/\.0+$/, '');
+};
+
+const formatExtraKmRateLabel = (value, currencyCode = 'MAD') => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  const label = Number.isInteger(amount) ? String(amount) : amount.toFixed(2).replace(/\.?0+$/, '');
+  return `${label} ${currencyCode}/km`;
+};
 
 const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
 const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
@@ -177,6 +191,46 @@ const getOwnerExecutionFuelLabel = (value, tr) => {
   return `${level}/8`;
 };
 
+const buildOwnerMileageOveragePreview = ({
+  startOdometer,
+  returnOdometer,
+  includedKm,
+  extraKmRate,
+  currencyCode = 'MAD',
+} = {}) => {
+  if (!hasOwnerExecutionNumberValue(startOdometer) || !hasOwnerExecutionNumberValue(returnOdometer)) return null;
+  const startValue = Number(startOdometer);
+  const returnValue = Number(returnOdometer);
+  if (!Number.isFinite(startValue) || !Number.isFinite(returnValue) || returnValue < startValue) return null;
+
+  const totalKm = Number((returnValue - startValue).toFixed(2));
+  const allowance = Number(includedKm);
+  const rate = Number(extraKmRate);
+  const hasDistanceRule = Number.isFinite(allowance) && allowance > 0 && Number.isFinite(rate) && rate > 0;
+  const extraKm = hasDistanceRule ? Number(Math.max(0, totalKm - allowance).toFixed(2)) : 0;
+  const overageCharge = hasDistanceRule ? Number((extraKm * rate).toFixed(2)) : 0;
+
+  return {
+    totalKm,
+    includedKm: hasDistanceRule ? allowance : 0,
+    extraKmRate: hasDistanceRule ? rate : 0,
+    extraKm,
+    overageCharge,
+    currencyCode,
+    hasDistanceRule,
+    hasOverage: overageCharge > 0,
+  };
+};
+
+const getOwnerMileageOverageSettlementLabel = (settlement = '', tr = (en) => en) => {
+  const normalizedSettlement = String(settlement || '').trim().toLowerCase();
+  if (normalizedSettlement === 'deduct_deposit') return tr('Deduct from deposit', 'Déduire de la caution');
+  if (normalizedSettlement === 'paid_separately') return tr('Paid separately', 'Payé séparément');
+  if (normalizedSettlement === 'waived') return tr('Waived', 'Annulé');
+  if (normalizedSettlement === 'unpaid') return tr('Marked unpaid', 'Marqué impayé');
+  return '';
+};
+
 const isOwnerExecutionDepositReviewComplete = (draft = {}) => {
   const outcome = String(draft?.depositOutcome || '').trim().toLowerCase();
   if (!draft?.depositReviewed || !outcome) return false;
@@ -189,8 +243,8 @@ const isOwnerExecutionDepositReviewComplete = (draft = {}) => {
 const OWNER_HANDOFF_STEPS = [
   {
     key: 'vehicle_photos',
-    label: { en: 'Vehicle inspection', fr: 'Inspection véhicule' },
-    note: { en: 'Capture clear vehicle inspection photos.', fr: 'Capturez des photos claires de l’inspection véhicule.' },
+    label: { en: 'Open media', fr: 'Médias ouverture' },
+    note: { en: 'Capture clear media before the rental starts.', fr: 'Capturez des médias clairs avant le départ.' },
     gate: (draft) => Boolean(draft.handoffMediaReady),
   },
   {
@@ -207,7 +261,7 @@ const OWNER_HANDOFF_STEPS = [
   },
   {
     key: 'legal_docs',
-    label: { en: 'Registration + insurance', fr: 'Carte grise + assurance' },
+    label: { en: 'Registration + insurance media', fr: 'Médias carte grise + assurance' },
     note: { en: 'Capture one registration photo and one insurance photo.', fr: 'Capturez une photo de carte grise et une photo d’assurance.' },
     gate: (draft) =>
       Boolean(draft.legalDocsMediaReady) ||
@@ -232,8 +286,8 @@ const OWNER_FUEL_LEVEL_OPTIONS = Array.from({ length: 9 }, (_value, index) => in
 const OWNER_RETURN_STEPS = [
   {
     key: 'return_photos',
-    label: { en: 'Vehicle inspection', fr: 'Inspection véhicule' },
-    note: { en: 'Capture the vehicle on return.', fr: 'Capturez le véhicule au retour.' },
+    label: { en: 'Closed media', fr: 'Médias clôture' },
+    note: { en: 'Capture clear media before closing the rental.', fr: 'Capturez des médias clairs avant de clôturer la location.' },
     gate: (draft) => Boolean(draft.returnMediaReady),
   },
   {
@@ -1039,6 +1093,9 @@ const OwnerStepperStepCard = ({
   onPrimaryAction,
   primaryDisabled = false,
   primaryTone = 'violet',
+  secondaryActionLabel = '',
+  onSecondaryAction,
+  secondaryDisabled = false,
   children = null,
 }) => (
   <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.04)]">
@@ -1058,7 +1115,7 @@ const OwnerStepperStepCard = ({
     </div>
     {children ? <div className="mt-4">{children}</div> : null}
     {primaryActionLabel ? (
-      <div className="mt-4">
+      <div className="mt-4 flex flex-col items-stretch gap-2 sm:items-start">
         <button
           type="button"
           onClick={onPrimaryAction}
@@ -1075,6 +1132,16 @@ const OwnerStepperStepCard = ({
         >
           {primaryActionLabel}
         </button>
+        {secondaryActionLabel ? (
+          <button
+            type="button"
+            onClick={onSecondaryAction}
+            disabled={secondaryDisabled}
+            className="inline-flex w-fit items-center rounded-full px-2 py-1 text-xs font-bold text-slate-500 transition hover:bg-slate-100 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {secondaryActionLabel}
+          </button>
+        ) : null}
       </div>
     ) : null}
   </div>
@@ -1173,6 +1240,60 @@ const OwnerPolicyLine = ({ label, detail }) => (
     <p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p>
   </div>
 );
+
+const OwnerMileageOveragePreviewCard = ({ preview, tr }) => {
+  if (!preview) return null;
+  const formattedCharge = formatMoney(preview.overageCharge, preview.currencyCode);
+  const formattedRate = formatExtraKmRateLabel(preview.extraKmRate, preview.currencyCode);
+
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-3 ${
+        preview.hasOverage
+          ? 'border-amber-200 bg-amber-50 text-amber-900'
+          : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <Gauge className={`mt-0.5 h-4 w-4 flex-shrink-0 ${preview.hasOverage ? 'text-amber-600' : 'text-emerald-600'}`} />
+        <div className="min-w-0">
+          <p className="text-sm font-bold">
+            {preview.hasOverage
+              ? tr('Extra mileage preview', 'Aperçu kilométrage supplémentaire')
+              : tr('Mileage preview', 'Aperçu kilométrage')}
+          </p>
+          {preview.hasDistanceRule ? (
+            <p className="mt-1 text-xs leading-5">
+              {tr(
+                `${preview.totalKm} km driven • ${preview.includedKm} km included • ${preview.extraKm} km extra`,
+                `${preview.totalKm} km parcourus • ${preview.includedKm} km inclus • ${preview.extraKm} km extra`
+              )}
+            </p>
+          ) : (
+            <p className="mt-1 text-xs leading-5">
+              {tr(
+                `${preview.totalKm} km driven • unlimited distance rule`,
+                `${preview.totalKm} km parcourus • règle distance illimitée`
+              )}
+            </p>
+          )}
+          {preview.hasOverage ? (
+            <p className="mt-2 text-sm font-extrabold tracking-[-0.02em]">
+              {tr(
+                `${preview.extraKm} km × ${formattedRate} = ${formattedCharge}`,
+                `${preview.extraKm} km × ${formattedRate} = ${formattedCharge}`
+              )}
+            </p>
+          ) : (
+            <p className="mt-2 text-sm font-extrabold tracking-[-0.02em]">
+              {tr('No extra mileage charge.', 'Aucun frais kilométrique supplémentaire.')}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const storeOwnerVehicleId = (userId, vehicleId, options = {}) => {
   if (typeof window === 'undefined' || !vehicleId) return;
@@ -1744,6 +1865,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { vehicleId } = useParams();
+  const { user, userProfile, activatePrivateOwnerAccount } = useAuth();
   const isNewVehicle = vehicleId === 'new';
   const isOperationsWorkspaceRoute = location.pathname.includes('/account/operations/');
   const routeOwnerOperationRequest = useMemo(() => {
@@ -1767,9 +1889,43 @@ const AccountMarketplaceVehicleProfile = () => {
         ''
     ).trim();
     if (requestVehicleId && vehicleId && requestVehicleId !== String(vehicleId)) return null;
-    return stateRequest;
-  }, [isOperationsWorkspaceRoute, location.search, location.state, vehicleId]);
-  const { user, userProfile, activatePrivateOwnerAccount } = useAuth();
+
+    const executionStorageKeys = buildOwnerExecutionStorageKeys(requestId || stateRequest.id, user?.id);
+    const persistedExecutionDraft = executionStorageKeys.length > 0
+      ? executionStorageKeys
+          .map((storageKey) => {
+            try {
+              return window.localStorage.getItem(storageKey);
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value !== null)
+      : null;
+
+    if (!persistedExecutionDraft) {
+      return stateRequest;
+    }
+
+    try {
+      const normalizedDraft = normalizeOwnerExecutionDraft(JSON.parse(persistedExecutionDraft));
+      return {
+        ...stateRequest,
+        ownerExecution: normalizedDraft,
+        rawRequest: {
+          ...(stateRequest?.rawRequest || {}),
+          counter_offer: {
+            ...((stateRequest?.rawRequest?.counter_offer && typeof stateRequest.rawRequest.counter_offer === 'object')
+              ? stateRequest.rawRequest.counter_offer
+              : {}),
+            owner_execution: normalizedDraft,
+          },
+        },
+      };
+    } catch {
+      return stateRequest;
+    }
+  }, [isOperationsWorkspaceRoute, location.search, location.state, user?.id, vehicleId]);
   const [vehicle, setVehicle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -1833,6 +1989,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const [showOwnerReturnFuelModal, setShowOwnerReturnFuelModal] = useState(false);
   const [showOwnerSignatureModal, setShowOwnerSignatureModal] = useState(false);
   const [showOwnerRefundSignatureModal, setShowOwnerRefundSignatureModal] = useState(false);
+  const [showOwnerMileageOverageSignatureModal, setShowOwnerMileageOverageSignatureModal] = useState(false);
   const operationsMediaSectionRef = useRef(null);
   const ownerExecutionDocumentGenerationRef = useRef({ contract: false, receipt: false });
   const ownerExecutionDocumentAutoPrepareRef = useRef('');
@@ -1874,6 +2031,11 @@ const AccountMarketplaceVehicleProfile = () => {
     return '/account/vehicles';
   }, [isOperationsWorkspaceRoute, location, user?.id]);
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
+  const publicListingPath = useMemo(() => {
+    const listingId = String(vehicle?.listingId || '').trim();
+    if (!listingId) return '';
+    return buildMarketplaceListingPath(listingId);
+  }, [vehicle?.listingId]);
   const effectiveActiveTab = isOperationsWorkspaceRoute ? 'bookings' : activeTab;
   const resumeEditingAfterLoad = Boolean(location.state?.resumeEditing);
   const resumeFocusedSectionId = String(location.state?.focusSectionId || '').trim();
@@ -2447,6 +2609,10 @@ const AccountMarketplaceVehicleProfile = () => {
     () => isOperationsWorkspaceRoute && OWNER_EXECUTION_FOCUS_STAGES.has(ownerExecutionStage),
     [isOperationsWorkspaceRoute, ownerExecutionStage]
   );
+  const ownerExecutionReturnActionMode = useMemo(
+    () => ownerExecutionFocusMode && ownerExecutionStage === 'return_pending',
+    [ownerExecutionFocusMode, ownerExecutionStage]
+  );
   useEffect(() => {
     if (!ownerExecutionFocusMode) return;
 
@@ -2543,36 +2709,68 @@ const AccountMarketplaceVehicleProfile = () => {
       ownerExecutionDraft.startOdometer,
     ]
   );
-  const ownerReturnReady = useMemo(
-    () => [
-      ownerExecutionDraft.returnMediaReady,
-      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer) &&
-        (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ||
-          Number(ownerExecutionDraft.returnOdometer) >= Number(ownerExecutionDraft.startOdometer)),
-      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel),
-	      ownerExecutionDraft.issueReviewed &&
-	        (!ownerExecutionDraft.issueReported || Boolean(String(ownerExecutionDraft.issueNote || '').trim())),
-	      isOwnerExecutionDepositReviewComplete(ownerExecutionDraft),
-	    ].every(Boolean),
-	    [
-	      ownerExecutionDraft.depositOutcome,
-	      ownerExecutionDraft.depositReviewed,
-	      ownerExecutionDraft.depositRefundSignatureUrl,
-	      ownerExecutionDraft.issueNote,
-	      ownerExecutionDraft.issueReported,
-      ownerExecutionDraft.issueReviewed,
-      ownerExecutionDraft.returnFuelLevel,
-      ownerExecutionDraft.returnMediaReady,
-      ownerExecutionDraft.startOdometer,
-      ownerExecutionDraft.returnOdometer,
-    ]
-	  );
 	  const ownerReturnFuelDelta = useMemo(() => {
     if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startFuelLevel) || !hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)) return null;
     const startLevel = Number(ownerExecutionDraft.startFuelLevel);
     const returnLevel = Number(ownerExecutionDraft.returnFuelLevel);
     return returnLevel - startLevel;
 	  }, [ownerExecutionDraft.returnFuelLevel, ownerExecutionDraft.startFuelLevel]);
+  const ownerReturnMileageRule = useMemo(() => {
+    const rawListing = operationalRequest?.rawListing && typeof operationalRequest.rawListing === 'object' ? operationalRequest.rawListing : {};
+    const rawProfile = operationalRequest?.rawProfile && typeof operationalRequest.rawProfile === 'object' ? operationalRequest.rawProfile : {};
+    const listingPricing = rawListing.pricing && typeof rawListing.pricing === 'object' ? rawListing.pricing : {};
+    const distancePricing = listingPricing.distance && typeof listingPricing.distance === 'object' ? listingPricing.distance : {};
+
+    return {
+      includedKm:
+        operationalRequest?.includedKm ??
+        operationalRequest?.included_km ??
+        rawListing.included_km ??
+        distancePricing.included_km ??
+        rawProfile.mileage_limit_km ??
+        formData.mileageLimitKm,
+      extraKmRate:
+        operationalRequest?.extraKmRate ??
+        operationalRequest?.extra_km_rate ??
+        rawListing.extra_km_rate ??
+        distancePricing.extra_km_rate ??
+        rawProfile.extra_km_rate ??
+        formData.extraKmRate,
+      currencyCode: operationalRequest?.currencyCode || formData.currencyCode || 'MAD',
+    };
+  }, [formData.currencyCode, formData.extraKmRate, formData.mileageLimitKm, operationalRequest]);
+  const ownerReturnMileageOveragePreview = useMemo(
+    () => buildOwnerMileageOveragePreview({
+      startOdometer: ownerExecutionDraft.startOdometer,
+      returnOdometer: ownerExecutionDraft.returnOdometer,
+      includedKm: ownerReturnMileageRule.includedKm,
+      extraKmRate: ownerReturnMileageRule.extraKmRate,
+      currencyCode: ownerReturnMileageRule.currencyCode,
+    }),
+    [
+      ownerExecutionDraft.returnOdometer,
+      ownerExecutionDraft.startOdometer,
+      ownerReturnMileageRule.currencyCode,
+      ownerReturnMileageRule.extraKmRate,
+      ownerReturnMileageRule.includedKm,
+    ]
+  );
+  const ownerReturnOdometerDraftPreview = useMemo(
+    () => buildOwnerMileageOveragePreview({
+      startOdometer: ownerExecutionDraft.startOdometer,
+      returnOdometer: returnOdometerInput,
+      includedKm: ownerReturnMileageRule.includedKm,
+      extraKmRate: ownerReturnMileageRule.extraKmRate,
+      currencyCode: ownerReturnMileageRule.currencyCode,
+    }),
+    [
+      ownerExecutionDraft.startOdometer,
+      ownerReturnMileageRule.currencyCode,
+      ownerReturnMileageRule.extraKmRate,
+      ownerReturnMileageRule.includedKm,
+      returnOdometerInput,
+    ]
+  );
 	  const ownerReturnDepositOutcomeLabel = useMemo(() => {
 	    if (ownerExecutionDraft.depositOutcome === 'refund_full') {
 	      return ownerExecutionDraft.depositRefundSignatureUrl
@@ -2583,6 +2781,66 @@ const AccountMarketplaceVehicleProfile = () => {
 	    if (ownerExecutionDraft.depositOutcome === 'hold_full') return tr('Hold fully', 'Retenir en totalité');
 	    return tr('Choose the deposit outcome before closing the rental.', 'Choisissez le résultat de la caution avant de clôturer la location.');
 	  }, [ownerExecutionDraft.depositOutcome, ownerExecutionDraft.depositRefundSignatureUrl, tr]);
+  const ownerMileageOverageSettlementLabel = useMemo(
+    () => getOwnerMileageOverageSettlementLabel(ownerExecutionDraft.mileageOverageSettlement, tr),
+    [ownerExecutionDraft.mileageOverageSettlement, tr]
+  );
+  const ownerMileageOverageRequiresReview = Boolean(
+    ownerReturnMileageOveragePreview?.hasOverage ||
+    Number(ownerExecutionDraft.mileageOverageAmount || 0) > 0 ||
+    Number(ownerExecutionDraft.mileageOverageExtraKm || 0) > 0
+  );
+  const ownerMileageOverageActivePreview = ownerReturnMileageOveragePreview?.hasOverage
+    ? ownerReturnMileageOveragePreview
+    : ownerMileageOverageRequiresReview
+      ? {
+          hasOverage: true,
+          overageCharge: Number(ownerExecutionDraft.mileageOverageAmount || 0) || 0,
+          currencyCode: ownerExecutionDraft.mileageOverageCurrency || ownerReturnMileageRule.currencyCode || 'MAD',
+          extraKm: Number(ownerExecutionDraft.mileageOverageExtraKm || 0) || 0,
+          totalKm: Number(ownerExecutionDraft.mileageOverageTotalKm || 0) || 0,
+          includedKm: Number(ownerExecutionDraft.mileageOverageIncludedKm || 0) || 0,
+          extraKmRate: Number(ownerExecutionDraft.mileageOverageRate || 0) || 0,
+        }
+      : ownerReturnMileageOveragePreview;
+  const ownerMileageOverageConfirmationRequired = Boolean(
+    ownerMileageOverageRequiresReview &&
+    ownerExecutionDraft.mileageOverageSettlement &&
+    !String(ownerExecutionDraft.mileageOverageSignatureUrl || '').trim()
+  );
+  const ownerMileageOverageReviewComplete = Boolean(
+    !ownerMileageOverageRequiresReview ||
+    (
+      ownerExecutionDraft.mileageOverageSettlement &&
+      ownerExecutionDraft.mileageOverageSignatureUrl
+    )
+  );
+  const ownerReturnReady = useMemo(
+    () => [
+      ownerExecutionDraft.returnMediaReady,
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnOdometer) &&
+        (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer) ||
+          Number(ownerExecutionDraft.returnOdometer) >= Number(ownerExecutionDraft.startOdometer)),
+      hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel),
+      ownerExecutionDraft.issueReviewed &&
+        (!ownerExecutionDraft.issueReported || Boolean(String(ownerExecutionDraft.issueNote || '').trim())),
+      isOwnerExecutionDepositReviewComplete(ownerExecutionDraft),
+      ownerMileageOverageReviewComplete,
+    ].every(Boolean),
+    [
+      ownerExecutionDraft.depositOutcome,
+      ownerExecutionDraft.depositReviewed,
+      ownerExecutionDraft.depositRefundSignatureUrl,
+      ownerExecutionDraft.issueNote,
+      ownerExecutionDraft.issueReported,
+      ownerExecutionDraft.issueReviewed,
+      ownerExecutionDraft.returnFuelLevel,
+      ownerExecutionDraft.returnMediaReady,
+      ownerExecutionDraft.startOdometer,
+      ownerExecutionDraft.returnOdometer,
+      ownerMileageOverageReviewComplete,
+    ]
+  );
   const ownerHandoffCurrentStep = useMemo(() => {
     if (!ownerExecutionDraft.handoffMediaReady) return OWNER_HANDOFF_STEPS[0];
     if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.startOdometer)) return OWNER_HANDOFF_STEPS[1];
@@ -2608,12 +2866,14 @@ const AccountMarketplaceVehicleProfile = () => {
     ) return OWNER_RETURN_STEPS[1];
     if (!hasOwnerExecutionNumberValue(ownerExecutionDraft.returnFuelLevel)) return OWNER_RETURN_STEPS[2];
     if (!ownerExecutionDraft.issueReviewed || (ownerExecutionDraft.issueReported && !String(ownerExecutionDraft.issueNote || '').trim())) return OWNER_RETURN_STEPS[3];
-	    if (!isOwnerExecutionDepositReviewComplete(ownerExecutionDraft)) return OWNER_RETURN_STEPS[4];
+    if (!isOwnerExecutionDepositReviewComplete(ownerExecutionDraft) || !ownerMileageOverageReviewComplete) return OWNER_RETURN_STEPS[4];
 	    return OWNER_RETURN_STEPS[5];
 	  }, [
 	    ownerExecutionDraft.depositOutcome,
 	    ownerExecutionDraft.depositReviewed,
 	    ownerExecutionDraft.depositRefundSignatureUrl,
+    ownerExecutionDraft.mileageOverageSettlement,
+    ownerExecutionDraft.mileageOverageSignatureUrl,
     ownerExecutionDraft.issueNote,
     ownerExecutionDraft.issueReported,
     ownerExecutionDraft.issueReviewed,
@@ -2621,14 +2881,15 @@ const AccountMarketplaceVehicleProfile = () => {
     ownerExecutionDraft.returnMediaReady,
     ownerExecutionDraft.startOdometer,
     ownerExecutionDraft.returnOdometer,
+    ownerMileageOverageReviewComplete,
   ]);
   const ownerExecutionMediaReferenceMeta = useMemo(() => {
     const mediaCountDescription = ownerExecutionMediaCount > 0
       ? tr(
-          `Inspection ${ownerExecutionHandoffPhotos.length} • Documents ${ownerExecutionLegalDocsPhotos.length} • Return ${ownerExecutionReturnPhotos.length}`,
-          `Inspection ${ownerExecutionHandoffPhotos.length} • Documents ${ownerExecutionLegalDocsPhotos.length} • Retour ${ownerExecutionReturnPhotos.length}`
+          `Open ${ownerExecutionHandoffPhotos.length} • Docs ${ownerExecutionLegalDocsPhotos.length} • Closed ${ownerExecutionReturnPhotos.length}`,
+          `Ouverture ${ownerExecutionHandoffPhotos.length} • Docs ${ownerExecutionLegalDocsPhotos.length} • Clôture ${ownerExecutionReturnPhotos.length}`
         )
-      : tr('Inspection 0 • Documents 0 • Return 0', 'Inspection 0 • Documents 0 • Retour 0');
+      : tr('Open 0 • Docs 0 • Closed 0', 'Ouverture 0 • Docs 0 • Clôture 0');
 
     if (
       operationsFocusedMediaPhase === 'handoff' ||
@@ -2636,12 +2897,12 @@ const AccountMarketplaceVehicleProfile = () => {
     ) {
       return {
         phase: 'handoff',
-        shortLabel: tr('Pickup inspection', 'Inspection départ'),
+        shortLabel: tr('Open media', 'Médias ouverture'),
         eyebrow: tr('Current media', 'Média actuel'),
-        title: tr('Vehicle inspection media', 'Médias inspection véhicule'),
+        title: tr('Open media', 'Médias ouverture'),
         description: tr(
-          'Current step: capture or review pickup inspection photos.',
-          'Étape actuelle : capturez ou vérifiez les photos d’inspection départ.'
+          'Current step: capture or review opening media.',
+          'Étape actuelle : capturez ou vérifiez les médias d’ouverture.'
         ),
       };
     }
@@ -2652,12 +2913,12 @@ const AccountMarketplaceVehicleProfile = () => {
     ) {
       return {
         phase: 'legal_docs',
-        shortLabel: tr('Documents proof', 'Preuve documents'),
+        shortLabel: tr('Registration + insurance media', 'Médias carte grise + assurance'),
         eyebrow: tr('Current media', 'Média actuel'),
-        title: tr('Registration and insurance media', 'Médias carte grise et assurance'),
+        title: tr('Registration + insurance media', 'Médias carte grise + assurance'),
         description: tr(
-          'Current step: keep registration and insurance proof close.',
-          'Étape actuelle : gardez la preuve carte grise et assurance à portée.'
+          'Current step: capture registration and insurance media.',
+          'Étape actuelle : capturez les médias carte grise et assurance.'
         ),
       };
     }
@@ -2668,21 +2929,21 @@ const AccountMarketplaceVehicleProfile = () => {
     ) {
       return {
         phase: 'return',
-        shortLabel: tr('Return inspection', 'Inspection retour'),
+        shortLabel: tr('Closed media', 'Médias clôture'),
         eyebrow: tr('Current media', 'Média actuel'),
-        title: tr('Return inspection media', 'Médias inspection retour'),
+        title: tr('Closed media', 'Médias clôture'),
         description: tr(
-          'Current step: capture or review return inspection photos.',
-          'Étape actuelle : capturez ou vérifiez les photos d’inspection retour.'
+          'Current step: capture or review closing media.',
+          'Étape actuelle : capturez ou vérifiez les médias de clôture.'
         ),
       };
     }
 
     return {
       phase: 'all',
-      shortLabel: tr('Media archive', 'Archive médias'),
-      eyebrow: tr('Vehicle media', 'Médias véhicule'),
-      title: tr('Vehicle inspection and rental media', 'Inspection véhicule et médias location'),
+      shortLabel: tr('Rental media', 'Médias location'),
+      eyebrow: tr('Rental media', 'Médias location'),
+      title: tr('Open and closed media', 'Médias ouverture et clôture'),
       description: mediaCountDescription,
     };
   }, [
@@ -2728,12 +2989,12 @@ const AccountMarketplaceVehicleProfile = () => {
     const phaseCards = [
       {
         key: 'handoff',
-        title: tr('Vehicle inspection', 'Inspection véhicule'),
+        title: tr('Open media', 'Médias ouverture'),
         description: '',
         photos: ownerExecutionHandoffPhotos,
         emptyLabel: tr(
-          'Vehicle inspection photos will appear here after you save the inspection.',
-          'Les photos d’inspection véhicule apparaîtront ici après avoir enregistré l’inspection.'
+          'Open media will appear here after you save it.',
+          'Les médias d’ouverture apparaîtront ici après enregistrement.'
         ),
         countLabel: tr(
           `${ownerExecutionHandoffPhotos.length} photo${ownerExecutionHandoffPhotos.length === 1 ? '' : 's'}`,
@@ -2742,12 +3003,12 @@ const AccountMarketplaceVehicleProfile = () => {
       },
       {
         key: 'legal_docs',
-        title: tr('Registration + insurance', 'Carte grise + assurance'),
+        title: tr('Registration + insurance media', 'Médias carte grise + assurance'),
         description: '',
         photos: ownerExecutionLegalDocsPhotos,
         emptyLabel: tr(
-          'Registration and insurance photos will appear here after the document step is saved.',
-          'Les photos de carte grise et assurance apparaîtront ici après l’enregistrement de l’étape documents.'
+          'Registration + insurance media will appear here after the document step is saved.',
+          'Les médias carte grise + assurance apparaîtront ici après l’enregistrement de l’étape documents.'
         ),
         countLabel: tr(
           `${ownerExecutionLegalDocsPhotos.length} photo${ownerExecutionLegalDocsPhotos.length === 1 ? '' : 's'}`,
@@ -2756,12 +3017,12 @@ const AccountMarketplaceVehicleProfile = () => {
       },
       {
         key: 'return',
-        title: tr('Return media', 'Médias de retour'),
+        title: tr('Closed media', 'Médias clôture'),
         description: '',
         photos: ownerExecutionReturnPhotos,
         emptyLabel: tr(
-          'Return photos will appear here once ready-to-finish evidence is saved.',
-          'Les photos de retour apparaîtront ici une fois la preuve de clôture enregistrée.'
+          'Closed media will appear here once ready-to-finish evidence is saved.',
+          'Les médias de clôture apparaîtront ici une fois la preuve de clôture enregistrée.'
         ),
         countLabel: tr(
           `${ownerExecutionReturnPhotos.length} photo${ownerExecutionReturnPhotos.length === 1 ? '' : 's'}`,
@@ -2831,6 +3092,12 @@ const AccountMarketplaceVehicleProfile = () => {
       ownerExecutionDocumentPayload.finalReceipt.refund.currencyCode || ownerExecutionDocumentPayload.request.currencyCode || 'MAD',
       isFrench ? 'fr' : 'en'
     );
+    const mileageOverageSignatureUrl = String(ownerExecutionDraft.mileageOverageSignatureUrl || '').trim();
+    const mileageOverageAmountLabel = formatMoney(
+      ownerExecutionDraft.mileageOverageAmount || ownerReturnMileageOveragePreview?.overageCharge || 0,
+      ownerExecutionDraft.mileageOverageCurrency || ownerReturnMileageOveragePreview?.currencyCode || 'MAD',
+      isFrench ? 'fr' : 'en'
+    );
 
     return [
       {
@@ -2872,6 +3139,33 @@ const AccountMarketplaceVehicleProfile = () => {
           : tr('No refund signature needed', 'Aucune signature requise'),
         showPreviewSlot: true,
       },
+      ...(ownerMileageOverageRequiresReview || mileageOverageSignatureUrl
+        ? [{
+            key: 'mileage-overage-signature',
+            title: tr('Extra mileage signature', 'Signature kilométrage extra'),
+            description: mileageOverageSignatureUrl
+              ? tr(
+                  `Renter confirmed ${mileageOverageAmountLabel} for extra mileage.`,
+                  `Le locataire a confirmé ${mileageOverageAmountLabel} pour le kilométrage extra.`
+                )
+              : ownerExecutionDraft.mileageOverageSettlement
+                ? tr('Extra mileage settlement selected. Customer signature is required.', 'Règlement kilométrage extra sélectionné. Signature client requise.')
+                : tr('Required when extra mileage is charged.', 'Requise lorsqu’un kilométrage extra est facturé.'),
+            statusLabel: mileageOverageSignatureUrl
+              ? tr('Signature saved', 'Signature enregistrée')
+              : ownerExecutionDraft.mileageOverageSettlement
+                ? tr('Signature required', 'Signature requise')
+                : tr('Pending settlement', 'Règlement en attente'),
+            statusTone: mileageOverageSignatureUrl ? 'emerald' : ownerExecutionDraft.mileageOverageSettlement ? 'amber' : 'slate',
+            previewUrl: mileageOverageSignatureUrl,
+            previewAlt: tr('Extra mileage signature preview', 'Aperçu signature kilométrage extra'),
+            previewLabel: tr('Signature preview', 'Aperçu signature'),
+            previewEmptyLabel: ownerExecutionDraft.mileageOverageSettlement
+              ? tr('Waiting for extra mileage signature', 'Signature kilométrage extra en attente')
+              : tr('Choose settlement first', 'Choisissez le règlement d’abord'),
+            showPreviewSlot: true,
+          }]
+        : []),
       {
         key: 'contract-document',
         title: tr('Contract', 'Contrat'),
@@ -2917,14 +3211,20 @@ const AccountMarketplaceVehicleProfile = () => {
   }, [
     isFrench,
     ownerExecutionDraft.depositOutcome,
+    ownerExecutionDraft.mileageOverageAmount,
+    ownerExecutionDraft.mileageOverageCurrency,
+    ownerExecutionDraft.mileageOverageSettlement,
+    ownerExecutionDraft.mileageOverageSignatureUrl,
     ownerExecutionDraft.returnSavedAt,
     ownerExecutionDocumentPayload,
+    ownerReturnMileageOveragePreview,
     tr,
   ]);
   const ownerExecutionDocumentsSummary = useMemo(() => {
     const savedSignatures = [
       ownerExecutionDocumentPayload.artifacts.contractSignatureUrl,
       ownerExecutionDocumentPayload.artifacts.refundSignatureUrl,
+      ownerExecutionDraft.mileageOverageSignatureUrl,
     ].filter((value) => String(value || '').trim()).length;
     const readyDocuments = [
       ownerExecutionDocumentPayload.contract.url,
@@ -2937,6 +3237,7 @@ const AccountMarketplaceVehicleProfile = () => {
     );
   }, [
     ownerExecutionDocumentPayload,
+    ownerExecutionDraft.mileageOverageSignatureUrl,
     tr,
   ]);
   const ownerExecutionSummary = useMemo(() => {
@@ -3096,7 +3397,7 @@ const AccountMarketplaceVehicleProfile = () => {
       cards.push({
         eyebrow: tr('Deposit', 'Caution'),
         value: formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
-        detail: tr('Keep the deposit linked to the handoff and return evidence.', 'Gardez la caution liée aux preuves de départ et de retour.'),
+        detail: tr('Keep the deposit linked to open and closed media.', 'Gardez la caution liée aux médias ouverture et clôture.'),
         icon: DollarSign,
         tone: 'slate',
       });
@@ -3189,7 +3490,7 @@ const AccountMarketplaceVehicleProfile = () => {
         key: 'security',
         label: tr('Security', 'Garantie'),
         value: formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en'),
-        detail: tr('Deposit linked to pickup and return evidence.', 'Caution liée aux preuves de départ et retour.'),
+        detail: tr('Deposit linked to open and closed media.', 'Caution liée aux médias ouverture et clôture.'),
         icon: ShieldCheck,
         tone: 'amber',
       },
@@ -3313,12 +3614,12 @@ const AccountMarketplaceVehicleProfile = () => {
               return request;
             }
             const nextStatus =
-              updatedRequest?.request_status ||
               (nextRequestStatus === 'active'
                 ? 'active'
                 : nextRequestStatus === 'completed'
                   ? 'completed'
-                  : request?.rawRequest?.request_status ||
+                  : updatedRequest?.request_status ||
+                    request?.rawRequest?.request_status ||
                     request?.requestStatus);
             const nextRequest = {
               ...request,
@@ -3771,20 +4072,25 @@ const AccountMarketplaceVehicleProfile = () => {
         messageType: 'note',
         subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
         body: kind === 'handoff'
-          ? tr('Vehicle inspection photos uploaded', 'Photos d’inspection véhicule téléversées')
+          ? tr('Open media', 'Médias ouverture')
           : kind === 'legal_docs'
-            ? tr('Registration and insurance photos uploaded', 'Photos carte grise et assurance téléversées')
-            : tr('Photos uploaded', 'Photos téléversées'),
+            ? tr('Registration + insurance media', 'Médias carte grise + assurance')
+            : tr('Closed media', 'Médias clôture'),
         attachments,
         metadata: {
           requestId: String(operationalRequest.id),
           requestStatus: operationalRequest.requestStatus,
           photoEvidenceKind: kind,
           photoEvidenceLabel: kind === 'handoff'
-            ? tr('Vehicle inspection', 'Inspection véhicule')
+            ? tr('Open media', 'Médias ouverture')
             : kind === 'legal_docs'
-              ? tr('Registration + insurance', 'Carte grise + assurance')
-              : tr('Return evidence', 'Preuve de retour'),
+              ? tr('Registration + insurance media', 'Médias carte grise + assurance')
+              : tr('Closed media', 'Médias clôture'),
+          photoEvidenceDescription: kind === 'handoff'
+            ? tr('Open media saved.', 'Médias ouverture enregistrés.')
+            : kind === 'legal_docs'
+              ? tr('Registration + insurance media saved.', 'Médias carte grise + assurance enregistrés.')
+              : tr('Closed media saved.', 'Médias clôture enregistrés.'),
           href: buildOwnerExecutionWorkspaceHref(operationalRequest, { focus: 'execution' }),
         },
       });
@@ -3793,12 +4099,19 @@ const AccountMarketplaceVehicleProfile = () => {
     }
   }, [operationalRequest?.customerId, operationalRequest?.id, operationalRequest?.listingTitle, operationalRequest?.requestStatus, tr]);
 
-  const sendOwnerExecutionSystemMessage = useCallback(async ({ body, event, requestStatus, documentLinks = [] }) => {
+  const sendOwnerExecutionSystemMessage = useCallback(async ({
+    body,
+    event,
+    requestStatus,
+    documentLinks = [],
+    metadata = {},
+  }) => {
     if (!operationalRequest?.customerId || !operationalRequest?.id || !body) {
       return;
     }
 
     let existingThreadKey = '';
+    let existingThread = null;
     try {
       const threadResponse = await MessageService.listSharedThreads({
         entityType: 'marketplace_request',
@@ -3806,11 +4119,12 @@ const AccountMarketplaceVehicleProfile = () => {
         threadType: MESSAGE_THREAD_TYPES.marketplaceOwnerRequest,
         limit: 20,
       });
+      existingThread = threadResponse?.threads?.find(
+        (thread) => String(thread?.entity_type || '').trim().toLowerCase() === 'marketplace_request'
+          && String(thread?.entity_id || '').trim() === String(operationalRequest.id)
+      ) || null;
       existingThreadKey = String(
-        threadResponse?.threads?.find(
-          (thread) => String(thread?.entity_type || '').trim().toLowerCase() === 'marketplace_request'
-            && String(thread?.entity_id || '').trim() === String(operationalRequest.id)
-        )?.thread_key || ''
+        existingThread?.thread_key || ''
       ).trim();
     } catch (threadLookupError) {
       console.warn('Unable to resolve marketplace request thread for execution update:', threadLookupError);
@@ -3833,6 +4147,43 @@ const AccountMarketplaceVehicleProfile = () => {
           })
           .filter(Boolean)
       : [];
+    const additionalMetadata = metadata && typeof metadata === 'object' ? metadata : {};
+    const normalizedEvent = String(event || additionalMetadata.event || additionalMetadata.eventType || '').trim().toLowerCase();
+    const hasReceiptLink = Boolean(
+      additionalMetadata?.completionReceipt?.url ||
+      additionalMetadata?.completion_receipt?.url ||
+      additionalMetadata.finalReceiptUrl ||
+      normalizedDocumentLinks.some((link) => {
+        const linkKey = String(link.kind || link.key || link.label || link.type || '').trim().toLowerCase();
+        return (linkKey.includes('receipt') || linkKey.includes('reçu') || linkKey.includes('recu')) && (link.href || link.url);
+      })
+    );
+    if (normalizedEvent === 'completed' && hasReceiptLink) {
+      const existingCompletionReceipt = (Array.isArray(existingThread?.messages) ? existingThread.messages : []).some((message) => {
+        const messageMetadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+        const messageType = String(message?.message_type || '').trim().toLowerCase();
+        const messageEvent = String(messageMetadata.event || messageMetadata.eventType || '').trim().toLowerCase();
+        if (messageType !== 'system_event' || messageEvent !== 'completed') return false;
+        const messageDocumentLinks = [
+          ...(Array.isArray(messageMetadata.documentLinks) ? messageMetadata.documentLinks : []),
+          ...(Array.isArray(messageMetadata.document_links) ? messageMetadata.document_links : []),
+          ...(Array.isArray(messageMetadata.documentActions) ? messageMetadata.documentActions : []),
+          ...(Array.isArray(messageMetadata.document_actions) ? messageMetadata.document_actions : []),
+        ];
+        return Boolean(
+          messageMetadata?.completionReceipt?.url ||
+          messageMetadata?.completion_receipt?.url ||
+          messageMetadata.finalReceiptUrl ||
+          messageDocumentLinks.some((link) => {
+            const linkKey = String(link?.kind || link?.key || link?.label || link?.title || '').trim().toLowerCase();
+            return (linkKey.includes('receipt') || linkKey.includes('reçu') || linkKey.includes('recu')) && (link?.href || link?.url);
+          })
+        );
+      });
+      if (existingCompletionReceipt) {
+        return;
+      }
+    }
 
     try {
       await MessageService.sendSharedMessage({
@@ -3848,6 +4199,7 @@ const AccountMarketplaceVehicleProfile = () => {
         subject: operationalRequest?.listingTitle || tr('Marketplace request', 'Demande marketplace'),
         body,
         metadata: {
+          ...additionalMetadata,
           event,
           requestId: String(operationalRequest.id),
           requestStatus: requestStatus || operationalRequest.requestStatus,
@@ -4009,6 +4361,23 @@ const AccountMarketplaceVehicleProfile = () => {
     const nextDraft = {
       ...ownerExecutionDraft,
       returnOdometer: String(Math.round(normalizedValue)),
+      ...(String(ownerExecutionDraft.returnOdometer || '') !== String(Math.round(normalizedValue))
+        ? {
+            mileageOverageReviewed: false,
+            mileageOverageSettlement: '',
+            mileageOverageAmount: 0,
+            mileageOverageCurrency: '',
+            mileageOverageExtraKm: 0,
+            mileageOverageTotalKm: 0,
+            mileageOverageIncludedKm: 0,
+            mileageOverageRate: 0,
+            mileageOverageReviewedAt: null,
+            mileageOverageSignatureUrl: '',
+            mileageOverageSignedAt: null,
+            mileageOverageSignedBy: '',
+            mileageOverageRecordedBy: '',
+          }
+        : {}),
     };
 
     void (async () => {
@@ -4222,6 +4591,83 @@ const AccountMarketplaceVehicleProfile = () => {
     void persistOwnerExecutionDraft(nextDraft);
   }, [ownerExecutionDraft, ownerExecutionReturnLocked, persistOwnerExecutionDraft]);
 
+  const setOwnerMileageOverageSettlement = useCallback((settlement = '') => {
+    if (ownerExecutionReturnLocked || !ownerMileageOverageActivePreview?.hasOverage) return;
+    const normalizedSettlement = String(settlement || '').trim().toLowerCase();
+    const allowedSettlements = new Set(['deduct_deposit', 'paid_separately', 'waived', 'unpaid']);
+    if (!allowedSettlements.has(normalizedSettlement)) return;
+
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      mileageOverageReviewed: true,
+      mileageOverageSettlement: normalizedSettlement,
+      mileageOverageAmount: ownerMileageOverageActivePreview.overageCharge,
+      mileageOverageCurrency: ownerMileageOverageActivePreview.currencyCode,
+      mileageOverageExtraKm: ownerMileageOverageActivePreview.extraKm,
+      mileageOverageTotalKm: ownerMileageOverageActivePreview.totalKm,
+      mileageOverageIncludedKm: ownerMileageOverageActivePreview.includedKm,
+      mileageOverageRate: ownerMileageOverageActivePreview.extraKmRate,
+      mileageOverageReviewedAt: new Date().toISOString(),
+      mileageOverageSignatureUrl: '',
+      mileageOverageSignedAt: null,
+      mileageOverageSignedBy: '',
+      mileageOverageRecordedBy: '',
+    };
+
+    void persistOwnerExecutionDraft(nextDraft);
+  }, [ownerExecutionDraft, ownerExecutionReturnLocked, ownerMileageOverageActivePreview, persistOwnerExecutionDraft]);
+
+  const openOwnerMileageOverageSignatureModal = useCallback(() => {
+    if (ownerExecutionReturnLocked || ownerExecutionSaving || !ownerMileageOverageActivePreview?.hasOverage) return;
+    if (!ownerExecutionDraft.mileageOverageSettlement) return;
+    setShowOwnerMileageOverageSignatureModal(true);
+  }, [
+    ownerExecutionDraft.mileageOverageSettlement,
+    ownerExecutionReturnLocked,
+    ownerExecutionSaving,
+    ownerMileageOverageActivePreview?.hasOverage,
+  ]);
+
+  const saveOwnerMileageOverageSignature = useCallback((signatureUrl = '') => {
+    if (ownerExecutionReturnLocked || !ownerMileageOverageActivePreview?.hasOverage) return;
+    const normalizedSignatureUrl = String(signatureUrl || '').trim();
+    if (!normalizedSignatureUrl) return;
+    if (!String(ownerExecutionDraft.mileageOverageSettlement || '').trim()) return;
+
+    const nextDraft = {
+      ...ownerExecutionDraft,
+      mileageOverageReviewed: true,
+      mileageOverageSettlement: ownerExecutionDraft.mileageOverageSettlement,
+      mileageOverageAmount: ownerMileageOverageActivePreview.overageCharge,
+      mileageOverageCurrency: ownerMileageOverageActivePreview.currencyCode,
+      mileageOverageExtraKm: ownerMileageOverageActivePreview.extraKm,
+      mileageOverageTotalKm: ownerMileageOverageActivePreview.totalKm,
+      mileageOverageIncludedKm: ownerMileageOverageActivePreview.includedKm,
+      mileageOverageRate: ownerMileageOverageActivePreview.extraKmRate,
+      mileageOverageReviewedAt: ownerExecutionDraft.mileageOverageReviewedAt || new Date().toISOString(),
+      mileageOverageSignatureUrl: normalizedSignatureUrl,
+      mileageOverageSignedAt: new Date().toISOString(),
+      mileageOverageSignedBy: String(
+        operationalRequest?.customerId ||
+        operationalRequest?.customerEmail ||
+        operationalRequest?.customerName ||
+        ''
+      ).trim(),
+      mileageOverageRecordedBy: String(user?.id || '').trim(),
+    };
+
+    void persistOwnerExecutionDraft(nextDraft);
+  }, [
+    operationalRequest?.customerEmail,
+    operationalRequest?.customerId,
+    operationalRequest?.customerName,
+    ownerExecutionDraft,
+    ownerExecutionReturnLocked,
+    ownerMileageOverageActivePreview,
+    persistOwnerExecutionDraft,
+    user?.id,
+  ]);
+
   const saveOwnerExecutionDepositReview = useCallback((outcome = '') => {
     if (ownerExecutionReturnLocked) return;
     const normalizedOutcome = String(outcome || '').trim().toLowerCase();
@@ -4300,23 +4746,70 @@ const AccountMarketplaceVehicleProfile = () => {
     void (async () => {
       const documentDraft = await ensureOwnerExecutionFinalReceiptDocument(nextDraft);
       const finalReceiptUrl = String(documentDraft.finalReceiptUrl || '').trim();
-      await persistOwnerExecutionDraft(documentDraft, 'completed');
+      const completionDraft = normalizeOwnerExecutionDraft({
+        ...documentDraft,
+        completionReceipt: finalReceiptUrl
+          ? {
+              url: finalReceiptUrl,
+              generatedAt: documentDraft.finalReceiptGeneratedAt || new Date().toISOString(),
+              completedAt: documentDraft.returnSavedAt || nextDraft.returnSavedAt,
+              label: 'Final receipt',
+              kind: 'receipt',
+              depositOutcome: documentDraft.depositOutcome,
+              refundAmount: documentDraft.depositRefundAmount,
+              refundCurrency: documentDraft.depositRefundCurrency,
+              refundSignatureUrl: documentDraft.depositRefundSignatureUrl,
+              refundSignedAt: documentDraft.depositRefundSignedAt,
+              mileageOverage: documentDraft.mileageOverageAmount > 0 || documentDraft.mileageOverageExtraKm > 0
+                ? {
+                    settlement: documentDraft.mileageOverageSettlement,
+                    amount: documentDraft.mileageOverageAmount,
+                    currency: documentDraft.mileageOverageCurrency,
+                    extraKm: documentDraft.mileageOverageExtraKm,
+                    totalKm: documentDraft.mileageOverageTotalKm,
+                    includedKm: documentDraft.mileageOverageIncludedKm,
+                    rate: documentDraft.mileageOverageRate,
+                    signatureUrl: documentDraft.mileageOverageSignatureUrl,
+                    signedAt: documentDraft.mileageOverageSignedAt,
+                  }
+                : null,
+            }
+          : null,
+      });
+      const completionSaved = await persistOwnerExecutionDraft(completionDraft, 'completed');
+      if (!completionSaved) {
+        toast.error(tr('Could not finish the rental. Please try again.', 'Impossible de terminer la location. Veuillez réessayer.'));
+        return;
+      }
+
+      const completionReceipt = completionDraft.completionReceipt || null;
+      const receiptHref = String(completionReceipt?.url || finalReceiptUrl || '').trim();
       await sendOwnerExecutionSystemMessage({
-        body: finalReceiptUrl
-          ? tr('Rental completed. The receipt has been updated.', 'Location terminée. Le reçu a été mis à jour.')
+        body: receiptHref
+          ? tr('Rental completed. Final receipt is ready.', 'Location terminée. Le reçu final est prêt.')
           : tr('Rental completed', 'Location terminée'),
         event: 'completed',
         requestStatus: 'completed',
-        documentLinks: finalReceiptUrl
+        documentLinks: receiptHref
           ? [
               {
                 key: 'receipt',
                 kind: 'receipt',
                 label: tr('Open receipt', 'Ouvrir le reçu'),
-                href: finalReceiptUrl,
+                href: receiptHref,
               },
             ]
           : [],
+        metadata: {
+          ownerExecution: completionDraft,
+          owner_execution: completionDraft,
+          completionReceipt,
+          completion_receipt: completionReceipt,
+          finalReceiptUrl: receiptHref || null,
+          finalReceiptGeneratedAt: completionDraft.finalReceiptGeneratedAt || null,
+          completedAt: completionDraft.returnSavedAt || null,
+          mileageOverage: completionReceipt?.mileageOverage || null,
+        },
       });
     })();
   }, [ensureOwnerExecutionFinalReceiptDocument, ownerExecutionDraft, ownerExecutionReturnLocked, ownerReturnReady, persistOwnerExecutionDraft, sendOwnerExecutionSystemMessage, tr]);
@@ -4364,10 +4857,10 @@ const AccountMarketplaceVehicleProfile = () => {
       await persistOwnerExecutionDraft(nextDraft);
       await sendOwnerExecutionPhotoMessage({ kind, attachments: uploadedAttachments });
       toast.success(kind === 'handoff'
-        ? tr('Vehicle inspection photos saved.', 'Photos d’inspection véhicule enregistrées.')
+        ? tr('Open media saved.', 'Médias ouverture enregistrés.')
         : kind === 'legal_docs'
-          ? tr('Registration and insurance photos saved.', 'Photos carte grise et assurance enregistrées.')
-          : tr('Return photos saved.', 'Photos de retour enregistrées.'));
+          ? tr('Registration + insurance media saved.', 'Médias carte grise + assurance enregistrés.')
+          : tr('Closed media saved.', 'Médias clôture enregistrés.'));
     } catch (photoError) {
       console.warn(`Failed to upload ${kind} execution photos:`, photoError);
       toast.error(photoError?.message || tr('Unable to upload photos right now.', 'Impossible de téléverser les photos pour le moment.'));
@@ -4443,16 +4936,24 @@ const AccountMarketplaceVehicleProfile = () => {
         const refundSignatureMissing =
           ownerExecutionDraft.depositOutcome === 'refund_full' &&
           !String(ownerExecutionDraft.depositRefundSignatureUrl || '').trim();
+        const mileageSignatureMissing = ownerMileageOverageConfirmationRequired;
         return {
-          label: refundSignatureMissing
+          label: mileageSignatureMissing
+            ? tr('Sign extra mileage', 'Signer kilométrage extra')
+            : refundSignatureMissing
             ? tr('Sign refund receipt', 'Signer le reçu de remboursement')
             : tr('Save deposit review', 'Enregistrer la caution'),
-          onClick: refundSignatureMissing
+          onClick: mileageSignatureMissing
+            ? openOwnerMileageOverageSignatureModal
+            : refundSignatureMissing
             ? openOwnerRefundSignatureModal
             : () => saveOwnerExecutionDepositReview(ownerExecutionDraft.depositOutcome),
-          disabled: ownerExecutionSaving || !String(ownerExecutionDraft.depositOutcome || '').trim(),
+          disabled:
+            ownerExecutionSaving ||
+            !String(ownerExecutionDraft.depositOutcome || '').trim() ||
+            (ownerMileageOverageRequiresReview && !String(ownerExecutionDraft.mileageOverageSettlement || '').trim()),
           tone: 'violet',
-          icon: refundSignatureMissing ? FileSignature : DollarSign,
+          icon: mileageSignatureMissing || refundSignatureMissing ? FileSignature : DollarSign,
         };
       }
 
@@ -4529,12 +5030,15 @@ const AccountMarketplaceVehicleProfile = () => {
     openOwnerReturnFuelModal,
     openOwnerReturnOdometerModal,
     openOwnerSignatureModal,
+    openOwnerMileageOverageSignatureModal,
     openOwnerRefundSignatureModal,
     openOwnerStartFuelModal,
     openOwnerStartOdometerModal,
     ownerExecutionCanStartReturnFlow,
     ownerExecutionDraft.depositOutcome,
     ownerExecutionDraft.depositRefundSignatureUrl,
+    ownerExecutionDraft.mileageOverageSettlement,
+    ownerMileageOverageConfirmationRequired,
     ownerExecutionDraft.returnFuelLevel,
     ownerExecutionDraft.returnOdometer,
     ownerExecutionDraft.startFuelLevel,
@@ -4547,6 +5051,8 @@ const AccountMarketplaceVehicleProfile = () => {
     ownerHandoffCurrentStep.key,
     ownerHandoffReady,
     ownerReturnCurrentStep.key,
+    ownerMileageOverageRequiresReview,
+    ownerReturnMileageOveragePreview?.hasOverage,
     ownerReturnReady,
     returnOdometerInput,
     saveOwnerExecutionDepositReview,
@@ -4559,20 +5065,20 @@ const AccountMarketplaceVehicleProfile = () => {
   const ownerExecutionFooterHelper = useMemo(() => {
     if (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'return_photos') {
       return tr(
-        'Upload the return evidence above to unlock the next step.',
-        'Téléversez la preuve de retour ci-dessus pour débloquer l’étape suivante.'
+        'Upload closed media above to unlock the next step.',
+        'Téléversez les médias de clôture ci-dessus pour débloquer l’étape suivante.'
       );
     }
     if ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'vehicle_photos') {
       return tr(
-        'Upload the vehicle inspection above to unlock the rest of the handoff.',
-        'Téléversez l’inspection véhicule ci-dessus pour débloquer le reste de la remise.'
+        'Upload open media above to unlock the rest of the handoff.',
+        'Téléversez les médias d’ouverture ci-dessus pour débloquer le reste de la remise.'
       );
     }
     if ((ownerExecutionStage === 'approved' || ownerExecutionStage === 'handoff') && ownerHandoffCurrentStep.key === 'legal_docs') {
       return tr(
-        'Upload one registration photo and one insurance photo above to confirm documents.',
-        'Téléversez une photo de carte grise et une photo d’assurance ci-dessus pour confirmer les documents.'
+        'Upload registration + insurance media above to confirm documents.',
+        'Téléversez les médias carte grise + assurance ci-dessus pour confirmer les documents.'
       );
     }
     if (ownerExecutionStage === 'return_pending' && ownerReturnCurrentStep.key === 'return_condition') {
@@ -5015,6 +5521,15 @@ const AccountMarketplaceVehicleProfile = () => {
         extras: parseCommaSeparated(sourceFormData.extrasText),
         media: nextNormalizedMedia,
       };
+      const resolvedVehicleSaveId = isNewVehicle
+        ? null
+        : (
+            vehicle?.id ||
+            vehicle?.rawProfile?.id ||
+            sourceFormData?.rawProfile?.id ||
+            vehicleId ||
+            null
+          );
 
       const result = await withTimeout(
         BusinessMarketplaceService.saveOwnerVehicle({
@@ -5025,10 +5540,11 @@ const AccountMarketplaceVehicleProfile = () => {
             user?.app_metadata?.account_type ||
             'individual_owner',
           metadata: ownerMetadata,
-          vehicleId: isNewVehicle ? null : vehicleId,
+          vehicleId: resolvedVehicleSaveId,
           formData: payload,
           submitForReview,
           saveListing,
+          sectionKey: analyticsMeta?.sectionKey || '',
         }),
         OWNER_VEHICLE_SAVE_TIMEOUT_MS,
         tr('Saving took too long. Please try again.', 'L’enregistrement a pris trop de temps. Veuillez réessayer.')
@@ -5274,8 +5790,16 @@ const AccountMarketplaceVehicleProfile = () => {
   };
 
   const handleSaveVehicle = async () => {
+    const normalizedActiveTab = String(activeTab || '').trim().toLowerCase();
+    const sectionKey = normalizedActiveTab === 'listing'
+      ? 'listingWorkspace'
+      : normalizedActiveTab === 'overview'
+        ? 'vehicleWorkspace'
+        : '';
+
     await persistVehicle(false, activeTab === 'listing', null, '', {
-      source: activeTab === 'listing' ? 'listing_tab_save' : 'vehicle_profile_save',
+      source: normalizedActiveTab === 'listing' ? 'listing_tab_save' : 'vehicle_profile_save',
+      sectionKey,
     });
   };
 
@@ -5387,6 +5911,20 @@ const AccountMarketplaceVehicleProfile = () => {
     hasVehicleMedia,
     documentCount: vehicleDocuments.length,
   });
+  const pricingCurrencyCode = formData.currencyCode || vehicle?.currencyCode || 'MAD';
+  const includedKmLabel = formatDistanceQuantity(formData.mileageLimitKm);
+  const extraKmRateLabel = formatExtraKmRateLabel(formData.extraKmRate, pricingCurrencyCode);
+  const distanceRuleSummary = includedKmLabel
+    ? extraKmRateLabel
+      ? tr(
+          `${includedKmLabel} km included • extra km billed at ${extraKmRateLabel}`,
+          `${includedKmLabel} km inclus • km supplémentaire facturé à ${extraKmRateLabel}`
+        )
+      : tr(
+          `${includedKmLabel} km included • add an extra-km rate`,
+          `${includedKmLabel} km inclus • ajoutez un tarif par km supplémentaire`
+        )
+    : tr('Unlimited kilometers • no extra-km charge', 'Kilomètres illimités • pas de frais par km supplémentaire');
   const normalizedFuelPolicy = String(formData.fuelPolicy || '').trim().toLowerCase();
   const returnSameFuelLevel =
     !normalizedFuelPolicy ||
@@ -5796,7 +6334,7 @@ const AccountMarketplaceVehicleProfile = () => {
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Verify owner', 'Vérifier le propriétaire'),
         body: '',
-        actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
+        actionLabel: tr('Review owner verification', 'Voir la vérification propriétaire'),
       }
     : ownerVerificationStatus === 'pending'
       ? {
@@ -5808,7 +6346,7 @@ const AccountMarketplaceVehicleProfile = () => {
             'Your ID and driver license were sent to admin. Keep building the listing while we wait for approval. Full review will unlock automatically after that.',
             'Votre pièce et votre permis ont été envoyés à l’admin. Continuez l’annonce pendant l’attente. L’envoi complet en revue se débloquera ensuite automatiquement.'
           ),
-          actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
+          actionLabel: tr('Review trust status', 'Voir le statut de confiance'),
         }
       : {
           statusKey: 'action',
@@ -5819,7 +6357,7 @@ const AccountMarketplaceVehicleProfile = () => {
             'Start with your profile ID and driver license. Listing setup can continue while admin reviews them, but the full review send waits for approval.',
             'Commencez par votre pièce d’identité et votre permis. La configuration de l’annonce peut continuer pendant la revue admin, mais l’envoi complet attend l’approbation.'
           ),
-          actionLabel: tr('Open trust center', 'Ouvrir le centre de confiance'),
+          actionLabel: tr('Verify owner', 'Vérifier le propriétaire'),
         };
   const vehicleBasicsComplete = Boolean(formData.brandName && formData.modelName && formData.plateNumber && formData.cityName);
   const ownerWorkflowStepTwo = vehicleBasicsComplete
@@ -5849,7 +6387,7 @@ const AccountMarketplaceVehicleProfile = () => {
         statusTone: 'bg-emerald-100 text-emerald-700',
         title: tr('Upload vehicle documents', 'Téléverser les documents du véhicule'),
         body: '',
-        actionLabel: tr('Open documents', 'Ouvrir les documents'),
+        actionLabel: tr('Review vehicle documents', 'Vérifier les documents du véhicule'),
       }
     : vehicleLegalManualFallbackSubmitted
       ? {
@@ -5861,7 +6399,7 @@ const AccountMarketplaceVehicleProfile = () => {
             'Your registration and insurance files were sent, but a few fields still need manual completion. Admin review is now pending.',
             'Vos fichiers d’immatriculation et d’assurance ont été envoyés, mais quelques champs demandent encore une saisie manuelle. La revue admin est maintenant en attente.'
           ),
-          actionLabel: tr('Open documents', 'Ouvrir les documents'),
+          actionLabel: tr('Review vehicle documents', 'Vérifier les documents du véhicule'),
         }
       : vehicleVerificationWaitingOnAdmin || vehicleVerificationSubmitted
       ? {
@@ -5873,7 +6411,7 @@ const AccountMarketplaceVehicleProfile = () => {
             'Your registration and insurance files are with admin. We are waiting for vehicle verification approval.',
             'Vos fichiers d’immatriculation et d’assurance sont chez l’admin. Nous attendons l’approbation de la vérification véhicule.'
           ),
-          actionLabel: tr('Open documents', 'Ouvrir les documents'),
+          actionLabel: tr('Review vehicle documents', 'Vérifier les documents du véhicule'),
         }
       : {
           statusKey: 'action',
@@ -5884,7 +6422,7 @@ const AccountMarketplaceVehicleProfile = () => {
             'Upload the registration and insurance files. Once they are sent, admin review can start.',
             'Téléversez les fichiers d’immatriculation et d’assurance. Une fois envoyés, la revue admin peut commencer.'
         ),
-        actionLabel: tr('Complete step 3', 'Compléter l’étape 3'),
+        actionLabel: tr('Add vehicle documents', 'Ajouter les documents du véhicule'),
       };
   const listingSetupComplete = Boolean(formData.listingTitle) && Boolean(hasListingPrice && hasDepositAmount) && vehiclePhotoRequirements.isComplete;
   const stepFourTargetItem =
@@ -6470,14 +7008,14 @@ const AccountMarketplaceVehicleProfile = () => {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {vehicle?.listingId && listingIsLive && !isOperationsWorkspaceRoute ? (
-              <a
-                href={`/marketplace/marketplace-${encodeURIComponent(String(vehicle.listingId))}`}
+            {publicListingPath && listingIsLive && !isOperationsWorkspaceRoute ? (
+              <Link
+                to={publicListingPath}
                 className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
               >
                 <ExternalLink className="w-4 h-4" />
                 {tr('View public listing', 'Voir la fiche publique')}
-              </a>
+              </Link>
             ) : null}
             {isOperationsWorkspaceRoute ? (
               <>
@@ -6963,17 +7501,51 @@ const AccountMarketplaceVehicleProfile = () => {
                           <input value={formData.halfDayPriceAmount} onChange={(event) => updateField('halfDayPriceAmount', event.target.value)} className={baseFieldClassName} />
                         </OwnerField>
                         <OwnerField label={tr('Included kilometers', 'Kilomètres inclus')}>
-                          <input value={formData.mileageLimitKm} onChange={(event) => updateField('mileageLimitKm', event.target.value)} className={baseFieldClassName} />
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={formData.mileageLimitKm}
+                            onChange={(event) => updateField('mileageLimitKm', event.target.value)}
+                            className={baseFieldClassName}
+                            placeholder={tr('Unlimited if empty', 'Illimité si vide')}
+                          />
+                          <p className="mt-1 text-xs font-medium text-slate-500">
+                            {tr('Leave empty when kilometers are unlimited.', 'Laissez vide si les kilomètres sont illimités.')}
+                          </p>
+                          {fieldErrors.mileageLimitKm ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldErrors.mileageLimitKm}</p> : null}
                         </OwnerField>
                         <OwnerField label={tr('Half-day minimum hours', 'Heures minimum demi-journée')}>
                           <input type="number" min="1" value={formData.halfDayMinHours} onChange={(event) => updateField('halfDayMinHours', event.target.value)} className={baseFieldClassName} />
                         </OwnerField>
-                        <OwnerField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')}>
-                          <input value={formData.extraKmRate} onChange={(event) => updateField('extraKmRate', event.target.value)} className={baseFieldClassName} />
+                        <OwnerField label={tr('Overage rate (MAD/km)', 'Tarif de dépassement (MAD/km)')}>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={formData.extraKmRate}
+                            onChange={(event) => updateField('extraKmRate', event.target.value)}
+                            className={baseFieldClassName}
+                            placeholder={includedKmLabel ? '20' : tr('Not applied', 'Non appliqué')}
+                          />
+                          <p className="mt-1 text-xs font-medium text-slate-500">
+                            {includedKmLabel
+                              ? tr('Price per kilometer beyond the included amount.', 'Prix par kilomètre au-delà du montant inclus.')
+                              : tr('Set included kilometers first to charge extra kilometers.', 'Définissez d’abord les kilomètres inclus pour facturer les kilomètres supplémentaires.')}
+                          </p>
+                          {fieldErrors.extraKmRate ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldErrors.extraKmRate}</p> : null}
                         </OwnerField>
                         <OwnerField label={tr('Half-day maximum hours', 'Heures maximum demi-journée')}>
                           <input type="number" min="1" value={formData.halfDayMaxHours} onChange={(event) => updateField('halfDayMaxHours', event.target.value)} className={baseFieldClassName} />
                         </OwnerField>
+                      </div>
+                      <div className="mt-4 rounded-[1.1rem] border border-violet-100 bg-violet-50/50 px-4 py-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Distance rule', 'Règle kilométrique')}</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-950">{distanceRuleSummary}</p>
+                        <p className="mt-1 text-xs font-medium text-slate-600">
+                          {tr(
+                            'Same logic as kilometer packages: included km is the allowance, and the overage rate is charged per extra kilometer.',
+                            'Même logique que les forfaits kilométriques : les km inclus sont l’allocation, et le tarif de dépassement est facturé par km supplémentaire.'
+                          )}
+                        </p>
                       </div>
                       <div className="mt-4 grid gap-3 lg:grid-cols-2">
                         <div className="rounded-[1.1rem] border border-slate-200 bg-slate-50 px-4 py-4">
@@ -7046,9 +7618,13 @@ const AccountMarketplaceVehicleProfile = () => {
                         <ViewField label={tr('Daily price', 'Prix journalier')} value={formData.dailyPriceAmount ? `${formData.dailyPriceAmount} MAD` : '—'} />
                         <ViewField label={tr('Deposit', 'Caution')} value={formData.depositAmount ? `${formData.depositAmount} MAD` : '—'} />
                         <ViewField label={tr('Half-day package price', 'Prix du forfait demi-journée')} value={formData.halfDayPriceAmount ? `${formData.halfDayPriceAmount} MAD` : '—'} />
-                        <ViewField label={tr('Included kilometers', 'Kilomètres inclus')} value={formData.mileageLimitKm ? `${formData.mileageLimitKm} km` : '—'} />
+                        <ViewField label={tr('Included kilometers', 'Kilomètres inclus')} value={includedKmLabel ? `${includedKmLabel} km` : tr('Unlimited', 'Illimité')} />
                         <ViewField label={tr('Half-day hours', 'Heures demi-journée')} value={formData.halfDayMinHours && formData.halfDayMaxHours ? `${formData.halfDayMinHours}-${formData.halfDayMaxHours} h` : '—'} />
-                        <ViewField label={tr('Extra kilometer rate', 'Tarif kilomètre supplémentaire')} value={formData.extraKmRate ? `${formData.extraKmRate} MAD` : '—'} />
+                        <ViewField label={tr('Overage rate', 'Tarif de dépassement')} value={extraKmRateLabel || tr('Not applied', 'Non appliqué')} />
+                      </div>
+                      <div className="mt-4 rounded-[1.1rem] border border-violet-100 bg-violet-50/50 px-4 py-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Distance rule', 'Règle kilométrique')}</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-950">{distanceRuleSummary}</p>
                       </div>
                     </div>
                     <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
@@ -7303,9 +7879,9 @@ const AccountMarketplaceVehicleProfile = () => {
                           : tr('Publish now', 'Publier maintenant')}
                       </button>
                     ) : null}
-                    {vehicle?.listingId && listingIsLive ? (
+                    {publicListingPath && listingIsLive ? (
                       <Link
-                        to={`/marketplace/marketplace-${encodeURIComponent(String(vehicle.listingId))}`}
+                        to={publicListingPath}
                         className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
                       >
                         <ExternalLink className="h-4 w-4" />
@@ -7358,9 +7934,9 @@ const AccountMarketplaceVehicleProfile = () => {
                     {tr('Edit pricing and details', 'Modifier prix et détails')}
                   </button>
                 </div>
-                {vehicle?.listingId && listingIsLive ? (
+                {publicListingPath && listingIsLive ? (
                   <Link
-                    to={`/marketplace/marketplace-${encodeURIComponent(String(vehicle.listingId))}`}
+                    to={publicListingPath}
                     className="mt-3 inline-flex w-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
                   >
                     {tr('Open public listing', 'Ouvrir l’annonce publique')}
@@ -7489,6 +8065,7 @@ const AccountMarketplaceVehicleProfile = () => {
                   stagePills={ownerExecutionStagePills}
                   overviewSteps={isOperationsWorkspaceRoute ? [] : operationalExecutionMeta.steps}
                   statusCards={ownerExecutionPrimaryStatusCards}
+                  actionMode={ownerExecutionReturnActionMode}
                   footer={ownerExecutionFooter}
                 >
 
@@ -7506,7 +8083,7 @@ const AccountMarketplaceVehicleProfile = () => {
                             primaryTone="emerald"
                           >
                             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                              {tr('Vehicle inspection, documents, deposit, and signature are complete.', 'Inspection véhicule, documents, caution et signature sont terminés.')}
+                              {tr('Open media, documents, deposit, and signature are complete.', 'Médias ouverture, documents, caution et signature sont terminés.')}
                             </div>
                           </OwnerStepperStepCard>
                         ) : null}
@@ -7524,10 +8101,10 @@ const AccountMarketplaceVehicleProfile = () => {
                               signature: FileSignature,
                             };
                             const detailMap = {
-                              vehicle_photos: complete ? tr(`${ownerExecutionHandoffPhotos.length} vehicle inspection photos saved.`, `${ownerExecutionHandoffPhotos.length} photos d’inspection véhicule enregistrées.`) : tr(step.note.en, step.note.fr),
+                              vehicle_photos: complete ? tr(`${ownerExecutionHandoffPhotos.length} open media saved.`, `${ownerExecutionHandoffPhotos.length} médias ouverture enregistrés.`) : tr(step.note.en, step.note.fr),
                               start_odometer: complete ? `${ownerExecutionDraft.startOdometer} km` : tr(step.note.en, step.note.fr),
                               start_fuel: complete ? getOwnerExecutionFuelLabel(ownerExecutionDraft.startFuelLevel, tr) : tr(step.note.en, step.note.fr),
-                              legal_docs: complete ? tr(`${ownerExecutionLegalDocsPhotos.length} document photos saved.`, `${ownerExecutionLegalDocsPhotos.length} photos de documents enregistrées.`) : tr(step.note.en, step.note.fr),
+                              legal_docs: complete ? tr(`${ownerExecutionLegalDocsPhotos.length} registration + insurance media saved.`, `${ownerExecutionLegalDocsPhotos.length} médias carte grise + assurance enregistrés.`) : tr(step.note.en, step.note.fr),
                               deposit: complete ? tr('Deposit confirmed.', 'Caution confirmée.') : tr(step.note.en, step.note.fr),
                               signature: complete ? tr('Contract signed.', 'Contrat signé.') : tr(step.note.en, step.note.fr),
                             };
@@ -7560,8 +8137,8 @@ const AccountMarketplaceVehicleProfile = () => {
                               >
                                 {active && step.key === 'vehicle_photos' ? (
                                   <RentalPhotoEvidenceCapture
-                                    title={tr('Vehicle inspection', 'Inspection véhicule')}
-                                    subtitle={tr('Take at least 3 clear vehicle inspection photos before the vehicle leaves.', 'Prenez au moins 3 photos claires d’inspection véhicule avant le départ.')}
+                                    title={tr('Open media', 'Médias ouverture')}
+                                    subtitle={tr('Take at least 3 clear photos before the rental starts.', 'Prenez au moins 3 photos claires avant le départ.')}
                                     helper={tr('Use the camera, review the images, then confirm the upload.', 'Utilisez la caméra, vérifiez les images, puis confirmez le téléversement.')}
                                     sessionToken={`owner-handoff-${String(operationalRequest?.id || 'request')}`}
                                     photos={ownerExecutionDraft.handoffPhotos}
@@ -7570,14 +8147,14 @@ const AccountMarketplaceVehicleProfile = () => {
                                     saving={ownerExecutionSaving}
                                     disabled={ownerExecutionHandoffLocked}
                                     onSubmit={(files) => uploadOwnerExecutionPhotos('handoff', files)}
-                                    submitLabel={tr('Save vehicle inspection photos', 'Enregistrer les photos d’inspection véhicule')}
+                                    submitLabel={tr('Save open media', 'Enregistrer les médias ouverture')}
                                     variant="flush"
                                     tr={tr}
                                   />
                                 ) : null}
                                 {active && step.key === 'legal_docs' ? (
                                   <RentalPhotoEvidenceCapture
-                                    title={tr('Registration + insurance', 'Carte grise + assurance')}
+                                    title={tr('Registration + insurance media', 'Médias carte grise + assurance')}
                                     subtitle={tr('Take exactly 2 clear photos: one registration and one insurance.', 'Prenez exactement 2 photos claires : une carte grise et une assurance.')}
                                     helper={tr('Use the same camera flow, review both images, then confirm the upload.', 'Utilisez le même flux caméra, vérifiez les deux images, puis confirmez le téléversement.')}
                                     sessionToken={`owner-legal-docs-${String(operationalRequest?.id || 'request')}`}
@@ -7587,7 +8164,7 @@ const AccountMarketplaceVehicleProfile = () => {
                                     saving={ownerExecutionSaving}
                                     disabled={ownerExecutionHandoffLocked}
                                     onSubmit={(files) => uploadOwnerExecutionPhotos('legal_docs', files)}
-                                    submitLabel={tr('Save registration and insurance photos', 'Enregistrer les photos carte grise et assurance')}
+                                    submitLabel={tr('Save registration + insurance media', 'Enregistrer les médias carte grise + assurance')}
                                     variant="flush"
                                     tr={tr}
                                   />
@@ -7674,6 +8251,17 @@ const AccountMarketplaceVehicleProfile = () => {
 
                     {ownerExecutionStage === 'return_pending' ? (
                       <div className="mt-4 space-y-4">
+                        {!ownerReturnReady ? (
+                          <button
+                            type="button"
+                            onClick={cancelOwnerExecutionReturnPending}
+                            disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                            className="inline-flex w-fit items-center rounded-full px-2 py-1 text-xs font-bold text-slate-500 transition hover:bg-slate-100 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {tr('Cancel return flow', 'Annuler le retour')}
+                          </button>
+                        ) : null}
+
                         {ownerReturnReady ? (
                           <OwnerStepperStepCard
                             stepNumber={tr('Step 2', 'Étape 2')}
@@ -7684,6 +8272,9 @@ const AccountMarketplaceVehicleProfile = () => {
                             onPrimaryAction={saveOwnerReturnFlow}
                             primaryDisabled={ownerExecutionSaving || !ownerReturnReady}
                             primaryTone="violet"
+                            secondaryActionLabel={tr('Cancel return flow', 'Annuler le retour')}
+                            onSecondaryAction={cancelOwnerExecutionReturnPending}
+                            secondaryDisabled={ownerExecutionSaving || ownerExecutionReturnLocked}
                           />
                         ) : null}
 
@@ -7699,16 +8290,26 @@ const AccountMarketplaceVehicleProfile = () => {
                               deposit_review: DollarSign,
                               end_rental: CheckCircle2,
                             };
+                            const returnOdometerDetail = ownerReturnMileageOveragePreview?.hasOverage
+                              ? tr(
+                                  `${ownerExecutionDraft.returnOdometer} km • ${ownerReturnMileageOveragePreview.extraKm} km extra • ${formatMoney(ownerReturnMileageOveragePreview.overageCharge, ownerReturnMileageOveragePreview.currencyCode)}`,
+                                  `${ownerExecutionDraft.returnOdometer} km • ${ownerReturnMileageOveragePreview.extraKm} km extra • ${formatMoney(ownerReturnMileageOveragePreview.overageCharge, ownerReturnMileageOveragePreview.currencyCode)}`
+                                )
+                              : `${ownerExecutionDraft.returnOdometer} km`;
                             const detailMap = {
-                              return_photos: complete ? tr('Return inspection completed.', 'Inspection retour terminée.') : tr(step.note.en, step.note.fr),
-                              return_odometer: complete ? `${ownerExecutionDraft.returnOdometer} km` : tr(step.note.en, step.note.fr),
+                              return_photos: complete ? tr('Closed media saved.', 'Médias clôture enregistrés.') : tr(step.note.en, step.note.fr),
+                              return_odometer: complete ? returnOdometerDetail : tr(step.note.en, step.note.fr),
                               return_fuel: complete ? getOwnerExecutionFuelLabel(ownerExecutionDraft.returnFuelLevel, tr) : tr(step.note.en, step.note.fr),
                               return_condition: complete
                                 ? ownerExecutionDraft.issueReported
                                   ? tr('Issue documented.', 'Incident documenté.')
                                   : tr('No issue reported.', 'Aucun incident signalé.')
                                 : tr(step.note.en, step.note.fr),
-                              deposit_review: complete ? ownerReturnDepositOutcomeLabel : tr(step.note.en, step.note.fr),
+                              deposit_review: complete
+                                ? ownerReturnMileageOveragePreview?.hasOverage && ownerMileageOverageSettlementLabel
+                                  ? `${ownerReturnDepositOutcomeLabel} • ${ownerMileageOverageSettlementLabel}`
+                                  : ownerReturnDepositOutcomeLabel
+                                : tr(step.note.en, step.note.fr),
                               end_rental: ownerReturnReady
                                 ? tr('Ready to close.', 'Prête à clôturer.')
                                 : tr(step.note.en, step.note.fr),
@@ -7748,9 +8349,9 @@ const AccountMarketplaceVehicleProfile = () => {
                               >
                                 {active && step.key === 'return_photos' ? (
                                   <RentalPhotoEvidenceCapture
-                                    title={tr('Vehicle inspection', 'Inspection véhicule')}
-                                    subtitle={tr('Take at least 3 clear return photos before closing the rental.', 'Prenez au moins 3 photos claires avant de clôturer la location.')}
-                                    helper={tr('Capture the vehicle condition on return. Issue reporting stays optional in the next step.', 'Capturez l’état du véhicule au retour. Le signalement d’incident reste optionnel à l’étape suivante.')}
+                                    title={tr('Closed media', 'Médias clôture')}
+                                    subtitle={tr('Take at least 3 clear photos before closing the rental.', 'Prenez au moins 3 photos claires avant de clôturer la location.')}
+                                    helper={tr('Capture the closing media. Issue reporting stays optional in the next step.', 'Capturez les médias de clôture. Le signalement d’incident reste optionnel à l’étape suivante.')}
                                     sessionToken={`owner-return-${String(operationalRequest?.id || 'request')}`}
                                     photos={ownerExecutionDraft.returnPhotos}
                                     minPhotos={OWNER_RETURN_MIN_PHOTOS}
@@ -7758,10 +8359,13 @@ const AccountMarketplaceVehicleProfile = () => {
                                     saving={ownerExecutionSaving}
                                     disabled={ownerExecutionReturnLocked}
                                     onSubmit={(files) => uploadOwnerExecutionPhotos('return', files)}
-                                    submitLabel={tr('Save return photos', 'Enregistrer les photos de retour')}
+                                    submitLabel={tr('Save closed media', 'Enregistrer les médias clôture')}
                                     variant="flush"
                                     tr={tr}
                                   />
+                                ) : null}
+                                {(active || complete) && step.key === 'return_odometer' && ownerReturnMileageOveragePreview ? (
+                                  <OwnerMileageOveragePreviewCard preview={ownerReturnMileageOveragePreview} tr={tr} />
                                 ) : null}
                                 {active && step.key === 'return_fuel' && ownerReturnFuelDelta !== null ? (
                                   <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${
@@ -7882,6 +8486,80 @@ const AccountMarketplaceVehicleProfile = () => {
                                         );
                                       })}
                                     </div>
+                                    {ownerReturnMileageOveragePreview?.hasOverage ? (
+                                      <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                                        <OwnerMileageOveragePreviewCard preview={ownerReturnMileageOveragePreview} tr={tr} />
+                                        <div className="mt-4">
+                                          <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-700">
+                                            {tr('Extra mileage settlement', 'Règlement kilométrage extra')}
+                                          </p>
+                                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                            {[
+                                              { key: 'deduct_deposit', label: tr('Deduct from deposit', 'Déduire de la caution') },
+                                              { key: 'paid_separately', label: tr('Paid separately', 'Payé séparément') },
+                                              { key: 'waived', label: tr('Waive charge', 'Annuler les frais') },
+                                              { key: 'unpaid', label: tr('Mark unpaid', 'Marquer impayé') },
+                                            ].map((option) => {
+                                              const selected = ownerExecutionDraft.mileageOverageSettlement === option.key;
+                                              return (
+                                                <button
+                                                  key={option.key}
+                                                  type="button"
+                                                  onClick={() => setOwnerMileageOverageSettlement(option.key)}
+                                                  disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                                  className={`rounded-2xl border px-4 py-3 text-left text-sm font-bold transition ${
+                                                    selected
+                                                      ? 'border-amber-300 bg-white text-amber-800 shadow-sm'
+                                                      : 'border-amber-100 bg-white/70 text-slate-700 hover:border-amber-300 hover:text-amber-800'
+                                                  } disabled:cursor-not-allowed disabled:opacity-60`}
+                                                >
+                                                  {option.label}
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                          {ownerMileageOverageSettlementLabel ? (
+                                            <p className="mt-3 text-xs font-semibold text-amber-800">
+                                              {tr(
+                                                `Selected: ${ownerMileageOverageSettlementLabel}`,
+                                                `Sélectionné : ${ownerMileageOverageSettlementLabel}`
+                                              )}
+                                            </p>
+                                          ) : (
+                                            <p className="mt-3 text-xs font-semibold text-amber-700">
+                                              {tr('Choose how the extra mileage charge should be handled.', 'Choisissez comment traiter les frais de kilométrage supplémentaire.')}
+                                            </p>
+                                          )}
+                                          {ownerExecutionDraft.mileageOverageSettlement ? (
+                                            <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white/80 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                              <div>
+                                                <p className="text-sm font-bold text-slate-950">
+                                                  {ownerExecutionDraft.mileageOverageSignatureUrl
+                                                    ? tr('Extra mileage signature saved', 'Signature kilométrage extra enregistrée')
+                                                    : tr('Customer signature required', 'Signature client requise')}
+                                                </p>
+                                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                                  {ownerExecutionDraft.mileageOverageSignatureUrl
+                                                    ? tr('The renter confirmed this extra mileage settlement.', 'Le locataire a confirmé ce règlement kilométrage extra.')
+                                                    : tr('Have the renter sign before finishing the rental.', 'Faites signer le locataire avant de terminer la location.')}
+                                                </p>
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={openOwnerMileageOverageSignatureModal}
+                                                disabled={ownerExecutionSaving || ownerExecutionReturnLocked}
+                                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-full bg-violet-600 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                                              >
+                                                <FileSignature className="h-3.5 w-3.5" />
+                                                {ownerExecutionDraft.mileageOverageSignatureUrl
+                                                  ? tr('Re-sign', 'Signer à nouveau')
+                                                  : tr('Sign extra mileage', 'Signer kilométrage extra')}
+                                              </button>
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 ) : null}
                                 {step.key === 'end_rental' ? (
@@ -7939,6 +8617,36 @@ const AccountMarketplaceVehicleProfile = () => {
                                   : '—'}
                           </p>
                         </div>
+                        <div className="flex flex-col gap-2 rounded-2xl border border-violet-100 bg-white px-4 py-4 shadow-sm md:col-span-3 sm:flex-row sm:items-center sm:justify-end">
+                            {ownerExecutionDocumentPayload.finalReceipt.url ? (
+                              <a
+                                href={ownerExecutionDocumentPayload.finalReceipt.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 text-sm font-bold text-white shadow-[0_14px_28px_rgba(79,70,229,0.22)] transition hover:scale-[1.01]"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                {tr('Open receipt', 'Ouvrir le reçu')}
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled
+                                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 text-sm font-bold text-slate-400"
+                              >
+                                <FileText className="h-4 w-4" />
+                                {tr('Receipt preparing', 'Reçu en préparation')}
+                              </button>
+                            )}
+                            <Link
+                              to={`/account/messages?requestId=${encodeURIComponent(String(operationalRequest.id))}`}
+                              state={{ from: currentPath }}
+                              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
+                            >
+                              <MessageSquareText className="h-4 w-4" />
+                              {tr('Open chat', 'Ouvrir le chat')}
+                            </Link>
+                        </div>
                       </div>
                     ) : null}
 
@@ -7946,16 +8654,21 @@ const AccountMarketplaceVehicleProfile = () => {
                     <div className="mt-4">
                       <OperationsCollapseCard
                         icon={FileText}
-                        eyebrow={tr('Reference', 'Référence')}
-                        title={tr('Reference details', 'Détails de référence')}
-                        description={ownerExecutionReferenceSummary}
+                        eyebrow={ownerExecutionReturnActionMode ? tr('Details', 'Détails') : tr('Reference', 'Référence')}
+                        title={ownerExecutionReturnActionMode ? tr('More rental details', 'Plus de détails location') : tr('Reference details', 'Détails de référence')}
+                        description={ownerExecutionReturnActionMode
+                          ? tr(
+                              'Media, documents, vehicle, and payment details.',
+                              'Médias, documents, véhicule et détails de paiement.'
+                            )
+                          : ownerExecutionReferenceSummary}
                         expanded={operationsReferenceExpanded}
                         onToggle={() => {
                           if (operationsReferenceExpanded) setOperationsFocusedMediaPhase('');
                           setOperationsReferenceExpanded((current) => !current);
                         }}
-                        expandLabel={tr('Show reference details', 'Voir les détails de référence')}
-                        collapseLabel={tr('Hide reference details', 'Masquer les détails de référence')}
+                        expandLabel={ownerExecutionReturnActionMode ? tr('Show rental details', 'Voir les détails location') : tr('Show reference details', 'Voir les détails de référence')}
+                        collapseLabel={ownerExecutionReturnActionMode ? tr('Hide rental details', 'Masquer les détails location') : tr('Hide reference details', 'Masquer les détails de référence')}
                       >
                         <div className="space-y-4">
                       <div ref={operationsMediaSectionRef}>
@@ -8111,7 +8824,7 @@ const AccountMarketplaceVehicleProfile = () => {
                         </div>
                       </OperationsCollapseCard>
                     </div>
-                  ) : (
+                  ) : !isOperationsWorkspaceRoute ? (
                     <>
                       <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Funds flow', 'Flux financier')}</p>
@@ -8162,7 +8875,7 @@ const AccountMarketplaceVehicleProfile = () => {
                         )}
                       </div>
                     </>
-                  )}
+                  ) : null}
                 </AccountRentalExecutionStepperShell>
                 </div>
               ) : null}
@@ -9071,6 +9784,10 @@ const AccountMarketplaceVehicleProfile = () => {
               />
             </div>
 
+            {ownerReturnOdometerDraftPreview ? (
+              <OwnerMileageOveragePreviewCard preview={ownerReturnOdometerDraftPreview} tr={tr} />
+            ) : null}
+
             <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
               <button
                 type="button"
@@ -9134,6 +9851,18 @@ const AccountMarketplaceVehicleProfile = () => {
         description={tr(
           `Renter confirms receipt of ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} refunded in full.`,
           `Le locataire confirme avoir reçu ${formatMoney(operationalRequest?.depositAmount || 0, operationalRequest?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} remboursé en totalité.`
+        )}
+      />
+
+      <SignaturePadModal
+        isOpen={showOwnerMileageOverageSignatureModal}
+        onClose={() => setShowOwnerMileageOverageSignatureModal(false)}
+        onSave={saveOwnerMileageOverageSignature}
+        rentalId={`marketplace-${String(operationalRequest?.id || 'owner')}-mileage-overage`}
+        title={tr('Extra Mileage Signature', 'Signature kilométrage supplémentaire')}
+        description={tr(
+          `Renter confirms ${formatMoney(ownerReturnMileageOveragePreview?.overageCharge || 0, ownerReturnMileageOveragePreview?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} for ${ownerReturnMileageOveragePreview?.extraKm || 0} extra km handled as ${ownerMileageOverageSettlementLabel || 'selected settlement'}.`,
+          `Le locataire confirme ${formatMoney(ownerReturnMileageOveragePreview?.overageCharge || 0, ownerReturnMileageOveragePreview?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')} pour ${ownerReturnMileageOveragePreview?.extraKm || 0} km extra traité comme ${ownerMileageOverageSettlementLabel || 'règlement sélectionné'}.`
         )}
       />
 

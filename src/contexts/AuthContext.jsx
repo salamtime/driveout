@@ -28,6 +28,7 @@ const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
 const PLATFORM_PERMISSION_MODULES = new Set(['Workspaces', 'Platform Admins']);
 const AUTH_PROFILE_BOOTSTRAP_TIMEOUT_MS = 6000;
 const AUTH_TENANT_SESSION_BOOTSTRAP_TIMEOUT_MS = 3500;
+const AUTH_TENANT_SESSION_DEFER_MS = 450;
 const AUTH_PENDING_INTENT_TIMEOUT_MS = 2500;
 const AUTH_BOOTSTRAP_TIMEOUT_CODE = 'AUTH_BOOTSTRAP_TIMEOUT';
 
@@ -692,10 +693,12 @@ export const AuthProvider = ({ children }) => {
         tenantSessionLoadSequenceRef.current = nextTenantSessionRequestId;
         setTenantSession(null);
         setPlatformAccess(buildPlatformAccessFallback(privilegedOwnerOverride));
-        void hydrateTenantSession({
-          requestId: nextTenantSessionRequestId,
-          privilegedOwnerOverride,
-        });
+        globalThis.setTimeout(() => {
+          void hydrateTenantSession({
+            requestId: nextTenantSessionRequestId,
+            privilegedOwnerOverride,
+          });
+        }, AUTH_TENANT_SESSION_DEFER_MS);
       } else {
         tenantSessionLoadSequenceRef.current += 1;
         setTenantSession(null);

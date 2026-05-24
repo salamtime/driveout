@@ -11,6 +11,9 @@ import {
   shouldSurfaceMessageThreadNotification,
 } from '../../utils/messageNotificationPreferences';
 
+const GLOBAL_MESSAGE_LAUNCHER_BOOTSTRAP_DELAY_MS = 1200;
+const GLOBAL_MESSAGE_LAUNCHER_THREAD_LIMIT = 20;
+
 const buildToastPreview = (value, fallback) => {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return fallback;
@@ -280,7 +283,7 @@ const GlobalMessageLauncher = ({
 
     try {
       if (!silent) setLoading(true);
-      const response = await MessageService.listSharedThreads({ limit: 50 });
+      const response = await MessageService.listSharedThreads({ limit: GLOBAL_MESSAGE_LAUNCHER_THREAD_LIMIT });
       setThreads(Array.isArray(response?.threads) ? response.threads : []);
       setInitialized(true);
     } catch (error) {
@@ -295,7 +298,13 @@ const GlobalMessageLauncher = ({
   };
 
   useEffect(() => {
-    void loadThreads({ silent: true });
+    const timerId = window.setTimeout(() => {
+      void loadThreads({ silent: true });
+    }, GLOBAL_MESSAGE_LAUNCHER_BOOTSTRAP_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
   }, [currentUserId]);
 
   useEffect(() => {

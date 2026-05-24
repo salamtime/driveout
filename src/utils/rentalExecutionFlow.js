@@ -52,8 +52,22 @@ export const createRentalExecutionDraft = () => ({
   depositRefundCurrency: '',
   depositRefundSignedBy: '',
   depositRefundRecordedBy: '',
+  mileageOverageReviewed: false,
+  mileageOverageSettlement: '',
+  mileageOverageAmount: 0,
+  mileageOverageCurrency: '',
+  mileageOverageExtraKm: 0,
+  mileageOverageTotalKm: 0,
+  mileageOverageIncludedKm: 0,
+  mileageOverageRate: 0,
+  mileageOverageReviewedAt: null,
+  mileageOverageSignatureUrl: '',
+  mileageOverageSignedAt: null,
+  mileageOverageSignedBy: '',
+  mileageOverageRecordedBy: '',
   finalReceiptUrl: '',
   finalReceiptGeneratedAt: null,
+  completionReceipt: null,
   returnSavedAt: null,
 });
 
@@ -79,13 +93,51 @@ export const normalizeRentalExecutionPhotos = (photos) =>
     }))
     .filter((photo) => photo.publicUrl || photo.thumbnailUrl);
 
+const normalizeRentalExecutionCompletionReceipt = (receipt, fallback = {}) => {
+  const raw = receipt && typeof receipt === 'object' ? receipt : {};
+  const url = String(raw.url || raw.href || fallback.finalReceiptUrl || '').trim();
+  if (!url) return null;
+  const rawMileageOverage = raw.mileageOverage || raw.mileage_overage || {};
+  const fallbackMileageAmount = Math.max(0, Number(fallback.mileageOverageAmount || 0) || 0);
+  const mileageOverage = {
+    settlement: String(rawMileageOverage.settlement || fallback.mileageOverageSettlement || '').trim().toLowerCase(),
+    amount: Math.max(0, Number(rawMileageOverage.amount ?? fallbackMileageAmount) || 0),
+    currency: String(rawMileageOverage.currency || rawMileageOverage.currencyCode || fallback.mileageOverageCurrency || '').trim(),
+    extraKm: Math.max(0, Number(rawMileageOverage.extraKm ?? fallback.mileageOverageExtraKm ?? 0) || 0),
+    totalKm: Math.max(0, Number(rawMileageOverage.totalKm ?? fallback.mileageOverageTotalKm ?? 0) || 0),
+    includedKm: Math.max(0, Number(rawMileageOverage.includedKm ?? fallback.mileageOverageIncludedKm ?? 0) || 0),
+    rate: Math.max(0, Number(rawMileageOverage.rate ?? fallback.mileageOverageRate ?? 0) || 0),
+    signatureUrl: String(rawMileageOverage.signatureUrl || fallback.mileageOverageSignatureUrl || '').trim(),
+    signedAt: rawMileageOverage.signedAt || fallback.mileageOverageSignedAt || null,
+  };
+
+  return {
+    url,
+    generatedAt: raw.generatedAt || raw.generated_at || fallback.finalReceiptGeneratedAt || null,
+    completedAt: raw.completedAt || raw.completed_at || fallback.returnSavedAt || null,
+    label: String(raw.label || 'Final receipt').trim() || 'Final receipt',
+    kind: String(raw.kind || 'receipt').trim().toLowerCase() || 'receipt',
+    depositOutcome: String(raw.depositOutcome || raw.deposit_outcome || fallback.depositOutcome || '').trim().toLowerCase(),
+    refundAmount: Math.max(0, Number(raw.refundAmount || raw.refund_amount || fallback.depositRefundAmount || 0) || 0),
+    refundCurrency: String(raw.refundCurrency || raw.refund_currency || fallback.depositRefundCurrency || '').trim(),
+    refundSignatureUrl: String(
+      raw.refundSignatureUrl ||
+      raw.refund_signature_url ||
+      fallback.depositRefundSignatureUrl ||
+      ''
+    ).trim(),
+    refundSignedAt: raw.refundSignedAt || raw.refund_signed_at || fallback.depositRefundSignedAt || null,
+    mileageOverage: mileageOverage.amount > 0 || mileageOverage.extraKm > 0 ? mileageOverage : null,
+  };
+};
+
 export const normalizeRentalExecutionDraft = (value) => {
   const raw = value && typeof value === 'object' ? value : {};
   const handoffPhotos = normalizeRentalExecutionPhotos(raw.handoffPhotos);
   const legalDocsPhotos = normalizeRentalExecutionPhotos(raw.legalDocsPhotos || raw.legal_docs_photos);
   const returnPhotos = normalizeRentalExecutionPhotos(raw.returnPhotos);
 
-  return {
+  const normalizedDraft = {
     handoffChecked: Boolean(raw.handoffChecked),
     handoffConditionReviewed: Boolean(raw.handoffConditionReviewed),
     handoffConditionNote: String(raw.handoffConditionNote || '').trim(),
@@ -142,11 +194,32 @@ export const normalizeRentalExecutionDraft = (value) => {
     depositRefundCurrency: String(raw.depositRefundCurrency || raw.deposit_refund_currency || '').trim(),
     depositRefundSignedBy: String(raw.depositRefundSignedBy || raw.deposit_refund_signed_by || '').trim(),
     depositRefundRecordedBy: String(raw.depositRefundRecordedBy || raw.deposit_refund_recorded_by || '').trim(),
+    mileageOverageReviewed: Boolean(raw.mileageOverageReviewed || raw.mileage_overage_reviewed),
+    mileageOverageSettlement: String(raw.mileageOverageSettlement || raw.mileage_overage_settlement || '').trim().toLowerCase(),
+    mileageOverageAmount: Math.max(0, Number(raw.mileageOverageAmount || raw.mileage_overage_amount || 0) || 0),
+    mileageOverageCurrency: String(raw.mileageOverageCurrency || raw.mileage_overage_currency || '').trim(),
+    mileageOverageExtraKm: Math.max(0, Number(raw.mileageOverageExtraKm || raw.mileage_overage_extra_km || 0) || 0),
+    mileageOverageTotalKm: Math.max(0, Number(raw.mileageOverageTotalKm || raw.mileage_overage_total_km || 0) || 0),
+    mileageOverageIncludedKm: Math.max(0, Number(raw.mileageOverageIncludedKm || raw.mileage_overage_included_km || 0) || 0),
+    mileageOverageRate: Math.max(0, Number(raw.mileageOverageRate || raw.mileage_overage_rate || 0) || 0),
+    mileageOverageReviewedAt: raw.mileageOverageReviewedAt || raw.mileage_overage_reviewed_at || null,
+    mileageOverageSignatureUrl: String(raw.mileageOverageSignatureUrl || raw.mileage_overage_signature_url || '').trim(),
+    mileageOverageSignedAt: raw.mileageOverageSignedAt || raw.mileage_overage_signed_at || null,
+    mileageOverageSignedBy: String(raw.mileageOverageSignedBy || raw.mileage_overage_signed_by || '').trim(),
+    mileageOverageRecordedBy: String(raw.mileageOverageRecordedBy || raw.mileage_overage_recorded_by || '').trim(),
     finalReceiptUrl: String(raw.finalReceiptUrl || raw.final_receipt_url || raw.receiptUrl || '').trim(),
     finalReceiptGeneratedAt:
       raw.finalReceiptGeneratedAt || raw.final_receipt_generated_at || raw.receiptGeneratedAt || null,
+    completionReceipt: null,
     returnSavedAt: raw.returnSavedAt || null,
   };
+
+  normalizedDraft.completionReceipt = normalizeRentalExecutionCompletionReceipt(
+    raw.completionReceipt || raw.completion_receipt,
+    normalizedDraft
+  );
+
+  return normalizedDraft;
 };
 
 export const isRentalExecutionHandoffLocked = (draft = {}, requestStatus = '') => {
@@ -228,8 +301,22 @@ export const buildRentalExecutionSnapshots = (draft = {}) => {
       depositRefundCurrency: normalizedDraft.depositRefundCurrency,
       depositRefundSignedBy: normalizedDraft.depositRefundSignedBy,
       depositRefundRecordedBy: normalizedDraft.depositRefundRecordedBy,
+      mileageOverageReviewed: normalizedDraft.mileageOverageReviewed,
+      mileageOverageSettlement: normalizedDraft.mileageOverageSettlement,
+      mileageOverageAmount: normalizedDraft.mileageOverageAmount,
+      mileageOverageCurrency: normalizedDraft.mileageOverageCurrency,
+      mileageOverageExtraKm: normalizedDraft.mileageOverageExtraKm,
+      mileageOverageTotalKm: normalizedDraft.mileageOverageTotalKm,
+      mileageOverageIncludedKm: normalizedDraft.mileageOverageIncludedKm,
+      mileageOverageRate: normalizedDraft.mileageOverageRate,
+      mileageOverageReviewedAt: normalizedDraft.mileageOverageReviewedAt,
+      mileageOverageSignatureUrl: normalizedDraft.mileageOverageSignatureUrl,
+      mileageOverageSignedAt: normalizedDraft.mileageOverageSignedAt,
+      mileageOverageSignedBy: normalizedDraft.mileageOverageSignedBy,
+      mileageOverageRecordedBy: normalizedDraft.mileageOverageRecordedBy,
       finalReceiptUrl: normalizedDraft.finalReceiptUrl,
       finalReceiptGeneratedAt: normalizedDraft.finalReceiptGeneratedAt,
+      completionReceipt: normalizedDraft.completionReceipt,
       returnSavedAt: normalizedDraft.returnSavedAt,
     },
   };

@@ -150,6 +150,8 @@ const AccountWorkspaceLayout = () => {
     const candidates = [
       businessOwnerHomePath,
       '/account/vehicles',
+      '/account/operations',
+      '/account/rental-history',
       '/account/boost',
       '/account/verification',
       '/account/messages',
@@ -423,6 +425,7 @@ const AccountWorkspaceLayout = () => {
     const warmWorkspace = () => {
       void import('../../pages/account/AccountOverview');
       void import('../../pages/account/AccountRentals');
+      void import('../../pages/account/AccountRentalHistory');
       void import('../../pages/account/AccountMessages');
       void import('../../pages/account/AccountRevenue');
       void import('../../pages/account/AccountVerification');
@@ -503,7 +506,7 @@ const AccountWorkspaceLayout = () => {
     const href = resolveSectionHref(item) || item?.href || '/account/overview';
     const currentPath = getCurrentLocationPath(location);
     const shouldPreserveReturnPath =
-      item?.id === 'settings' &&
+      ['settings', 'messages'].includes(item?.id) &&
       (
         location.pathname === '/account/vehicles' ||
         location.pathname.startsWith('/account/vehicles/') ||

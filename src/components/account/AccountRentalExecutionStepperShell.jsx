@@ -198,6 +198,7 @@ const AccountRentalExecutionStepperShell = ({
   stagePills = [],
   overviewSteps = [],
   statusCards = [],
+  actionMode = false,
   children = null,
   footer = null,
 }) => {
@@ -205,7 +206,7 @@ const AccountRentalExecutionStepperShell = ({
 
   if (variant === 'rentalDetails') {
     return (
-      <div className="relative overflow-visible">
+      <div className="relative overflow-visible" data-action-mode={actionMode ? 'true' : 'false'}>
         {hasHeader ? (
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">

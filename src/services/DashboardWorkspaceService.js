@@ -4,6 +4,7 @@ import MaintenanceService from './MaintenanceService';
 import { deriveEffectiveRentalStatus } from '../utils/rentalLifecycle';
 
 const UPCOMING_RENTAL_STATUSES = new Set(['scheduled', 'reserved', 'confirmed']);
+const DASHBOARD_QUERY_TIMEOUT_MS = 4500;
 
 const formatVehicleName = (vehicle = {}) =>
   vehicle?.model || vehicle?.name || 'Vehicle';
@@ -20,6 +21,38 @@ const composeRentalDateTime = (dateValue, timeValue, fallbackTime = '00:00') => 
   const composed = new Date(`${source}T${timeValue || fallbackTime}:00`);
   return Number.isNaN(composed.getTime()) ? null : composed;
 };
+
+const withSoftTimeout = async (task, fallbackValue, label) => {
+  let timeoutId = null;
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => task()),
+      new Promise((resolve) => {
+        timeoutId = globalThis.setTimeout(() => {
+          console.warn(`Dashboard workspace query timed out: ${label}`);
+          resolve(fallbackValue);
+        }, DASHBOARD_QUERY_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    console.warn(`Dashboard workspace query failed: ${label}`, error);
+    return fallbackValue;
+  } finally {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
+};
+
+const sumPaidRentalRevenue = (rentals = []) =>
+  (rentals || []).reduce((sum, rental) => {
+    if (String(rental?.payment_status || '').trim().toLowerCase() !== 'paid') {
+      return sum;
+    }
+
+    return sum + (Number(rental?.total_amount || 0) || 0);
+  }, 0);
 
 const mapUpcomingRentals = (rentals = []) =>
   (rentals || [])
@@ -71,19 +104,13 @@ const mapUpcomingRentals = (rentals = []) =>
 class DashboardWorkspaceService {
   async getCoreSnapshot() {
     const [
-      vehicleStatsResult,
       allVehicles,
       maintenanceRows,
-      totalRevenue,
-      recentBookings,
       allRentalsDetailed,
     ] = await Promise.all([
-      VehicleService.getVehicleStats(),
-      VehicleService.getAllVehicles(),
-      MaintenanceService.getAllMaintenanceRecords(),
-      RentalService.getTotalRevenue(),
-      RentalService.getRecentBookings(5),
-      RentalService.getAllRentalsDetailed(),
+      withSoftTimeout(() => VehicleService.getAllVehicles(), [], 'core vehicles'),
+      withSoftTimeout(() => MaintenanceService.getAllMaintenanceRecords(), [], 'core maintenance'),
+      withSoftTimeout(() => RentalService.getAllRentalsDetailed(), [], 'core rentals'),
     ]);
 
     const vehicles = Array.isArray(allVehicles) ? allVehicles : [];
@@ -97,20 +124,20 @@ class DashboardWorkspaceService {
       ['scheduled', 'in_progress', 'pending'].includes(String(row?.status || '').toLowerCase())
     );
     const maintenanceCount = new Set(openMaintenanceRows.map((row) => row.vehicle_id)).size;
+    const totalRevenue = sumPaidRentalRevenue(detailedRentals);
+    const recentBookings = detailedRentals.slice(0, 5);
     const startOfWeek = new Date();
     startOfWeek.setDate(startOfWeek.getDate() - 6);
     startOfWeek.setHours(0, 0, 0, 0);
 
-    const fleetStats = vehicleStatsResult?.success
-      ? vehicleStatsResult
-      : {
-          total: vehicles.length,
-          available: vehicles.filter((vehicle) => vehicle.status === 'available').length,
-          rented: vehicles.filter((vehicle) => vehicle.status === 'rented').length,
-          reserved: vehicles.filter((vehicle) => vehicle.status === 'reserved').length,
-          maintenance: vehicles.filter((vehicle) => vehicle.status === 'maintenance').length,
-          out_of_service: vehicles.filter((vehicle) => vehicle.status === 'out_of_service').length,
-        };
+    const fleetStats = {
+      total: vehicles.length,
+      available: vehicles.filter((vehicle) => vehicle.status === 'available').length,
+      rented: vehicles.filter((vehicle) => vehicle.status === 'rented').length,
+      reserved: vehicles.filter((vehicle) => vehicle.status === 'reserved').length,
+      maintenance: vehicles.filter((vehicle) => vehicle.status === 'maintenance').length,
+      out_of_service: vehicles.filter((vehicle) => vehicle.status === 'out_of_service').length,
+    };
 
     return {
       stats: {
@@ -144,14 +171,16 @@ class DashboardWorkspaceService {
   }
 
   async getSecondarySnapshot() {
-    const [revenueTrendRows, allRentalsDetailed, allVehicles] = await Promise.all([
-      RentalService.getRevenueTrend(7),
-      RentalService.getAllRentalsDetailed(),
-      VehicleService.getAllVehicles(),
+    const [allRentalsDetailed, allVehicles] = await Promise.all([
+      withSoftTimeout(() => RentalService.getAllRentalsDetailed(), [], 'secondary rentals'),
+      withSoftTimeout(() => VehicleService.getAllVehicles(), [], 'secondary vehicles'),
     ]);
 
     const dailyRevenue = {};
-    (revenueTrendRows || []).forEach((rental) => {
+    (allRentalsDetailed || []).forEach((rental) => {
+      if (String(rental?.payment_status || '').trim().toLowerCase() !== 'paid') {
+        return;
+      }
       const date = new Date(rental.created_at).toISOString().split('T')[0];
       if (!dailyRevenue[date]) dailyRevenue[date] = 0;
       dailyRevenue[date] += Number(rental.total_amount || 0);

@@ -9,6 +9,8 @@ import {
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
+const BOOKING_REQUESTS_TABLE = 'app_booking_requests';
+const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const setupErrorCodes = new Set(['42P01', '42501', '42703', '22P02', 'PGRST116', 'PGRST204']);
 const REQUIRED_PROFILE_COLUMNS = new Set([
   'brand_name',
@@ -31,6 +33,18 @@ const parseBody = (body) => {
   return typeof body === 'object' ? body : {};
 };
 
+const pickFirstRow = (data) => (
+  Array.isArray(data) ? (data[0] || null) : (data || null)
+);
+
+const runFirstRowQuery = async (queryPromise) => {
+  const { data, error } = await queryPromise;
+  return {
+    data: pickFirstRow(data),
+    error,
+  };
+};
+
 const optionalNumber = (value) => {
   if (value === '' || value === null || value === undefined) return null;
   const next = Number(value);
@@ -40,6 +54,26 @@ const optionalNumber = (value) => {
 const optionalInteger = (value) => {
   const next = optionalNumber(value);
   return next === null ? null : Math.trunc(next);
+};
+
+const validateDistancePricing = (formData = {}) => {
+  const includedKilometers = optionalNumber(formData.mileageLimitKm);
+  const extraKilometerRate = optionalNumber(formData.extraKmRate);
+
+  if (includedKilometers !== null && includedKilometers <= 0) {
+    return 'Included kilometers must be greater than 0, or leave it empty for unlimited kilometers.';
+  }
+  if (extraKilometerRate !== null && extraKilometerRate <= 0) {
+    return 'Extra kilometer rate must be greater than 0, or leave it empty when not applied.';
+  }
+  if (includedKilometers !== null && includedKilometers > 0 && (extraKilometerRate === null || extraKilometerRate <= 0)) {
+    return 'Add the extra kilometer rate in MAD/km for kilometers beyond the included amount.';
+  }
+  if ((includedKilometers === null || includedKilometers <= 0) && extraKilometerRate !== null && extraKilometerRate > 0) {
+    return 'Add included kilometers before setting an extra kilometer rate.';
+  }
+
+  return '';
 };
 
 const optionalDateString = (value) => {
@@ -210,7 +244,36 @@ const fetchLinkedFleetVehicleRecord = async ({ adminClient, profile, ownerId, te
     return null;
   }
 
-  const { data, error } = await applyTenantQueryScope(
+  const { data, error } = await runFirstRowQuery(
+    applyTenantQueryScope(
+      adminClient
+        .from(VEHICLES_TABLE)
+        .select('*')
+        .eq('plate_number', fallbackPlateNumber)
+        .eq('owner_user_id', ownerId)
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantScope
+    )
+  );
+
+  if (error) {
+    const { data: legacyVehicle, error: legacyVehicleError } = await runFirstRowQuery(
+      adminClient
+        .from(VEHICLES_TABLE)
+        .select('*')
+        .eq('plate_number', fallbackPlateNumber)
+        .eq('owner_user_id', ownerId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+    );
+
+    return legacyVehicleError ? null : legacyVehicle || null;
+  }
+
+  if (data) return data;
+
+  const { data: legacyVehicle, error: legacyVehicleError } = await runFirstRowQuery(
     adminClient
       .from(VEHICLES_TABLE)
       .select('*')
@@ -218,33 +281,7 @@ const fetchLinkedFleetVehicleRecord = async ({ adminClient, profile, ownerId, te
       .eq('owner_user_id', ownerId)
       .order('updated_at', { ascending: false })
       .limit(1)
-      .maybeSingle(),
-    tenantScope
   );
-
-  if (error) {
-    const { data: legacyVehicle, error: legacyVehicleError } = await adminClient
-      .from(VEHICLES_TABLE)
-      .select('*')
-      .eq('plate_number', fallbackPlateNumber)
-      .eq('owner_user_id', ownerId)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    return legacyVehicleError ? null : legacyVehicle || null;
-  }
-
-  if (data) return data;
-
-  const { data: legacyVehicle, error: legacyVehicleError } = await adminClient
-    .from(VEHICLES_TABLE)
-    .select('*')
-    .eq('plate_number', fallbackPlateNumber)
-    .eq('owner_user_id', ownerId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
 
   return legacyVehicleError ? null : legacyVehicle || null;
 };
@@ -282,16 +319,17 @@ const loadOwnerProfileByFleetVehicle = async ({ adminClient, ownerId, fleetVehic
     resolvedFleetVehicle = legacyFleetVehicle;
   }
 
-  const { data: profileByRef, error: profileByRefError } = await applyTenantQueryScope(
-    adminClient
-      .from(VEHICLE_PROFILES_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .eq('vehicle_ref_id', String(resolvedFleetVehicle.id))
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    tenantScope
+  const { data: profileByRef, error: profileByRefError } = await runFirstRowQuery(
+    applyTenantQueryScope(
+      adminClient
+        .from(VEHICLE_PROFILES_TABLE)
+        .select('*')
+        .eq('owner_id', ownerId)
+        .eq('vehicle_ref_id', String(resolvedFleetVehicle.id))
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantScope
+    )
   );
 
   if (profileByRefError && !setupErrorCodes.has(String(profileByRefError.code || ''))) {
@@ -307,16 +345,17 @@ const loadOwnerProfileByFleetVehicle = async ({ adminClient, ownerId, fleetVehic
     return { profile: null, fleetVehicle: resolvedFleetVehicle };
   }
 
-  const { data: profileByPlate, error: profileByPlateError } = await applyTenantQueryScope(
-    adminClient
-      .from(VEHICLE_PROFILES_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .eq('plate_number', plateNumber)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    tenantScope
+  const { data: profileByPlate, error: profileByPlateError } = await runFirstRowQuery(
+    applyTenantQueryScope(
+      adminClient
+        .from(VEHICLE_PROFILES_TABLE)
+        .select('*')
+        .eq('owner_id', ownerId)
+        .eq('plate_number', plateNumber)
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantScope
+    )
   );
 
   if (profileByPlateError && !setupErrorCodes.has(String(profileByPlateError.code || ''))) {
@@ -327,6 +366,315 @@ const loadOwnerProfileByFleetVehicle = async ({ adminClient, ownerId, fleetVehic
     profile: profileByPlate || null,
     fleetVehicle: resolvedFleetVehicle,
   };
+};
+
+const loadOwnerProfileByListingId = async ({ adminClient, ownerId, listingId, tenantScope = null }) => {
+  const normalizedListingId = String(listingId || '').trim();
+  if (!ownerId || !normalizedListingId) {
+    return null;
+  }
+
+  let { data: listing, error: listingError } = await applyTenantQueryScope(
+    adminClient
+      .from(MARKETPLACE_LISTINGS_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('id', normalizedListingId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (listingError && !setupErrorCodes.has(String(listingError.code || ''))) {
+    throw listingError;
+  }
+
+  if (!listing?.id) {
+    const tenantScopedListing = await applyTenantQueryScope(
+      adminClient
+        .from(MARKETPLACE_LISTINGS_TABLE)
+        .select('*')
+        .eq('id', normalizedListingId)
+        .maybeSingle(),
+      tenantScope
+    );
+
+    if (tenantScopedListing.error && !setupErrorCodes.has(String(tenantScopedListing.error.code || ''))) {
+      throw tenantScopedListing.error;
+    }
+
+    listing = tenantScopedListing.data || null;
+  }
+
+  const profileId = String(listing?.vehicle_public_profile_id || '').trim();
+  if (!profileId) {
+    return null;
+  }
+
+  const { data: profile, error: profileError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('id', profileId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (profileError && !setupErrorCodes.has(String(profileError.code || ''))) {
+    throw profileError;
+  }
+
+  if (!profile?.id) {
+    return null;
+  }
+
+  return {
+    profile,
+    listing,
+    fleetVehicle: null,
+  };
+};
+
+const loadLatestListingForProfile = async ({ adminClient, ownerId, profileId, tenantScope = null }) => {
+  const normalizedProfileId = String(profileId || '').trim();
+  if (!normalizedProfileId) {
+    return null;
+  }
+
+  const ownerScopedResult = await runFirstRowQuery(
+    applyTenantQueryScope(
+      adminClient
+        .from(MARKETPLACE_LISTINGS_TABLE)
+        .select('*')
+        .eq('owner_id', ownerId)
+        .eq('vehicle_public_profile_id', normalizedProfileId)
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantScope
+    )
+  );
+
+  if (ownerScopedResult.error && !setupErrorCodes.has(String(ownerScopedResult.error.code || ''))) {
+    throw ownerScopedResult.error;
+  }
+
+  if (ownerScopedResult.data?.id) {
+    return ownerScopedResult.data;
+  }
+
+  const tenantScopedResult = await runFirstRowQuery(
+    applyTenantQueryScope(
+      adminClient
+        .from(MARKETPLACE_LISTINGS_TABLE)
+        .select('*')
+        .eq('vehicle_public_profile_id', normalizedProfileId)
+        .order('updated_at', { ascending: false })
+        .limit(1),
+      tenantScope
+    )
+  );
+
+  if (tenantScopedResult.error && !setupErrorCodes.has(String(tenantScopedResult.error.code || ''))) {
+    throw tenantScopedResult.error;
+  }
+
+  return tenantScopedResult.data || null;
+};
+
+const loadOwnerProfileByRequestId = async ({ adminClient, ownerId, requestId, tenantScope = null }) => {
+  const normalizedRequestId = String(requestId || '').trim();
+  if (!ownerId || !normalizedRequestId) {
+    return null;
+  }
+
+  let { data: requestRow, error: requestError } = await applyTenantQueryScope(
+    adminClient
+      .from(BOOKING_REQUESTS_TABLE)
+      .select('id, owner_id, listing_id, vehicle_public_profile_id')
+      .eq('owner_id', ownerId)
+      .eq('id', normalizedRequestId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (requestError && !setupErrorCodes.has(String(requestError.code || ''))) {
+    throw requestError;
+  }
+
+  if (!requestRow?.id) {
+    const tenantScopedRequest = await applyTenantQueryScope(
+      adminClient
+        .from(BOOKING_REQUESTS_TABLE)
+        .select('id, owner_id, listing_id, vehicle_public_profile_id')
+        .eq('id', normalizedRequestId)
+        .maybeSingle(),
+      tenantScope
+    );
+
+    if (tenantScopedRequest.error && !setupErrorCodes.has(String(tenantScopedRequest.error.code || ''))) {
+      throw tenantScopedRequest.error;
+    }
+
+    requestRow = tenantScopedRequest.data || null;
+  }
+
+  const requestProfileId = String(requestRow?.vehicle_public_profile_id || '').trim();
+  if (requestProfileId) {
+    const { data: profile, error: profileError } = await applyTenantQueryScope(
+      adminClient
+        .from(VEHICLE_PROFILES_TABLE)
+        .select('*')
+        .eq('id', requestProfileId)
+        .maybeSingle(),
+      tenantScope
+    );
+
+    if (profileError && !setupErrorCodes.has(String(profileError.code || ''))) {
+      throw profileError;
+    }
+
+    if (profile?.id) {
+      return {
+        profile,
+        listing: null,
+        fleetVehicle: null,
+      };
+    }
+  }
+
+  const requestListingId = String(requestRow?.listing_id || '').trim();
+  if (requestListingId) {
+    return loadOwnerProfileByListingId({
+      adminClient,
+      ownerId,
+      listingId: requestListingId,
+      tenantScope,
+    });
+  }
+
+  return null;
+};
+
+const loadOwnerProfileByRentalId = async ({ adminClient, ownerId, rentalId, tenantScope = null }) => {
+  const normalizedRentalId = String(rentalId || '').trim();
+  if (!ownerId || !normalizedRentalId) {
+    return null;
+  }
+
+  let { data: rentalRow, error: rentalError } = await applyTenantQueryScope(
+    adminClient
+      .from(RENTALS_TABLE)
+      .select('id, vehicle_id')
+      .eq('id', normalizedRentalId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (rentalError && !setupErrorCodes.has(String(rentalError.code || ''))) {
+    throw rentalError;
+  }
+
+  if (!rentalRow?.id) {
+    return null;
+  }
+
+  if (!rentalRow?.vehicle_id) {
+    return null;
+  }
+
+  return loadOwnerProfileByFleetVehicle({
+    adminClient,
+    ownerId,
+    fleetVehicleId: rentalRow.vehicle_id,
+    tenantScope,
+  });
+};
+
+const resolveOwnerProfileRecord = async ({ adminClient, ownerId, vehicleId, tenantScope = null }) => {
+  const normalizedVehicleId = String(vehicleId || '').trim();
+  if (!ownerId || !normalizedVehicleId) {
+    return null;
+  }
+
+  const { data: directProfile, error: directProfileError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('owner_id', ownerId)
+      .eq('id', normalizedVehicleId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (directProfileError && !setupErrorCodes.has(String(directProfileError.code || ''))) {
+    throw directProfileError;
+  }
+
+  if (directProfile?.id) {
+    return {
+      profile: directProfile,
+      fleetVehicle: null,
+    };
+  }
+
+  const { data: tenantScopedProfile, error: tenantScopedProfileError } = await applyTenantQueryScope(
+    adminClient
+      .from(VEHICLE_PROFILES_TABLE)
+      .select('*')
+      .eq('id', normalizedVehicleId)
+      .maybeSingle(),
+    tenantScope
+  );
+
+  if (tenantScopedProfileError && !setupErrorCodes.has(String(tenantScopedProfileError.code || ''))) {
+    throw tenantScopedProfileError;
+  }
+
+  if (tenantScopedProfile?.id) {
+    return {
+      profile: tenantScopedProfile,
+      fleetVehicle: null,
+    };
+  }
+
+  const requestResolution = await loadOwnerProfileByRequestId({
+    adminClient,
+    ownerId,
+    requestId: normalizedVehicleId,
+    tenantScope,
+  });
+
+  if (requestResolution?.profile?.id) {
+    return requestResolution;
+  }
+
+  const listingResolution = await loadOwnerProfileByListingId({
+    adminClient,
+    ownerId,
+    listingId: normalizedVehicleId,
+    tenantScope,
+  });
+
+  if (listingResolution?.profile?.id) {
+    return listingResolution;
+  }
+
+  const rentalResolution = await loadOwnerProfileByRentalId({
+    adminClient,
+    ownerId,
+    rentalId: normalizedVehicleId,
+    tenantScope,
+  });
+
+  if (rentalResolution?.profile?.id) {
+    return rentalResolution;
+  }
+
+  return loadOwnerProfileByFleetVehicle({
+    adminClient,
+    ownerId,
+    fleetVehicleId: normalizedVehicleId,
+    tenantScope,
+  });
 };
 
 const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitForReview = false, existingListing = null }) => {
@@ -456,6 +804,10 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
         min_hours: optionalInteger(formData.halfDayMinHours),
         max_hours: optionalInteger(formData.halfDayMaxHours),
       },
+      distance: {
+        included_km: optionalInteger(formData.mileageLimitKm),
+        extra_km_rate: optionalNumber(formData.extraKmRate),
+      },
       currency: String(formData.currencyCode || 'MAD').trim() || 'MAD',
       seasonal_pricing: Array.isArray(formData.seasonalPricing) ? formData.seasonalPricing : [],
     },
@@ -470,20 +822,21 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
 };
 
 const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, vehicleId, formData, submitForReview = false, saveListing = false, tenantScope = null }) => {
+  const distancePricingError = validateDistancePricing(formData);
+  if (distancePricingError) {
+    const error = new Error(distancePricingError);
+    error.status = 400;
+    throw error;
+  }
+
   let existingListing = null;
   if (vehicleId) {
-    const { data: listing } = await applyTenantQueryScope(
-      adminClient
-      .from(MARKETPLACE_LISTINGS_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .eq('vehicle_public_profile_id', vehicleId)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-      tenantScope
-    );
-    existingListing = listing || null;
+    existingListing = await loadLatestListingForProfile({
+      adminClient,
+      ownerId,
+      profileId: vehicleId,
+      tenantScope,
+    });
   }
 
   const { profilePayload, listingPayload } = buildPayloads({
@@ -541,16 +894,17 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     null;
 
   if (fleetVehiclePayload?.plate_number) {
-    const { data: existingPlateVehicle, error: plateError } = await applyTenantQueryScope(
-      adminClient
-      .from(VEHICLES_TABLE)
-      .select('*')
-      .eq('plate_number', fleetVehiclePayload.plate_number)
-      .order('id', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-      tenantScope
-    );
+      const { data: existingPlateVehicle, error: plateError } = await runFirstRowQuery(
+        applyTenantQueryScope(
+          adminClient
+            .from(VEHICLES_TABLE)
+            .select('*')
+            .eq('plate_number', fleetVehiclePayload.plate_number)
+            .order('id', { ascending: false })
+            .limit(1),
+          tenantScope
+        )
+      );
 
     if (plateError && !setupErrorCodes.has(String(plateError.code || ''))) {
       throw plateError;
@@ -590,15 +944,16 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     const duplicatePlateConstraint = String(error?.message || error?.details || '').includes('plate_number_key')
       || String(error?.constraint || '') === 'saharax_0u4w4d_vehicles_plate_number_key';
     if (String(error?.code || '') === '23505' && duplicatePlateConstraint && compatibleFleetPayload?.plate_number) {
-      const { data: duplicateVehicle } = await applyTenantQueryScope(
-        adminClient
-        .from(VEHICLES_TABLE)
-        .select('*')
-        .eq('plate_number', compatibleFleetPayload.plate_number)
-        .order('id', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-        tenantScope
+      const { data: duplicateVehicle } = await runFirstRowQuery(
+        applyTenantQueryScope(
+          adminClient
+            .from(VEHICLES_TABLE)
+            .select('*')
+            .eq('plate_number', compatibleFleetPayload.plate_number)
+            .order('id', { ascending: false })
+            .limit(1),
+          tenantScope
+        )
       );
       if (duplicateVehicle?.id && (!duplicateVehicle?.owner_user_id || String(duplicateVehicle.owner_user_id) === String(ownerId))) {
         savedFleetVehicle = duplicateVehicle;
@@ -646,7 +1001,7 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     };
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const { data, error } = existingListing?.id
-        ? await applyTenantQueryScope(adminClient.from(MARKETPLACE_LISTINGS_TABLE).update(stampTenantPayload(compatibleListingPayload, tenantScope)).eq('id', existingListing.id).eq('owner_id', ownerId).select('*').single(), tenantScope)
+        ? await applyTenantQueryScope(adminClient.from(MARKETPLACE_LISTINGS_TABLE).update(stampTenantPayload(compatibleListingPayload, tenantScope)).eq('id', existingListing.id).select('*').single(), tenantScope)
         : await adminClient.from(MARKETPLACE_LISTINGS_TABLE).insert(stampTenantPayload(compatibleListingPayload, tenantScope)).select('*').single();
       if (!error) {
         savedListing = data;
@@ -711,6 +1066,64 @@ const loadVehicleRecord = async ({ adminClient, ownerId, vehicleId, tenantScope 
   }
 
   if (!profile) {
+    const { data: tenantScopedProfile, error: tenantScopedProfileError } = await applyTenantQueryScope(
+      adminClient
+        .from(VEHICLE_PROFILES_TABLE)
+        .select('*')
+        .eq('id', vehicleId)
+        .maybeSingle(),
+      tenantScope
+    );
+
+    if (tenantScopedProfileError && !setupErrorCodes.has(String(tenantScopedProfileError.code || ''))) {
+      throw tenantScopedProfileError;
+    }
+
+    if (tenantScopedProfile?.id) {
+      profile = tenantScopedProfile;
+    }
+  }
+
+  if (!profile) {
+    const requestResolution = await loadOwnerProfileByRequestId({
+      adminClient,
+      ownerId,
+      requestId: vehicleId,
+      tenantScope,
+    });
+
+    if (requestResolution?.profile?.id) {
+      profile = requestResolution.profile;
+    }
+  }
+
+  if (!profile) {
+    const listingResolution = await loadOwnerProfileByListingId({
+      adminClient,
+      ownerId,
+      listingId: vehicleId,
+      tenantScope,
+    });
+
+    if (listingResolution?.profile?.id) {
+      profile = listingResolution.profile;
+    }
+  }
+
+  if (!profile) {
+    const rentalResolution = await loadOwnerProfileByRentalId({
+      adminClient,
+      ownerId,
+      rentalId: vehicleId,
+      tenantScope,
+    });
+
+    if (rentalResolution?.profile?.id) {
+      profile = rentalResolution.profile;
+    }
+  }
+
+  if (!profile) {
     const fleetResolution = await loadOwnerProfileByFleetVehicle({
       adminClient,
       ownerId,
@@ -725,21 +1138,12 @@ const loadVehicleRecord = async ({ adminClient, ownerId, vehicleId, tenantScope 
     profile = fleetResolution.profile;
   }
 
-  const { data: listing, error: listingError } = await applyTenantQueryScope(
-    adminClient
-      .from(MARKETPLACE_LISTINGS_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .eq('vehicle_public_profile_id', profile.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    tenantScope
-  );
-
-  if (listingError && !setupErrorCodes.has(String(listingError.code || ''))) {
-    throw listingError;
-  }
+  const listing = await loadLatestListingForProfile({
+    adminClient,
+    ownerId,
+    profileId: profile.id,
+    tenantScope,
+  });
 
   const fleetVehicle = await fetchLinkedFleetVehicleRecord({
     adminClient,
@@ -752,6 +1156,356 @@ const loadVehicleRecord = async ({ adminClient, ownerId, vehicleId, tenantScope 
     profile,
     listing: listing || null,
     fleetVehicle: fleetVehicle || null,
+  };
+};
+
+const updateCompatibleSingleRecord = async ({ initialPayload, buildQuery, fallbackErrorMessage, contextLabel = 'ownerVehicleSectionSave' }) => {
+  let compatiblePayload = { ...initialPayload };
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const { data, error } = await buildQuery(compatiblePayload);
+    if (!error) {
+      return data || null;
+    }
+
+    const missingColumn = getMissingSchemaColumn(error);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(compatiblePayload, missingColumn)) {
+      const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+      compatiblePayload = nextPayload;
+      continue;
+    }
+
+    error.saveContext = contextLabel;
+    throw error;
+  }
+
+  const error = new Error(fallbackErrorMessage || 'Unable to save this section with the current marketplace schema.');
+  error.saveContext = contextLabel;
+  throw error;
+};
+
+const saveListingCopySection = async ({ adminClient, ownerId, accountType, vehicleId, formData, tenantScope = null }) => {
+  const resolvedProfileRecord = await resolveOwnerProfileRecord({
+    adminClient,
+    ownerId,
+    vehicleId,
+    tenantScope,
+  });
+  const profileId = String(resolvedProfileRecord?.profile?.id || vehicleId || '').trim();
+  if (!profileId) {
+    const error = new Error('Choose a vehicle before saving listing copy.');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const shortDescription = String(formData.shortDescription || '').trim() || null;
+  const fullDescription = String(formData.fullDescription || '').trim() || null;
+  const listingTitle = String(formData.listingTitle || '').trim();
+  const normalizedOwnerType = ['individual_owner', 'operator', 'owner'].includes(String(accountType || '').trim())
+    ? String(accountType).trim()
+    : 'individual_owner';
+
+  const savedProfile = await updateCompatibleSingleRecord({
+    initialPayload: {
+      short_description: shortDescription,
+      full_description: fullDescription,
+      updated_at: now,
+    },
+    buildQuery: (payload) =>
+      applyTenantQueryScope(
+        adminClient
+          .from(VEHICLE_PROFILES_TABLE)
+          .update(stampTenantPayload(payload, tenantScope))
+          .eq('id', profileId)
+          .select('*')
+          .single(),
+        tenantScope
+      ),
+    fallbackErrorMessage: 'Unable to save listing copy with the current marketplace schema.',
+    contextLabel: 'saveListingCopySection.profileUpdate',
+  });
+
+  if (!savedProfile?.id) {
+    const error = new Error('Vehicle not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  let existingListing = null;
+  try {
+    existingListing = await loadLatestListingForProfile({
+      adminClient,
+      ownerId,
+      profileId: savedProfile.id,
+      tenantScope,
+    });
+  } catch (listingLookupError) {
+    listingLookupError.saveContext = 'saveListingCopySection.listingLookup';
+    throw listingLookupError;
+  }
+
+  const fallbackTitle = [savedProfile.brand_name, savedProfile.model_name].filter(Boolean).join(' ').trim() || 'Marketplace listing';
+  const listingCopyPayload = {
+    title: listingTitle || fallbackTitle,
+    short_description: shortDescription,
+    full_description: fullDescription,
+    updated_at: now,
+  };
+
+  const savedListing = await updateCompatibleSingleRecord({
+    initialPayload: existingListing?.id
+      ? listingCopyPayload
+      : {
+          owner_id: ownerId,
+          owner_type: normalizedOwnerType,
+          vehicle_public_profile_id: savedProfile.id,
+          listing_status: 'draft',
+          review_status: 'not_submitted',
+          moderation_status: 'not_reviewed',
+          booking_mode: 'request',
+          currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',
+          created_at: now,
+          ...listingCopyPayload,
+        },
+    buildQuery: (payload) =>
+      existingListing?.id
+        ? applyTenantQueryScope(
+            adminClient
+              .from(MARKETPLACE_LISTINGS_TABLE)
+              .update(stampTenantPayload(payload, tenantScope))
+              .eq('id', existingListing.id)
+              .select('*')
+              .single(),
+            tenantScope
+          )
+        : adminClient
+            .from(MARKETPLACE_LISTINGS_TABLE)
+            .insert(stampTenantPayload(payload, tenantScope))
+            .select('*')
+            .single(),
+    fallbackErrorMessage: 'Unable to save marketplace listing copy with the current schema.',
+    contextLabel: existingListing?.id
+      ? 'saveListingCopySection.listingUpdate'
+      : 'saveListingCopySection.listingInsert',
+  });
+
+  // Keep listing-copy saves lightweight. This path only edits public text,
+  // so we can return the updated profile/listing directly without reloading
+  // linked fleet data or other heavier vehicle workspace context.
+  return {
+    profile: savedProfile,
+    listing: savedListing || existingListing || null,
+    fleetVehicle: null,
+  };
+};
+
+const saveVehicleWorkspaceSection = async ({ adminClient, ownerId, vehicleId, formData, tenantScope = null }) => {
+  const resolvedProfileRecord = await resolveOwnerProfileRecord({
+    adminClient,
+    ownerId,
+    vehicleId,
+    tenantScope,
+  });
+  const profileId = String(resolvedProfileRecord?.profile?.id || vehicleId || '').trim();
+  if (!profileId) {
+    const error = new Error('Choose a vehicle before saving vehicle setup.');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const savedProfile = await updateCompatibleSingleRecord({
+    initialPayload: {
+      brand_name: String(formData.brandName || '').trim() || null,
+      model_name: String(formData.modelName || '').trim() || null,
+      category_code: String(formData.categoryCode || '').trim() || 'atv',
+      year: optionalInteger(formData.year),
+      plate_number: String(formData.plateNumber || '').trim() || null,
+      city_name: String(formData.cityName || '').trim() || 'Tangier',
+      area_name: String(formData.areaName || '').trim() || null,
+      seats: optionalInteger(formData.seats),
+      engine_cc: optionalInteger(formData.engineCc),
+      color: String(formData.color || '').trim() || null,
+      current_odometer: optionalInteger(formData.currentOdometer),
+      engine_hours: optionalInteger(formData.engineHours),
+      updated_at: now,
+    },
+    buildQuery: (payload) =>
+      applyTenantQueryScope(
+        adminClient
+          .from(VEHICLE_PROFILES_TABLE)
+          .update(stampTenantPayload(payload, tenantScope))
+          .eq('id', profileId)
+          .select('*')
+          .single(),
+        tenantScope
+      ),
+    fallbackErrorMessage: 'Unable to save vehicle setup with the current marketplace schema.',
+    contextLabel: 'saveVehicleWorkspaceSection.profileUpdate',
+  });
+
+  if (!savedProfile?.id) {
+    const error = new Error('Vehicle not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  let existingListing = null;
+  try {
+    existingListing = await loadLatestListingForProfile({
+      adminClient,
+      ownerId,
+      profileId: savedProfile.id,
+      tenantScope,
+    });
+  } catch (listingLookupError) {
+    listingLookupError.saveContext = 'saveVehicleWorkspaceSection.listingLookup';
+    throw listingLookupError;
+  }
+
+  return {
+    profile: savedProfile,
+    listing: existingListing || null,
+    fleetVehicle: null,
+  };
+};
+
+const saveListingWorkspaceSection = async ({ adminClient, ownerId, accountType, vehicleId, formData, tenantScope = null }) => {
+  const resolvedProfileRecord = await resolveOwnerProfileRecord({
+    adminClient,
+    ownerId,
+    vehicleId,
+    tenantScope,
+  });
+  const profileId = String(resolvedProfileRecord?.profile?.id || vehicleId || '').trim();
+  if (!profileId) {
+    const error = new Error('Choose a vehicle before saving pricing and publish details.');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const shortDescription = String(formData.shortDescription || '').trim() || null;
+  const fullDescription = String(formData.fullDescription || '').trim() || null;
+  const listingTitle = String(formData.listingTitle || '').trim();
+  const normalizedOwnerType = ['individual_owner', 'operator', 'owner'].includes(String(accountType || '').trim())
+    ? String(accountType).trim()
+    : 'individual_owner';
+
+  const savedProfile = await updateCompatibleSingleRecord({
+    initialPayload: {
+      short_description: shortDescription,
+      full_description: fullDescription,
+      deposit_amount: optionalNumber(formData.depositAmount),
+      mileage_limit_km: optionalInteger(formData.mileageLimitKm),
+      extra_km_rate: optionalNumber(formData.extraKmRate),
+      pickup_location_name: String(formData.pickupLocationName || '').trim() || null,
+      pickup_address: String(formData.pickupAddress || '').trim() || null,
+      fuel_policy: String(formData.fuelPolicy || '').trim() || null,
+      extras: toStringArray(formData.extrasText),
+      terms_accepted_for_submission: Boolean(formData.termsAcceptedForSubmission),
+      updated_at: now,
+    },
+    buildQuery: (payload) =>
+      applyTenantQueryScope(
+        adminClient
+          .from(VEHICLE_PROFILES_TABLE)
+          .update(stampTenantPayload(payload, tenantScope))
+          .eq('id', profileId)
+          .select('*')
+          .single(),
+        tenantScope
+      ),
+    fallbackErrorMessage: 'Unable to save listing details with the current marketplace schema.',
+    contextLabel: 'saveListingWorkspaceSection.profileUpdate',
+  });
+
+  if (!savedProfile?.id) {
+    const error = new Error('Vehicle not found.');
+    error.status = 404;
+    throw error;
+  }
+
+  let existingListing = null;
+  try {
+    existingListing = await loadLatestListingForProfile({
+      adminClient,
+      ownerId,
+      profileId: savedProfile.id,
+      tenantScope,
+    });
+  } catch (listingLookupError) {
+    listingLookupError.saveContext = 'saveListingWorkspaceSection.listingLookup';
+    throw listingLookupError;
+  }
+
+  const listingPayload = {
+    title: listingTitle || [savedProfile.brand_name, savedProfile.model_name].filter(Boolean).join(' ').trim() || 'Marketplace listing',
+    short_description: shortDescription,
+    full_description: fullDescription,
+    currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',
+    daily_price_amount: optionalNumber(formData.dailyPriceAmount),
+    deposit_amount: optionalNumber(formData.depositAmount),
+    included_km: optionalInteger(formData.mileageLimitKm),
+    extra_km_rate: optionalNumber(formData.extraKmRate),
+    pricing: {
+      daily: optionalNumber(formData.dailyPriceAmount),
+      half_day: {
+        price: optionalNumber(formData.halfDayPriceAmount),
+        min_hours: optionalInteger(formData.halfDayMinHours),
+        max_hours: optionalInteger(formData.halfDayMaxHours),
+      },
+      distance: {
+        included_km: optionalInteger(formData.mileageLimitKm),
+        extra_km_rate: optionalNumber(formData.extraKmRate),
+      },
+      currency: String(formData.currencyCode || 'MAD').trim() || 'MAD',
+      seasonal_pricing: Array.isArray(formData.seasonalPricing) ? formData.seasonalPricing : [],
+    },
+    updated_at: now,
+  };
+
+  const savedListing = await updateCompatibleSingleRecord({
+    initialPayload: existingListing?.id
+      ? listingPayload
+      : {
+          owner_id: ownerId,
+          owner_type: normalizedOwnerType,
+          vehicle_public_profile_id: savedProfile.id,
+          listing_status: 'draft',
+          review_status: 'not_submitted',
+          moderation_status: 'not_reviewed',
+          booking_mode: 'request',
+          created_at: now,
+          ...listingPayload,
+        },
+    buildQuery: (payload) =>
+      existingListing?.id
+        ? applyTenantQueryScope(
+            adminClient
+              .from(MARKETPLACE_LISTINGS_TABLE)
+              .update(stampTenantPayload(payload, tenantScope))
+              .eq('id', existingListing.id)
+              .select('*')
+              .single(),
+            tenantScope
+          )
+        : adminClient
+            .from(MARKETPLACE_LISTINGS_TABLE)
+            .insert(stampTenantPayload(payload, tenantScope))
+            .select('*')
+            .single(),
+    fallbackErrorMessage: 'Unable to save pricing and listing details with the current schema.',
+    contextLabel: existingListing?.id
+      ? 'saveListingWorkspaceSection.listingUpdate'
+      : 'saveListingWorkspaceSection.listingInsert',
+  });
+
+  return {
+    profile: savedProfile,
+    listing: savedListing || existingListing || null,
+    fleetVehicle: null,
   };
 };
 
@@ -900,6 +1654,48 @@ export default async function handler(req, res) {
       });
     }
 
+    const sectionKey = String(requestPayload.sectionKey || '').trim();
+    if (sectionKey && requestPayload.vehicleId && !requestPayload.submitForReview) {
+      let result = null;
+
+      if (sectionKey === 'listingCopy') {
+        result = await saveListingCopySection({
+          adminClient,
+          ownerId,
+          accountType: requestPayload.accountType,
+          vehicleId: requestPayload.vehicleId,
+          formData: requestPayload.formData || {},
+          tenantScope: effectiveTenantScope,
+        });
+      } else if (sectionKey === 'vehicleWorkspace') {
+        result = await saveVehicleWorkspaceSection({
+          adminClient,
+          ownerId,
+          vehicleId: requestPayload.vehicleId,
+          formData: requestPayload.formData || {},
+          tenantScope: effectiveTenantScope,
+        });
+      } else if (sectionKey === 'listingWorkspace') {
+        result = await saveListingWorkspaceSection({
+          adminClient,
+          ownerId,
+          accountType: requestPayload.accountType,
+          vehicleId: requestPayload.vehicleId,
+          formData: requestPayload.formData || {},
+          tenantScope: effectiveTenantScope,
+        });
+      }
+
+      if (result) {
+        return json(res, 200, {
+          success: true,
+          vehicle: result,
+          submitted: false,
+          sectionKey,
+        });
+      }
+    }
+
     const result = await saveVehicleRecord({
       adminClient,
       ownerId,
@@ -919,6 +1715,7 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('Owner vehicle save failed:', {
+      context: error?.saveContext,
       message: error?.message,
       code: error?.code,
       details: error?.details,

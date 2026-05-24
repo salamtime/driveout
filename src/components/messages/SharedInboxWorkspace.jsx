@@ -4,6 +4,7 @@ import {
   Archive,
   CheckCircle2,
   Clock3,
+  Filter,
   Inbox,
   Loader2,
   MessageSquareText,
@@ -177,6 +178,7 @@ const SharedInboxWorkspace = ({
   emptyActionTo,
   emptyActionState,
   onMobileConversationStateChange,
+  onExitDirectThreadMode,
   activeMode = 'customer',
   contextCounts = {},
   showContextTabs = true,
@@ -195,7 +197,11 @@ const SharedInboxWorkspace = ({
         ? 'admin'
         : 'account'
   );
-  const defaultInboxLane = laneModel === 'team' ? 'support' : 'conversations';
+  const defaultInboxLane = laneModel === 'team'
+    ? 'support'
+    : laneModel === 'account'
+      ? 'action_required'
+      : 'conversations';
   const [search, setSearch] = useState('');
   const [selectedThreadKey, setSelectedThreadKey] = useState('');
   const [deletedThreadKeys, setDeletedThreadKeys] = useState([]);
@@ -203,6 +209,9 @@ const SharedInboxWorkspace = ({
   const [activeListFilter, setActiveListFilter] = useState('all');
   const [activeInboxLane, setActiveInboxLane] = useState(defaultInboxLane);
   const [immersiveMode, setImmersiveMode] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [hasExplicitLaneSelection, setHasExplicitLaneSelection] = useState(false);
   const [hasExplicitThreadSelection, setHasExplicitThreadSelection] = useState(false);
   const [shouldHonorInitialSelection, setShouldHonorInitialSelection] = useState(true);
   const [isCompactViewport, setIsCompactViewport] = useState(() =>
@@ -357,15 +366,47 @@ const SharedInboxWorkspace = ({
     () => dedupedModeThreads.filter((thread) => thread.inboxLane === 'internal'),
     [dedupedModeThreads]
   );
-  const laneThreadMap = useMemo(
-    () => ({
-      conversations: conversationLaneThreads,
-      support: supportLaneThreads,
-      updates: updatesLaneThreads,
-      reviews: reviewsLaneThreads,
-      internal: internalLaneThreads,
+  const actionRequiredLaneThreads = useMemo(
+    () => dedupedModeThreads.filter((thread) => {
+      if (thread.inboxLane === 'support' || thread.inboxLane === 'internal') return false;
+      if (thread.inboxLane === 'reviews') return !isCompletedWorkflowThread(thread);
+      return classifyThreadSection(thread) === MESSAGE_THREAD_SECTIONS.actions;
     }),
-    [conversationLaneThreads, internalLaneThreads, reviewsLaneThreads, supportLaneThreads, updatesLaneThreads]
+    [dedupedModeThreads]
+  );
+  const liveLaneThreads = useMemo(
+    () => conversationLaneThreads.filter(
+      (thread) => classifyThreadSection(thread) !== MESSAGE_THREAD_SECTIONS.actions
+    ),
+    [conversationLaneThreads]
+  );
+  const laneThreadMap = useMemo(
+    () => laneModel === 'account'
+      ? {
+          action_required: actionRequiredLaneThreads,
+          live: liveLaneThreads,
+          support: supportLaneThreads,
+          updates: updatesLaneThreads,
+          reviews: reviewsLaneThreads,
+          internal: internalLaneThreads,
+        }
+      : {
+          conversations: conversationLaneThreads,
+          support: supportLaneThreads,
+          updates: updatesLaneThreads,
+          reviews: reviewsLaneThreads,
+          internal: internalLaneThreads,
+        },
+    [
+      actionRequiredLaneThreads,
+      conversationLaneThreads,
+      internalLaneThreads,
+      laneModel,
+      liveLaneThreads,
+      reviewsLaneThreads,
+      supportLaneThreads,
+      updatesLaneThreads,
+    ]
   );
   const laneEligibleThreads = laneThreadMap[activeInboxLane] || [];
   const activeWorkflowReviewThreads = useMemo(
@@ -534,9 +575,9 @@ const SharedInboxWorkspace = ({
     [activeContextTab, contextTabs]
   );
 
-  const shouldShowCustomerContextTabs = showContextTabs && laneModel === 'account' && activeInboxLane === 'conversations';
+  const shouldShowCustomerContextTabs = showContextTabs && laneModel !== 'account' && activeInboxLane === 'live';
 
-  const visibleThreads = activeInboxLane === 'conversations' && shouldShowCustomerContextTabs
+  const visibleThreads = activeInboxLane === 'live' && shouldShowCustomerContextTabs
     ? (activeTabConfig?.threads || [])
     : laneEligibleThreads.filter(getThreadMatchesSearch);
 
@@ -600,6 +641,22 @@ const SharedInboxWorkspace = ({
     }
 
     return {
+      action_required: {
+        label: tr('Action required', 'Action requise'),
+        lead: tr(
+          'Start here for approvals, review tasks, and threads waiting on you.',
+          'Commencez ici pour les approbations, tâches de revue et fils qui attendent votre action.'
+        ),
+        showSupportCta: false,
+      },
+      live: {
+        label: tr('Live', 'En direct'),
+        lead: tr(
+          'Open trip and booking conversations that are already moving.',
+          'Ouvrez les conversations de trajet et réservation déjà en cours.'
+        ),
+        showSupportCta: false,
+      },
       conversations: {
         label: currentSenderRole === 'owner'
           ? tr(`Owner conversations${workspaceIdentity ? `: ${workspaceIdentity}` : ''}`, `Conversations propriétaire${workspaceIdentity ? ` : ${workspaceIdentity}` : ''}`)
@@ -881,6 +938,10 @@ const SharedInboxWorkspace = ({
       },
     ];
   }, [activeInboxLane, currentUserId, tr, visibleThreads]);
+  const activeListFilterOption = useMemo(
+    () => listFilterOptions.find((filter) => filter.key === activeListFilter) || listFilterOptions[0] || null,
+    [activeListFilter, listFilterOptions]
+  );
 
   const getThreadIdentityLabel = (thread, counterparty) => {
     const family = String(thread?.family || '').trim().toLowerCase();
@@ -1064,6 +1125,23 @@ const SharedInboxWorkspace = ({
       title: tr('Updated', 'Mis à jour'),
     };
   };
+  const getThreadStatusChipClassName = (statusMeta, selected = false) => {
+    if (selected) {
+      return 'bg-violet-100 text-violet-700';
+    }
+
+    const normalizedClassName = String(statusMeta?.className || '').trim().toLowerCase();
+    if (normalizedClassName.includes('rose')) {
+      return 'bg-rose-50 text-rose-700 ring-1 ring-rose-100';
+    }
+    if (normalizedClassName.includes('amber')) {
+      return 'bg-amber-50 text-amber-700 ring-1 ring-amber-100';
+    }
+    if (normalizedClassName.includes('emerald')) {
+      return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100';
+    }
+    return 'bg-slate-100 text-slate-600 ring-1 ring-slate-200';
+  };
 
   const getThreadRowToneClass = (thread, selected = false, hasUnread = false) => {
     const family = String(thread?.family || '').trim().toLowerCase();
@@ -1095,11 +1173,34 @@ const SharedInboxWorkspace = ({
     return 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50';
   };
 
+  function resolveThreadInboxLane(thread) {
+    const rawLane = String(thread?.inboxLane || '').trim().toLowerCase();
+    if (laneModel !== 'account') {
+      return rawLane || defaultInboxLane;
+    }
+
+    if (rawLane === 'support') return 'support';
+    if (rawLane === 'updates') return 'updates';
+    if (rawLane === 'reviews') return 'updates';
+    if (rawLane === 'conversations') {
+      return classifyThreadSection(thread) === MESSAGE_THREAD_SECTIONS.actions
+        ? 'action_required'
+        : 'live';
+    }
+
+    if (classifyThreadSection(thread) === MESSAGE_THREAD_SECTIONS.actions) {
+      return 'action_required';
+    }
+
+    return rawLane || 'live';
+  }
+
   useEffect(() => {
     const normalizedInitialLane = String(initialInboxLane || '').trim().toLowerCase();
     if (!normalizedInitialLane) return;
     if (!laneMetaMap[normalizedInitialLane]) return;
     setActiveInboxLane(normalizedInitialLane);
+    setHasExplicitLaneSelection(true);
   }, [initialInboxLane, laneMetaMap]);
 
   useEffect(() => {
@@ -1138,7 +1239,7 @@ const SharedInboxWorkspace = ({
     setShouldHonorInitialSelection(true);
   }, [initialSelectedRequestId, initialSelectedThreadKey]);
 
-  useEffect(() => {
+  const initialResolvedThreadKey = useMemo(() => {
     const requestedThreadKey = String(initialSelectedThreadKey || '').trim();
     const requestedRequestId = String(initialSelectedRequestId || '').trim();
     const requestMatchedThread = requestedRequestId
@@ -1151,42 +1252,95 @@ const SharedInboxWorkspace = ({
     const requestedThreadExists = requestedThreadKey
       ? threadsWithMailbox.some((thread) => String(thread.thread_key || thread.id) === requestedThreadKey)
       : false;
-    const resolvedRequestedThreadKey = requestMatchedThread
+
+    return requestMatchedThread
       ? String(requestMatchedThread.thread_key || requestMatchedThread.id || '').trim()
       : requestedThreadExists
         ? requestedThreadKey
         : findThreadKeyByRequestId(requestedRequestId) || requestedThreadKey;
+  }, [findThreadKeyByRequestId, initialSelectedRequestId, initialSelectedThreadKey, threadsWithMailbox]);
+
+  const initialResolvedThread = useMemo(() => {
+    const resolvedThreadKey = String(initialResolvedThreadKey || '').trim();
+    if (!resolvedThreadKey) return null;
+    return (
+      threadsWithMailbox.find(
+        (thread) => String(thread.thread_key || thread.id) === resolvedThreadKey
+      ) || null
+    );
+  }, [initialResolvedThreadKey, threadsWithMailbox]);
+
+  useEffect(() => {
+    if (laneModel !== 'account') return;
+    if (directThreadMode || loading) return;
+    if (hasExplicitLaneSelection) return;
+    if (String(initialInboxLane || '').trim()) return;
+    if (String(initialResolvedThreadKey || '').trim()) return;
+    if (hasExplicitThreadSelection) return;
+    if (String(search || '').trim()) return;
+    if (activeListFilter !== 'all') return;
+
+    const currentLaneThreads = laneThreadMap[activeInboxLane] || [];
+    if (currentLaneThreads.length > 0) return;
+
+    const preferredLane = ['action_required', 'live', 'updates', 'support']
+      .find((laneKey) => (laneThreadMap[laneKey] || []).length > 0);
+
+    if (preferredLane && preferredLane !== activeInboxLane) {
+      setActiveInboxLane(preferredLane);
+    }
+  }, [
+    activeInboxLane,
+    activeListFilter,
+    directThreadMode,
+    hasExplicitThreadSelection,
+    hasExplicitLaneSelection,
+    initialInboxLane,
+    initialResolvedThreadKey,
+    laneModel,
+    laneThreadMap,
+    loading,
+    search,
+  ]);
+
+  useEffect(() => {
+    const resolvedRequestedThreadKey = String(initialResolvedThreadKey || '').trim();
     if (!resolvedRequestedThreadKey) return;
     if (!shouldHonorInitialSelection) return;
-    if (hasExplicitThreadSelection) return;
-    const matchingThread =
-      requestMatchedThread ||
-      threadsWithMailbox.find(
-        (thread) => String(thread.thread_key || thread.id) === resolvedRequestedThreadKey
-      );
+    const matchingThread = initialResolvedThread;
     if (!matchingThread) return;
+    const matchingThreadLane = resolveThreadInboxLane(matchingThread);
+    const selectedThreadAlreadyResolved = String(selectedThreadKey || '').trim() === resolvedRequestedThreadKey;
+    const activeLaneAlreadyResolved = String(activeInboxLane || '').trim().toLowerCase() === matchingThreadLane;
+
+    if (hasExplicitThreadSelection && selectedThreadAlreadyResolved && activeLaneAlreadyResolved) {
+      return;
+    }
 
     if (shouldShowCustomerContextTabs) {
       setActiveContextTab(getContextTabForThread(matchingThread));
     }
     setActiveListFilter(activeInboxLane === 'reviews' || String(matchingThread?.inboxLane || '').trim().toLowerCase() === 'reviews' ? 'all' : 'all');
-    setActiveInboxLane(String(matchingThread.inboxLane || defaultInboxLane));
+    setActiveInboxLane(matchingThreadLane);
+    setHasExplicitLaneSelection(true);
     setSelectedThreadKey(resolvedRequestedThreadKey);
     setHasExplicitThreadSelection(true);
-  }, [activeInboxLane, activeMode, defaultInboxLane, hasExplicitThreadSelection, initialSelectedRequestId, initialSelectedThreadKey, laneEligibleThreads, shouldHonorInitialSelection, shouldShowCustomerContextTabs, threadsWithMailbox]);
+  }, [activeInboxLane, hasExplicitThreadSelection, initialResolvedThread, initialResolvedThreadKey, selectedThreadKey, shouldHonorInitialSelection, shouldShowCustomerContextTabs]);
 
   useEffect(() => {
+    if (loading) return;
     if (!filteredVisibleThreads.length) {
+      if (directThreadMode) return;
       setSelectedThreadKey('');
       setImmersiveMode(false);
       setHasExplicitThreadSelection(false);
       return;
     }
-    if (directThreadMode && !selectedThreadKey) return;
+    if (directThreadMode) return;
     if (!selectedThreadKey || !filteredVisibleThreads.some((thread) => String(thread.thread_key || thread.id) === String(selectedThreadKey))) {
       setSelectedThreadKey(String(filteredVisibleThreads[0].thread_key || filteredVisibleThreads[0].id));
     }
-  }, [directThreadMode, filteredVisibleThreads, selectedThreadKey]);
+  }, [directThreadMode, filteredVisibleThreads, loading, selectedThreadKey]);
 
   useEffect(() => {
     if (directThreadMode && selectedThreadKey && isCompactViewport) {
@@ -1228,8 +1382,10 @@ const SharedInboxWorkspace = ({
     if (matchedThread && shouldShowCustomerContextTabs) {
       setActiveContextTab(getContextTabForThread(matchedThread));
     }
-    if (matchedThread?.inboxLane && matchedThread.inboxLane !== activeInboxLane) {
-      setActiveInboxLane(matchedThread.inboxLane);
+    const matchedThreadLane = matchedThread ? resolveThreadInboxLane(matchedThread) : '';
+    if (matchedThreadLane && matchedThreadLane !== activeInboxLane) {
+      setActiveInboxLane(matchedThreadLane);
+      setHasExplicitLaneSelection(true);
     }
     setSelectedThreadKey(threadKey);
     setHasExplicitThreadSelection(true);
@@ -1287,45 +1443,70 @@ const SharedInboxWorkspace = ({
 
     return [
       {
-        key: 'conversations',
-        label: tr('Conversations', 'Conversations'),
-        count: conversationLaneThreads.length,
+        key: 'action_required',
+        label: tr('Action required', 'Action requise'),
+        count: actionRequiredLaneThreads.length,
       },
       {
-        key: 'support',
-        label: tr('Support', 'Support'),
-        count: supportLaneThreads.length,
+        key: 'live',
+        label: tr('Live', 'En direct'),
+        count: liveLaneThreads.length,
       },
       {
         key: 'updates',
         label: tr('Updates', 'Mises à jour'),
         count: updatesLaneThreads.length,
       },
+      {
+        key: 'support',
+        label: tr('Support', 'Support'),
+        count: supportLaneThreads.length,
+      },
     ];
   }, [
+    actionRequiredLaneThreads.length,
     activeWorkflowReviewThreads.length,
     conversationLaneThreads.length,
     laneModel,
+    liveLaneThreads.length,
     supportLaneThreads.length,
     tr,
     updatesLaneThreads.length,
   ]);
 
+  const getReturnLaneForThread = useCallback((thread) => {
+    return resolveThreadInboxLane(thread);
+  }, [defaultInboxLane, laneModel]);
+
   const selectedThread = useMemo(
     () => filteredVisibleThreads.find((thread) => String(thread.thread_key || thread.id) === String(selectedThreadKey)) || null,
     [filteredVisibleThreads, selectedThreadKey]
   );
+  const directRenderedThread = useMemo(() => {
+    if (!directThreadMode) return null;
+    const resolvedThreadKey = String(selectedThreadKey || initialResolvedThreadKey || '').trim();
+    if (resolvedThreadKey) {
+      return (
+        threadsWithMailbox.find(
+          (thread) => String(thread.thread_key || thread.id) === resolvedThreadKey
+        ) || null
+      );
+    }
+    return initialResolvedThread;
+  }, [directThreadMode, initialResolvedThread, initialResolvedThreadKey, selectedThreadKey, threadsWithMailbox]);
   const fallbackVisibleThread = useMemo(
     () => filteredVisibleThreads[0] || null,
     [filteredVisibleThreads]
   );
   const resolvedRenderedThread = useMemo(() => {
-    const baseThread = selectedThread || fallbackVisibleThread;
+    const baseThread = directThreadMode
+      ? (directRenderedThread || selectedThread || fallbackVisibleThread)
+      : (selectedThread || fallbackVisibleThread);
     if (isCompactViewport && !hasExplicitThreadSelection) {
       return null;
     }
     return baseThread;
-  }, [fallbackVisibleThread, hasExplicitThreadSelection, isCompactViewport, selectedThread]);
+  }, [directRenderedThread, directThreadMode, fallbackVisibleThread, hasExplicitThreadSelection, isCompactViewport, selectedThread]);
   const renderedThreadWithContext = useMemo(() => {
     if (!resolvedRenderedThread) return null;
     const metadata = resolvedRenderedThread?.metadata && typeof resolvedRenderedThread.metadata === 'object' ? resolvedRenderedThread.metadata : {};
@@ -1381,10 +1562,20 @@ const SharedInboxWorkspace = ({
     void onMarkThreadRead(resolvedRenderedThread);
   }, [onMarkThreadRead, resolvedRenderedThread]);
 
+  const isThreadPanelLoading = Boolean(
+    loading && (
+      directThreadMode ||
+      hasExplicitThreadSelection ||
+      Boolean(initialSelectedThreadKey) ||
+      Boolean(initialSelectedRequestId)
+    )
+  );
   const isMobileThreadOpen = Boolean(isCompactViewport && immersiveMode && hasExplicitThreadSelection && renderedThreadWithContext);
   const shouldShowMobileList = !directThreadMode && (!isCompactViewport || !isMobileThreadOpen);
   const shouldShowMobileThread = directThreadMode || !isCompactViewport || isMobileThreadOpen;
-  const mobileVisibleThreadCount = filteredVisibleThreads.length;
+  const mobileControlGridClass = isCompactViewport
+    ? 'grid grid-cols-2 gap-2'
+    : 'flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden';
   const workspaceGridClass = directThreadMode
     ? 'mt-0 grid h-[calc(100dvh-4rem)] min-h-[36rem] gap-2'
     : `${immersiveMode ? 'mt-0' : 'mt-1'} grid gap-2 ${immersiveMode ? 'h-[calc(100dvh-7.5rem)] min-h-[40rem]' : 'lg:h-[min(84vh,68rem)] lg:grid-cols-[328px_minmax(0,1fr)] lg:items-stretch lg:[grid-auto-rows:minmax(0,1fr)] xl:grid-cols-[356px_minmax(0,1fr)] 2xl:grid-cols-[372px_minmax(0,1fr)]'}`;
@@ -1398,31 +1589,57 @@ const SharedInboxWorkspace = ({
       ) : null}
 
       <div className={workspaceGridClass}>
-        <div className={`${!shouldShowMobileList ? 'hidden' : ''} ${immersiveMode ? 'hidden' : `rounded-[28px] border border-slate-200 ${listSurfaceClass} p-3.5 shadow-[0_12px_30px_rgba(15,23,42,0.05)] lg:flex lg:min-h-0 lg:flex-col`}`}>
-          {isCompactViewport ? (
-            <div className="mb-2 rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.04)]">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
-                    {workspaceEyebrow}
-                  </p>
-                  <p className="mt-1 text-base font-black text-slate-950">
-                    {activeLaneMeta.label}
-                  </p>
-                </div>
-                <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-violet-50 px-2.5 text-xs font-black text-violet-700">
-                  {mobileVisibleThreadCount}
-                </span>
-              </div>
+        <div className={`${!shouldShowMobileList ? 'hidden' : ''} ${immersiveMode ? 'hidden' : `rounded-[24px] border border-slate-200 ${listSurfaceClass} p-2.5 shadow-[0_12px_30px_rgba(15,23,42,0.05)] sm:rounded-[28px] sm:p-3.5 lg:flex lg:min-h-0 lg:flex-col`}`}>
+          <div className="sticky top-2 z-10 mb-2.5 rounded-[18px] border border-slate-200 bg-white/95 px-2.5 py-2 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur sm:hidden">
+            <div className="flex items-center gap-1.5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {inboxLaneButtons.map((lane) => (
+                <button
+                  key={lane.key}
+                  type="button"
+                  onClick={() => {
+                    setSearch('');
+                    setActiveInboxLane(lane.key);
+                    setActiveListFilter('all');
+                    setActiveContextTab('');
+                    setHasExplicitLaneSelection(true);
+                    setHasExplicitThreadSelection(false);
+                    setShouldHonorInitialSelection(false);
+                  }}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-black transition ${
+                    activeInboxLane === lane.key
+                      ? 'bg-slate-950 text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)]'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  <span>{lane.label === tr('Action required', 'Action requise') ? tr('Action', 'Action') : lane.label}</span>
+                  <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-black ${
+                    activeInboxLane === lane.key
+                      ? 'bg-white/15 text-white'
+                      : 'bg-white text-slate-500'
+                  }`}>
+                    {lane.count}
+                  </span>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={loading}
+                className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm disabled:opacity-60"
+                aria-label={tr('Refresh', 'Actualiser')}
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
             </div>
-          ) : null}
-          <div className={`mb-2.5 rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] shadow-[0_10px_24px_rgba(15,23,42,0.04)] ${compactLaneHeader ? 'px-4 py-2.5' : 'px-4 py-3'}`}>
-            <div className="flex items-center justify-between gap-3">
+          </div>
+
+          <div className={`mb-2.5 hidden rounded-[20px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] shadow-[0_10px_24px_rgba(15,23,42,0.04)] sm:block sm:rounded-[22px] ${compactLaneHeader ? 'px-3.5 py-2.5 sm:px-4' : 'px-3.5 py-3 sm:px-4'}`}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
                   {workspaceEyebrow}
                 </p>
-                <p className={`mt-1 text-sm font-semibold text-slate-500 ${compactLaneHeader ? 'line-clamp-1' : 'line-clamp-2'}`}>
+                <p className={`mt-1 text-[13px] font-semibold leading-5 text-slate-500 sm:text-sm ${compactLaneHeader ? 'line-clamp-1' : 'line-clamp-2'}`}>
                   {workspaceLead}
                 </p>
               </div>
@@ -1431,7 +1648,7 @@ const SharedInboxWorkspace = ({
                   type="button"
                   onClick={onRefresh}
                   disabled={loading}
-                  className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60 sm:h-11"
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   <span className="hidden sm:inline">{tr('Refresh', 'Actualiser')}</span>
@@ -1439,24 +1656,27 @@ const SharedInboxWorkspace = ({
               ) : null}
             </div>
 
-            <div className={`mt-3 flex gap-2 pb-1 ${compactLaneHeader ? 'flex-wrap overflow-visible' : 'overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'}`}>
+            <div className={`mt-3 ${isCompactViewport ? mobileControlGridClass : compactLaneHeader ? 'flex flex-wrap gap-2 overflow-visible' : mobileControlGridClass}`}>
               {inboxLaneButtons.map((lane) => (
                 <button
                   key={lane.key}
                   type="button"
                   onClick={() => {
+                    setSearch('');
                     setActiveInboxLane(lane.key);
                     setActiveListFilter('all');
+                    setActiveContextTab('');
+                    setHasExplicitLaneSelection(true);
                     setHasExplicitThreadSelection(false);
                     setShouldHonorInitialSelection(false);
                   }}
-                  className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2.5 text-sm font-black tracking-[-0.01em] transition ${compactLaneHeader ? 'shrink' : 'shrink-0'} ${
+                  className={`inline-flex min-w-0 items-center justify-between gap-2 rounded-full border px-3 py-2.5 text-[13px] font-black tracking-[-0.01em] transition sm:px-3.5 sm:text-sm ${isCompactViewport ? 'w-full' : compactLaneHeader ? 'shrink' : 'shrink-0'} ${
                     activeInboxLane === lane.key
                       ? 'border-violet-200 bg-violet-50 text-slate-950 shadow-[0_8px_18px_rgba(139,92,246,0.08)]'
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900'
                   }`}
                 >
-                  <span className="whitespace-nowrap">{lane.label}</span>
+                  <span className="min-w-0 truncate">{lane.label}</span>
                   <span className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[10px] font-black ${
                     activeInboxLane === lane.key
                       ? 'bg-violet-100 text-violet-700'
@@ -1485,15 +1705,45 @@ const SharedInboxWorkspace = ({
           {(showSearch || shouldShowCustomerContextTabs || showListFilters) ? (
             <div className="mb-2.5 space-y-2">
               {showSearch ? (
-                <label className="flex h-11 items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-3">
-                  <Search className="h-4 w-4 shrink-0 text-slate-400" />
-                  <input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder={tr('Search messages', 'Rechercher dans les messages')}
-                    className="w-full border-0 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
-                  />
-                </label>
+                <>
+                  <div className="grid grid-cols-2 gap-2 sm:hidden">
+                    <button
+                      type="button"
+                      onClick={() => setMobileSearchOpen((current) => !current)}
+                      className={`inline-flex h-10 items-center justify-center gap-2 rounded-full border px-3 text-xs font-black transition ${
+                        mobileSearchOpen || search
+                          ? 'border-violet-200 bg-violet-50 text-violet-700'
+                          : 'border-slate-200 bg-white text-slate-600'
+                      }`}
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      {tr('Search', 'Recherche')}
+                    </button>
+                    {showListFilters ? (
+                      <button
+                        type="button"
+                        onClick={() => setMobileFiltersOpen((current) => !current)}
+                        className={`inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-full border px-3 text-xs font-black transition ${
+                          mobileFiltersOpen || activeListFilter !== 'all'
+                            ? 'border-slate-900 bg-slate-950 text-white'
+                            : 'border-slate-200 bg-white text-slate-600'
+                        }`}
+                      >
+                        <Filter className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{activeListFilterOption?.label || tr('Filter', 'Filtre')}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                  <label className={`${mobileSearchOpen ? 'flex' : 'hidden'} h-11 items-center gap-2.5 rounded-[18px] border border-slate-200 bg-white px-3 sm:flex sm:rounded-2xl`}>
+                    <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                    <input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder={tr('Search messages', 'Rechercher dans les messages')}
+                      className="w-full border-0 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
+                    />
+                  </label>
+                </>
               ) : null}
 
               {shouldShowCustomerContextTabs ? (
@@ -1523,21 +1773,26 @@ const SharedInboxWorkspace = ({
               ) : null}
 
               {showListFilters ? (
-                <div className={listFiltersWrapClass}>
-                  <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <div className={`${isCompactViewport && !mobileFiltersOpen ? 'hidden' : ''} ${listFiltersWrapClass}`}>
+                  <div className={isCompactViewport ? 'grid grid-cols-2 gap-2' : 'flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'}>
                     {listFilterOptions.map((filter) => (
                       <button
                         key={filter.key}
                         type="button"
-                        onClick={() => setActiveListFilter(filter.key)}
-                        className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-black transition ${
+                        onClick={() => {
+                          setActiveListFilter(filter.key);
+                          setMobileFiltersOpen(false);
+                        }}
+                        className={`inline-flex min-w-0 items-center justify-between gap-1.5 rounded-full px-3 py-2 text-[11px] font-black transition ${isCompactViewport ? 'w-full' : 'shrink-0'} ${
                           activeListFilter === filter.key
                             ? 'bg-slate-950 text-white'
                             : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
                         }`}
                       >
-                        {filter.key === 'archived' || filter.key === 'history' ? <Archive className="h-3.5 w-3.5" /> : null}
-                        <span className="whitespace-nowrap">{filter.label}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {filter.key === 'archived' || filter.key === 'history' ? <Archive className="h-3.5 w-3.5 shrink-0" /> : null}
+                          <span className="truncate">{filter.label}</span>
+                        </span>
                         <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${
                           activeListFilter === filter.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
                         }`}>
@@ -1551,7 +1806,7 @@ const SharedInboxWorkspace = ({
             </div>
           ) : null}
 
-          <div className="space-y-2.5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+          <div className="space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
             {loading ? (
               Array.from({ length: 5 }).map((_, index) => (
                 <div key={`thread-loading-${index}`} className="h-14 animate-pulse rounded-2xl bg-slate-100" />
@@ -1559,15 +1814,16 @@ const SharedInboxWorkspace = ({
             ) : null}
 
             {!loading ? (
-              <div className="space-y-2">
+              <div className="space-y-1.5 sm:space-y-2">
                 {groupedVisibleThreads.map((group) => (
                   <div key={group.key} className="space-y-1">
                     {group.title ? (
-                      <div className="flex items-center justify-between px-1">
-                        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
-                          {group.title}
+                      <div className="flex items-center justify-between px-1 sm:px-1.5">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 sm:text-[11px] sm:tracking-[0.2em]">
+                          <span className="sm:hidden">{activeLaneMeta.label}</span>
+                          <span className="hidden sm:inline">{group.title}</span>
                         </p>
-                        <span className="text-xs font-semibold text-slate-400">{group.threads.length}</span>
+                        <span className="text-[11px] font-black text-slate-400 sm:text-xs sm:font-semibold">{group.threads.length}</span>
                       </div>
                     ) : null}
                     <div className="space-y-1">
@@ -1584,26 +1840,34 @@ const SharedInboxWorkspace = ({
                           thread.latest_message ||
                           '—'
                         ).trim();
+                        const latestSenderRole = String(latestMessage?.sender_role || '').trim().toLowerCase();
+                        const latestSenderId = String(latestMessage?.sender_user_id || '').trim();
+                        const latestMessageFromSelf = Boolean(
+                          latestSenderRole === String(currentSenderRole || '').trim().toLowerCase() ||
+                          (latestSenderId && latestSenderId === String(currentUserId || '').trim())
+                        );
+                        const latestSenderLabel = latestMessageFromSelf
+                          ? tr('You', 'Vous')
+                          : getThreadIdentityLabel(thread, counterparty);
                         const threadActionLabel = threadGroupingMode === 'transaction_hub'
                           ? getThreadActionLabel(thread)
                           : '';
                         const hasUnread = Number(thread?.unread_count || 0) > 0;
+                        const unreadCount = Number(thread?.unread_count || 0);
                         const contextLabel = getThreadContextLabel(thread);
                         const adminEmailLabel = getThreadAdminEmailLabel(thread, counterparty);
                         const isReviewLaneRow = activeInboxLane === 'reviews';
                         const displayMetaLine = adminEmailLabel || contextLabel || '';
-                        const showContextLabel = Boolean(
-                          contextLabel &&
-                          !threadActionLabel &&
-                          contextLabel !== latestPreview
-                        );
+                        const supportingLabel = isReviewLaneRow
+                          ? displayMetaLine
+                          : contextLabel || adminEmailLabel || '';
                         const avatarUrl = getThreadAvatarUrl(thread, counterparty);
                         return (
                           <button
                             key={threadKey}
                             type="button"
                             onClick={() => handleSelectThread(threadKey)}
-                            className={`group relative w-full overflow-hidden rounded-[18px] border px-3 py-2.5 text-left transition-all duration-150 ${getThreadRowToneClass(thread, selectedThreadKey === threadKey, hasUnread)}`}
+                            className={`group relative w-full overflow-hidden rounded-[18px] border px-2.5 py-2.5 text-left transition-all duration-150 sm:rounded-[22px] sm:px-3.5 sm:py-3.5 ${getThreadRowToneClass(thread, selectedThreadKey === threadKey, hasUnread)}`}
                           >
                             <span
                               aria-hidden="true"
@@ -1615,15 +1879,15 @@ const SharedInboxWorkspace = ({
                                     : 'bg-transparent group-hover:bg-slate-300'
                               }`}
                             />
-                            <div className="flex items-start gap-2.5">
-                              <div className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[18px] text-[11px] font-black ring-1 transition-all duration-150 ${
+                            <div className="flex items-start gap-2 sm:gap-3">
+                              <div className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[17px] text-[10px] font-black ring-1 transition-all duration-150 sm:h-11 sm:w-11 sm:rounded-[21px] sm:text-[11px] ${
                                 getThreadAvatarClassName(thread, selectedThreadKey === threadKey, hasUnread)
                               }`}>
                                 {avatarUrl ? (
                                   <img
                                     src={avatarUrl}
                                     alt={getThreadIdentityLabel(thread, counterparty)}
-                                    className="h-full w-full rounded-[18px] object-cover"
+                                    className="h-full w-full rounded-[17px] object-cover sm:rounded-[21px]"
                                   />
                                 ) : (
                                   getThreadAvatarLabel(thread, counterparty)
@@ -1635,13 +1899,13 @@ const SharedInboxWorkspace = ({
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0 flex-1">
-                                    <p className={`truncate text-[15px] font-black leading-5 ${
+                                    <p className={`truncate text-[14px] font-black leading-5 sm:text-[15px] ${
                                         hasUnread ? 'text-slate-950' : 'text-slate-900'
                                       }`}>
                                         {getThreadIdentityLabel(thread, counterparty)}
                                     </p>
                                   </div>
-                                  <div className="ml-2 flex shrink-0 items-center gap-2">
+                                  <div className="ml-1.5 flex shrink-0 items-center gap-2 sm:ml-2">
                                     <span className={`text-[11px] font-semibold ${
                                       selectedThreadKey === threadKey
                                         ? 'text-violet-500'
@@ -1651,17 +1915,18 @@ const SharedInboxWorkspace = ({
                                     }`}>
                                       {formatDateTime(thread.latest_message_at, isFrench)}
                                     </span>
-                                    <StatusIcon
-                                      className={`h-3 w-3 shrink-0 ${
-                                        selectedThreadKey === threadKey ? 'text-violet-500' : statusMeta.className
-                                      }`}
-                                      aria-label={statusMeta.title}
-                                    />
                                   </div>
                                 </div>
-                                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                                  <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${getThreadTypeBadgeClassName(thread, selectedThreadKey === threadKey)}`}>
+                                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 sm:mt-1.5 sm:gap-1.5">
+                                  <span className={`inline-flex max-w-full shrink-0 items-center truncate rounded-full px-1.5 py-0.5 text-[9.5px] font-bold sm:px-2 sm:text-[10px] ${getThreadTypeBadgeClassName(thread, selectedThreadKey === threadKey)}`}>
                                     {getThreadTypeBadgeLabel(thread)}
+                                  </span>
+                                  <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-black sm:px-2 sm:text-[10px] ${getThreadStatusChipClassName(statusMeta, selectedThreadKey === threadKey)}`}>
+                                    <StatusIcon
+                                      className="h-3 w-3 shrink-0"
+                                      aria-hidden="true"
+                                    />
+                                    {statusMeta.title}
                                   </span>
                                   {threadActionLabel ? (
                                     <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-black ${
@@ -1672,37 +1937,53 @@ const SharedInboxWorkspace = ({
                                       {threadActionLabel}
                                     </span>
                                   ) : null}
-                                  {isReviewLaneRow && displayMetaLine ? (
-                                    <p className="min-w-0 truncate text-[11px] font-medium text-slate-500">
-                                      {displayMetaLine}
-                                    </p>
-                                  ) : showContextLabel ? (
-                                    <p className="min-w-0 truncate text-[11px] font-medium text-slate-500">
-                                      {contextLabel}
-                                    </p>
-                                  ) : null}
                                 </div>
-                                {adminEmailLabel && !isReviewLaneRow ? (
-                                  <p className="mt-1 truncate text-[11px] font-medium text-slate-400">
-                                    {adminEmailLabel}
+                                {supportingLabel && supportingLabel !== latestPreview ? (
+                                  <p className="mt-0.5 truncate text-[10.5px] font-medium text-slate-500 sm:mt-1 sm:text-[11px]">
+                                    {supportingLabel}
                                   </p>
                                 ) : null}
-                                <div className="mt-1.5 flex items-start gap-2">
-                                  <p className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
-                                    hasUnread ? 'text-slate-700' : 'text-slate-500'
+                                <div className={`mt-1.5 rounded-[15px] border px-2.5 py-1.5 sm:mt-2.5 sm:rounded-[18px] sm:px-3 sm:py-2.5 ${
+                                  selectedThreadKey === threadKey
+                                    ? 'border-violet-200/80 bg-white/80'
+                                    : 'border-slate-200 bg-slate-50/90 group-hover:border-slate-300 group-hover:bg-white'
+                                }`}>
+                                  <div className="mb-0.5 flex items-center justify-between gap-2 sm:mb-1">
+                                    <span className={`truncate text-[10px] font-black uppercase tracking-[0.14em] ${
+                                      latestMessageFromSelf ? 'text-violet-600' : 'text-slate-400'
+                                    }`}>
+                                      {latestSenderLabel}
+                                    </span>
+                                    {waitingState === 'needs_reply' ? (
+                                      <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-sky-500" aria-label={tr('Needs reply', 'À répondre')} />
+                                    ) : null}
+                                  </div>
+                                  <p className={`line-clamp-2 text-[12.5px] leading-[1.35rem] sm:line-clamp-3 sm:text-[13px] sm:leading-5 ${
+                                    hasUnread ? 'font-semibold text-slate-800' : 'font-medium text-slate-600'
                                   }`}>
-                                    {latestPreview}
+                                    “{latestPreview}”
                                   </p>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
                                   {waitingState === 'needs_reply' ? (
-                                    <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" aria-label={tr('Needs reply', 'À répondre')} />
+                                    <span className="inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-black text-sky-700 ring-1 ring-sky-100">
+                                      {tr('Needs reply', 'À répondre')}
+                                    </span>
                                   ) : null}
                                 </div>
                               </div>
                               <div className="shrink-0 self-center">
                                 {hasUnread ? (
-                                  <span className={`h-2 w-2 rounded-full ${
-                                    selectedThreadKey === threadKey ? 'bg-violet-500' : 'bg-slate-900'
-                                  }`} aria-label={tr('Unread', 'Non lu')} />
+                                  <span
+                                    className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-1 text-[10px] font-black ${
+                                      selectedThreadKey === threadKey
+                                        ? 'bg-violet-100 text-violet-700'
+                                        : 'bg-slate-900 text-white'
+                                    }`}
+                                    aria-label={tr('Unread', 'Non lu')}
+                                  >
+                                    {unreadCount}
+                                  </span>
                                 ) : (
                                   <span className="block h-2 w-2" aria-hidden="true" />
                                 )}
@@ -1798,6 +2079,13 @@ const SharedInboxWorkspace = ({
               immersiveMode={immersiveMode}
               forceFloatingComposer={directThreadMode}
               onExitReadingMode={() => {
+                if (directThreadMode && typeof onExitDirectThreadMode === 'function') {
+                  onExitDirectThreadMode({
+                    thread: renderedThreadWithContext,
+                    preferredInboxLane: getReturnLaneForThread(renderedThreadWithContext),
+                  });
+                  return;
+                }
                 setImmersiveMode(false);
                 setHasExplicitThreadSelection(false);
                 setShouldHonorInitialSelection(false);
@@ -1819,6 +2107,18 @@ const SharedInboxWorkspace = ({
               }}
               floatingBackLabel={tr('Message list', 'Liste des messages')}
             />
+          ) : isThreadPanelLoading ? (
+            <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-violet-50 text-violet-700">
+                <Loader2 className="h-7 w-7 animate-spin" />
+              </div>
+              <p className="mt-5 text-xl font-black text-slate-950">
+                {tr('Opening thread', 'Ouverture du fil')}
+              </p>
+              <p className="mt-2 max-w-md text-sm text-slate-500">
+                {tr('Loading the latest conversation and context now.', 'Chargement de la dernière conversation et du contexte.')}
+              </p>
+            </div>
           ) : directThreadMode ? (
             <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
               <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-violet-50 text-violet-700">
@@ -1831,8 +2131,8 @@ const SharedInboxWorkspace = ({
               </p>
               <p className="mt-2 max-w-md text-sm text-slate-500">
                 {loading
-                  ? tr('We are loading the latest customer thread now.', 'Nous chargeons le dernier fil client.')
-                  : tr('This request does not have a customer thread yet.', "Cette demande n’a pas encore de fil client.")}
+                  ? tr('Loading the latest thread now.', 'Chargement du dernier fil.')
+                  : tr('This request does not have a thread yet.', "Cette demande n’a pas encore de fil.")}
               </p>
             </div>
           ) : !isCompactViewport ? (
@@ -1844,7 +2144,7 @@ const SharedInboxWorkspace = ({
                 {tr('Select a conversation', 'Sélectionnez une conversation')}
               </p>
               <p className="mt-2 max-w-md text-sm text-slate-500">
-                {tr('Open any thread from the left to read the full history and continue the conversation.', 'Ouvrez un fil à gauche pour lire tout l’historique et poursuivre la conversation.')}
+                {tr('Open a thread from the left to continue.', 'Ouvrez un fil à gauche pour continuer.')}
               </p>
             </div>
           ) : null}

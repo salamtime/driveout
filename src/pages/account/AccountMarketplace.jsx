@@ -1,11 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CarFront, FileCheck, GanttChartSquare, MessageSquareText, ShieldCheck, Star, UploadCloud } from 'lucide-react';
+import { ArrowLeft, CarFront, FileCheck, GanttChartSquare, History, Info, MessageSquareText, ShieldCheck, Star, UploadCloud } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import i18n from '../../i18n';
 import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
 import BusinessMarketplaceService, { getMarketplaceStatusLabel, getMarketplaceStatusTone } from '../../services/BusinessMarketplaceService';
-import CustomerExperienceService from '../../services/CustomerExperienceService';
 import MessageService from '../../services/MessageService';
 import {
   canOwnerPreApproveMarketplaceRequest,
@@ -18,13 +17,13 @@ import {
 } from '../../utils/marketplaceRequestState';
 import VerificationService from '../../services/VerificationService';
 import AccountStatCard from '../../components/account/AccountStatCard';
-import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
 import MessageWidget from '../../components/messages/MessageWidget';
 import { supabase } from '../../lib/supabase';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCenter';
 import { buildOwnerExecutionWorkspaceHref } from '../../utils/ownerRentalExecutionLinks';
+import { normalizeOwnerRentalHistoryRows } from '../../utils/ownerRentalHistory';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 
 const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
@@ -170,6 +169,48 @@ const isMeaningfulOwnerVehicle = (vehicle) => {
   );
 
   return hasIdentity || hasCommercialData || hasWorkflowState;
+};
+
+const normalizeStoredOwnerVehicleResult = (result, isFrench = false) => {
+  if (result?.error || !result?.vehicle) return null;
+  const vehicle = result.vehicle;
+
+  return {
+    id: vehicle.id,
+    listingId: vehicle.listingId || null,
+    title: [vehicle.brandName, vehicle.modelName].filter(Boolean).join(' ') || (isFrench ? 'Profil véhicule' : 'Vehicle profile'),
+    brandName: vehicle.brandName || '',
+    modelName: vehicle.modelName || '',
+    categoryCode: vehicle.categoryCode || 'atv',
+    cityName: vehicle.cityName || '',
+    areaName: vehicle.areaName || '',
+    coverImageUrl: vehicle.coverImageUrl || null,
+    shortDescription: vehicle.shortDescription || '',
+    marketplaceVisible: Boolean(vehicle.rawProfile?.marketplace_visible),
+    isActive: vehicle.rawProfile?.is_active !== false,
+    listingStatus: vehicle.listingStatus || 'draft',
+    reviewStatus: vehicle.reviewStatus || 'not_submitted',
+    bookingMode: vehicle.rawListing?.booking_mode || 'request',
+    hourlyPrice: Number(vehicle.hourlyPriceAmount || 0),
+    dailyPrice: Number(vehicle.dailyPriceAmount || 0),
+    weeklyPrice: Number(vehicle.weeklyPriceAmount || 0),
+    depositAmount: Number(vehicle.depositAmount || 0),
+    currencyCode: vehicle.currencyCode || 'MAD',
+    adminFeedback: vehicle.adminFeedback || '',
+    moderationStatus: vehicle.moderationStatus || 'not_reviewed',
+    changesRequestedAt: vehicle.rawListing?.changes_requested_at || null,
+    resubmittedAt: vehicle.rawListing?.resubmitted_at || null,
+    latestOwnerMessage: Array.isArray(vehicle.ownerMessages) ? vehicle.ownerMessages[0]?.body || '' : '',
+    latestOwnerMessageAt: Array.isArray(vehicle.ownerMessages) ? vehicle.ownerMessages[0]?.createdAt || null : null,
+    latestOwnerMessageType: Array.isArray(vehicle.ownerMessages) ? vehicle.ownerMessages[0]?.messageType || 'message' : 'message',
+    latestOwnerMessageSenderType: Array.isArray(vehicle.ownerMessages) ? vehicle.ownerMessages[0]?.senderType || 'admin' : 'admin',
+    submittedAt: vehicle.rawListing?.submitted_at || null,
+    reviewedAt: vehicle.rawListing?.reviewed_at || null,
+    publishedAt: vehicle.rawListing?.published_at || null,
+    updatedAt: vehicle.rawListing?.updated_at || vehicle.rawProfile?.updated_at || vehicle.rawProfile?.created_at || null,
+    rawProfile: vehicle.rawProfile || null,
+    rawListing: vehicle.rawListing || null,
+  };
 };
 
 const getReviewCardTone = (status) => {
@@ -421,6 +462,23 @@ const OwnerVehicleCard = ({
       action: tr('View details', 'Voir les détails'),
     };
   })();
+  const summaryItems = [
+    {
+      label: tr('Listing', 'Annonce'),
+      value: listingJourneyLabel,
+      onClick: onOpenListingTab,
+    },
+    {
+      label: tr('Review', 'Revue'),
+      value: reviewJourneyLabel,
+      onClick: onOpenReviews,
+    },
+    {
+      label: tr('Verification', 'Vérification'),
+      value: verificationMeta.hint,
+      onClick: onOpenLegalTab,
+    },
+  ];
 
   return (
     <article
@@ -436,16 +494,16 @@ const OwnerVehicleCard = ({
           onOpenProfile();
         }
       }}
-      className="w-full rounded-[1.85rem] border border-violet-300 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_28px_58px_rgba(79,70,229,0.10),0_18px_42px_rgba(15,23,42,0.08),0_0_0_1px_rgba(167,139,250,0.28)]"
+      className="w-full rounded-[1.65rem] border border-violet-300 bg-white p-3.5 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_28px_58px_rgba(79,70,229,0.10),0_18px_42px_rgba(15,23,42,0.08),0_0_0_1px_rgba(167,139,250,0.28)] sm:rounded-[1.85rem] sm:p-5"
     >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex min-w-0 flex-1 gap-4">
+      <div className="flex flex-col gap-3.5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 flex-1 items-start gap-3 sm:gap-4">
           {vehicle?.coverImageUrl ? (
-            <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 shadow-sm">
+            <div className="shrink-0 self-start overflow-hidden rounded-[1.2rem] border border-slate-200 bg-slate-50 shadow-sm sm:rounded-[1.5rem]">
               <img
                 src={vehicle.coverImageUrl}
                 alt={vehicle?.title || 'Marketplace vehicle'}
-                className="h-28 w-36 object-cover"
+                className="h-24 w-28 object-contain sm:h-28 sm:w-36"
               />
             </div>
           ) : null}
@@ -459,7 +517,7 @@ const OwnerVehicleCard = ({
                 {verificationMeta.label}
               </span>
             </div>
-            <h2 className="mt-3 text-xl font-bold text-slate-950">
+            <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950 sm:mt-3 sm:text-xl sm:font-bold sm:tracking-normal">
               {vehicle?.title || tr('Marketplace vehicle', 'Véhicule marketplace')}
             </h2>
             <p className="mt-1 text-sm text-slate-500">
@@ -472,36 +530,28 @@ const OwnerVehicleCard = ({
                   : tr('Pricing pending', 'Tarification en attente')}
               </span>
             </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                  {tr('Listing', 'Annonce')}
-                </p>
-                <p className="mt-2 text-sm font-semibold text-slate-950">{listingJourneyLabel}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                  {tr('Review', 'Revue')}
-                </p>
-                <p className="mt-2 text-sm font-semibold text-slate-950">{reviewJourneyLabel}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                  {tr('Verification', 'Vérification')}
-                </p>
-                <p className="mt-2 text-sm font-semibold text-slate-950">{verificationMeta.hint}</p>
-              </div>
+            <div className="mt-3 grid gap-2 sm:mt-4 sm:grid-cols-3 sm:gap-3">
+              {summaryItems.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    item.onClick();
+                  }}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-left transition hover:border-violet-200 hover:bg-violet-50 sm:py-3"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                    {item.label}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold leading-5 text-slate-950 sm:mt-2">{item.value}</p>
+                </button>
+              ))}
             </div>
-            <p className="mt-4 text-sm text-slate-500">
-              {tr(
-                'Pricing, availability, documents, and go-live actions all stay connected inside this listing workspace.',
-                "Tarification, disponibilité, documents et publication restent connectés dans cet espace annonce."
-              )}
-            </p>
           </div>
         </div>
 
-        <div className="flex w-full flex-col gap-3 lg:w-[260px]">
+        <div className="flex w-full flex-col gap-2.5 lg:w-[260px] lg:gap-3">
           <button
             type="button"
             onClick={(event) => {
@@ -512,7 +562,7 @@ const OwnerVehicleCard = ({
           >
             {statusMeta.action}
           </button>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
             <button
               type="button"
               onClick={(event) => {
@@ -761,7 +811,10 @@ const AccountMarketplace = () => {
   const [counterOfferRequestId, setCounterOfferRequestId] = useState('');
   const [counterOfferDrafts, setCounterOfferDrafts] = useState({});
   const [holdNow, setHoldNow] = useState(Date.now());
+  const [listingInfoOpen, setListingInfoOpen] = useState(false);
+  const [vehicleVerificationHydrated, setVehicleVerificationHydrated] = useState(false);
   const realtimeReloadTimerRef = useRef(null);
+  const workspaceLoadSequenceRef = useRef(0);
   const selectedRequestId = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return String(params.get('requestId') || '').trim();
@@ -784,6 +837,11 @@ const AccountMarketplace = () => {
     location.state?.from &&
       location.state.from !== `${location.pathname}${location.search}${location.hash}`
   );
+  const scrollToListings = useCallback(() => {
+    const node = document.getElementById('owner-listing-cards');
+    if (!node) return;
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   const loadWorkspace = useCallback(async () => {
     if (!user?.id) {
@@ -791,14 +849,39 @@ const AccountMarketplace = () => {
       return;
     }
 
+    const loadSequence = workspaceLoadSequenceRef.current + 1;
+    workspaceLoadSequenceRef.current = loadSequence;
+    const isCurrentLoad = () => workspaceLoadSequenceRef.current === loadSequence;
+    const normalizeVehicleRows = (vehicleRows = []) =>
+      vehicleRows
+        .filter((vehicle, index, allVehicles) => allVehicles.findIndex((item) => String(item?.id) === String(vehicle?.id)) === index)
+        .filter((vehicle) => isMeaningfulOwnerVehicle(vehicle));
+    const storeVehicleSnapshot = (nextVehicles = [], storedVehicleIds = []) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const knownVehicleCount = Math.max(nextVehicles.length, storedVehicleIds.length);
+        window.localStorage.setItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, user?.id), String(knownVehicleCount));
+        if (nextVehicles.length > 0) {
+          window.localStorage.setItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, user?.id), String(nextVehicles[0].id));
+        } else {
+          window.localStorage.removeItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, user?.id));
+        }
+        writeStoredOwnerVehicleIds(user?.id, nextVehicles.map((vehicle) => vehicle?.id));
+      } catch {
+        // ignore local storage issues
+      }
+    };
+
     try {
       setLoading(true);
+      setVehicleVerificationHydrated(false);
       setError('');
-      const [vehiclesResult, requestsResult, accountSnapshot] = await Promise.all([
+      const [vehiclesResult, requestsResult] = await Promise.all([
         BusinessMarketplaceService.getOwnerVehicles(user.id),
         BusinessMarketplaceService.getOwnerRequests(user.id, 'all'),
-        CustomerExperienceService.getCustomerAccountSnapshot(user).catch(() => null),
       ]);
+
+      if (!isCurrentLoad()) return;
 
       if (vehiclesResult?.error && !vehiclesResult?.setupRequired) {
         throw vehiclesResult.error;
@@ -807,106 +890,70 @@ const AccountMarketplace = () => {
         throw requestsResult.error;
       }
 
-      let ownerVehicles = Array.isArray(vehiclesResult?.vehicles) ? vehiclesResult.vehicles : [];
-        const storedVehicleIds = readStoredOwnerVehicleIds(user?.id);
+      let ownerVehicles = normalizeVehicleRows(Array.isArray(vehiclesResult?.vehicles) ? vehiclesResult.vehicles : []);
+      const storedVehicleIds = readStoredOwnerVehicleIds(user?.id);
       const missingStoredIds = storedVehicleIds.filter(
         (vehicleId) => !ownerVehicles.some((vehicle) => String(vehicle?.id) === String(vehicleId))
       );
 
-      if (missingStoredIds.length > 0) {
-        const missingVehicles = await Promise.all(
-          missingStoredIds.map(async (vehicleId) => {
-            const result = await BusinessMarketplaceService.getOwnerVehicle(user.id, vehicleId);
-            if (result?.error || !result?.vehicle) return null;
-            return {
-              id: result.vehicle.id,
-              listingId: result.vehicle.listingId || null,
-              title: [result.vehicle.brandName, result.vehicle.modelName].filter(Boolean).join(' ') || (isFrench ? 'Profil véhicule' : 'Vehicle profile'),
-              brandName: result.vehicle.brandName || '',
-              modelName: result.vehicle.modelName || '',
-              categoryCode: result.vehicle.categoryCode || 'atv',
-              cityName: result.vehicle.cityName || '',
-              areaName: result.vehicle.areaName || '',
-              coverImageUrl: result.vehicle.coverImageUrl || null,
-              shortDescription: result.vehicle.shortDescription || '',
-              marketplaceVisible: Boolean(result.vehicle.rawProfile?.marketplace_visible),
-              isActive: result.vehicle.rawProfile?.is_active !== false,
-              listingStatus: result.vehicle.listingStatus || 'draft',
-              reviewStatus: result.vehicle.reviewStatus || 'not_submitted',
-              bookingMode: result.vehicle.rawListing?.booking_mode || 'request',
-              hourlyPrice: Number(result.vehicle.hourlyPriceAmount || 0),
-              dailyPrice: Number(result.vehicle.dailyPriceAmount || 0),
-              weeklyPrice: Number(result.vehicle.weeklyPriceAmount || 0),
-              depositAmount: Number(result.vehicle.depositAmount || 0),
-              currencyCode: result.vehicle.currencyCode || 'MAD',
-              adminFeedback: result.vehicle.adminFeedback || '',
-              moderationStatus: result.vehicle.moderationStatus || 'not_reviewed',
-              changesRequestedAt: result.vehicle.rawListing?.changes_requested_at || null,
-              resubmittedAt: result.vehicle.rawListing?.resubmitted_at || null,
-              latestOwnerMessage: Array.isArray(result.vehicle.ownerMessages) ? result.vehicle.ownerMessages[0]?.body || '' : '',
-              latestOwnerMessageAt: Array.isArray(result.vehicle.ownerMessages) ? result.vehicle.ownerMessages[0]?.createdAt || null : null,
-              latestOwnerMessageType: Array.isArray(result.vehicle.ownerMessages) ? result.vehicle.ownerMessages[0]?.messageType || 'message' : 'message',
-              latestOwnerMessageSenderType: Array.isArray(result.vehicle.ownerMessages) ? result.vehicle.ownerMessages[0]?.senderType || 'admin' : 'admin',
-              submittedAt: result.vehicle.rawListing?.submitted_at || null,
-              reviewedAt: result.vehicle.rawListing?.reviewed_at || null,
-              publishedAt: result.vehicle.rawListing?.published_at || null,
-              updatedAt: result.vehicle.rawListing?.updated_at || result.vehicle.rawProfile?.updated_at || result.vehicle.rawProfile?.created_at || null,
-              rawProfile: result.vehicle.rawProfile || null,
-              rawListing: result.vehicle.rawListing || null,
-            };
+      setVehicles(ownerVehicles);
+      setRequests(Array.isArray(requestsResult?.requests) ? requestsResult.requests : []);
+      storeVehicleSnapshot(ownerVehicles, storedVehicleIds);
+      setLoading(false);
+
+      void (async () => {
+        let enrichedVehicles = ownerVehicles;
+
+        if (missingStoredIds.length > 0) {
+          const missingVehicles = await Promise.all(
+            missingStoredIds.map(async (vehicleId) => {
+              const result = await BusinessMarketplaceService.getOwnerVehicle(user.id, vehicleId);
+              return normalizeStoredOwnerVehicleResult(result, isFrench);
+            })
+          );
+          enrichedVehicles = normalizeVehicleRows([...enrichedVehicles, ...missingVehicles.filter(Boolean)]);
+        }
+
+        const verifiedVehicles = await Promise.all(
+          enrichedVehicles.map(async (vehicle) => {
+            try {
+              const verificationResult = await VerificationService.getEntityVerificationSummary('vehicle', vehicle.id);
+              const summary = verificationResult?.summary || null;
+              return {
+                ...vehicle,
+                vehicleVerificationStatus: summary?.status || 'pending',
+                vehicleVerificationComplete: Boolean(summary?.complete),
+                vehicleVerificationMissing: Array.isArray(summary?.missing) ? summary.missing : [],
+              };
+            } catch {
+              return {
+                ...vehicle,
+                vehicleVerificationStatus: 'pending',
+                vehicleVerificationComplete: false,
+                vehicleVerificationMissing: [],
+              };
+            }
           })
         );
 
-        ownerVehicles = [...ownerVehicles, ...missingVehicles.filter(Boolean)];
-      }
-
-      ownerVehicles = ownerVehicles.filter(
-        (vehicle, index, allVehicles) => allVehicles.findIndex((item) => String(item?.id) === String(vehicle?.id)) === index
-      );
-      ownerVehicles = ownerVehicles.filter((vehicle) => isMeaningfulOwnerVehicle(vehicle));
-      ownerVehicles = await Promise.all(
-        ownerVehicles.map(async (vehicle) => {
-          try {
-            const verificationResult = await VerificationService.getEntityVerificationSummary('vehicle', vehicle.id);
-            const summary = verificationResult?.summary || null;
-            return {
-              ...vehicle,
-              vehicleVerificationStatus: summary?.status || 'pending',
-              vehicleVerificationComplete: Boolean(summary?.complete),
-              vehicleVerificationMissing: Array.isArray(summary?.missing) ? summary.missing : [],
-            };
-          } catch {
-            return {
-              ...vehicle,
-              vehicleVerificationStatus: 'pending',
-              vehicleVerificationComplete: false,
-              vehicleVerificationMissing: [],
-            };
-          }
-        })
-      );
-      setVehicles(ownerVehicles);
-      if (typeof window !== 'undefined') {
-        try {
-          const knownVehicleCount = Math.max(ownerVehicles.length, storedVehicleIds.length);
-          window.localStorage.setItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, user?.id), String(knownVehicleCount));
-          if (ownerVehicles.length > 0) {
-            window.localStorage.setItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, user?.id), String(ownerVehicles[0].id));
-          } else {
-            window.localStorage.removeItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, user?.id));
-          }
-          writeStoredOwnerVehicleIds(user?.id, ownerVehicles.map((vehicle) => vehicle?.id));
-        } catch {
-          // ignore local storage issues
-        }
-      }
-      setRequests(Array.isArray(requestsResult?.requests) ? requestsResult.requests : []);
+        if (!isCurrentLoad()) return;
+        setVehicles(verifiedVehicles);
+        storeVehicleSnapshot(verifiedVehicles, storedVehicleIds);
+        setVehicleVerificationHydrated(true);
+      })().catch((enrichmentError) => {
+        if (!isCurrentLoad()) return;
+        console.warn('Listing workspace enrichment skipped:', enrichmentError);
+        setVehicleVerificationHydrated(true);
+      });
     } catch (loadError) {
+      if (!isCurrentLoad()) return;
       setError(loadError?.message || (isFrench
         ? 'Impossible de charger votre espace véhicules pour le moment.'
         : 'Unable to load your vehicle workspace right now.'));
     } finally {
-      setLoading(false);
+      if (isCurrentLoad()) {
+        setLoading(false);
+      }
     }
   }, [user?.id, isFrench]);
 
@@ -919,13 +966,14 @@ const AccountMarketplace = () => {
     if (location.pathname !== '/account/vehicles') return;
     if (selectedRequestId) return;
     if (vehicles.length !== 1) return;
+    if (!vehicleVerificationHydrated) return;
 
     const target = getOwnerVehicleSetupTarget(vehicles[0], returnPath);
     navigate(target.to, {
       replace: true,
       state: target.state,
     });
-  }, [loading, location.pathname, navigate, returnPath, selectedRequestId, vehicles]);
+  }, [loading, location.pathname, navigate, returnPath, selectedRequestId, vehicleVerificationHydrated, vehicles]);
 
   useEffect(() => {
     if (!selectedRequestId || loading) return undefined;
@@ -1009,8 +1057,10 @@ const AccountMarketplace = () => {
         moderationStatus !== 'pending_review';
     }).length;
     const openRequests = requests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)).length;
+    const rentalHistory = normalizeOwnerRentalHistoryRows(requests);
+    const completedRentals = rentalHistory.filter((row) => row.status === 'completed').length;
     const deposits = vehicles.reduce((sum, vehicle) => sum + Number(vehicle?.depositAmount || 0), 0);
-    return { liveVehicles, pendingReview, changesRequested, needsSetup, openRequests, deposits };
+    return { liveVehicles, pendingReview, changesRequested, needsSetup, openRequests, completedRentals, deposits };
   }, [vehicles, requests]);
   const primaryVehicle = useMemo(() => {
     if (!vehicles.length) return null;
@@ -1365,16 +1415,34 @@ const AccountMarketplace = () => {
   return (
     <div className="space-y-6">
       <div className="sticky top-0 z-20">
-        <AccountWorkspaceHero
-          eyebrow={tr('Listings', 'Annonces')}
-          title={tr('Listings control center', 'Centre de contrôle des annonces')}
-          description={tr(
-            'Manage vehicle setup, pricing, legal documents, booking readiness, and live listing requests from one workspace.',
-            'Gérez préparation véhicule, tarifs, documents légaux, préparation des réservations et demandes en direct depuis un seul espace.'
-          )}
-          className="bg-white/95 backdrop-blur"
-          aside={
-            <div className="flex flex-wrap gap-2">
+        <section className="rounded-[1.65rem] border border-violet-300 bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] backdrop-blur transition-all sm:rounded-[1.85rem] sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-[0.28em] text-violet-500">
+                {tr('Listings', 'Annonces')}
+              </p>
+              <h1 className="mt-2 text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">
+                {tr('Listings control center', 'Centre de contrôle des annonces')}
+              </h1>
+              <p className="mt-2 text-sm font-medium leading-6 text-slate-500 sm:text-base">
+                {tr(
+                  'Setup, publish, and bookings in one place.',
+                  'Configuration, publication et réservations au même endroit.'
+                )}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 lg:max-w-[31rem] lg:justify-end">
+              <button
+                type="button"
+                onClick={() => setListingInfoOpen((current) => !current)}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                aria-expanded={listingInfoOpen}
+              >
+                <Info className="h-4 w-4" />
+                <span className="hidden sm:inline">{tr('How it works', 'Fonctionnement')}</span>
+                <span className="sr-only sm:hidden">{tr('How it works', 'Fonctionnement')}</span>
+              </button>
               {canReturn ? (
                 <button
                   type="button"
@@ -1393,14 +1461,35 @@ const AccountMarketplace = () => {
                 <UploadCloud className="h-4 w-4" />
                 {tr('Add listing', 'Ajouter une annonce')}
               </button>
-              <Link to="/account/messages" className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700">
+              <Link
+                to="/account/messages"
+                state={{ from: returnPath }}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+              >
                 <MessageSquareText className="h-4 w-4" />
                 {tr('Open Inbox', 'Ouvrir Inbox')}
               </Link>
+              <Link
+                to="/account/rental-history"
+                state={{ from: returnPath }}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+              >
+                <History className="h-4 w-4" />
+                {tr('Rental history', 'Historique')}
+              </Link>
             </div>
-          }
-        />
+          </div>
+        </section>
       </div>
+
+      {listingInfoOpen ? (
+        <section className="rounded-[1.35rem] border border-violet-100 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-600 shadow-[0_12px_34px_rgba(15,23,42,0.05)] sm:rounded-[1.6rem] sm:px-5 sm:py-4">
+          {tr(
+            'Build the vehicle profile, complete pricing and documents, then use Inbox for every renter request.',
+            'Créez le profil véhicule, complétez les prix et documents, puis utilisez Inbox pour chaque demande locataire.'
+          )}
+        </section>
+      ) : null}
 
       {error ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
@@ -1416,53 +1505,68 @@ const AccountMarketplace = () => {
         </div>
         <div className="-mx-1 overflow-x-auto px-1 pb-2">
           <div className="flex snap-x snap-mandatory gap-3">
-            <AccountStatCard
-              compact
-              eyebrow={tr('Listings', 'Annonces')}
-              value={vehicles.length}
-              label={tr('Total listings', 'Total des annonces')}
-              tone="violet"
-            />
-            <AccountStatCard
-              compact
-              eyebrow={tr('Setup', 'Configuration')}
-              value={stats.needsSetup}
-              label={tr('Still in setup', 'Encore en configuration')}
-              tone="amber"
-            />
-            <AccountStatCard
-              compact
-              eyebrow={tr('Live', 'En ligne')}
-              value={stats.liveVehicles}
-              label={tr('Live listings', 'Annonces en ligne')}
-              tone="emerald"
-            />
-            <AccountStatCard
-              compact
-              eyebrow={tr('Review', 'Revue')}
-              value={stats.pendingReview + stats.changesRequested}
-              label={tr('Needs review follow-up', 'Demandent un suivi de revue')}
-              tone="sky"
-            />
-            <AccountStatCard
-              compact
-              eyebrow={tr('Inbox', 'Inbox')}
-              value={stats.openRequests}
-              label={tr('Open renter requests', 'Demandes locataires ouvertes')}
-              tone="slate"
-            />
+            {[
+              {
+                eyebrow: tr('Listings', 'Annonces'),
+                value: vehicles.length,
+                label: tr('Total listings', 'Total des annonces'),
+                tone: 'violet',
+                onClick: scrollToListings,
+              },
+              {
+                eyebrow: tr('Setup', 'Configuration'),
+                value: stats.needsSetup,
+                label: tr('Still in setup', 'Encore en configuration'),
+                tone: 'amber',
+                onClick: scrollToListings,
+              },
+              {
+                eyebrow: tr('Live', 'En ligne'),
+                value: stats.liveVehicles,
+                label: tr('Live listings', 'Annonces en ligne'),
+                tone: 'emerald',
+                onClick: scrollToListings,
+              },
+              {
+                eyebrow: tr('Review', 'Revue'),
+                value: stats.pendingReview + stats.changesRequested,
+                label: tr('Needs review follow-up', 'Demandent un suivi de revue'),
+                tone: 'sky',
+                onClick: scrollToListings,
+              },
+              {
+                eyebrow: tr('Inbox', 'Inbox'),
+                value: stats.openRequests,
+                label: tr('Open renter requests', 'Demandes locataires ouvertes'),
+                tone: 'slate',
+                onClick: () => navigate('/account/messages', { state: { from: returnPath } }),
+              },
+              {
+                eyebrow: tr('History', 'Historique'),
+                value: stats.completedRentals,
+                label: tr('Completed owner rentals', 'Locations propriétaire terminées'),
+                tone: 'violet',
+                onClick: () => navigate('/account/rental-history', { state: { from: returnPath } }),
+              },
+            ].map((snapshot) => (
+              <button
+                key={snapshot.eyebrow}
+                type="button"
+                onClick={snapshot.onClick}
+                className="snap-start text-left transition hover:-translate-y-0.5"
+              >
+                <AccountStatCard
+                  compact
+                  eyebrow={snapshot.eyebrow}
+                  value={snapshot.value}
+                  label={snapshot.label}
+                  tone={snapshot.tone}
+                  className="pointer-events-none"
+                />
+              </button>
+            ))}
           </div>
         </div>
-      </section>
-
-      <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-        <AccountWorkspaceSectionHeader
-          title={tr('How Listings works', 'Comment fonctionnent les annonces')}
-          description={tr(
-            'Build the vehicle profile first, then move through pricing, legal documents, booking setup, and go-live review. Once a renter requests a vehicle, the live conversation continues in Inbox.',
-            "Créez d'abord le profil véhicule, puis avancez via tarification, documents légaux, préparation de réservation et revue avant publication. Lorsqu'un locataire envoie une demande, la conversation en direct continue dans Inbox."
-          )}
-        />
       </section>
 
       {loading ? (
@@ -1472,7 +1576,7 @@ const AccountMarketplace = () => {
           ))}
         </div>
       ) : vehicles.length ? (
-        <section className="space-y-4">
+        <section id="owner-listing-cards" className="scroll-mt-28 space-y-4">
           {vehicles.map((vehicle) => (
             <OwnerVehicleCard
               key={vehicle.id}

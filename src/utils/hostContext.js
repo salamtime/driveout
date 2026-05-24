@@ -9,7 +9,6 @@ const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
 const LOCAL_ADMIN_PORT = '5175';
 const LOCAL_TENANT_PORT_MAP = {
   '5173': 'saharax',
-  '5174': 'offroad',
 };
 const LOCAL_TENANT_SLUG_PORT_MAP = Object.entries(LOCAL_TENANT_PORT_MAP).reduce((accumulator, [port, slug]) => {
   if (slug) {
@@ -184,7 +183,6 @@ export const isSaharaXBrandingHost = (host = getHostContext()) => {
   const tenantSlug = String(host?.tenantSlug || '').trim().toLowerCase();
 
   return (
-    host?.kind === 'local' ||
     (host?.kind === 'tenant' && isFirstPartyTenantSlug(tenantSlug)) ||
     hostname === 'saharax.driveout.io' ||
     hostname === 'saharax.co' ||

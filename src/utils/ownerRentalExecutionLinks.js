@@ -53,6 +53,7 @@ export const getOwnerExecutionActionConfig = (request = null, tr = (en) => en) =
   if (!ACTIONABLE_EXECUTION_STATUSES.has(requestStatus)) return null;
 
   const stage = getOwnerExecutionRequestStage(request);
+  if (stage === 'completed') return null;
   const href = buildOwnerExecutionWorkspaceHref(request);
 
   if (stage === 'live' || stage === 'return_pending') {

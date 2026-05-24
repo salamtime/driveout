@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, MoreHorizontal, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
@@ -24,6 +24,7 @@ import { canAdjustVehicleFuelLevel } from '../../utils/permissionHelpers';
 import i18n from '../../i18n';
 import useFuelRealtimeSync from '../../hooks/useFuelRealtimeSync';
 import { resolveReturnPath } from '../../utils/navigationReturn';
+import { buildMarketplaceListingPath } from '../../utils/marketplaceShareLinks';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -137,6 +138,25 @@ const formatFuelEventLabel = (record) => {
   if (type === 'staff_fuel_use') return tr('Staff fuel use', 'Utilisation carburant équipe');
   if (type === 'manual_adjustment') return tr('Manual fuel adjustment', 'Ajustement manuel carburant');
   return formatStatus(record?.transaction_type || tr('fuel event', 'événement carburant'));
+};
+
+const extractMarketplaceListingId = (value = '') => {
+  const normalizedValue = String(value || '').trim();
+  if (!normalizedValue) return '';
+
+  const directMatch = normalizedValue.match(/(?:^|\/)(marketplace-[^/?#]+)/i);
+  if (directMatch?.[1]) return directMatch[1];
+
+  try {
+    const parsedUrl = new URL(
+      normalizedValue,
+      typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    );
+    const pathnameMatch = parsedUrl.pathname.match(/\/marketplace\/(marketplace-[^/?#]+)/i);
+    return pathnameMatch?.[1] || '';
+  } catch (_error) {
+    return '';
+  }
 };
 
 const formatReportLabel = (report) => {
@@ -1283,6 +1303,10 @@ const VehicleProfile = () => {
     vehicle?.listing_url ||
     vehicle?.share_url ||
     '';
+  const publicListingPath = useMemo(() => {
+    const listingId = extractMarketplaceListingId(publicListingUrl);
+    return listingId ? buildMarketplaceListingPath(listingId) : '';
+  }, [publicListingUrl]);
   const vehicleFinanceCostRows = useMemo(() => {
     if (!vehicleFinanceOverview) return [];
 
@@ -1437,7 +1461,17 @@ const VehicleProfile = () => {
               </>
             ) : (
               <>
-                {publicListingUrl ? (
+                {publicListingPath ? (
+                  <Link
+                    to={publicListingPath}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    {tr('View public listing', 'Voir la fiche publique')}
+                  </Link>
+                ) : publicListingUrl ? (
                   <a
                     href={publicListingUrl}
                     target="_blank"

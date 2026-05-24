@@ -563,13 +563,16 @@ const normalizeOwnerVehicle = (profile, listing) => {
 };
 
 const normalizeOwnerRequest = (request, listing, profile) => {
-  const status = normalizeMarketplaceRequestLifecycleStatus(request || 'pending');
-  const requestDisplay = getMarketplaceRequestDisplay(status);
   const title =
     listing?.title ||
     [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
     'Marketplace request';
   const counterOffer = request?.counter_offer && typeof request.counter_offer === 'object' ? request.counter_offer : {};
+  const ownerExecution = normalizeRentalExecutionDraft(counterOffer?.owner_execution);
+  const status = ownerExecution.returnSavedAt || request?.closed_at
+    ? 'completed'
+    : normalizeMarketplaceRequestLifecycleStatus(request || 'pending');
+  const requestDisplay = getMarketplaceRequestDisplay(status);
   const duration = safeNumber(request.duration);
   const rentalType = String(request.rental_type || 'hourly').trim().toLowerCase();
   const estimatedAmount = safeNumber(counterOffer?.price_amount) > 0
@@ -578,7 +581,10 @@ const normalizeOwnerRequest = (request, listing, profile) => {
       ? safeNumber(listing?.daily_price_amount) * Math.max(1, duration)
       : safeNumber(listing?.hourly_price_amount) * Math.max(1, duration);
   const money = getMarketplaceMoneyBreakdown({ estimatedAmount });
-  const ownerExecution = normalizeRentalExecutionDraft(counterOffer?.owner_execution);
+  const listingDistancePricing =
+    listing?.pricing && typeof listing.pricing === 'object' && listing.pricing.distance && typeof listing.pricing.distance === 'object'
+      ? listing.pricing.distance
+      : {};
 
   return {
     id: request.id,
@@ -627,6 +633,8 @@ const normalizeOwnerRequest = (request, listing, profile) => {
     halfDayMinHours: safeNumber(listing?.pricing?.half_day?.min_hours),
     halfDayMaxHours: safeNumber(listing?.pricing?.half_day?.max_hours),
     hourlyPrice: safeNumber(listing?.hourly_price_amount),
+    includedKm: listing?.included_km ?? listingDistancePricing?.included_km ?? profile?.mileage_limit_km ?? null,
+    extraKmRate: listing?.extra_km_rate ?? listingDistancePricing?.extra_km_rate ?? profile?.extra_km_rate ?? null,
     coverImageUrl: profile?.cover_image_url || '',
     cityName: profile?.city_name || 'Tangier',
     areaName: profile?.area_name || '',
@@ -882,6 +890,10 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
         min_hours: optionalInteger(formData.halfDayMinHours),
         max_hours: optionalInteger(formData.halfDayMaxHours),
       },
+      distance: {
+        included_km: optionalInteger(formData.mileageLimitKm),
+        extra_km_rate: optionalNumber(formData.extraKmRate),
+      },
       currency: String(formData.currencyCode || 'MAD').trim() || 'MAD',
       seasonal_pricing: Array.isArray(formData.seasonalPricing) ? formData.seasonalPricing : [],
     },
@@ -897,11 +909,25 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
 
 export const validateOwnerVehicleForm = (formData, submitForReview = false) => {
   const errors = {};
+  const includedKilometers = optionalNumber(formData.mileageLimitKm);
+  const extraKilometerRate = optionalNumber(formData.extraKmRate);
 
   if (!String(formData.brandName || '').trim()) errors.brandName = 'Brand is required.';
   if (!String(formData.modelName || '').trim()) errors.modelName = 'Model is required.';
   if (!String(formData.categoryCode || '').trim()) errors.categoryCode = 'Category is required.';
   if (!String(formData.cityName || '').trim()) errors.cityName = 'City is required.';
+  if (includedKilometers !== null && includedKilometers <= 0) {
+    errors.mileageLimitKm = 'Included kilometers must be greater than 0, or leave it empty for unlimited kilometers.';
+  }
+  if (extraKilometerRate !== null && extraKilometerRate <= 0) {
+    errors.extraKmRate = 'Extra kilometer rate must be greater than 0, or leave it empty when not applied.';
+  }
+  if (includedKilometers !== null && includedKilometers > 0 && (extraKilometerRate === null || extraKilometerRate <= 0)) {
+    errors.extraKmRate = 'Add the extra kilometer rate in MAD/km for kilometers beyond the included amount.';
+  }
+  if ((includedKilometers === null || includedKilometers <= 0) && extraKilometerRate !== null && extraKilometerRate > 0) {
+    errors.mileageLimitKm = 'Add included kilometers before setting an extra kilometer rate.';
+  }
 
   if (submitForReview) {
     if (!formData.dailyPriceAmount && !formData.halfDayPriceAmount) {
@@ -1217,7 +1243,16 @@ class BusinessMarketplaceService {
     });
   }
 
-  static async saveOwnerVehicle({ ownerId, accountType, metadata, vehicleId, formData, submitForReview = false, saveListing = false }) {
+  static async saveOwnerVehicle({
+    ownerId,
+    accountType,
+    metadata,
+    vehicleId,
+    formData,
+    submitForReview = false,
+    saveListing = false,
+    sectionKey = '',
+  }) {
     if (!ownerId) {
       throw new Error('You must be signed in to save a vehicle.');
     }
@@ -1238,6 +1273,7 @@ class BusinessMarketplaceService {
         formData,
         submitForReview,
         saveListing,
+        sectionKey,
       }),
     });
 

@@ -21,6 +21,7 @@ import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus } from '../
 import { normalizeMarketplaceRequestLifecycleStatus } from '../src/utils/marketplaceRequestState.js';
 import {
   buildRentalExecutionRecordPayload,
+  deriveRentalExecutionStage,
   normalizeRentalExecutionDraft,
   RENTAL_EXECUTION_RECORDS_TABLE,
 } from '../src/utils/rentalExecutionFlow.js';
@@ -1344,6 +1345,62 @@ const hasExecutionNumberValue = (value) => {
   return Number.isFinite(numericValue) && numericValue >= 0;
 };
 
+const positiveExecutionNumber = (value) => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
+};
+
+const resolveExecutionDistanceRule = ({ requestRow = {}, listingRow = {}, profileRow = {}, executionDraft = {} }) => {
+  const counterOffer = requestRow?.counter_offer && typeof requestRow.counter_offer === 'object'
+    ? requestRow.counter_offer
+    : {};
+  const listingPricing = listingRow?.pricing && typeof listingRow.pricing === 'object' ? listingRow.pricing : {};
+  const distancePricing = listingPricing.distance && typeof listingPricing.distance === 'object' ? listingPricing.distance : {};
+
+  const includedKm = positiveExecutionNumber(
+    executionDraft.mileageOverageIncludedKm ||
+    counterOffer.included_km ||
+    counterOffer.includedKm ||
+    requestRow.included_km ||
+    listingRow.included_km ||
+    distancePricing.included_km ||
+    profileRow.mileage_limit_km
+  );
+  const extraKmRate = positiveExecutionNumber(
+    executionDraft.mileageOverageRate ||
+    counterOffer.extra_km_rate ||
+    counterOffer.extraKmRate ||
+    requestRow.extra_km_rate ||
+    listingRow.extra_km_rate ||
+    distancePricing.extra_km_rate ||
+    profileRow.extra_km_rate
+  );
+
+  return { includedKm, extraKmRate };
+};
+
+const calculateExecutionMileageOverageAmount = ({ requestRow = {}, listingRow = {}, profileRow = {}, executionDraft = {} }) => {
+  if (!hasExecutionNumberValue(executionDraft.startOdometer) || !hasExecutionNumberValue(executionDraft.returnOdometer)) {
+    return { hasOverage: false, amount: 0, extraKm: 0, totalKm: 0, includedKm: 0, extraKmRate: 0 };
+  }
+
+  const startOdometer = Number(executionDraft.startOdometer);
+  const returnOdometer = Number(executionDraft.returnOdometer);
+  const totalKm = Math.max(0, returnOdometer - startOdometer);
+  const { includedKm, extraKmRate } = resolveExecutionDistanceRule({ requestRow, listingRow, profileRow, executionDraft });
+  const extraKm = includedKm > 0 ? Math.max(0, totalKm - includedKm) : 0;
+  const amount = includedKm > 0 && extraKmRate > 0 ? Number((extraKm * extraKmRate).toFixed(2)) : 0;
+
+  return {
+    hasOverage: amount > 0,
+    amount,
+    extraKm: Number(extraKm.toFixed(2)),
+    totalKm: Number(totalKm.toFixed(2)),
+    includedKm,
+    extraKmRate,
+  };
+};
+
 const getMissingBookingRequestPayloadColumnName = (error) => {
   const message = String(error?.message || error?.details || '');
   const qualifiedColumnMatch = message.match(/column\s+["']?[\w.]*\.([a-zA-Z0-9_]+)["']?\s+does not exist/i);
@@ -1456,7 +1513,10 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
     request_status: requestRow?.request_status || 'pending',
     counter_offer: existingCounterOffer,
   });
+  const existingExecutionDraft = normalizeRentalExecutionDraft(existingCounterOffer?.owner_execution || {});
+  const currentExecutionStage = deriveRentalExecutionStage(existingExecutionDraft, currentRequestStatus);
   const normalizedExecutionDraft = normalizeRentalExecutionDraft(executionDraft);
+  let normalizedRequestedExecutionStatus = null;
 
   const updates = {
     counter_offer: {
@@ -1468,14 +1528,88 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
 
   if (requestStatus) {
     const normalizedNextStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
+    normalizedRequestedExecutionStatus = normalizedNextStatus;
     const validTransition =
       normalizedNextStatus === currentRequestStatus ||
-      (normalizedNextStatus === 'active' && currentRequestStatus === 'approved') ||
-      (normalizedNextStatus === 'completed' && currentRequestStatus === 'active');
+      normalizedNextStatus === currentExecutionStage ||
+      (
+        normalizedNextStatus === 'active' &&
+        ['approved', 'handoff', 'ready_to_start'].includes(currentExecutionStage)
+      ) ||
+      (
+        normalizedNextStatus === 'completed' &&
+        (
+          ['active', 'live', 'return_pending'].includes(currentExecutionStage) ||
+          Boolean(existingExecutionDraft.startedAt) ||
+          Boolean(normalizedExecutionDraft.startedAt)
+        )
+      );
 
     if (!validTransition) {
       throw new Error('This rental is not ready for that action yet.');
     }
+
+    let executionListingRow = null;
+    let executionProfileRow = null;
+    if (normalizedNextStatus === 'completed') {
+      if (requestRow?.listing_id) {
+        const { data: listingRow, error: listingError } = await adminClient
+          .from(MARKETPLACE_LISTINGS_TABLE)
+          .select('*')
+          .eq('id', requestRow.listing_id)
+          .maybeSingle();
+
+        if (listingError && !isMissingTableError(listingError) && !isSchemaCompatibilityError(listingError)) {
+          throw listingError;
+        }
+        executionListingRow = listingRow || null;
+      }
+
+      const profileId = executionListingRow?.vehicle_public_profile_id || requestRow?.vehicle_public_profile_id;
+      if (profileId) {
+        const { data: profileRow, error: profileError } = await adminClient
+          .from(VEHICLE_PROFILES_TABLE)
+          .select('*')
+          .eq('id', profileId)
+          .maybeSingle();
+
+        if (profileError && !isMissingTableError(profileError) && !isSchemaCompatibilityError(profileError)) {
+          throw profileError;
+        }
+        executionProfileRow = profileRow || null;
+      }
+    }
+
+    const mileageOverageCheck = calculateExecutionMileageOverageAmount({
+      requestRow,
+      listingRow: executionListingRow || {},
+      profileRow: executionProfileRow || {},
+      executionDraft: normalizedExecutionDraft,
+    });
+    if (normalizedNextStatus === 'completed' && mileageOverageCheck.hasOverage) {
+      normalizedExecutionDraft.mileageOverageAmount = mileageOverageCheck.amount;
+      normalizedExecutionDraft.mileageOverageExtraKm = mileageOverageCheck.extraKm;
+      normalizedExecutionDraft.mileageOverageTotalKm = mileageOverageCheck.totalKm;
+      normalizedExecutionDraft.mileageOverageIncludedKm = mileageOverageCheck.includedKm;
+      normalizedExecutionDraft.mileageOverageRate = mileageOverageCheck.extraKmRate;
+      normalizedExecutionDraft.mileageOverageCurrency = normalizedExecutionDraft.mileageOverageCurrency || requestRow?.currency_code || executionListingRow?.currency_code || 'MAD';
+      normalizedExecutionDraft.mileageOverageReviewed = Boolean(normalizedExecutionDraft.mileageOverageSettlement);
+      normalizedExecutionDraft.mileageOverageReviewedAt = normalizedExecutionDraft.mileageOverageReviewedAt || new Date().toISOString();
+    }
+    const requiresMileageOverageReview =
+      mileageOverageCheck.hasOverage ||
+      Number(normalizedExecutionDraft.mileageOverageAmount || 0) > 0 ||
+      Number(normalizedExecutionDraft.mileageOverageExtraKm || 0) > 0;
+    const hasCompleteMileageOverageReview =
+      !requiresMileageOverageReview ||
+      (
+        Boolean(normalizedExecutionDraft.mileageOverageSettlement) &&
+        Boolean(normalizedExecutionDraft.mileageOverageSignatureUrl) &&
+        (
+          Number(normalizedExecutionDraft.mileageOverageAmount || 0) > 0 ||
+          mileageOverageCheck.amount > 0
+        )
+      );
 
     const hasCompleteHandoff =
       Boolean(normalizedExecutionDraft.handoffMediaReady) &&
@@ -1495,7 +1629,8 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
         Number(normalizedExecutionDraft.returnOdometer) >= Number(normalizedExecutionDraft.startOdometer)
       ) &&
       hasExecutionNumberValue(normalizedExecutionDraft.returnFuelLevel) &&
-      Boolean(normalizedExecutionDraft.issueReviewed);
+      Boolean(normalizedExecutionDraft.issueReviewed) &&
+      hasCompleteMileageOverageReview;
 
     if (normalizedNextStatus === 'active' && !hasCompleteHandoff) {
       throw new Error('Finish the handoff checklist before starting this rental.');
@@ -1505,7 +1640,9 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
       throw new Error('Finish the return review before ending this rental.');
     }
 
-    updates.request_status = normalizedNextStatus;
+    if (!['active', 'completed'].includes(normalizedNextStatus)) {
+      updates.request_status = normalizedNextStatus;
+    }
     if (normalizedNextStatus === 'active') {
       updates.closed_at = null;
     }
@@ -1515,7 +1652,7 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
   }
 
   const updatedRequest = await updateBookingRequestWithCompatiblePayload(adminClient, normalizedRequestId, updates);
-  const effectiveRequestStatus = requestStatus || updatedRequest?.request_status || currentRequestStatus;
+  const effectiveRequestStatus = normalizedRequestedExecutionStatus || updatedRequest?.request_status || currentRequestStatus;
 
   await upsertMarketplaceOwnerExecutionRecord({
     adminClient,
@@ -1527,7 +1664,7 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
     console.warn('Failed to sync marketplace owner execution record:', executionRecordError);
   });
 
-  if (requestStatus === 'active') {
+  if (normalizedRequestedExecutionStatus === 'active') {
     await insertRentalEvent(adminClient, {
       rentalId: normalizedRequestId,
       eventType: 'started',
@@ -1539,7 +1676,7 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
     });
   }
 
-  if (requestStatus === 'completed') {
+  if (normalizedRequestedExecutionStatus === 'completed') {
     await insertRentalEvent(adminClient, {
       rentalId: normalizedRequestId,
       eventType: 'ended',
@@ -1548,6 +1685,36 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
         ownerId: ownerUserId,
         endedAt: normalizedExecutionDraft.returnSavedAt || new Date().toISOString(),
         issueReported: Boolean(normalizedExecutionDraft.issueReported),
+        finalReceiptUrl: normalizedExecutionDraft.finalReceiptUrl || null,
+        finalReceiptGeneratedAt: normalizedExecutionDraft.finalReceiptGeneratedAt || null,
+        completionReceipt: normalizedExecutionDraft.completionReceipt || null,
+        depositOutcome: normalizedExecutionDraft.depositOutcome || null,
+        depositRefundAmount: normalizedExecutionDraft.depositRefundAmount || 0,
+        depositRefundCurrency: normalizedExecutionDraft.depositRefundCurrency || null,
+        depositRefundSignatureUrl: normalizedExecutionDraft.depositRefundSignatureUrl || null,
+        depositRefundSignedAt: normalizedExecutionDraft.depositRefundSignedAt || null,
+        mileageOverageReviewed: Boolean(normalizedExecutionDraft.mileageOverageReviewed),
+        mileageOverageSettlement: normalizedExecutionDraft.mileageOverageSettlement || null,
+        mileageOverageAmount: normalizedExecutionDraft.mileageOverageAmount || 0,
+        mileageOverageBillableAmount: normalizedExecutionDraft.mileageOverageSettlement === 'waived'
+          ? 0
+          : normalizedExecutionDraft.mileageOverageAmount || 0,
+        mileageOverageSettledAmount: ['deduct_deposit', 'paid_separately'].includes(normalizedExecutionDraft.mileageOverageSettlement)
+          ? normalizedExecutionDraft.mileageOverageAmount || 0
+          : 0,
+        mileageOverageWaivedAmount: normalizedExecutionDraft.mileageOverageSettlement === 'waived'
+          ? normalizedExecutionDraft.mileageOverageAmount || 0
+          : 0,
+        mileageOverageCurrency: normalizedExecutionDraft.mileageOverageCurrency || null,
+        mileageOverageExtraKm: normalizedExecutionDraft.mileageOverageExtraKm || 0,
+        mileageOverageTotalKm: normalizedExecutionDraft.mileageOverageTotalKm || 0,
+        mileageOverageIncludedKm: normalizedExecutionDraft.mileageOverageIncludedKm || 0,
+        mileageOverageRate: normalizedExecutionDraft.mileageOverageRate || 0,
+        mileageOverageReviewedAt: normalizedExecutionDraft.mileageOverageReviewedAt || null,
+        mileageOverageSignatureUrl: normalizedExecutionDraft.mileageOverageSignatureUrl || null,
+        mileageOverageSignedAt: normalizedExecutionDraft.mileageOverageSignedAt || null,
+        mileageOverageSignedBy: normalizedExecutionDraft.mileageOverageSignedBy || null,
+        mileageOverageRecordedBy: normalizedExecutionDraft.mileageOverageRecordedBy || null,
       },
     });
   }

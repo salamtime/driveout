@@ -7,6 +7,8 @@ import {
   Camera,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   CornerUpLeft,
   Ellipsis,
@@ -198,6 +200,7 @@ const ConversationThread = ({
     createdAt: '',
   });
   const initialThreadScrollKeyRef = useRef('');
+  const latestScrollTimersRef = useRef([]);
 
   const selectedThread = thread;
   const isThreadArchived = Boolean(
@@ -1918,7 +1921,7 @@ const ConversationThread = ({
   const headerSecondaryLabel = showBookingContextCard
     ? (isOwnerMarketplaceDecisionView
         ? bookingHeaderDateRange
-        : [marketplaceRequestReference ? `${tr('Reference', 'Référence')} ${marketplaceRequestReference}` : '', bookingHeaderDateRange].filter(Boolean).join(' • '))
+        : bookingHeaderDateRange)
     : isVerificationThread
       ? verificationHeaderSubtitle
       : (contextSubtitle || otherParty.email || selectedThread.subject || '');
@@ -2204,11 +2207,20 @@ const ConversationThread = ({
     (isRentalThread && rentalContextData) ||
     (showBookingContextCard && !isOwnerMarketplaceDecisionView && !hideMarketplacePendingSummaryCard)
   );
+  const shouldUseMinimalBookingContextHeader = Boolean(
+    compactMode &&
+    showBookingContextCard &&
+    !isOwnerMarketplaceDecisionView &&
+    !hideMarketplacePendingSummaryCard
+  );
   const shouldShowCompactStatusBlock = !isVerificationThread && Boolean(
-    showBookingContextCard ||
-    marketplaceModerationProgress ||
-    isRentalThread ||
-    String(compactHeaderNextActionSummary || '').trim()
+    !shouldUseMinimalBookingContextHeader &&
+    (
+      showBookingContextCard ||
+      marketplaceModerationProgress ||
+      isRentalThread ||
+      String(compactHeaderNextActionSummary || '').trim()
+    )
   );
   const compactHeaderStatusIconClass = isVerificationThread
     ? verificationStatus === 'approved'
@@ -2939,11 +2951,77 @@ const ConversationThread = ({
     }
 
     if (eventName === 'completed') {
+      const rawDocumentActions = [
+        ...(Array.isArray(metadata.documentLinks) ? metadata.documentLinks : []),
+        ...(Array.isArray(metadata.document_links) ? metadata.document_links : []),
+        ...(Array.isArray(metadata.documentActions) ? metadata.documentActions : []),
+        ...(Array.isArray(metadata.document_actions) ? metadata.document_actions : []),
+      ];
+      const completionReceipt =
+        metadata.completionReceipt && typeof metadata.completionReceipt === 'object'
+          ? metadata.completionReceipt
+          : metadata.completion_receipt && typeof metadata.completion_receipt === 'object'
+            ? metadata.completion_receipt
+            : null;
+      const receiptAction = rawDocumentActions.find((action) => {
+        const actionKey = String(action?.kind || action?.key || action?.label || action?.title || '').trim().toLowerCase();
+        return actionKey.includes('receipt') || actionKey.includes('reçu') || actionKey.includes('recu');
+      });
+      const receiptHref = String(
+        completionReceipt?.url ||
+        metadata.finalReceiptUrl ||
+        receiptAction?.href ||
+        receiptAction?.url ||
+        ''
+      ).trim();
+      const receiptGeneratedAt = completionReceipt?.generatedAt || metadata.finalReceiptGeneratedAt || null;
+      const completedAt = completionReceipt?.completedAt || metadata.completedAt || message?.created_at || null;
+      const mileageOverage =
+        completionReceipt?.mileageOverage ||
+        metadata.mileageOverage ||
+        metadata.mileage_overage ||
+        null;
+      const mileageOverageAmount = Number(mileageOverage?.amount || 0) || 0;
+      const mileageOverageExtraKm = Number(mileageOverage?.extraKm || mileageOverage?.extra_km || 0) || 0;
+      const mileageOverageSettlement = String(mileageOverage?.settlement || '').trim().toLowerCase();
+      const mileageOverageSettlementLabel = mileageOverageSettlement === 'deduct_deposit'
+        ? tr('deducted from deposit', 'déduit de la caution')
+        : mileageOverageSettlement === 'paid_separately'
+          ? tr('paid separately', 'payé séparément')
+          : mileageOverageSettlement === 'waived'
+            ? tr('waived', 'annulé')
+            : mileageOverageSettlement === 'unpaid'
+              ? tr('unpaid', 'impayé')
+              : '';
+      const mileageOverageSummary = mileageOverageAmount > 0 || mileageOverageExtraKm > 0
+        ? `${tr('Extra mileage', 'Kilométrage extra')}: ${formatMoney(mileageOverageAmount, mileageOverage?.currency || mileageOverage?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}${mileageOverageExtraKm > 0 ? ` · ${mileageOverageExtraKm} km` : ''}${mileageOverageSettlementLabel ? ` · ${mileageOverageSettlementLabel}` : ''}`
+        : '';
+
       return {
         tone: 'slate',
         title: tr('Rental completed', 'Location terminée'),
         subtitle: tr('The booking is closed', 'La réservation est clôturée'),
-        detail: tr('This rental is now complete in the shared timeline.', 'Cette location est désormais terminée dans la chronologie partagée.'),
+        detail: receiptHref
+          ? ''
+          : tr('This rental is now complete in the shared timeline.', 'Cette location est désormais terminée dans la chronologie partagée.'),
+        hideBody: true,
+        documentCards: receiptHref
+          ? [
+              {
+                key: 'final-receipt',
+                title: tr('Final receipt', 'Reçu final'),
+                body: [
+                  receiptGeneratedAt
+                    ? `${tr('Generated', 'Généré')} ${formatDateTime(receiptGeneratedAt, isFrench)}`
+                    : tr('Receipt generated for this completed rental.', 'Reçu généré pour cette location terminée.'),
+                  mileageOverageSummary,
+                ].filter(Boolean).join(' • '),
+                meta: completedAt ? `${tr('Completed', 'Terminée')} ${formatDateTime(completedAt, isFrench)}` : '',
+                href: receiptHref,
+                actionLabel: tr('Open receipt', 'Ouvrir le reçu'),
+              },
+            ]
+          : [],
       };
     }
 
@@ -2992,6 +3070,17 @@ const ConversationThread = ({
         };
       })
       .filter(Boolean);
+    const receiptDocumentActions = documentActions.filter((action) => {
+      const kind = String(action.kind || action.key || action.label || '').trim().toLowerCase();
+      return kind.includes('receipt') || kind.includes('reçu') || kind.includes('recu');
+    });
+    const nonReceiptDocumentActions = documentActions.filter((action) => !receiptDocumentActions.includes(action));
+    const completionReceipt =
+      metadata.completionReceipt && typeof metadata.completionReceipt === 'object'
+        ? metadata.completionReceipt
+        : metadata.completion_receipt && typeof metadata.completion_receipt === 'object'
+          ? metadata.completion_receipt
+          : null;
     const eventName = String(metadata.event || '').trim().toLowerCase();
     const eventType = String(metadata.type || '').trim().toLowerCase();
     const normalizedStatus = String(
@@ -3163,6 +3252,65 @@ const ConversationThread = ({
     }
 
     if (messageType === 'system_event') {
+      if (eventName === 'completed') {
+        const receiptHref = String(
+          completionReceipt?.url ||
+          metadata.finalReceiptUrl ||
+          receiptDocumentActions[0]?.href ||
+          ''
+        ).trim();
+        const receiptGeneratedAt = completionReceipt?.generatedAt || metadata.finalReceiptGeneratedAt || null;
+        const completedAt = completionReceipt?.completedAt || metadata.completedAt || message?.created_at || null;
+        const mileageOverage =
+          completionReceipt?.mileageOverage ||
+          metadata.mileageOverage ||
+          metadata.mileage_overage ||
+          null;
+        const mileageOverageAmount = Number(mileageOverage?.amount || 0) || 0;
+        const mileageOverageExtraKm = Number(mileageOverage?.extraKm || mileageOverage?.extra_km || 0) || 0;
+        const mileageOverageSettlement = String(mileageOverage?.settlement || '').trim().toLowerCase();
+        const mileageOverageSettlementLabel = mileageOverageSettlement === 'deduct_deposit'
+          ? tr('deducted from deposit', 'déduit de la caution')
+          : mileageOverageSettlement === 'paid_separately'
+            ? tr('paid separately', 'payé séparément')
+            : mileageOverageSettlement === 'waived'
+              ? tr('waived', 'annulé')
+              : mileageOverageSettlement === 'unpaid'
+                ? tr('unpaid', 'impayé')
+                : '';
+        const mileageOverageSummary = mileageOverageAmount > 0 || mileageOverageExtraKm > 0
+          ? `${tr('Extra mileage', 'Kilométrage extra')}: ${formatMoney(mileageOverageAmount, mileageOverage?.currency || mileageOverage?.currencyCode || 'MAD', isFrench ? 'fr' : 'en')}${mileageOverageExtraKm > 0 ? ` · ${mileageOverageExtraKm} km` : ''}${mileageOverageSettlementLabel ? ` · ${mileageOverageSettlementLabel}` : ''}`
+          : '';
+
+        return {
+          tone: 'approval',
+          eyebrow: '',
+          title: tr('Rental completed', 'Location terminée'),
+          body: receiptHref ? '' : String(message?.body || '').trim(),
+          previewSrc: '',
+          previewName: '',
+          actions: nonReceiptDocumentActions,
+          documentCards: receiptHref
+            ? [
+                {
+                  key: 'final-receipt',
+                  title: tr('Final receipt', 'Reçu final'),
+                  body: [
+                    receiptGeneratedAt
+                      ? `${tr('Generated', 'Généré')} ${formatDateTime(receiptGeneratedAt, isFrench)}`
+                      : tr('Receipt generated for this completed rental.', 'Reçu généré pour cette location terminée.'),
+                    mileageOverageSummary,
+                  ].filter(Boolean).join(' • '),
+                  meta: completedAt ? `${tr('Completed', 'Terminée')} ${formatDateTime(completedAt, isFrench)}` : '',
+                  href: receiptHref,
+                  actionLabel: tr('Open receipt', 'Ouvrir le reçu'),
+                  kind: 'receipt',
+                },
+              ]
+            : [],
+        };
+      }
+
       if (eventName === 'verification_completed') {
         return {
           tone: 'approval',
@@ -3297,8 +3445,88 @@ const ConversationThread = ({
     [showHeaderDetails, timelineEntries]
   );
   const chatMessagesForRender = useMemo(
-    () => realConversationMessages.filter((message) => !getTimelineEventCard(message, getMessageAttachments(message))),
-    [getTimelineEventCard, realConversationMessages]
+    () => {
+      const getCompletionReceiptContextKey = (message) => {
+        const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+        const messageType = String(message?.message_type || '').trim().toLowerCase();
+        const eventName = String(metadata.event || metadata.eventType || '').trim().toLowerCase();
+        if (messageType !== 'system_event' || eventName !== 'completed') return '';
+
+        const rawDocumentActions = [
+          ...(Array.isArray(metadata.documentLinks) ? metadata.documentLinks : []),
+          ...(Array.isArray(metadata.document_links) ? metadata.document_links : []),
+          ...(Array.isArray(metadata.documentActions) ? metadata.documentActions : []),
+          ...(Array.isArray(metadata.document_actions) ? metadata.document_actions : []),
+        ];
+        const hasCompletionReceipt = Boolean(
+          metadata?.completionReceipt?.url ||
+          metadata?.completion_receipt?.url ||
+          metadata.finalReceiptUrl ||
+          rawDocumentActions.some((action) => {
+            const actionKey = String(action?.kind || action?.key || action?.label || action?.title || '').trim().toLowerCase();
+            return (actionKey.includes('receipt') || actionKey.includes('reçu') || actionKey.includes('recu')) && (action?.href || action?.url);
+          })
+        );
+        if (!hasCompletionReceipt) return '';
+
+        return [
+          String(metadata.requestId || metadata.request_id || metadata.entityId || metadata.entity_id || '').trim(),
+          String(message?.thread_key || message?.threadKey || '').trim(),
+          String(message?.entity_id || message?.entityId || '').trim(),
+        ].find(Boolean) || 'completed-receipt';
+      };
+
+      const latestCompletedReceiptByContext = new Map();
+      displayConversationMessages.forEach((message) => {
+        const contextKey = getCompletionReceiptContextKey(message);
+        if (!contextKey) return;
+        const current = latestCompletedReceiptByContext.get(contextKey);
+        const currentTime = new Date(current?.created_at || 0).getTime();
+        const nextTime = new Date(message?.created_at || 0).getTime();
+        if (!current || nextTime >= currentTime) {
+          latestCompletedReceiptByContext.set(contextKey, message);
+        }
+      });
+
+      return displayConversationMessages.filter((message) => {
+        const completionReceiptContextKey = getCompletionReceiptContextKey(message);
+        if (completionReceiptContextKey && latestCompletedReceiptByContext.get(completionReceiptContextKey) !== message) {
+          return false;
+        }
+
+        const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+        const messageType = String(message?.message_type || '').trim().toLowerCase();
+        const eventName = String(metadata.event || metadata.eventType || '').trim().toLowerCase();
+        const rawDocumentActions = [
+          ...(Array.isArray(metadata.documentLinks) ? metadata.documentLinks : []),
+          ...(Array.isArray(metadata.document_links) ? metadata.document_links : []),
+          ...(Array.isArray(metadata.documentActions) ? metadata.documentActions : []),
+          ...(Array.isArray(metadata.document_actions) ? metadata.document_actions : []),
+        ];
+        const hasCompletionReceipt = Boolean(
+          metadata?.completionReceipt?.url ||
+          metadata?.completion_receipt?.url ||
+          metadata.finalReceiptUrl ||
+          rawDocumentActions.some((action) => {
+            const actionKey = String(action?.kind || action?.key || action?.label || action?.title || '').trim().toLowerCase();
+            return (actionKey.includes('receipt') || actionKey.includes('reçu') || actionKey.includes('recu')) && (action?.href || action?.url);
+          })
+        );
+
+        if (messageType === 'system_event' && eventName === 'completed' && hasCompletionReceipt) {
+          return true;
+        }
+
+        if (metadata.isInternal || messageType === 'internal_note') return false;
+        if (metadata.autoWelcome || metadata.isSystemSeed) return false;
+        const humanMessageTypes = new Set(['user_message', 'admin_message', 'message', 'note', 'verification_note']);
+        const isHumanMessage = humanMessageTypes.has(messageType) || (messageType === '' && !metadata.event);
+        if (!isHumanMessage) return false;
+
+        return !getTimelineEventCard(message, getMessageAttachments(message));
+      });
+    },
+    [displayConversationMessages, getTimelineEventCard]
   );
   const activeUsers = useMemo(
     () => presenceUsers.filter((entry) => Boolean(entry?.active)),
@@ -3386,7 +3614,11 @@ const ConversationThread = ({
       : workspaceActiveUsers.length > 0
         ? tr('Available to reply', 'Disponible pour répondre')
         : tr('Will reply when available', 'Répondra dès disponibilité');
-  const shouldUseFloatingFooter = forceFloatingComposer || useFloatingTouchFooter || (compactMode && isMobileComposer);
+  const shouldUseFloatingFooter = showThreadComposer || forceFloatingComposer || useFloatingTouchFooter || (compactMode && isMobileComposer);
+  const floatingFooterNeedsExtraSpace = Boolean(
+    shouldUseFloatingFooter &&
+    (showContextualActionBar || allowInternalNotes || replyModeActive || draftAttachments.length)
+  );
   const canSendPhotos = Boolean(
     threadCapabilities.supportsPhotos &&
     messagingPolicy.messagingPhotoSharingEnabled !== false
@@ -3395,13 +3627,13 @@ const ConversationThread = ({
   const headerBlockSpacingClass = showBookingContextCard ? 'mt-2' : 'mt-2.5';
   const threadVerticalSpacingClass = showBookingContextCard ? 'space-y-2.5' : 'space-y-3';
   const messageListPaddingClass = shouldUseFloatingFooter
-    ? forceFloatingComposer
-      ? compactMode
-        ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
-        : 'px-4 py-5 pb-44 sm:px-5 sm:pb-48 lg:px-6'
-      : compactMode
-        ? 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
-        : 'px-4 py-5 pb-80 sm:px-5 sm:pb-84 lg:px-6'
+    ? compactMode
+      ? floatingFooterNeedsExtraSpace
+        ? 'px-4 py-4 pb-72 sm:px-5 sm:pb-76'
+        : 'px-4 py-4 pb-40 sm:px-5 sm:pb-44'
+      : floatingFooterNeedsExtraSpace
+        ? 'px-4 py-5 pb-72 sm:px-5 sm:pb-76 lg:px-6'
+        : 'px-4 py-5 pb-40 sm:px-5 sm:pb-44 lg:px-6'
     : compactMode
       ? 'px-4 py-4 pb-4 sm:px-5'
       : 'px-4 py-5 pb-5 sm:px-5 lg:px-6';
@@ -3409,10 +3641,10 @@ const ConversationThread = ({
     ? allowInternalNotes
       ? 'bottom-56 right-4 sm:bottom-60 sm:right-5'
       : 'bottom-44 right-4 sm:bottom-48 sm:right-5'
-    : 'bottom-4 right-4 sm:bottom-5 sm:right-5';
+    : 'bottom-24 right-4 sm:bottom-28 sm:right-5';
   const composerContainerClass = shouldUseFloatingFooter
-    ? `fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] z-30 rounded-[26px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(250,247,255,0.995))] shadow-[0_20px_50px_rgba(15,23,42,0.18)] backdrop-blur-xl ${compactMode ? 'px-3 py-2.5' : 'px-4 py-3 sm:mx-auto sm:max-w-3xl'}`
-    : `relative z-10 shrink-0 border-t border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(250,247,255,0.99))] backdrop-blur-xl ${compactMode ? 'px-4 py-2.5 pb-[max(0.9rem,env(safe-area-inset-bottom,0px))]' : 'px-4 py-2.5 sm:px-5 lg:px-6'}`;
+    ? `fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] z-[80] rounded-[26px] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(250,247,255,0.995))] shadow-[0_20px_50px_rgba(15,23,42,0.18)] backdrop-blur-xl ${compactMode ? 'px-3 py-2.5' : 'px-4 py-3 sm:mx-auto sm:max-w-3xl'}`
+    : `sticky bottom-0 z-20 shrink-0 border-t border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(250,247,255,0.995))] shadow-[0_-10px_28px_rgba(15,23,42,0.06)] backdrop-blur-xl ${compactMode ? 'px-4 py-2.5 pb-[max(0.9rem,env(safe-area-inset-bottom,0px))]' : 'px-4 py-3 sm:px-5 lg:px-6'}`;
 
   const focusComposer = () => {
     const textarea = composerTextareaRef.current;
@@ -3575,6 +3807,23 @@ const ConversationThread = ({
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') {
         setActiveImagePreview(null);
+        return;
+      }
+      const gallery = Array.isArray(activeImagePreview.gallery) ? activeImagePreview.gallery : [];
+      if (gallery.length <= 1) return;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        setActiveImagePreview((current) => {
+          const currentGallery = Array.isArray(current?.gallery) ? current.gallery : [];
+          if (currentGallery.length <= 1) return current;
+          const direction = event.key === 'ArrowLeft' ? -1 : 1;
+          const nextIndex = ((Number(current.index || 0) + direction) + currentGallery.length) % currentGallery.length;
+          return {
+            ...currentGallery[nextIndex],
+            gallery: currentGallery,
+            index: nextIndex,
+          };
+        });
       }
     };
 
@@ -3586,6 +3835,8 @@ const ConversationThread = ({
     setRecentIncomingMessageIds([]);
     setUnseenLatestCount(0);
     initialThreadScrollKeyRef.current = '';
+    latestScrollTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    latestScrollTimersRef.current = [];
     previousMessageIdsRef.current = new Set(
       visibleMessages
         .map((message) => String(message?.id || '').trim())
@@ -3654,6 +3905,8 @@ const ConversationThread = ({
   useEffect(() => () => {
     incomingHighlightTimersRef.current.forEach((timerId) => clearTimeout(timerId));
     incomingHighlightTimersRef.current.clear();
+    latestScrollTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    latestScrollTimersRef.current = [];
   }, []);
 
   useEffect(() => {
@@ -3706,7 +3959,7 @@ const ConversationThread = ({
     if (initialThreadScrollKeyRef.current === normalizedThreadKey) return;
 
     initialThreadScrollKeyRef.current = normalizedThreadKey;
-    scheduleScrollToLatest('auto');
+    scheduleScrollToLatest('auto', { force: true });
   }, [resolvedThreadKey, visibleMessages.length]);
 
   useEffect(() => {
@@ -3762,11 +4015,22 @@ const ConversationThread = ({
     isNearBottomRef.current = true;
   };
 
-  const scheduleScrollToLatest = (behavior = 'auto') => {
+  const scheduleScrollToLatest = (behavior = 'auto', { force = false } = {}) => {
+    latestScrollTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    latestScrollTimersRef.current = [];
+
+    const runScroll = () => {
+      if (!force && !isNearBottomRef.current) return;
+      scrollToLatest(behavior);
+    };
+
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scrollToLatest(behavior);
-      });
+      requestAnimationFrame(runScroll);
+    });
+
+    [80, 220, 520].forEach((delay) => {
+      const timerId = window.setTimeout(runScroll, delay);
+      latestScrollTimersRef.current.push(timerId);
     });
   };
 
@@ -4178,7 +4442,14 @@ const ConversationThread = ({
             <p className="truncate text-sm font-semibold">
               {activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
             </p>
-            <p className="mt-0.5 text-xs text-white/65">{activeImagePreview.caption || ''}</p>
+            <p className="mt-0.5 text-xs text-white/65">
+              {[
+                activeImagePreview.caption || '',
+                Array.isArray(activeImagePreview.gallery) && activeImagePreview.gallery.length > 1
+                  ? `${Number(activeImagePreview.index || 0) + 1}/${activeImagePreview.gallery.length}`
+                  : '',
+              ].filter(Boolean).join(' • ')}
+            </p>
           </div>
           <button
             type="button"
@@ -4190,11 +4461,45 @@ const ConversationThread = ({
           </button>
         </div>
         <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-3">
+          {Array.isArray(activeImagePreview.gallery) && activeImagePreview.gallery.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveImagePreview((current) => {
+                  const gallery = Array.isArray(current?.gallery) ? current.gallery : [];
+                  if (gallery.length <= 1) return current;
+                  const nextIndex = ((Number(current.index || 0) - 1) + gallery.length) % gallery.length;
+                  return { ...gallery[nextIndex], gallery, index: nextIndex };
+                });
+              }}
+              className="absolute left-3 top-1/2 z-20 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+              aria-label={tr('Previous photo', 'Photo précédente')}
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+          ) : null}
           <img
             src={activeImagePreview.src}
             alt={activeImagePreview.name || tr('Chat photo', 'Photo du chat')}
             className="max-h-[75vh] w-auto max-w-full rounded-[20px] object-contain"
           />
+          {Array.isArray(activeImagePreview.gallery) && activeImagePreview.gallery.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveImagePreview((current) => {
+                  const gallery = Array.isArray(current?.gallery) ? current.gallery : [];
+                  if (gallery.length <= 1) return current;
+                  const nextIndex = (Number(current.index || 0) + 1) % gallery.length;
+                  return { ...gallery[nextIndex], gallery, index: nextIndex };
+                });
+              }}
+              className="absolute right-3 top-1/2 z-20 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+              aria-label={tr('Next photo', 'Photo suivante')}
+            >
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -4293,16 +4598,30 @@ const ConversationThread = ({
                   <p className="mt-0.5 text-xs text-slate-500">
                     {headerSecondaryLabel}
                   </p>
-                  {showBookingContextCard && counterpartyIdentityLabel ? (
-                    isOwnerMarketplaceDecisionView ? (
-                      <p className="mt-1 text-xs font-semibold text-slate-600">
-                        {[marketplaceRequestReference ? `${tr('Reference', 'Référence')} ${marketplaceRequestReference}` : '', counterpartyIdentityLabel].filter(Boolean).join(' • ')}
-                      </p>
-                    ) : (
-                      <p className="mt-1 text-xs font-semibold text-slate-600">
-                        {currentSenderRole === 'owner' ? tr('Customer', 'Client') : tr('Owner', 'Propriétaire')}: {counterpartyIdentityLabel}
-                      </p>
-                    )
+                  {showBookingContextCard && counterpartyIdentityLabel && isOwnerMarketplaceDecisionView ? (
+                    <p className="mt-1 text-xs font-semibold text-slate-600">
+                      {[marketplaceRequestReference ? `${tr('Reference', 'Référence')} ${marketplaceRequestReference}` : '', counterpartyIdentityLabel].filter(Boolean).join(' • ')}
+                    </p>
+                  ) : null}
+                  {shouldUseMinimalBookingContextHeader ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {marketplaceRequestReference ? (
+                        <span className="inline-flex rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                          {tr('Reference', 'Référence')} {marketplaceRequestReference}
+                        </span>
+                      ) : null}
+                      {hasExpandableHeaderDetails ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowHeaderDetails((current) => !current)}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                          aria-expanded={showHeaderDetails}
+                        >
+                          <span>{showHeaderDetails ? tr('Hide details', 'Masquer détails') : tr('Details', 'Détails')}</span>
+                          {showHeaderDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -4319,7 +4638,7 @@ const ConversationThread = ({
                         {headerStatusSummary}
                       </p>
                     </div>
-                    {compactHeaderNextActionSummary ? (
+                    {compactHeaderNextActionSummary && !showBookingContextCard ? (
                       <p className="mt-1 text-[11px] font-medium text-slate-500">
                         {compactHeaderNextActionSummary}
                       </p>
@@ -4342,12 +4661,12 @@ const ConversationThread = ({
                             ? (
                                 marketplaceModerationProgress
                                   ? tr('Hide history', "Masquer l'historique")
-                                  : tr('Hide details', 'Masquer les détails')
+                                  : tr('Hide', 'Masquer')
                               )
                             : (
                                 marketplaceModerationProgress
-                                  ? tr('Show history', "Afficher l'historique")
-                                  : tr('Show details', 'Afficher les détails')
+                                  ? tr('History', 'Historique')
+                                  : tr('Details', 'Détails')
                               )}
                         </span>
                         {showHeaderDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -4366,9 +4685,6 @@ const ConversationThread = ({
                     <div>
                       <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">
                         {tr('Status history', 'Historique du statut')}
-                      </p>
-                      <p className="mt-1 text-sm font-medium text-slate-500">
-                        {tr('This mirrors the real listing review state.', "Ce fil reflète l'état réel de la revue de l'annonce.")}
                       </p>
                     </div>
                   </div>
@@ -4964,7 +5280,7 @@ const ConversationThread = ({
             ) : null}
           </div>
 
-          <div className="absolute right-0 top-0 z-10">
+          <div className="absolute right-0 top-0 z-[90]">
             <button
               type="button"
               onClick={(event) => {
@@ -4982,8 +5298,8 @@ const ConversationThread = ({
               <div
                 className={
                   compactMode
-                    ? 'fixed inset-x-4 bottom-4 z-[70] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-[24px] border border-slate-200 bg-white p-2 shadow-[0_24px_60px_rgba(15,23,42,0.18)]'
-                    : 'absolute right-0 top-12 z-40 min-w-[14rem] rounded-[22px] border border-slate-200 bg-white p-1.5 shadow-[0_18px_36px_rgba(15,23,42,0.14)]'
+                    ? 'fixed right-4 top-[max(5.5rem,calc(env(safe-area-inset-top,0px)+4.5rem))] z-[9999] w-[min(calc(100vw-2rem),20rem)] max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-[24px] border border-slate-200 bg-white p-2 shadow-[0_28px_70px_rgba(15,23,42,0.26)]'
+                    : 'fixed right-5 top-[max(6rem,calc(env(safe-area-inset-top,0px)+5rem))] z-[9999] w-[min(calc(100vw-2rem),18rem)] max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-[22px] border border-slate-200 bg-white p-1.5 shadow-[0_24px_64px_rgba(15,23,42,0.22)]'
                 }
                 onClick={(event) => {
                   event.preventDefault();
@@ -5246,6 +5562,38 @@ const ConversationThread = ({
                         {formatDateTime(eventTimestamp, isFrench)}
                       </p>
                     </div>
+                    {Array.isArray(timelineEventCard.documentCards) && timelineEventCard.documentCards.length ? (
+                      <div className="mt-3 space-y-2">
+                        {timelineEventCard.documentCards.map((documentCard) => (
+                          <a
+                            key={documentCard.key}
+                            href={documentCard.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="group flex items-center justify-between gap-3 rounded-[18px] border border-violet-200 bg-white px-3.5 py-3 shadow-sm transition hover:border-violet-300 hover:bg-violet-50/60"
+                          >
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 shadow-[0_8px_18px_rgba(124,58,237,0.12)]">
+                                <FileBadge className="h-5 w-5" />
+                              </span>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-black text-slate-950">{documentCard.title}</p>
+                                {documentCard.body ? (
+                                  <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-slate-500">{documentCard.body}</p>
+                                ) : null}
+                                {documentCard.meta ? (
+                                  <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.12em] text-violet-500">{documentCard.meta}</p>
+                                ) : null}
+                              </div>
+                            </div>
+                            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-[11px] font-black text-violet-700 transition group-hover:border-violet-300 group-hover:bg-white">
+                              {documentCard.actionLabel || tr('Open document', 'Ouvrir le document')}
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                     {timelineEventCard.previewSrc ? (
                       <div className="mt-2.5 flex items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-white px-3 py-2.5">
                         <div className="flex min-w-0 items-center gap-3">
@@ -5448,7 +5796,40 @@ const ConversationThread = ({
           const messageId = String(message?.id || `${message.created_at}-${message.body}`);
           const replyReference = resolveReplyReference(message);
           const messageAttachments = getMessageAttachments(message);
+          const visualGalleryAttachments = messageAttachments.filter(
+            (attachment) => attachment?.status !== 'expired' && attachment?.publicUrl && isVisualAttachment(attachment)
+          );
+          const useCompactAttachmentGrid = visualGalleryAttachments.length > 1;
+          const compactAttachmentIds = new Set(
+            useCompactAttachmentGrid
+              ? visualGalleryAttachments.map((attachment) => String(attachment.id || attachment.publicUrl || ''))
+              : []
+          );
+          const stackedMessageAttachments = useCompactAttachmentGrid
+            ? messageAttachments.filter(
+                (attachment) => !compactAttachmentIds.has(String(attachment.id || attachment.publicUrl || ''))
+              )
+            : messageAttachments;
+          const previewGallery = visualGalleryAttachments.map((attachment) => ({
+            src: attachment.publicUrl,
+            name: attachment.originalFilename || tr('Media attachment', 'Média joint'),
+            caption: formatDateTime(message?.created_at, isFrench),
+          }));
+          const openAttachmentPreview = (attachment, galleryIndex = 0) => {
+            const gallery = previewGallery.length ? previewGallery : [{
+              src: attachment.publicUrl,
+              name: attachment.originalFilename || tr('Media attachment', 'Média joint'),
+              caption: formatDateTime(message?.created_at, isFrench),
+            }];
+            const nextIndex = Math.max(0, Math.min(galleryIndex, gallery.length - 1));
+            setActiveImagePreview({
+              ...gallery[nextIndex],
+              gallery,
+              index: nextIndex,
+            });
+          };
           const marketplaceStateCard = getMarketplaceStateCard(message);
+          const messageMetadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
           const participantLabel = getParticipantLabel(message, currentUserId, currentUserLabel, tr);
           const senderProfile = getThreadUserProfile(selectedThread, message?.sender_user_id);
           const participantAvatarUrl = String(
@@ -5461,6 +5842,36 @@ const ConversationThread = ({
           );
           const isMarketplaceConversation = selectedThread?.family === 'marketplace';
           const messageBodyText = String(message?.body || '').trim();
+          const photoEvidenceKind = String(messageMetadata.photoEvidenceKind || '').trim().toLowerCase();
+          const photoEvidenceTitle = photoEvidenceKind === 'handoff'
+            ? tr('Open media', 'Médias ouverture')
+            : photoEvidenceKind === 'legal_docs'
+              ? tr('Registration + insurance media', 'Médias carte grise + assurance')
+              : photoEvidenceKind === 'return'
+                ? tr('Closed media', 'Médias clôture')
+                : String(messageMetadata.photoEvidenceLabel || '').trim();
+          const photoEvidenceDescription = photoEvidenceKind === 'handoff'
+            ? tr('Open media saved.', 'Médias ouverture enregistrés.')
+            : photoEvidenceKind === 'legal_docs'
+              ? tr('Registration + insurance media saved.', 'Médias carte grise + assurance enregistrés.')
+              : photoEvidenceKind === 'return'
+                ? tr('Closed media saved.', 'Médias clôture enregistrés.')
+                : String(messageMetadata.photoEvidenceDescription || '').trim();
+          const hasPhotoEvidenceSummary = Boolean(photoEvidenceTitle && messageAttachments.length);
+          const normalizedMessageBodyText = messageBodyText.toLowerCase();
+          const shouldHidePhotoEvidenceBody = hasPhotoEvidenceSummary && (
+            normalizedMessageBodyText === photoEvidenceTitle.toLowerCase() ||
+            normalizedMessageBodyText === 'photos uploaded' ||
+            normalizedMessageBodyText === 'vehicle inspection photos uploaded' ||
+            normalizedMessageBodyText === 'registration and insurance photos uploaded' ||
+            normalizedMessageBodyText === 'return media uploaded' ||
+            normalizedMessageBodyText === 'open media' ||
+            normalizedMessageBodyText === 'registration + insurance media' ||
+            normalizedMessageBodyText === 'closed media' ||
+            normalizedMessageBodyText === 'photos téléversées' ||
+            normalizedMessageBodyText === 'photos d’inspection véhicule téléversées' ||
+            normalizedMessageBodyText === 'photos carte grise et assurance téléversées'
+          );
           const isShortMarketplaceChatNote = Boolean(
             isMarketplaceConversation &&
             !marketplaceStateCard &&
@@ -5579,7 +5990,7 @@ const ConversationThread = ({
                     </button>
                     {openMessageActionId === messageId ? (
                       <div
-                        className={`absolute right-0 top-9 z-20 min-w-[10rem] rounded-2xl border bg-white p-1.5 shadow-[0_18px_36px_rgba(15,23,42,0.14)] ${
+                        className={`absolute right-0 top-9 z-[130] min-w-[10rem] rounded-2xl border bg-white p-1.5 shadow-[0_22px_54px_rgba(15,23,42,0.2)] ${
                           normalizedBubbleType === 'admin_message' ? 'border-violet-200' : 'border-slate-200'
                         }`}
                         onClick={(event) => {
@@ -5737,13 +6148,144 @@ const ConversationThread = ({
                         {marketplaceStateCard.detail}
                       </p>
                     ) : null}
+                    {Array.isArray(marketplaceStateCard.documentCards) && marketplaceStateCard.documentCards.length ? (
+                      <div className="mt-3 grid gap-2">
+                        {marketplaceStateCard.documentCards.map((documentCard) => (
+                          <a
+                            key={documentCard.key}
+                            href={documentCard.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`group flex items-center justify-between gap-3 rounded-[16px] border px-3 py-2.5 transition ${
+                              normalizedBubbleType === 'admin_message'
+                                ? 'border-white/15 bg-white/10 hover:bg-white/16'
+                                : 'border-violet-200 bg-white hover:bg-violet-50/70'
+                            }`}
+                          >
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${
+                                normalizedBubbleType === 'admin_message'
+                                  ? 'bg-white/12 text-white'
+                                  : 'bg-violet-100 text-violet-700'
+                              }`}>
+                                <FileBadge className="h-4 w-4" />
+                              </span>
+                              <div className="min-w-0">
+                                <p className={`truncate text-sm font-black ${normalizedBubbleType === 'admin_message' ? 'text-white' : 'text-slate-950'}`}>
+                                  {documentCard.title}
+                                </p>
+                                {documentCard.body ? (
+                                  <p className={`mt-0.5 line-clamp-2 text-xs font-semibold ${normalizedBubbleType === 'admin_message' ? 'text-white/75' : 'text-slate-500'}`}>
+                                    {documentCard.body}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-black ${
+                              normalizedBubbleType === 'admin_message'
+                                ? 'bg-white/12 text-white'
+                                : 'bg-violet-50 text-violet-700'
+                            }`}>
+                              {documentCard.actionLabel || tr('Open', 'Ouvrir')}
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
-                {messageAttachments.length ? (
+                {hasPhotoEvidenceSummary ? (
+                  <div className={`mt-2.5 rounded-[18px] border px-3 py-2.5 ${
+                    normalizedBubbleType === 'admin_message'
+                      ? 'border-white/15 bg-white/10'
+                      : 'border-violet-200 bg-white'
+                  }`}>
+                    <div className="flex items-start gap-3">
+                      <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${
+                        normalizedBubbleType === 'admin_message'
+                          ? 'bg-white/12 text-white'
+                          : 'bg-violet-50 text-violet-700'
+                      }`}>
+                        <Camera className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-[10px] font-black uppercase tracking-[0.16em] ${
+                          normalizedBubbleType === 'admin_message' ? 'text-violet-100' : 'text-violet-600'
+                        }`}>
+                          {photoEvidenceTitle}
+                        </p>
+                        {photoEvidenceDescription ? (
+                          <p className={`mt-1 text-sm font-semibold leading-5 ${
+                            normalizedBubbleType === 'admin_message' ? 'text-white' : 'text-slate-950'
+                          }`}>
+                            {photoEvidenceDescription}
+                          </p>
+                        ) : null}
+                        <p className={`mt-1 text-[11px] font-bold ${
+                          normalizedBubbleType === 'admin_message' ? 'text-white/70' : 'text-slate-500'
+                        }`}>
+                          {tr(
+                            `${messageAttachments.length} photo${messageAttachments.length === 1 ? '' : 's'}`,
+                            `${messageAttachments.length} photo${messageAttachments.length === 1 ? '' : 's'}`
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {useCompactAttachmentGrid ? (
+                  <div className="mt-2.5 overflow-hidden rounded-[18px] border border-violet-100 bg-white shadow-sm">
+                    <div className="grid grid-cols-2 gap-1.5 p-1.5">
+                      {visualGalleryAttachments.slice(0, 4).map((attachment, attachmentIndex) => {
+                        const overflowCount = visualGalleryAttachments.length - 4;
+                        const showOverflow = attachmentIndex === 3 && overflowCount > 0;
+                        return (
+                          <button
+                            key={attachment.id || attachment.publicUrl}
+                            type="button"
+                            onClick={() => openAttachmentPreview(attachment, attachmentIndex)}
+                            className="group relative block aspect-[4/3] overflow-hidden rounded-[14px] bg-slate-100 text-left"
+                          >
+                            <img
+                              src={attachment.thumbnailUrl || attachment.publicUrl}
+                              alt={attachment.originalFilename || tr('Chat media', 'Média du chat')}
+                              className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+                              loading="lazy"
+                            />
+                            {showOverflow ? (
+                              <span className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-2xl font-black text-white backdrop-blur-[1px]">
+                                +{overflowCount}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className={`flex items-center justify-between gap-3 px-3 pb-2 text-[11px] font-bold ${
+                      normalizedBubbleType === 'admin_message' ? 'text-violet-100' : 'text-slate-500'
+                    }`}>
+                      <span>
+                        {tr(
+                          `${visualGalleryAttachments.length} photos`,
+                          `${visualGalleryAttachments.length} photos`
+                        )}
+                      </span>
+                      <span className="text-violet-600">{tr('Tap to view', 'Touchez pour voir')}</span>
+                    </div>
+                  </div>
+                ) : null}
+                {stackedMessageAttachments.length ? (
                   <div className="mt-2.5 grid gap-2">
-                    {messageAttachments.map((attachment) => {
+                    {stackedMessageAttachments.map((attachment) => {
                       const isExpired = attachment.status === 'expired' || !attachment.publicUrl;
                       const isVisual = isVisualAttachment(attachment);
+                      const previewIndex = Math.max(
+                        0,
+                        visualGalleryAttachments.findIndex((visualAttachment) => (
+                          String(visualAttachment.id || visualAttachment.publicUrl || '') === String(attachment.id || attachment.publicUrl || '')
+                        ))
+                      );
                       return (
                         <div
                           key={attachment.id}
@@ -5776,11 +6318,7 @@ const ConversationThread = ({
                           ) : isVisual ? (
                             <button
                               type="button"
-                              onClick={() => setActiveImagePreview({
-                                src: attachment.publicUrl,
-                                name: attachment.originalFilename || tr('Media attachment', 'Média joint'),
-                                caption: formatDateTime(message?.created_at, isFrench),
-                              })}
+                              onClick={() => openAttachmentPreview(attachment, previewIndex)}
                               className="block w-full text-left"
                             >
                               <img
@@ -5820,7 +6358,7 @@ const ConversationThread = ({
                     })}
                   </div>
                 ) : null}
-                {!(marketplaceStateCard?.hideBody || (
+                {!(marketplaceStateCard?.hideBody || shouldHidePhotoEvidenceBody || (
                   messageAttachments.length &&
                   ['photo attachment', 'media attachment', 'file attachment'].includes(String(message?.body || '').trim().toLowerCase())
                 )) ? (

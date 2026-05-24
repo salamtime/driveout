@@ -622,6 +622,16 @@ const PublicVehicleDetail = () => {
   };
 
   const getTripDurationLabel = (pkg) => formatTripDurationLabel(getSelectedDurationForPackage(pkg), rentalType, tr);
+  const listingIncludedKm = Number(selectedPackage?.includedKilometers ?? currentListing?.includedKm ?? 0) || 0;
+  const listingExtraKmRate = Number(selectedPackage?.extraKmRate ?? currentListing?.extraKmRate ?? 0) || 0;
+  const listingDistanceRule = listingIncludedKm > 0
+    ? listingExtraKmRate > 0
+      ? tr(
+          `${listingIncludedKm} km included • ${listingExtraKmRate} MAD/km extra`,
+          `${listingIncludedKm} km inclus • ${listingExtraKmRate} MAD/km extra`
+        )
+      : tr(`${listingIncludedKm} km included`, `${listingIncludedKm} km inclus`)
+    : tr('Unlimited kilometers', 'Kilomètres illimités');
 
   const showDurationSelector = true;
   const displayBrand = currentListing?.brand || 'Segway';
@@ -890,6 +900,13 @@ const PublicVehicleDetail = () => {
         tr('A valid car driver license is required to rent this vehicle.', 'Un permis voiture valide est obligatoire pour louer ce véhicule.'),
       ],
     },
+    distance: {
+      title: tr('Distance rule', 'Règle de distance'),
+      body: [
+        listingDistanceRule,
+        tr('Extra kilometers are calculated from the pickup and return odometer readings.', 'Les kilomètres supplémentaires sont calculés à partir du compteur au départ et au retour.'),
+      ],
+    },
     insurance: {
       title: tr('Insurance', 'Assurance'),
       body: [
@@ -925,7 +942,7 @@ const PublicVehicleDetail = () => {
         tr('Need more hours? Contact our staff directly and we will help you arrange a longer rental.', 'Besoin de plus d’heures ? Contactez directement notre équipe et nous vous aiderons à organiser une location plus longue.'),
       ],
     },
-  }), [isFrench]);
+  }), [isFrench, listingDistanceRule]);
 
   const conditionsRows = useMemo(() => ([
     {
@@ -933,6 +950,12 @@ const PublicVehicleDetail = () => {
       label: tr('Damage deposit', 'Caution'),
       value: `${currentListing?.depositAmount || 0} ${currentListing?.currencyCode || 'MAD'}`,
       infoKey: 'deposit',
+    },
+    {
+      key: 'distance',
+      label: tr('Distance', 'Distance'),
+      value: listingDistanceRule,
+      infoKey: 'distance',
     },
     {
       key: 'pickup',
@@ -969,7 +992,7 @@ const PublicVehicleDetail = () => {
       label: tr('Fleet', 'Flotte'),
       value: activeProvider.providerName,
     },
-  ]), [currentListing, activeProvider.providerName, isFrench]);
+  ]), [currentListing, activeProvider.providerName, isFrench, listingDistanceRule]);
 
   if (loading) {
     return (

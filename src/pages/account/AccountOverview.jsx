@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   CalendarClock,
@@ -31,7 +31,6 @@ import { getCurrentLocationPath } from '../../utils/navigationReturn';
 import { buildOwnerExecutionWorkspaceHref, getOwnerExecutionActionConfig } from '../../utils/ownerRentalExecutionLinks';
 import StatusChip from '../../components/account/StatusChip';
 import ActionItem from '../../components/account/ActionItem';
-import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
 import OwnerListingSetupGuide from '../../components/account/OwnerListingSetupGuide';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -40,6 +39,70 @@ import {
   getMessageNotificationPreferences,
   getUnreadMessageThreadBuckets,
 } from '../../utils/messageNotificationPreferences';
+import { normalizeRentalExecutionDraft } from '../../utils/rentalExecutionFlow';
+import { normalizeOwnerRentalHistoryRows } from '../../utils/ownerRentalHistory';
+
+const OWNER_OPERATION_REQUEST_CACHE_PREFIX = 'driveout_owner_operation_request:';
+const OWNER_EXECUTION_FLOW_KEY = 'driveout_owner_execution_flow';
+
+const buildOwnerExecutionStorageKey = (requestId, userId = '') => {
+  const normalizedRequestId = String(requestId || '').trim();
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedRequestId) return '';
+  const baseKey = `${OWNER_EXECUTION_FLOW_KEY}:${normalizedRequestId}`;
+  return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const readCachedOwnerOperationRequests = (userId = '') => {
+  if (typeof window === 'undefined') return [];
+
+  const normalizedUserId = String(userId || '').trim();
+  const cachedRequests = [];
+
+  try {
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const storageKey = window.sessionStorage.key(index);
+      if (!storageKey || !storageKey.startsWith(OWNER_OPERATION_REQUEST_CACHE_PREFIX)) continue;
+
+      const rawValue = window.sessionStorage.getItem(storageKey);
+      if (!rawValue) continue;
+
+      const cachedRequest = JSON.parse(rawValue);
+      if (!cachedRequest?.id) continue;
+      if (normalizedUserId && String(cachedRequest?.ownerId || '').trim() !== normalizedUserId) continue;
+
+      const executionStorageKey = buildOwnerExecutionStorageKey(cachedRequest.id, normalizedUserId);
+      const persistedExecutionDraft = executionStorageKey
+        ? window.localStorage.getItem(executionStorageKey)
+        : null;
+      const ownerExecution = persistedExecutionDraft
+        ? normalizeRentalExecutionDraft(JSON.parse(persistedExecutionDraft))
+        : cachedRequest?.ownerExecution || null;
+
+      cachedRequests.push({
+        ...cachedRequest,
+        ...(ownerExecution ? { ownerExecution } : {}),
+        rawRequest: {
+          ...(cachedRequest?.rawRequest || {}),
+          ...(ownerExecution
+            ? {
+                counter_offer: {
+                  ...((cachedRequest?.rawRequest?.counter_offer && typeof cachedRequest.rawRequest.counter_offer === 'object')
+                    ? cachedRequest.rawRequest.counter_offer
+                    : {}),
+                  owner_execution: ownerExecution,
+                },
+              }
+            : {}),
+        },
+      });
+    }
+  } catch {
+    return [];
+  }
+
+  return cachedRequests;
+};
 
 const preloadOwnerOperationsRoute = () => import('./AccountMarketplaceVehicleProfile');
 
@@ -116,15 +179,18 @@ const ProfileEntryCard = ({ to, state, eyebrow, value, label, ctaLabel, onClick 
     to={to}
     state={state}
     onClick={onClick}
-    className="group rounded-[1.55rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)] transition hover:border-violet-200 hover:shadow-[0_18px_40px_rgba(91,33,182,0.08)]"
+    className="group flex min-h-[7.25rem] flex-col justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.04)] transition hover:border-violet-200 hover:shadow-[0_14px_28px_rgba(91,33,182,0.07)]"
   >
-    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{eyebrow}</p>
-    <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">{value}</p>
-    <p className="mt-2 text-sm text-slate-600">{label}</p>
-    <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-violet-700 transition group-hover:border-violet-200 group-hover:bg-violet-50">
-      <span>{ctaLabel}</span>
-      <ArrowRight className="h-4 w-4" />
+    <div>
+      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">{eyebrow}</p>
+      <div className="mt-2 flex items-end justify-between gap-3">
+        <p className="text-2xl font-black tracking-tight text-slate-950">{value}</p>
+        <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-50 text-violet-600 transition group-hover:bg-violet-50 group-hover:text-violet-700">
+          <ArrowRight className="h-4 w-4" />
+        </span>
+      </div>
     </div>
+    <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{label || ctaLabel}</p>
   </Link>
 );
 
@@ -295,9 +361,12 @@ const resolveEffectiveVerificationStatus = ({
   snapshotProfileStatus = '',
   authMetadataStatus = '',
   appMetadataStatus = '',
+  userProfileApprovedAt = null,
+  snapshotProfileApprovedAt = null,
+  authMetadataApprovedAt = null,
+  appMetadataApprovedAt = null,
 } = {}) => {
-  const normalizedStatuses = [
-    requestDrivenStatus,
+  const normalizedPrimaryStatuses = [
     userProfileStatus,
     snapshotProfileStatus,
     authMetadataStatus,
@@ -305,18 +374,61 @@ const resolveEffectiveVerificationStatus = ({
   ]
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean);
+  const normalizedRequestDrivenStatus = String(requestDrivenStatus || '').trim().toLowerCase();
+  const approvedAtEvidence = [
+    userProfileApprovedAt,
+    snapshotProfileApprovedAt,
+    authMetadataApprovedAt,
+    appMetadataApprovedAt,
+  ].some((value) => Boolean(value));
 
-  if (!normalizedStatuses.length) return '';
-  if (normalizedStatuses.includes('approved') || normalizedStatuses.includes('verified')) return 'approved';
-  if (normalizedStatuses.includes('expired')) return 'expired';
-  if (normalizedStatuses.includes('rejected') || normalizedStatuses.includes('suspended')) return 'rejected';
-  if (normalizedStatuses.includes('pending') || normalizedStatuses.includes('in_review')) return 'pending';
-  return normalizedStatuses[0];
+  if (
+    normalizedPrimaryStatuses.includes('expired') ||
+    normalizedRequestDrivenStatus === 'expired'
+  ) {
+    return 'expired';
+  }
+
+  if (
+    normalizedPrimaryStatuses.includes('rejected') ||
+    normalizedPrimaryStatuses.includes('suspended')
+  ) {
+    return 'rejected';
+  }
+
+  if (
+    approvedAtEvidence ||
+    normalizedPrimaryStatuses.includes('approved') ||
+    normalizedPrimaryStatuses.includes('verified')
+  ) {
+    return 'approved';
+  }
+
+  if (normalizedRequestDrivenStatus === 'approved' || normalizedRequestDrivenStatus === 'verified') {
+    return 'approved';
+  }
+
+  if (normalizedRequestDrivenStatus === 'rejected' || normalizedRequestDrivenStatus === 'suspended') {
+    return 'rejected';
+  }
+
+  if (
+    normalizedPrimaryStatuses.includes('pending') ||
+    normalizedPrimaryStatuses.includes('in_review') ||
+    ['pending', 'in_review'].includes(normalizedRequestDrivenStatus)
+  ) {
+    return 'pending';
+  }
+
+  return normalizedPrimaryStatuses[0] || normalizedRequestDrivenStatus || '';
 };
 
 const getBookingStatus = (status, tr) => {
   const normalized = String(status || '').toLowerCase();
-  if (['active', 'ready_to_finish', 'completed', 'closed'].includes(normalized)) {
+  if (['completed', 'closed'].includes(normalized)) {
+    return { label: tr('Completed', 'Terminée'), tone: 'neutral' };
+  }
+  if (['active', 'ready_to_finish'].includes(normalized)) {
     return { label: tr('Active', 'Active'), tone: 'success' };
   }
   if (['expired', 'no_show_review'].includes(normalized)) {
@@ -355,8 +467,11 @@ const AccountOverview = () => {
   const location = useLocation();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const locale = isFrench ? 'fr' : 'en';
-  const tr = (en, fr) => (isFrench ? fr : en);
+  const tr = useCallback((en, fr) => (isFrench ? fr : en), [isFrench]);
   const { user, userProfile, loading: authLoading, initialized: authInitialized } = useAuth();
+  const currentUserId = String(user?.id || '').trim();
+  const latestUserRef = useRef(user);
+  const overviewLoadInFlightRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState(null);
@@ -378,7 +493,11 @@ const AccountOverview = () => {
       user?.app_metadata?.account_source ||
       '',
   });
-  const knownOwnerVehicleCount = useMemo(() => getKnownOwnerVehicleCount(user?.id), [user?.id]);
+  useEffect(() => {
+    latestUserRef.current = user;
+  }, [user]);
+
+  const knownOwnerVehicleCount = useMemo(() => getKnownOwnerVehicleCount(currentUserId), [currentUserId]);
   const effectiveOwnerVehicleCount = Math.max(knownOwnerVehicleCount, dbOwnerVehicleCount);
   const workspaceIdentity = useMemo(
     () =>
@@ -393,22 +512,44 @@ const AccountOverview = () => {
   const isOwnerWorkspace = workspaceMode !== ACCOUNT_WORKSPACE_MODES.service;
   const currentPath = useMemo(() => getCurrentLocationPath(location), [location]);
   const loadWorkspaceOverview = useCallback(async ({ silent = false } = {}) => {
-    if (!user) {
+    const activeUser = latestUserRef.current;
+
+    if (!activeUser || !currentUserId) {
       setLoading(false);
+      return null;
+    }
+    if (overviewLoadInFlightRef.current) {
       return null;
     }
 
     try {
+      overviewLoadInFlightRef.current = true;
       if (!silent) {
         setLoading(true);
       }
       setError('');
 
-      const verificationPromise = VerificationService.getEntityVerificationSummary('user', user.id).catch(() => ({ requests: [] }));
+      const verificationPromise = VerificationService.getEntityVerificationSummary('user', currentUserId).catch(() => ({ requests: [] }));
+      const ownerVehiclesPromise = BusinessMarketplaceService.getOwnerVehicles(currentUserId);
+      const ownerRequestsPromise = BusinessMarketplaceService.getOwnerRequests(currentUserId, 'all');
 
       void verificationPromise.then((verificationResult) => {
         setVerificationRequests(Array.isArray(verificationResult?.requests) ? verificationResult.requests : []);
       });
+      void ownerRequestsPromise.then((ownerRequestsResult) => {
+        setOwnerData((current) => ({
+          ...current,
+          requests: ownerRequestsResult?.requests || [],
+        }));
+      }).catch(() => {});
+      void ownerVehiclesPromise.then((ownerVehiclesResult) => {
+        const vehicles = ownerVehiclesResult?.vehicles || [];
+        setDbOwnerVehicleCount(Array.isArray(vehicles) ? vehicles.length : 0);
+        setOwnerData((current) => ({
+          ...current,
+          vehicles,
+        }));
+      }).catch(() => {});
 
       const [
         accountSnapshot,
@@ -419,10 +560,10 @@ const AccountOverview = () => {
         toursResult,
         messageThreadsResult,
       ] = await Promise.all([
-        CustomerExperienceService.getCustomerAccountSnapshot(user, { forceRefresh: true }),
-        CustomerExperienceService.getCustomerMarketplaceRequests(user),
-        BusinessMarketplaceService.getOwnerVehicles(user.id),
-        BusinessMarketplaceService.getOwnerRequests(user.id, 'all'),
+        CustomerExperienceService.getCustomerAccountSnapshot(activeUser, { forceRefresh: true }),
+        CustomerExperienceService.getCustomerMarketplaceRequests(activeUser),
+        ownerVehiclesPromise,
+        ownerRequestsPromise,
         verificationPromise,
         CustomerExperienceService.getCustomerTourHistory(user).catch(() => []),
         MessageService.listSharedThreads({ limit: 50 }).catch(() => ({ threads: [] })),
@@ -448,11 +589,12 @@ const AccountOverview = () => {
       setError(loadError?.message || tr('Unable to load your workspace overview right now.', 'Impossible de charger votre vue générale pour le moment.'));
       return null;
     } finally {
+      overviewLoadInFlightRef.current = false;
       if (!silent) {
         setLoading(false);
       }
     }
-  }, [tr, user]);
+  }, [currentUserId, tr]);
 
   useEffect(() => {
     let cancelled = false;
@@ -537,6 +679,19 @@ const AccountOverview = () => {
 
   const ownerVehicles = ownerData.vehicles || [];
   const ownerRequests = ownerData.requests || [];
+  const cachedOwnerOperationRequests = useMemo(
+    () => readCachedOwnerOperationRequests(currentUserId),
+    [currentUserId]
+  );
+  const effectiveOwnerRequests = useMemo(() => {
+    if (ownerRequests.length > 0) return ownerRequests;
+    if (!loading) return ownerRequests;
+    return cachedOwnerOperationRequests;
+  }, [cachedOwnerOperationRequests, loading, ownerRequests]);
+  const ownerRentalHistoryRows = useMemo(
+    () => normalizeOwnerRentalHistoryRows(effectiveOwnerRequests),
+    [effectiveOwnerRequests]
+  );
   const openCustomerRequests = useMemo(
     () => customerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)),
     [customerRequests]
@@ -560,7 +715,7 @@ const AccountOverview = () => {
     () => getRequestDrivenVerificationStatus(latestVerificationByType),
     [latestVerificationByType]
   );
-  const pendingOwnerRequests = ownerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)).length;
+  const pendingOwnerRequests = effectiveOwnerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus)).length;
   const effectiveVerificationStatus = useMemo(
     () =>
       resolveEffectiveVerificationStatus({
@@ -569,6 +724,10 @@ const AccountOverview = () => {
         snapshotProfileStatus: profile?.verificationStatus,
         authMetadataStatus: user?.user_metadata?.verification_status,
         appMetadataStatus: user?.app_metadata?.verification_status,
+        userProfileApprovedAt: userProfile?.approvedAt || userProfile?.approved_at,
+        snapshotProfileApprovedAt: profile?.approvedAt || profile?.approved_at,
+        authMetadataApprovedAt: user?.user_metadata?.approved_at,
+        appMetadataApprovedAt: user?.app_metadata?.approved_at,
       }),
     [
       requestDrivenVerificationStatus,
@@ -702,13 +861,13 @@ const AccountOverview = () => {
     return sorted[0] || null;
   }, [openCustomerRequests]);
   const nextOwnerRequest = useMemo(() => {
-    if (!ownerRequests.length) return null;
-    const pending = ownerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
+    if (!effectiveOwnerRequests.length) return null;
+    const pending = effectiveOwnerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
     const sorted = [...pending].sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
     return sorted[0] || null;
-  }, [ownerRequests]);
+  }, [effectiveOwnerRequests]);
   const nextOwnerExecutionRequest = useMemo(() => {
-    if (!ownerRequests.length) return null;
+    if (!effectiveOwnerRequests.length) return null;
 
     const getPriority = (stage) => {
       if (stage === 'return_pending') return 0;
@@ -718,7 +877,7 @@ const AccountOverview = () => {
       return 9;
     };
 
-    const actionable = ownerRequests
+    const actionable = effectiveOwnerRequests
       .map((request) => ({
         request,
         action: getOwnerExecutionActionConfig(request, tr),
@@ -733,13 +892,13 @@ const AccountOverview = () => {
       return new Date(right.request?.updatedAt || right.request?.createdAt || 0).getTime() -
         new Date(left.request?.updatedAt || left.request?.createdAt || 0).getTime();
     })[0] || null;
-  }, [ownerRequests, tr]);
+  }, [effectiveOwnerRequests, tr]);
   const hasActiveOwnerExecution = Boolean(nextOwnerExecutionRequest?.action);
   const isOwnerOperationsHydrating = Boolean(
     isOwnerWorkspace &&
     loading &&
     !hasActiveOwnerExecution &&
-    ownerRequests.length === 0
+    effectiveOwnerRequests.length === 0
   );
   const walletBalance = Number(snapshot?.wallet?.balance || 0);
   const { supportUnreadThreads, customerUnreadThreads } = useMemo(
@@ -974,10 +1133,10 @@ const AccountOverview = () => {
       if (!listingHasPassedAdminReview && !ownerVerificationReady) {
         return {
           title: hasPendingVerificationReview
-            ? tr('Verification is in review', 'La vérification est en revue')
+            ? tr('Owner verification is in review', 'La vérification propriétaire est en revue')
             : hasRejectedVerification
-              ? tr('Finish verification before review', 'Terminez la vérification avant la revue')
-              : tr('Complete verification before review', 'Complétez la vérification avant la revue'),
+              ? tr('Update owner verification', 'Mettez à jour la vérification propriétaire')
+              : tr('Verify owner before review', 'Vérifiez le propriétaire avant la revue'),
           detail: tr(
             'You can keep editing your listing now. Owner verification is required before the full review send.',
             "Vous pouvez continuer à modifier l'annonce maintenant. La vérification propriétaire est requise avant l'envoi complet en revue."
@@ -985,8 +1144,10 @@ const AccountOverview = () => {
           to: '/account/verification',
           state: { from: currentPath },
           ctaLabel: hasPendingVerificationReview
-            ? tr('Review verification', 'Voir la vérification')
-            : tr('Open trust center', 'Ouvrir le centre de confiance'),
+            ? tr('Review trust status', 'Voir le statut de confiance')
+            : hasRejectedVerification
+              ? tr('Update owner verification', 'Mettre à jour la vérification propriétaire')
+              : tr('Verify owner', 'Vérifier le propriétaire'),
           icon: ShieldCheck,
           tone: hasRejectedVerification ? 'rose' : hasPendingVerificationReview ? 'amber' : 'violet',
         };
@@ -994,14 +1155,14 @@ const AccountOverview = () => {
 
       if (!listingHasPassedAdminReview && !marketplaceVerificationReady) {
         return {
-          title: tr('Finish vehicle documents', 'Terminez les documents du véhicule'),
+          title: tr('Review vehicle documents', 'Vérifiez les documents du véhicule'),
           detail: tr(
             'Registration and insurance still need approval before this listing can move into full review.',
             "L'immatriculation et l'assurance doivent encore être approuvées avant la revue complète."
           ),
           to: primaryVehicleLegalHref,
           state: { from: currentPath, resumeEditing: true, focusSectionId: 'legal-documents' },
-          ctaLabel: tr('Open vehicle documents', 'Ouvrir les documents du véhicule'),
+          ctaLabel: tr('Review vehicle documents', 'Vérifier les documents du véhicule'),
           icon: CarFront,
           tone: vehicleVerificationStage === 'issue' ? 'rose' : vehicleVerificationStage === 'pending' ? 'amber' : 'violet',
         };
@@ -1136,10 +1297,10 @@ const AccountOverview = () => {
         key: 'account_verification',
         label:
           hasRejectedVerification
-            ? tr('Verification needs your update', 'La vérification doit être corrigée')
+            ? tr('Owner verification needs your update', 'La vérification propriétaire doit être corrigée')
             : hasPendingVerificationReview
-              ? tr('Verification is waiting for admin review', "La vérification attend la revue de l'admin")
-              : tr('Verification is not complete yet', "La vérification n'est pas encore terminée"),
+              ? tr('Owner verification is waiting for admin review', "La vérification propriétaire attend la revue de l'admin")
+              : tr('Owner verification is not complete yet', "La vérification propriétaire n'est pas encore terminée"),
         detail:
           hasRejectedVerification
             ? tr(
@@ -1193,12 +1354,9 @@ const AccountOverview = () => {
     if (isOwnerWorkspace) {
       if (hasActiveOwnerExecution) {
         return {
-          eyebrow: tr('Rental operations', 'Opérations de location'),
-          title: nextOwnerExecutionRequest?.action?.title || tr('Rental operations ready', 'Opérations de location prêtes'),
-          description: tr(
-            'Home is now focused on the live owner workflow so you can start or finish the rental without digging through listing setup.',
-            "L'accueil est maintenant centré sur le flux propriétaire actif afin de démarrer ou terminer la location sans passer par la configuration de l'annonce."
-          ),
+          eyebrow: tr('Home', 'Accueil'),
+          title: tr('Owner workspace', 'Espace propriétaire'),
+          description: tr('Live rentals, messages, and payouts in one place.', 'Locations actives, messages et paiements au même endroit.'),
         };
       }
 
@@ -1206,10 +1364,7 @@ const AccountOverview = () => {
         return {
           eyebrow: tr('Rental operations', 'Opérations de location'),
           title: tr('Checking rental operations', 'Vérification des opérations de location'),
-          description: tr(
-            'We are loading your booking and rental actions now.',
-            'Nous chargeons maintenant vos actions de réservation et de location.'
-          ),
+          description: tr('Loading your next action.', 'Chargement de votre prochaine action.'),
         };
       }
 
@@ -1217,10 +1372,7 @@ const AccountOverview = () => {
         return {
           eyebrow: tr('Start listing', 'Commencer une annonce'),
           title: tr('List your first vehicle', 'Listez votre premier véhicule'),
-          description: tr(
-            'Create your listing now. Verification is required before review and publication, not before you begin.',
-            "Créez votre annonce maintenant. La vérification est requise avant la revue et la publication, pas avant de commencer."
-          ),
+          description: tr('Create the listing, then send it for review.', "Créez l'annonce, puis envoyez-la en revue."),
         };
       }
 
@@ -1228,10 +1380,7 @@ const AccountOverview = () => {
         return {
           eyebrow: tr('Home', 'Accueil'),
           title: tr('Your listing is in review', "Votre annonce est en revue"),
-          description: tr(
-            'Admin is reviewing your package. Home now keeps the next owner action, messages, and financial signals in one place.',
-            "L'admin révise votre dossier. L'accueil garde maintenant la prochaine action propriétaire, les messages et les signaux financiers au même endroit."
-          ),
+          description: tr('Waiting for admin approval.', "En attente de l'approbation admin."),
         };
       }
 
@@ -1239,32 +1388,23 @@ const AccountOverview = () => {
         return {
           eyebrow: tr('Home', 'Accueil'),
           title: tr('Your listing is live', "Votre annonce est en ligne"),
-          description: tr(
-            'Manage listing health, incoming requests, and payout activity from one home base.',
-            "Gérez la santé de l'annonce, les demandes entrantes et l'activité de versement depuis un seul point d'entrée."
-          ),
+          description: tr('Manage requests, trips, and payouts.', 'Gérez demandes, trajets et paiements.'),
         };
       }
 
       return {
         eyebrow: tr('Home', 'Accueil'),
         title: tr('Continue your listing', "Continuez votre annonce"),
-        description: tr(
-          'Home is now focused on your next best owner action instead of pushing verification first.',
-          "L'accueil est maintenant centré sur votre prochaine meilleure action propriétaire au lieu de pousser la vérification en premier."
-        ),
+        description: tr('Finish the next setup step.', "Terminez la prochaine étape de configuration."),
       };
     }
 
     return {
       eyebrow: tr('Home', 'Accueil'),
       title: tr('Your travel dashboard', 'Votre tableau de bord voyage'),
-      description: tr(
-        'Track trips, open booking conversations, and keep wallet activity close by.',
-        'Suivez vos parcours, ouvrez vos conversations de réservation et gardez votre portefeuille à portée de main.'
-      ),
+      description: tr('Trips, messages, and wallet activity.', 'Trajets, messages et portefeuille.'),
     };
-  }, [effectiveOwnerVehicleCount, hasActiveOwnerExecution, isOwnerOperationsHydrating, isOwnerWorkspace, nextOwnerExecutionRequest?.action?.title, primaryOwnerJourneyState, tr]);
+  }, [effectiveOwnerVehicleCount, hasActiveOwnerExecution, isOwnerOperationsHydrating, isOwnerWorkspace, primaryOwnerJourneyState, tr]);
 
   const heroSecondaryAction = useMemo(() => {
     if (isOwnerWorkspace) {
@@ -1281,6 +1421,29 @@ const AccountOverview = () => {
       state: { from: currentPath },
     };
   }, [currentPath, isOwnerWorkspace, tr]);
+
+  const ownerOperationMeta = useMemo(() => {
+    if (!isOwnerWorkspace || !nextOwnerExecutionRequest?.action) return null;
+
+    return {
+      title: nextOwnerExecutionRequest.action.title,
+      detail: [
+        nextOwnerExecutionRequest.request?.customerName,
+        nextOwnerExecutionRequest.request?.listingTitle,
+        formatDateTime(
+          nextOwnerExecutionRequest.request?.requestedStartAt
+            ? new Date(nextOwnerExecutionRequest.request.requestedStartAt)
+            : null,
+          locale === 'fr' ? 'fr-MA' : 'en-MA'
+        ),
+      ].filter(Boolean).join(' • '),
+      helper: nextOwnerExecutionRequest.action.detail,
+      href: nextOwnerExecutionRequest.action.href,
+      ctaLabel: nextOwnerExecutionRequest.action.ctaLabel,
+      request: nextOwnerExecutionRequest.request,
+      action: nextOwnerExecutionRequest.action,
+    };
+  }, [isOwnerWorkspace, locale, nextOwnerExecutionRequest]);
 
   const listingsEntry = useMemo(() => {
     return {
@@ -1320,17 +1483,35 @@ const AccountOverview = () => {
             `${pendingOwnerRequests} request${pendingOwnerRequests === 1 ? '' : 's'} waiting`,
             `${pendingOwnerRequests} demande${pendingOwnerRequests === 1 ? '' : 's'} en attente`
           )
-        : totalInboxSignalCount > 0
-          ? tr(
-              `${totalInboxSignalCount} unread conversation${totalInboxSignalCount === 1 ? '' : 's'}`,
-              `${totalInboxSignalCount} conversation${totalInboxSignalCount === 1 ? '' : 's'} non lue${totalInboxSignalCount === 1 ? '' : 's'}`
-            )
-          : tr('Bookings and support stay here', 'Réservations et support restent ici'),
+          : totalInboxSignalCount > 0
+            ? tr(
+                `${totalInboxSignalCount} unread conversation${totalInboxSignalCount === 1 ? '' : 's'}`,
+                `${totalInboxSignalCount} conversation${totalInboxSignalCount === 1 ? '' : 's'} non lue${totalInboxSignalCount === 1 ? '' : 's'}`
+              )
+            : tr('No unread messages', 'Aucun message non lu'),
     to: '/account/messages',
     ctaLabel: tr('Open Inbox', 'Ouvrir Inbox'),
   }), [pendingOwnerRequests, totalInboxSignalCount, tr]);
 
   const tripsEntry = useMemo(() => {
+    if (isOwnerWorkspace) {
+      const completedHistoryCount = ownerRentalHistoryRows.filter((row) => row.status === 'completed').length;
+      const activeHistoryCount = ownerRentalHistoryRows.filter((row) => row.status === 'active').length;
+
+      return {
+        value: `${ownerRentalHistoryRows.length}`,
+        label:
+          ownerRentalHistoryRows.length > 0
+            ? tr(
+                `${completedHistoryCount} completed • ${activeHistoryCount} active`,
+                `${completedHistoryCount} terminée${completedHistoryCount === 1 ? '' : 's'} • ${activeHistoryCount} active${activeHistoryCount === 1 ? '' : 's'}`
+              )
+            : tr('No owner rental history yet', 'Aucun historique propriétaire'),
+        to: '/account/rental-history',
+        ctaLabel: tr('Open rental history', "Ouvrir l'historique"),
+      };
+    }
+
     const activeTourCount = tourRows.filter((tour) => !['completed', 'closed', 'cancelled', 'canceled'].includes(String(tour?.status || '').toLowerCase())).length;
     const activeTripCount = activeBookings.length + upcomingBookings.length + activeTourCount;
     return {
@@ -1338,15 +1519,15 @@ const AccountOverview = () => {
       label:
         activeTripCount > 0
           ? tr('Confirmed and upcoming trips', 'Parcours confirmés et à venir')
-          : tr('No confirmed trips yet', 'Aucun parcours confirmé pour le moment'),
+          : tr('No trips yet', 'Aucun trajet'),
       to: '/account/rentals',
       ctaLabel: tr('Open trips', 'Ouvrir les parcours'),
     };
-  }, [activeBookings.length, upcomingBookings.length, tourRows, tr]);
+  }, [activeBookings.length, isOwnerWorkspace, ownerRentalHistoryRows, upcomingBookings.length, tourRows, tr]);
 
   const walletEntry = useMemo(() => ({
     value: formatMoney(walletBalance, snapshot?.wallet?.currencyCode || 'MAD', locale),
-    label: tr('Payments, payouts, and credits', 'Paiements, virements et crédits'),
+    label: tr('Wallet balance', 'Solde portefeuille'),
     to: '/account/revenue',
     ctaLabel: tr('Open wallet', 'Ouvrir le portefeuille'),
   }), [walletBalance, snapshot?.wallet?.currencyCode, locale, tr]);
@@ -1380,7 +1561,7 @@ const AccountOverview = () => {
       },
       {
         key: 'trips',
-        eyebrow: tr('Trips', 'Parcours'),
+        eyebrow: isOwnerWorkspace ? tr('Rental history', 'Historique') : tr('Trips', 'Parcours'),
         entry: tripsEntry,
       },
       {
@@ -1470,9 +1651,14 @@ const AccountOverview = () => {
     vehicleVerificationStage,
   ]);
 
+  const shouldHoldOwnerOverviewHydrationShell = Boolean(
+    isOwnerWorkspace &&
+    loading &&
+    hasActiveOwnerExecution
+  );
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
-    isTransitionFlow: loading,
+    isTransitionFlow: loading && !shouldHoldOwnerOverviewHydrationShell,
   });
 
   useEffect(() => {
@@ -1556,7 +1742,12 @@ const AccountOverview = () => {
   ].includes(nextActionKind);
   const shouldSuppressListingProgressForOwnerExecution = isOwnerWorkspace && hasActiveOwnerExecution;
   const showHeroPrimaryAction = !hasActiveOwnerExecution;
-  const showNextStepSection = !hasActiveOwnerExecution && !shouldMergeOwnerNextStepIntoProgress;
+  const shouldShowOwnerOperationsLoading = isOwnerOperationsHydrating && !ownerOperationMeta;
+  const showNextStepSection = !hasActiveOwnerExecution && !isOwnerOperationsHydrating && !shouldMergeOwnerNextStepIntoProgress;
+  const shouldShowWorkspaceHero = !ownerOperationMeta && !isOwnerOperationsHydrating;
+  const shouldShowLiveActivity = Boolean(
+    nextActivity && (!ownerOperationMeta || String(nextActivity.href || '') !== String(ownerOperationMeta.href || ''))
+  );
 
   const trackTrustCenterSelection = (source) => {
     trackAccountJourneyEvent(ACCOUNT_JOURNEY_EVENTS.trustCenterOpened, {
@@ -1580,69 +1771,173 @@ const AccountOverview = () => {
 
   return (
     <div className="space-y-4">
-      <AccountWorkspaceHero
-        eyebrow={homeHero.eyebrow}
-        title={homeHero.title}
-        description={homeHero.description}
-        aside={
-          <div className="flex flex-col items-start gap-3 sm:items-end">
-            <div className="flex flex-wrap gap-2">
-              {identityStatusDisplay.actionable ? (
-                <Link
-                  to="/account/verification"
-                  state={{ from: currentPath }}
-                  onClick={() => trackTrustCenterSelection('home_hero_status_chip')}
-                  className="transition hover:translate-y-[-1px]"
-                >
-                  <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} className="cursor-pointer" />
-                </Link>
-              ) : (
-                <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} />
-              )}
-              {isOwnerWorkspace && effectiveOwnerVehicleCount > 0 ? (
-                <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-                  {getOwnerJourneyLabel(primaryOwnerJourneyState, tr)}
-                </span>
-              ) : null}
+      {shouldShowOwnerOperationsLoading ? (
+        <section className="rounded-[1.35rem] border border-violet-100 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(91,33,182,0.06)] sm:px-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="h-3 w-36 animate-pulse rounded-full bg-violet-100" />
+              <div className="mt-4 h-8 w-64 max-w-full animate-pulse rounded-full bg-slate-100" />
+              <div className="mt-3 h-4 w-80 max-w-full animate-pulse rounded-full bg-slate-100" />
+              <div className="mt-4 flex flex-wrap gap-2">
+                <div className="h-7 w-28 animate-pulse rounded-full bg-slate-100" />
+                <div className="h-7 w-32 animate-pulse rounded-full bg-slate-100" />
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {showHeroPrimaryAction && nextBestAction.disabled ? (
-                <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-300 px-4 py-3 text-sm font-semibold text-white opacity-80">
-                  <span>{nextBestAction.ctaLabel}</span>
-                  <ArrowRight className="h-4 w-4" />
-                </div>
-              ) : showHeroPrimaryAction ? (
-                <Link
-                  to={nextBestAction.to}
-                  state={nextBestAction.state}
-                  onClick={() => trackNextActionSelection('home_hero_primary')}
-                  onMouseEnter={() => {
-                    if (String(nextBestAction.to || '').includes('/account/operations/')) {
-                      void preloadOwnerOperationsRoute();
-                    }
-                  }}
-                  onFocus={() => {
-                    if (String(nextBestAction.to || '').includes('/account/operations/')) {
-                      void preloadOwnerOperationsRoute();
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
-                >
-                  <span>{nextBestAction.ctaLabel}</span>
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
+            <div className="h-12 w-full animate-pulse rounded-2xl bg-violet-100 sm:w-52" />
+          </div>
+        </section>
+      ) : null}
+
+      {ownerOperationMeta ? (
+        <section className="rounded-[1.35rem] border border-violet-200 bg-white px-4 py-4 shadow-[0_18px_44px_rgba(91,33,182,0.08)] sm:px-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-violet-600">
+                {tr('Ready now', 'Prête maintenant')}
+              </p>
+              <h2 className="mt-2 text-2xl font-black tracking-[-0.03em] text-slate-950 sm:text-3xl">
+                {ownerOperationMeta.title}
+              </h2>
+              {ownerOperationMeta.detail ? (
+                <p className="mt-2 truncate text-sm font-semibold text-slate-600 sm:text-base">
+                  {ownerOperationMeta.detail}
+                </p>
               ) : null}
-              <Link
-                to={heroSecondaryAction.to}
-                state={heroSecondaryAction.state}
-                className="inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
-              >
-                <span>{heroSecondaryAction.label}</span>
-              </Link>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {identityStatusDisplay.actionable ? (
+                  <Link
+                    to="/account/verification"
+                    state={{ from: currentPath }}
+                    onClick={() => trackTrustCenterSelection('home_primary_operation_status')}
+                    className="transition hover:translate-y-[-1px]"
+                  >
+                    <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} className="cursor-pointer" />
+                  </Link>
+                ) : (
+                  <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} />
+                )}
+                {effectiveOwnerVehicleCount > 0 ? (
+                  <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">
+                    {getOwnerJourneyLabel(primaryOwnerJourneyState, tr)}
+                  </span>
+                ) : null}
+                <Link
+                  to={heroSecondaryAction.to}
+                  state={heroSecondaryAction.state}
+                  className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
+                >
+                  {heroSecondaryAction.label}
+                </Link>
+              </div>
+            </div>
+            <Link
+              to={ownerOperationMeta.href}
+              state={{
+                from: currentPath,
+                ownerOperationRequest: ownerOperationMeta.request,
+              }}
+              onClick={() => {
+                try {
+                  if (ownerOperationMeta.request?.id) {
+                    window.sessionStorage.setItem(
+                      `driveout_owner_operation_request:${String(ownerOperationMeta.request.id)}`,
+                      JSON.stringify(ownerOperationMeta.request)
+                    );
+                  }
+                } catch {
+                  // Navigation still works without the warm route snapshot.
+                }
+                trackNextActionSelection('home_primary_operation', {
+                  ...ownerOperationMeta.action,
+                  to: ownerOperationMeta.href,
+                });
+              }}
+              onMouseEnter={() => void preloadOwnerOperationsRoute()}
+              onFocus={() => void preloadOwnerOperationsRoute()}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_16px_32px_rgba(91,33,182,0.22)] transition hover:translate-y-[-1px] sm:w-auto sm:min-w-[210px]"
+            >
+              <CalendarClock className="h-4 w-4" />
+              <span>{ownerOperationMeta.ctaLabel}</span>
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </section>
+      ) : null}
+
+      {shouldShowWorkspaceHero ? (
+        <section className="rounded-[1.65rem] border border-violet-300 bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.05),0_0_0_1px_rgba(167,139,250,0.2)] backdrop-blur transition-all sm:rounded-[1.85rem] sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-[0.28em] text-violet-500">
+                {homeHero.eyebrow}
+              </p>
+              <h1 className="mt-2 text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">
+                {homeHero.title}
+              </h1>
+              <p className="mt-2 text-sm font-medium leading-6 text-slate-500 sm:text-base">
+                {homeHero.description}
+              </p>
+            </div>
+
+            <div className="flex flex-col items-start gap-3 lg:items-end">
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                {identityStatusDisplay.actionable ? (
+                  <Link
+                    to="/account/verification"
+                    state={{ from: currentPath }}
+                    onClick={() => trackTrustCenterSelection('home_hero_status_chip')}
+                    className="transition hover:translate-y-[-1px]"
+                  >
+                    <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} className="cursor-pointer" />
+                  </Link>
+                ) : (
+                  <StatusChip label={identityStatusDisplay.label} tone={identityStatusDisplay.tone} />
+                )}
+                {isOwnerWorkspace && effectiveOwnerVehicleCount > 0 ? (
+                  <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                    {getOwnerJourneyLabel(primaryOwnerJourneyState, tr)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                {showHeroPrimaryAction && nextBestAction.disabled ? (
+                  <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-300 px-4 py-3 text-sm font-semibold text-white opacity-80">
+                    <span>{nextBestAction.ctaLabel}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </div>
+                ) : showHeroPrimaryAction ? (
+                  <Link
+                    to={nextBestAction.to}
+                    state={nextBestAction.state}
+                    onClick={() => trackNextActionSelection('home_hero_primary')}
+                    onMouseEnter={() => {
+                      if (String(nextBestAction.to || '').includes('/account/operations/')) {
+                        void preloadOwnerOperationsRoute();
+                      }
+                    }}
+                    onFocus={() => {
+                      if (String(nextBestAction.to || '').includes('/account/operations/')) {
+                        void preloadOwnerOperationsRoute();
+                      }
+                    }}
+                    className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
+                  >
+                    <span>{nextBestAction.ctaLabel}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                ) : null}
+                <Link
+                  to={heroSecondaryAction.to}
+                  state={heroSecondaryAction.state}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                >
+                  <span>{heroSecondaryAction.label}</span>
+                </Link>
+              </div>
             </div>
           </div>
-        }
-      />
+        </section>
+      ) : null}
 
       {reviewSignals.length ? (
         <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
@@ -1696,82 +1991,12 @@ const AccountOverview = () => {
         </section>
       ) : null}
 
-      {isOwnerWorkspace && nextOwnerExecutionRequest?.action ? (
-        <section className="rounded-[1.6rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_100%)] px-5 py-4 shadow-[0_16px_40px_rgba(91,33,182,0.08)]">
-          <AccountWorkspaceSectionHeader
-            title={tr('Rental operations', 'Opérations de location')}
-            description={tr(
-              'Use Home as the main place to start and finish owner-side rental operations.',
-              "Utilisez l'accueil comme surface principale pour démarrer et terminer les opérations côté propriétaire."
-            )}
-            titleClassName="text-base font-bold text-slate-950"
-          />
-          <div className="mt-4 rounded-[1.45rem] border border-violet-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(91,33,182,0.08)]">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
-                  {tr('Ready now', 'Prête maintenant')}
-                </p>
-                <h3 className="mt-2 text-xl font-black tracking-[-0.03em] text-slate-950">
-                  {nextOwnerExecutionRequest.action.title}
-                </h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  {[
-                    nextOwnerExecutionRequest.request?.customerName,
-                    nextOwnerExecutionRequest.request?.listingTitle,
-                    formatDateTime(
-                      nextOwnerExecutionRequest.request?.requestedStartAt
-                        ? new Date(nextOwnerExecutionRequest.request.requestedStartAt)
-                        : null,
-                      locale === 'fr' ? 'fr-MA' : 'en-MA'
-                    ),
-                  ].filter(Boolean).join(' • ')}
-                </p>
-                <p className="mt-3 text-sm leading-6 text-slate-600">
-                  {nextOwnerExecutionRequest.action.detail}
-                </p>
-              </div>
-              <Link
-                to={nextOwnerExecutionRequest.action.href}
-                state={{
-                  from: currentPath,
-                  ownerOperationRequest: nextOwnerExecutionRequest.request,
-                }}
-                onClick={() => {
-                  try {
-                    if (nextOwnerExecutionRequest.request?.id) {
-                      window.sessionStorage.setItem(
-                        `driveout_owner_operation_request:${String(nextOwnerExecutionRequest.request.id)}`,
-                        JSON.stringify(nextOwnerExecutionRequest.request)
-                      );
-                    }
-                  } catch {
-                    // Navigation still works without the warm route snapshot.
-                  }
-                  trackNextActionSelection('home_rental_operations', {
-                    ...nextOwnerExecutionRequest.action,
-                    to: nextOwnerExecutionRequest.action.href,
-                  });
-                }}
-                onMouseEnter={() => void preloadOwnerOperationsRoute()}
-                onFocus={() => void preloadOwnerOperationsRoute()}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_32px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px] lg:min-w-[220px]"
-              >
-                <CalendarClock className="h-4 w-4" />
-                <span>{nextOwnerExecutionRequest.action.ctaLabel}</span>
-                <ArrowRight className="h-4 w-4" />
-              </Link>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+      <section className="rounded-[1.4rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_30px_rgba(15,23,42,0.04)]">
         <AccountWorkspaceSectionHeader
-          title={tr('Workspace snapshot', "Vue d'ensemble")}
+          title={tr('Snapshot', 'Aperçu')}
           titleClassName="text-base font-bold text-slate-950"
         />
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
           {snapshotEntryCards.map((card) => (
             <ProfileEntryCard
               key={card.key}
@@ -1846,7 +2071,7 @@ const AccountOverview = () => {
         </section>
       ) : null}
 
-      {nextActivity ? (
+      {shouldShowLiveActivity ? (
         <section className="rounded-[1.6rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_100%)] px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
           <AccountWorkspaceSectionHeader
             title={tr('Live activity', 'Activité en direct')}

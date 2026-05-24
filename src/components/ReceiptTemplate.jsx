@@ -31,8 +31,31 @@ const RECEIPT_BANKING_DETAILS = {
 };
 
 const getRentalKilometerPackage = (rental) => {
-  if (!isPackagePricingEnabled(rental)) return null;
-  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package);
+  const embeddedIncludedKm = Number(
+    rental?.included_kilometers_applied ??
+    rental?.package_total_included_km ??
+    rental?.selected_package_total_included_km ??
+    0
+  ) || 0;
+  const embeddedExtraKmRate = Number(
+    rental?.extra_km_rate_applied ??
+    rental?.package_extra_rate ??
+    rental?.selected_package_extra_rate ??
+    0
+  ) || 0;
+  const hasEmbeddedDistanceRule = embeddedIncludedKm > 0 && embeddedExtraKmRate > 0;
+
+  if (!isPackagePricingEnabled(rental) && !hasEmbeddedDistanceRule) return null;
+  const fallbackPackage = hasEmbeddedDistanceRule
+    ? {
+        id: rental?.package_id || rental?.selected_package_id || 'listing-distance-rule',
+        name: rental?.package_name || rental?.selected_package_name || 'Listing distance rule',
+        package_name: rental?.package_name || rental?.selected_package_name || 'Listing distance rule',
+        extra_km_rate: embeddedExtraKmRate,
+        total_included_kilometers_snapshot: embeddedIncludedKm,
+      }
+    : null;
+  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package || fallbackPackage);
   if (!pkg) return null;
 
   const hasLinkedPackage = Boolean(
@@ -806,6 +829,15 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       const recalculatedContractSubtotal = Math.max(0, basePrice + extensions);
       const recalculatedGrossTotal = recalculatedContractSubtotal + overage + fuel + maintenanceCharge + impoundCharge + transportFee;
       const subtotalWithSurchargesExceptOverage = recalculatedContractSubtotal + fuel + maintenanceCharge + impoundCharge + transportFee;
+      const rawOverageForWaiver = Math.max(0, Number(rental?.mileage_overage_raw_amount || rental?.mileage_overage_amount || 0) || 0);
+
+      if (
+        String(rental?.mileage_overage_settlement || rental?.owner_execution?.mileageOverageSettlement || '').toLowerCase() === 'waived' &&
+        rawOverageForWaiver > 0 &&
+        Math.abs(storedTotalAmount - (subtotalWithSurchargesExceptOverage + rawOverageForWaiver)) < 0.01
+      ) {
+        return subtotalWithSurchargesExceptOverage;
+      }
 
       if (Math.abs(storedTotalAmount - recalculatedGrossTotal) < 0.01) {
         return storedTotalAmount;
@@ -869,7 +901,43 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   };
 
   const overageDetails = calculateOverageDetails();
-  const effectiveOverageCharge = Math.max(0, Number(overageDetails.overageCharge || 0) || 0);
+  const mileageOverageSettlement = String(
+    rental?.mileage_overage_settlement ||
+    rental?.owner_execution?.mileageOverageSettlement ||
+    ''
+  ).toLowerCase();
+  const mileageOverageSettlementLabels = {
+    deduct_deposit: tr('Deducted from deposit', 'Déduit de la caution'),
+    paid_separately: tr('Paid separately', 'Payé séparément'),
+    waived: tr('Waived', 'Annulé'),
+    unpaid: tr('Unpaid', 'Impayé'),
+  };
+  const mileageOverageSettlementLabel = mileageOverageSettlementLabels[mileageOverageSettlement] || '';
+  const rawMileageOverageCharge = Math.max(
+    0,
+    Number(
+      rental?.mileage_overage_raw_amount ??
+      rental?.mileage_overage_amount ??
+      overageDetails.overageCharge ??
+      0
+    ) || 0
+  );
+  const effectiveOverageCharge = mileageOverageSettlement === 'waived'
+    ? 0
+    : Math.max(
+        0,
+        Number(
+          rental?.mileage_overage_billable_amount ??
+          overageDetails.overageCharge ??
+          0
+        ) || 0
+      );
+  const mileageOverageWaivedAmount = mileageOverageSettlement === 'waived'
+    ? Math.max(0, Number(rental?.mileage_overage_waived_amount ?? rawMileageOverageCharge) || 0)
+    : 0;
+  const mileageOveragePaidSeparatelyAmount = mileageOverageSettlement === 'paid_separately'
+    ? Math.max(0, Number(rental?.mileage_overage_settled_amount ?? effectiveOverageCharge) || 0)
+    : 0;
   const recalculatedTotalAmount = calculateTotal(effectiveOverageCharge);
   const priceOverrideMeta = getPriceOverrideMeta(rental);
   const hasMeaningfulManualPriceOverride = Boolean(
@@ -950,7 +1018,13 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     ? Math.max(0, totalAmount - impoundChargeTotal + estimatedTotalByMonday)
     : totalAmount;
   const savedDepositDeductionAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0));
-  const autoDepositSeizedAmount = Math.min(savedDepositDeductionAmount, receiptDamageDeposit || savedDepositDeductionAmount);
+  const mileageOverageDepositDeductionAmount = mileageOverageSettlement === 'deduct_deposit'
+    ? Math.max(0, Number(rental?.mileage_overage_deposit_deduction_amount ?? effectiveOverageCharge) || 0)
+    : 0;
+  const autoDepositSeizedAmount = Math.min(
+    savedDepositDeductionAmount + mileageOverageDepositDeductionAmount,
+    receiptDamageDeposit || savedDepositDeductionAmount + mileageOverageDepositDeductionAmount
+  );
   const explicitAmountDueDiscountAmount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
   const inferredAmountDueDiscountAmount =
     amountDueResolutionMeta &&
@@ -985,7 +1059,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       displayedImpoundTotal +
       transportFeeAmount
   );
-  const rawBalanceDue = Math.max(0, displayedTotalAmount - correctedPaidAmount);
+  const rawBalanceDue = Math.max(0, displayedTotalAmount - correctedPaidAmount - mileageOveragePaidSeparatelyAmount);
   const remainingBalanceAfterDepositSeizure = Math.max(0, rawBalanceDue - autoDepositSeizedAmount);
   const remainingRefundableSecurityDeposit = Math.max(0, receivedDamageDeposit - autoDepositSeizedAmount);
   const heldSecurityDepositAmount = receivedDamageDeposit > 0 ? receivedDamageDeposit : receiptDamageDeposit;
@@ -1210,11 +1284,29 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       },
       ...((overageDetails.extraKm > 0 || effectiveOverageCharge > 0)
         ? [{
-            label: tr('Overage', 'Dépassement'),
+            label: tr('Extra mileage', 'Kilométrage extra'),
             value:
               overageDetails.extraKm > 0 && overageDetails.rate > 0
-                ? `${formatReceiptKilometers(overageDetails.extraKm)} km × ${formatCurrency(overageDetails.rate)} MAD = ${formatCurrency(effectiveOverageCharge)} MAD`
-                : `${formatCurrency(effectiveOverageCharge)} MAD`,
+                ? `${formatReceiptKilometers(overageDetails.extraKm)} km × ${formatCurrency(overageDetails.rate)} MAD = ${formatCurrency(effectiveOverageCharge)} MAD${mileageOverageSettlementLabel ? ` • ${mileageOverageSettlementLabel}` : ''}`
+                : `${formatCurrency(effectiveOverageCharge)} MAD${mileageOverageSettlementLabel ? ` • ${mileageOverageSettlementLabel}` : ''}`,
+          }]
+        : []),
+      ...(mileageOverageWaivedAmount > 0
+        ? [{
+            label: tr('Extra mileage waived', 'Kilométrage extra annulé'),
+            value: `-${formatCurrency(mileageOverageWaivedAmount)} MAD`,
+          }]
+        : []),
+      ...(mileageOverageDepositDeductionAmount > 0
+        ? [{
+            label: tr('Deposit applied', 'Caution appliquée'),
+            value: `${formatCurrency(mileageOverageDepositDeductionAmount)} MAD • ${tr('extra mileage', 'kilométrage extra')}`,
+          }]
+        : []),
+      ...(mileageOveragePaidSeparatelyAmount > 0
+        ? [{
+            label: tr('Paid separately', 'Payé séparément'),
+            value: `${formatCurrency(mileageOveragePaidSeparatelyAmount)} MAD • ${tr('extra mileage', 'kilométrage extra')}`,
           }]
         : []),
       ...(amountDueDiscountAmount > 0
@@ -1325,10 +1417,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               <div>{tr('Displayed duration:', 'Durée affichée :')} {formatRentalDurationSummary(rental, tr)}</div>
               <div>{tr('Base unit price:', 'Prix unitaire de base :')} {formatCurrency(rental?.unit_price || 0)} MAD</div>
               <div>
-                {tr('Overage charge:', 'Frais de dépassement :')}{' '}
+                {tr('Extra mileage charge:', 'Frais kilométrage extra :')}{' '}
                 {overageDetails.extraKm > 0 && overageDetails.rate > 0
-                  ? `${formatCurrency(overageDetails.overageCharge)} MAD (${overageDetails.extraKm} km × ${formatCurrency(overageDetails.rate)} MAD/km)`
+                  ? `${formatCurrency(effectiveOverageCharge)} MAD (${overageDetails.extraKm} km × ${formatCurrency(overageDetails.rate)} MAD/km)`
                   : `${formatCurrency(effectiveOverageCharge)} MAD`}
+                {mileageOverageSettlementLabel ? ` • ${mileageOverageSettlementLabel}` : ''}
               </div>
               <div>{tr('Fuel charge:', 'Frais carburant :')} {formatCurrency(effectiveFuelCharge)} MAD</div>
               <div>{tr('Payment status:', 'Statut du paiement :')} {paymentStatusLabel}</div>
@@ -2820,13 +2913,14 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                     borderRadius: '6px'
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', fontWeight: '600', color: '#c53030' }}>{tr('Overage Charge:', 'Frais de dépassement :')}</span>
+                      <span style={{ fontSize: '13px', fontWeight: '600', color: '#c53030' }}>{tr('Extra mileage:', 'Kilométrage extra :')}</span>
                       <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#c53030' }}>
-                        {formatCurrency(overageDetails.overageCharge)} MAD
+                        {formatCurrency(effectiveOverageCharge)} MAD
                       </span>
                     </div>
                     <div style={{ fontSize: '11px', color: '#c53030', marginTop: '2px' }}>
                       {overageDetails.extraKm} km × {overageDetails.rate} MAD/km
+                      {mileageOverageSettlementLabel ? ` • ${mileageOverageSettlementLabel}` : ''}
                     </div>
                   </div>
                 )}
