@@ -10755,26 +10755,64 @@ const handleFuelChargeToggle = async (enabled) => {
   const handleCancelFinishWorkflow = async () => {
     try {
       if (rental?.id && rental?.rental_status !== 'completed') {
-        const { error } = await supabase
-          .from('app_4c3a7a6153_rentals')
-          .update({
-            ending_odometer: null,
-            end_engine_hours: null,
-            end_fuel_level: null,
-            fuel_charge: 0,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', rental.id);
+        const currentGrandTotal = Math.max(0, Number(rentalBillingSummary?.grandTotal || 0) || 0);
+        const cancelledOverageAmount = Math.max(
+          0,
+          Number(rentalBillingSummary?.overageCharge || rental?.overage_charge || 0) || 0
+        );
+        const cancelledFuelChargeAmount = Math.max(
+          0,
+          Number(rentalBillingSummary?.fuelChargeAmount || rental?.fuel_charge || 0) || 0
+        );
+        const nextGrandTotal = Math.max(0, currentGrandTotal - cancelledOverageAmount - cancelledFuelChargeAmount);
+        const amountDueState = buildAmountDueStateForGrandTotalChange({
+          rentalLike: rental,
+          amountDueMeta: amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental),
+          currentGrandTotal,
+          nextGrandTotal,
+        });
+        const storedTotalAmount = Math.max(0, Number(rental?.total_amount || 0) || 0);
+        const storedReturnChargeReduction = Math.min(
+          storedTotalAmount,
+          (Math.max(0, Number(rental?.overage_charge || 0) || 0) + Math.max(0, Number(rental?.fuel_charge || 0) || 0))
+        );
+        const nextStoredTotalAmount = Math.max(0, storedTotalAmount - storedReturnChargeReduction);
 
-        if (error) throw error;
-
-        setRental((prev) => prev ? ({
-          ...prev,
+        const { data: updatedRental, error } = await updateRentalWithSchemaFallback({
           ending_odometer: null,
+          total_distance: null,
+          total_kilometers_driven: null,
+          overage_charge: 0,
+          has_kilometer_overage: false,
+          included_kilometers_applied: null,
+          extra_km_rate_applied: null,
           end_engine_hours: null,
           end_fuel_level: null,
           fuel_charge: 0,
-        }) : prev);
+          total_amount: nextStoredTotalAmount,
+          remaining_amount: amountDueState.nextRemainingAmount,
+          payment_status: amountDueState.nextPaymentStatus,
+          updated_at: new Date().toISOString(),
+        });
+
+        if (error) throw error;
+
+        setRental((prev) => updatedRental || (prev ? ({
+          ...prev,
+          ending_odometer: null,
+          total_distance: null,
+          total_kilometers_driven: null,
+          overage_charge: 0,
+          has_kilometer_overage: false,
+          included_kilometers_applied: null,
+          extra_km_rate_applied: null,
+          end_engine_hours: null,
+          end_fuel_level: null,
+          fuel_charge: 0,
+          total_amount: nextStoredTotalAmount,
+          remaining_amount: amountDueState.nextRemainingAmount,
+          payment_status: amountDueState.nextPaymentStatus,
+        }) : prev));
       }
 
       setEndOdometer('');
@@ -10808,6 +10846,12 @@ const handleFuelChargeToggle = async (enabled) => {
         showWorkflow: false,
         steps: nextState,
         ending_odometer: null,
+        total_distance: null,
+        total_kilometers_driven: null,
+        overage_charge: 0,
+        has_kilometer_overage: false,
+        included_kilometers_applied: null,
+        extra_km_rate_applied: null,
         end_engine_hours: null,
         end_fuel_level: null,
         fuel_charge: 0,
@@ -20263,11 +20307,16 @@ useEffect(() => {
           {formatCurrency(rentalBillingSummary?.finalGrandTotal ?? rentalBillingSummary?.grandTotal ?? 0)} MAD
         </span>
         <span className="mx-1 text-slate-400">•</span>
-        <span>
-          {rentalBillingSummary?.balanceDue > 0
-            ? `${tr('Due', 'Dû')} ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
-            : tr('No balance due', 'Aucun solde dû')}
-        </span>
+        {rentalBillingSummary?.balanceDue > 0 ? (
+          <span>
+            <span>{tr('Due', 'Dû')} </span>
+            <span className="font-semibold text-red-600">
+              {formatCurrency(rentalBillingSummary.balanceDue)} MAD
+            </span>
+          </span>
+        ) : (
+          <span>{tr('No balance due', 'Aucun solde dû')}</span>
+        )}
         {hasPendingBalanceApproval || hasPendingSecurityReturn ? (
           <>
             <span className="mx-1 text-slate-400">•</span>
@@ -21848,10 +21897,14 @@ useEffect(() => {
                     {tr('Rental balance details', 'Détail du solde location')}
                   </p>
                   <p className="mt-0.5 text-xs text-slate-600">
-                    {tr(
-                      `Total ${formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} · Due ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`,
-                      `Total ${formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} · Dû ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
-                    )}
+                    <span>
+                      {tr('Total', 'Total')} {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)}
+                    </span>
+                    <span className="mx-1 text-slate-400">·</span>
+                    <span>{tr('Due', 'Dû')} </span>
+                    <span className={rentalBillingSummary.balanceDue > 0 ? 'font-semibold text-red-600' : 'font-medium text-slate-600'}>
+                      {formatCurrency(rentalBillingSummary.balanceDue)} MAD
+                    </span>
                   </p>
                 </div>
               </div>
