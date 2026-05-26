@@ -264,6 +264,7 @@ export const refreshEntityVerificationSummary = async (adminClient, entityType, 
     const { error } = await adminClient
       .from(APP_USERS_TABLE)
       .update({
+        verification_status: summary.status,
         profile_verification_status: summary.status,
         verification_summary: summary,
       })

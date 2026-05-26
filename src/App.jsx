@@ -752,12 +752,16 @@ const GlobalStatePersistence = () => {
 const AppGlobalMessageLauncher = () => {
   const location = useLocation();
   const { user, userProfile, session } = useAuth();
+  const hostContext = getHostContext();
 
   if (!user || !session?.access_token || location.pathname === '/login' || location.pathname === '/register' || location.pathname === '/reset-password') {
     return null;
   }
 
   const isAdmin = location.pathname.startsWith('/admin');
+  if (isAdmin && hostContext?.kind === 'tenant') {
+    return null;
+  }
   const isFrench = i18n.resolvedLanguage === 'fr';
 
   return (

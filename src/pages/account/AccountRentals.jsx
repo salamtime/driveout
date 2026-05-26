@@ -4,7 +4,6 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
-import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
 import CustomerRentalTimer from '../../components/account/CustomerRentalTimer';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -66,6 +65,58 @@ const TOUR_STATUS_LABELS = {
   canceled: { en: 'Cancelled', fr: 'Annulé' },
   no_show: { en: 'No-show', fr: 'Absent' },
   expired: { en: 'Expired', fr: 'Expiré' },
+};
+
+const TRIPS_WORKSPACE_CACHE_PREFIX = 'driveout_account_trips_workspace';
+const TRIPS_WORKSPACE_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
+
+const buildTripsWorkspaceCacheKey = (user) => {
+  const identity = String(user?.id || user?.email || '').trim().toLowerCase();
+  return identity ? `${TRIPS_WORKSPACE_CACHE_PREFIX}:${identity}` : '';
+};
+
+const readTripsWorkspaceCache = (user) => {
+  if (typeof window === 'undefined') return null;
+  const storageKey = buildTripsWorkspaceCacheKey(user);
+  if (!storageKey) return null;
+
+  try {
+    const rawValue = window.sessionStorage.getItem(storageKey);
+    if (!rawValue) return null;
+
+    const parsed = JSON.parse(rawValue);
+    const cachedAt = Number(parsed?._cachedAt || 0);
+    if (!cachedAt || Date.now() - cachedAt > TRIPS_WORKSPACE_CACHE_MAX_AGE_MS) {
+      return null;
+    }
+
+    return {
+      snapshot: parsed?.snapshot && typeof parsed.snapshot === 'object' ? parsed.snapshot : null,
+      rentals: Array.isArray(parsed?.rentals) ? parsed.rentals : [],
+      tours: Array.isArray(parsed?.tours) ? parsed.tours : [],
+      marketplaceRequests: Array.isArray(parsed?.marketplaceRequests) ? parsed.marketplaceRequests : [],
+    };
+  } catch {
+    return null;
+  }
+};
+
+const persistTripsWorkspaceCache = (user, payload = {}) => {
+  if (typeof window === 'undefined') return;
+  const storageKey = buildTripsWorkspaceCacheKey(user);
+  if (!storageKey) return;
+
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify({
+      snapshot: payload.snapshot || null,
+      rentals: Array.isArray(payload.rentals) ? payload.rentals : [],
+      tours: Array.isArray(payload.tours) ? payload.tours : [],
+      marketplaceRequests: Array.isArray(payload.marketplaceRequests) ? payload.marketplaceRequests : [],
+      _cachedAt: Date.now(),
+    }));
+  } catch {
+    // Cache is an optimization only; live loading still works without it.
+  }
 };
 
 const formatDateTime = (value, locale) => {
@@ -226,44 +277,61 @@ const RentalRow = ({ rental, tr, isFrench, onOpenDetails, historyMode = false })
   const mediaCount = getRentalMediaCount(rental);
   const paymentSummary = getRentalPaymentSummaryLabel(rental, { isFrench, tr, locale });
   const depositSummary = getRentalDepositSummaryLabel(rental, { isFrench, tr, locale });
+  const vehicleTitle = String(
+    rental?.modelName ||
+    rental?.vehicleName ||
+    rental?.vehicleLabel ||
+    ''
+  ).trim() || tr('Vehicle rental', 'Location véhicule');
   const [showDetails, setShowDetails] = useState(false);
 
   if (historyMode) {
     return (
-      <article className="rounded-[1.4rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-base font-bold text-slate-950">{rental?.modelName || tr('Vehicle reserved', 'Véhicule réservé')}</h3>
-            <p className="mt-1 text-sm text-slate-500">
-              {[startLabel, endLabel].filter(Boolean).join(' → ') || tr('Dates pending', 'Dates en attente')}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-[11px] font-semibold text-violet-700">
-                {rental?.rentalId || tr('Reference pending', 'Référence en attente')}
-              </span>
+      <article className="overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white shadow-[0_16px_38px_rgba(15,23,42,0.05)]">
+        <div className="grid gap-4 p-4 sm:grid-cols-[1fr_auto] sm:p-5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
               {receiptLink ? (
-                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700">
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
                   {tr('Receipt ready', 'Reçu prêt')}
                 </span>
               ) : null}
               {mediaCount > 0 ? (
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-600">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
+                  <Camera className="h-3.5 w-3.5" />
                   {tr(`${mediaCount} media`, `${mediaCount} média`)}
                 </span>
               ) : null}
             </div>
-            <p className="mt-3 text-sm font-semibold text-slate-800">{paymentSummary}</p>
-            <p className="mt-1 text-sm text-slate-500">{depositSummary}</p>
+
+            <h3 className="mt-3 text-xl font-black tracking-[-0.03em] text-slate-950">{vehicleTitle}</h3>
+            <p className="mt-1 text-sm font-medium text-slate-500">
+              {[startLabel, endLabel].filter(Boolean).join(' → ') || tr('Dates pending', 'Dates en attente')}
+            </p>
+            <p className="mt-3 inline-flex rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">
+              {rental?.rentalId || tr('Reference pending', 'Référence en attente')}
+            </p>
           </div>
 
-          <div className="text-left sm:min-w-[140px] sm:text-right">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Total', 'Total')}</p>
-            <p className="mt-1 text-xl font-bold tracking-tight text-slate-950">{formatMoney(rental?.total, 'MAD', locale)}</p>
+          <div className="rounded-[1.25rem] border border-slate-200 bg-slate-50/70 px-4 py-3 sm:min-w-[150px] sm:text-right">
+            <p className="text-xs font-bold text-slate-500">{tr('Total', 'Total')}</p>
+            <p className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-950">{formatMoney(rental?.total, 'MAD', locale)}</p>
+            <p className="mt-1 text-xs font-bold text-emerald-700">{paymentSummary}</p>
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+        <div className="border-t border-slate-100 px-4 py-4 sm:px-5">
+          <p className="text-sm font-medium text-slate-500">{depositSummary}</p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => onOpenDetails(rental)}
+              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-[0_14px_28px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px]"
+            >
+              {tr('View details', 'Voir les détails')}
+              <ArrowRight className="h-4 w-4" />
+            </button>
           {receiptLink ? (
             <a
               href={receiptLink}
@@ -275,13 +343,7 @@ const RentalRow = ({ rental, tr, isFrench, onOpenDetails, historyMode = false })
               {tr('Open receipt', 'Ouvrir le reçu')}
             </a>
           ) : null}
-          <button
-            type="button"
-            onClick={() => onOpenDetails(rental)}
-            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-          >
-            {tr('View details', 'Voir les détails')}
-          </button>
+          </div>
         </div>
       </article>
     );
@@ -411,9 +473,61 @@ const RentalSection = ({
   </section>
 );
 
-const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOpenDetails, browseState, sectionRef = null }) => {
+const TripSummaryStrip = ({ activeCount = 0, upcomingCount = 0, historyCount = 0, tr, loading = false }) => {
+  const items = [
+    { key: 'active', label: tr('Active', 'Actifs'), value: activeCount },
+    { key: 'upcoming', label: tr('Upcoming', 'À venir'), value: upcomingCount },
+    { key: 'history', label: tr('History', 'Historique'), value: historyCount },
+  ];
+
+  return (
+    <div className="flex flex-wrap gap-2 sm:justify-end">
+      {items.map((item) => (
+        <div
+          key={item.key}
+          className="inline-flex min-w-[6.5rem] items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 sm:min-w-[7.5rem] sm:px-4"
+        >
+          <p className="truncate text-xs font-bold text-slate-500">{item.label}</p>
+          {loading ? (
+            <span className="h-5 w-6 animate-pulse rounded-full bg-slate-200" />
+          ) : (
+            <p className="text-lg font-black tracking-[-0.03em] text-slate-950">{item.value}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOpenDetails, browseState, sectionRef = null, loading = false }) => {
   const hasHistory = pastRentals.length > 0 || canceledRentals.length > 0;
   const historyRentals = [...pastRentals, ...canceledRentals];
+
+  if (loading && !hasHistory) {
+    return (
+      <section ref={sectionRef} className="space-y-4">
+        <AccountWorkspaceSectionHeader
+          title={tr('Rental history', 'Historique location')}
+          titleClassName="mt-1 text-lg font-bold text-slate-900"
+        />
+        <div className="space-y-3">
+          {Array.from({ length: 2 }).map((_, index) => (
+            <div
+              key={index}
+              className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.04)]"
+            >
+              <div className="h-4 w-24 animate-pulse rounded-full bg-slate-100" />
+              <div className="mt-3 h-5 w-2/3 animate-pulse rounded-full bg-slate-100" />
+              <div className="mt-3 flex gap-2">
+                <div className="h-7 w-24 animate-pulse rounded-full bg-slate-100" />
+                <div className="h-7 w-28 animate-pulse rounded-full bg-slate-100" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  }
 
   if (!hasHistory) {
     return (
@@ -440,7 +554,6 @@ const RentalHistorySection = ({ pastRentals, canceledRentals, tr, isFrench, onOp
     <section ref={sectionRef} className="space-y-5">
       <AccountWorkspaceSectionHeader
         title={tr('Rental history', 'Historique location')}
-        description={tr('Open any completed trip to review the receipt, media, and final status.', 'Ouvrez n’importe quelle location terminée pour revoir le reçu, les médias et le statut final.')}
         titleClassName="mt-1 text-lg font-bold text-slate-900"
       />
 
@@ -542,46 +655,45 @@ const TourTripSection = ({
   emptyBody,
   emptyActionLabel,
   emptyActionTo,
+  emptyActionState,
   tr,
   isFrench,
   onOpenDetails,
   compact = false,
 }) => (
   <section className={compact ? 'space-y-3' : 'space-y-4'}>
-    <AccountWorkspaceSectionHeader
-      title={title}
-      description={description || undefined}
-      titleClassName={compact ? 'mt-1 text-base font-bold text-slate-900' : undefined}
-      descriptionClassName={compact ? 'mt-1 text-sm text-slate-500' : undefined}
-    />
-
     {tours.length ? (
-      <div className={compact ? 'space-y-3' : 'space-y-4'}>
-        {tours.map((tour) => (
-          <TourTripRow
-            key={tour.id || tour.groupId}
-            tour={tour}
-            tr={tr}
-            isFrench={isFrench}
-            onOpenDetails={onOpenDetails}
-            historyMode={compact}
-          />
-        ))}
-      </div>
+      <>
+        <AccountWorkspaceSectionHeader
+          title={title}
+          description={description || undefined}
+          titleClassName={compact ? 'mt-1 text-base font-bold text-slate-900' : undefined}
+          descriptionClassName={compact ? 'mt-1 text-sm text-slate-500' : undefined}
+        />
+        <div className={compact ? 'space-y-3' : 'space-y-4'}>
+          {tours.map((tour) => (
+            <TourTripRow
+              key={tour.id || tour.groupId}
+              tour={tour}
+              tr={tr}
+              isFrench={isFrench}
+              onOpenDetails={onOpenDetails}
+              historyMode={compact}
+            />
+          ))}
+        </div>
+      </>
     ) : (
-      <div
-        className={
-          compact
-            ? 'rounded-[1.4rem] border border-slate-200 bg-slate-50/80 p-4'
-            : 'rounded-[1.75rem] border border-dashed border-slate-200 bg-white p-6'
-        }
-      >
-        <p className="text-sm font-bold text-slate-900">{emptyTitle}</p>
-        <p className="mt-1 text-sm text-slate-500">{emptyBody}</p>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.035)]">
+        <div className="min-w-0">
+          <p className="text-sm font-bold text-slate-950">{title}</p>
+          <p className="mt-0.5 text-sm text-slate-500">{emptyTitle || emptyBody}</p>
+        </div>
         {emptyActionLabel && emptyActionTo ? (
           <Link
             to={emptyActionTo}
-            className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+            state={emptyActionState}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
           >
             <span>{emptyActionLabel}</span>
             <ArrowRight className="h-4 w-4" />
@@ -1149,7 +1261,7 @@ const MarketplaceRequestSection = ({
   );
 };
 
-const EmptyTripsState = ({ tr, browseState }) => (
+const EmptyTripsState = ({ tr, browseState, browseToursState }) => (
   <section className="rounded-[1.9rem] border border-dashed border-slate-200 bg-white/95 p-6 shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
     <div className="max-w-2xl">
       <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
@@ -1175,6 +1287,7 @@ const EmptyTripsState = ({ tr, browseState }) => (
         </Link>
         <Link
           to="/tours"
+          state={browseToursState}
           className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
         >
           <span>{tr('Browse tours', 'Explorer les tours')}</span>
@@ -1223,6 +1336,14 @@ const AccountRentals = () => {
       try {
         setLoading(true);
         setError('');
+        const cachedTripsWorkspace = readTripsWorkspaceCache(user);
+        if (cachedTripsWorkspace && !cancelled) {
+          setSnapshot(cachedTripsWorkspace.snapshot);
+          setRentals(cachedTripsWorkspace.rentals);
+          setTours(cachedTripsWorkspace.tours);
+          setMarketplaceRequests(cachedTripsWorkspace.marketplaceRequests);
+        }
+
         const [accountSnapshot, history, toursHistory, requests] = await Promise.all([
           CustomerExperienceService.getCustomerAccountSnapshot(user),
           CustomerExperienceService.getCustomerRentalHistory(user),
@@ -1230,10 +1351,19 @@ const AccountRentals = () => {
           CustomerExperienceService.getCustomerMarketplaceRequests(user),
         ]);
         if (cancelled) return;
+        const nextRentals = Array.isArray(history) ? history : [];
+        const nextTours = Array.isArray(toursHistory) ? toursHistory : [];
+        const nextMarketplaceRequests = Array.isArray(requests) ? requests : [];
         setSnapshot(accountSnapshot);
-        setRentals(Array.isArray(history) ? history : []);
-        setTours(Array.isArray(toursHistory) ? toursHistory : []);
-        setMarketplaceRequests(Array.isArray(requests) ? requests : []);
+        setRentals(nextRentals);
+        setTours(nextTours);
+        setMarketplaceRequests(nextMarketplaceRequests);
+        persistTripsWorkspaceCache(user, {
+          snapshot: accountSnapshot,
+          rentals: nextRentals,
+          tours: nextTours,
+          marketplaceRequests: nextMarketplaceRequests,
+        });
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError?.message || tr('Unable to load your trips right now.', 'Impossible de charger vos trajets pour le moment.'));
@@ -1255,7 +1385,12 @@ const AccountRentals = () => {
   const walletBalance = Number(snapshot?.wallet?.balance || 0);
   const linkedMarketplaceRequestIds = useMemo(() => {
     const requestIds = rentals
-      .map((rental) => String(rental?.raw?.marketplace_request_id || '').trim())
+      .map((rental) => String(
+        rental?.marketplaceRequestId ||
+        rental?.marketplace_request_id ||
+        rental?.raw?.marketplace_request_id ||
+        ''
+      ).trim())
       .filter(Boolean);
     return new Set(requestIds);
   }, [rentals]);
@@ -1303,6 +1438,7 @@ const AccountRentals = () => {
   const actionableMarketplaceRequests = useMemo(
     () => marketplaceRequests.filter((request) => {
       const requestId = String(request?.id || '').trim();
+      if (request?.linkedRentalId || request?.linked_rental_id) return false;
       if (requestId && linkedMarketplaceRequestIds.has(requestId)) return false;
       return isMarketplaceRequestOpen(request?.requestStatus);
     }),
@@ -1312,11 +1448,31 @@ const AccountRentals = () => {
   const hasCurrentOrUpcomingRental = rentalBuckets.upcoming.length > 0 || rentalBuckets.active.length > 0;
   const hasCurrentOrUpcomingTour = tourBuckets.upcoming.length > 0 || tourBuckets.active.length > 0;
   const hasAnyTourHistory = tours.length > 0;
+  const tripSummary = useMemo(() => ({
+    active: rentalBuckets.active.length + tourBuckets.active.length,
+    upcoming: rentalBuckets.upcoming.length + tourBuckets.upcoming.length,
+    history: rentalBuckets.past.length + rentalBuckets.canceled.length + tourBuckets.past.length + tourBuckets.canceled.length,
+  }), [
+    rentalBuckets.active.length,
+    rentalBuckets.canceled.length,
+    rentalBuckets.past.length,
+    rentalBuckets.upcoming.length,
+    tourBuckets.active.length,
+    tourBuckets.canceled.length,
+    tourBuckets.past.length,
+    tourBuckets.upcoming.length,
+  ]);
   const shouldUseMarketplaceFocus = Boolean(primaryMarketplaceRequest && !hasCurrentOrUpcomingRental);
   const additionalMarketplaceRequests = primaryMarketplaceRequest
     ? actionableMarketplaceRequests.filter((request) => String(request?.id || '') !== String(primaryMarketplaceRequest?.id || ''))
     : actionableMarketplaceRequests;
   const browseMarketplaceState = useMemo(
+    () => ({
+      from: getCurrentLocationPath(location),
+    }),
+    [location]
+  );
+  const browseToursState = useMemo(
     () => ({
       from: getCurrentLocationPath(location),
     }),
@@ -1337,6 +1493,12 @@ const AccountRentals = () => {
     pathname: location.pathname,
     isTransitionFlow: loading,
   });
+  const hasAnyLoadedTripData =
+    rentals.length > 0 ||
+    tours.length > 0 ||
+    marketplaceRequests.length > 0 ||
+    Boolean(snapshot);
+  const isHydratingTrips = Boolean(loading && !hasAnyLoadedTripData);
 
   const handleOpenDetails = (rental) => {
     if (!rental?.id) return;
@@ -1425,17 +1587,25 @@ const AccountRentals = () => {
 
   return (
     <div className="space-y-6">
-      <div className="sticky top-0 z-20">
-        <AccountWorkspaceHero
-          eyebrow={tr('Trips', 'Parcours')}
-          title={tr('Trips', 'Parcours')}
-          description={tr(
-            'Track active, upcoming, and completed rentals in one place.',
-            'Suivez vos locations actives, à venir et terminées au même endroit.'
-          )}
-          className="bg-white/95 backdrop-blur"
-        />
-      </div>
+      <section className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_18px_44px_rgba(15,23,42,0.06)] sm:rounded-[2rem] sm:p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              {tr('Trips', 'Parcours')}
+            </p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+              {tr('Trips', 'Parcours')}
+            </h1>
+          </div>
+          <TripSummaryStrip
+            activeCount={tripSummary.active}
+            upcomingCount={tripSummary.upcoming}
+            historyCount={tripSummary.history}
+            tr={tr}
+            loading={isHydratingTrips}
+          />
+        </div>
+      </section>
 
       {error ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
@@ -1470,8 +1640,8 @@ const AccountRentals = () => {
             onOpenDetails={handleOpenDetails}
           />
         </>
-      ) : !hasCurrentOrUpcomingTour && !hasAnyTourHistory && actionableMarketplaceRequests.length === 0 ? (
-        <EmptyTripsState tr={tr} browseState={browseMarketplaceState} />
+      ) : !isHydratingTrips && !hasCurrentOrUpcomingTour && !hasAnyTourHistory && actionableMarketplaceRequests.length === 0 ? (
+        <EmptyTripsState tr={tr} browseState={browseMarketplaceState} browseToursState={browseToursState} />
       ) : null}
 
       {actionableMarketplaceRequests.length > 0 ? (
@@ -1521,35 +1691,6 @@ const AccountRentals = () => {
         </div>
       ) : null}
 
-      <section ref={toursSectionRef} id="trips-tours" className="space-y-4">
-        <div className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-          <AccountWorkspaceSectionHeader
-            title={tr('Tours', 'Tours')}
-            description={tr(
-              'Keep guided rides and tour bookings inside the same trip workspace.',
-              'Gardez les sorties guidées et réservations de tours dans le même espace trajets.'
-            )}
-            titleClassName="mt-1 text-lg font-bold text-slate-950"
-          />
-        </div>
-
-        <TourTripSection
-          title={tr('Current and upcoming tours', 'Tours actuels et à venir')}
-          description=""
-          tours={currentTourTrips}
-          emptyTitle={tr('No upcoming tours yet', 'Aucun tour à venir pour le moment')}
-          emptyBody={tr(
-            'Your guided experiences will show up here once you book them.',
-            'Vos expériences guidées apparaîtront ici une fois réservées.'
-          )}
-          emptyActionLabel={tr('Browse tours', 'Explorer les tours')}
-          emptyActionTo="/tours"
-          tr={tr}
-          isFrench={isFrench}
-          onOpenDetails={handleOpenTourDetails}
-        />
-      </section>
-
       <RentalHistorySection
         pastRentals={rentalBuckets.past}
         canceledRentals={rentalBuckets.canceled}
@@ -1558,11 +1699,31 @@ const AccountRentals = () => {
         onOpenDetails={handleOpenDetails}
         browseState={browseMarketplaceState}
         sectionRef={historySectionRef}
+        loading={isHydratingTrips}
       />
+
+      <section ref={toursSectionRef} id="trips-tours" className="space-y-4">
+        <TourTripSection
+          title={tr('Tours', 'Tours')}
+          description=""
+          tours={currentTourTrips}
+          emptyTitle={tr('No tour bookings yet', 'Aucune réservation de tour')}
+          emptyBody={tr(
+            'Your guided experiences will show up here once you book them.',
+            'Vos expériences guidées apparaîtront ici une fois réservées.'
+          )}
+          emptyActionLabel={tr('Browse tours', 'Explorer les tours')}
+          emptyActionTo="/tours"
+          emptyActionState={browseToursState}
+          tr={tr}
+          isFrench={isFrench}
+          onOpenDetails={handleOpenTourDetails}
+        />
+      </section>
 
       <TourTripSection
         title={tr('Past tours', 'Tours passés')}
-        description={tr('Finished tours stay here for reference.', 'Les tours terminés restent ici pour référence.')}
+        description=""
         tours={pastTourTrips}
         emptyTitle={tr('No past tours yet', 'Aucun tour passé pour le moment')}
         emptyBody={tr('Your completed tours will appear here.', 'Vos tours terminés apparaîtront ici.')}

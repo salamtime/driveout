@@ -24,7 +24,10 @@ import {
   addConfiguredRentalDuration,
   normalizeDailyReturnPolicy,
 } from '../../src/utils/dailyReturnPolicy.js';
-import { normalizeMarketplaceRequestLifecycleStatus } from '../../src/utils/marketplaceRequestState.js';
+import {
+  isTerminalMarketplaceRequestStatus,
+  normalizeMarketplaceRequestLifecycleStatus,
+} from '../../src/utils/marketplaceRequestState.js';
 
 const WEBSITE_BOOKING_SOURCE = 'website';
 const WEBSITE_BLOCKING_STATUSES = ['verified', 'awaiting_payment', 'payment_submitted', 'confirmed'];
@@ -34,7 +37,7 @@ const DEFAULT_BUFFER_MINUTES = 60;
 const DEFAULT_SCHEDULED_GRACE_MINUTES = 120;
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const SETTINGS_ROW_ID = 1;
-const OPEN_MARKETPLACE_REQUEST_STATUSES = new Set(['pending', 'countered', 'pre_approved', 'approved', 'active', 'completed']);
+const OPEN_MARKETPLACE_REQUEST_STATUSES = new Set(['pending', 'countered', 'pre_approved', 'approved', 'active']);
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -197,11 +200,7 @@ const sendMarketplaceOwnerRequestEmail = async ({
   const ownerEmail = normalizeEmail(ownerRow?.email);
   if (!ownerEmail) return;
 
-  const listingTitle = String(
-    listing?.title ||
-    requestRow?.listing_title ||
-    'Marketplace vehicle'
-  ).trim();
+  const listingTitle = getCanonicalListingTitle(listing) || normalizeText(requestRow?.listing_title) || 'Marketplace vehicle';
   const customerName = String(requestRow?.customer_name || 'Customer').trim();
   const customerEmail = normalizeEmail(requestRow?.customer_email);
   const customerPhone = normalizeText(requestRow?.customer_phone);
@@ -805,6 +804,11 @@ const getListingBrandName = (listing = {}) =>
     listing?.raw?.name ||
     ''
   ).trim();
+
+const getCanonicalListingTitle = (listing = {}) =>
+  [getListingBrandName(listing), getListingModelName(listing)].filter(Boolean).join(' ').trim() ||
+  normalizeText(listing?.title) ||
+  'Marketplace vehicle';
 
 const chooseBestVehicle = async ({
   adminClient,
@@ -1941,7 +1945,7 @@ const createMarketplaceRequest = async (adminClient, payload) => {
       });
 
     const detailParts = [
-      listing?.title || 'Marketplace request',
+      getCanonicalListingTitle(listing),
       startIso ? formatDateTimeForEmail(startIso) : '',
       Number(duration || 0) > 0
         ? `${Number(duration)} ${normalizedRentalType === 'daily' ? (Number(duration) === 1 ? 'day' : 'days') : (Number(duration) === 1 ? 'hour' : 'hours')}`
@@ -1958,8 +1962,8 @@ const createMarketplaceRequest = async (adminClient, payload) => {
       replyEnabled: false,
       href: `/account/rentals/requests/${encodeURIComponent(String(createdRequest.id || ''))}`,
       listingId: String(createdRequest.listing_id || '').trim(),
-      listingTitle: String(listing?.title || '').trim(),
-      vehicleName: String(listing?.title || '').trim(),
+      listingTitle: getCanonicalListingTitle(listing),
+      vehicleName: getCanonicalListingTitle(listing),
       imageUrl: String(listing?.imageUrl || listing?.image_url || listing?.coverImageUrl || '').trim(),
       requestedStartAt: createdRequest.requested_start_at,
       requestedEndAt: createdRequest.requested_end_at,
@@ -1981,7 +1985,7 @@ const createMarketplaceRequest = async (adminClient, payload) => {
         entity_type: 'marketplace_request',
         entity_id: String(createdRequest.id || '').trim(),
         message_type: 'submission_event',
-        subject: String(listing?.title || 'Marketplace request').trim() || 'Marketplace request',
+        subject: getCanonicalListingTitle(listing) || 'Marketplace request',
         body: 'Request submitted',
         sender_user_id: senderUserId,
         sender_role: customerUserId ? 'customer' : 'system',
@@ -2174,6 +2178,8 @@ export default async function publicBookingHandler(req, res) {
       if (error) throw error;
 
       const existingRequest = (Array.isArray(data) ? data : []).find((row) => {
+        if (isTerminalMarketplaceRequestStatus(row)) return false;
+
         const requestStatus = normalizeMarketplaceRequestLifecycleStatus(row || 'pending');
         if (!OPEN_MARKETPLACE_REQUEST_STATUSES.has(requestStatus)) return false;
 
@@ -2211,6 +2217,8 @@ export default async function publicBookingHandler(req, res) {
       const requestsByListing = new Map();
 
       (Array.isArray(data) ? data : []).forEach((row) => {
+        if (isTerminalMarketplaceRequestStatus(row)) return;
+
         const requestStatus = normalizeMarketplaceRequestLifecycleStatus(row || 'pending');
         if (!OPEN_MARKETPLACE_REQUEST_STATUSES.has(requestStatus)) return;
 

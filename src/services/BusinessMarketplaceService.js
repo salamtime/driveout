@@ -82,6 +82,33 @@ const normalizeStatus = (status) => {
   return aliases[normalized] || normalized;
 };
 
+const isListingEffectivelyLive = (listing = null, profile = null) => {
+  if (!listing && !profile) return false;
+  const listingStatus = normalizeStatus(listing?.listing_status || listing?.status || '');
+  if (listingStatus === 'live') return true;
+
+  return Boolean(
+    profile?.marketplace_visible &&
+    listing?.published_at &&
+    !['rejected', 'changes_requested', 'unpublished'].includes(listingStatus)
+  );
+};
+
+const resolveListingStatus = (listing = null, profile = null, fallback = 'draft') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'live'
+    : normalizeStatus(listing?.listing_status || listing?.status || fallback);
+
+const resolveReviewStatus = (listing = null, profile = null, fallback = 'not_submitted') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'approved'
+    : normalizeStatus(listing?.review_status || fallback);
+
+const resolveModerationStatus = (listing = null, profile = null, fallback = 'not_reviewed') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'approved'
+    : normalizeStatus(listing?.moderation_status || fallback);
+
 const getVehicleVerificationGateMessage = (summary = null) => {
   const missing = Array.isArray(summary?.missing) ? summary.missing : [];
   if (missing.length > 0) {
@@ -446,7 +473,7 @@ const enrichVehiclesWithModeration = async (ownerId, vehicles, listingsByProfile
     return {
       ...vehicle,
       adminFeedback: listing?.admin_feedback || latestHistory?.feedback || '',
-      moderationStatus: normalizeStatus(listing?.moderation_status || vehicle.moderationStatus || 'not_reviewed'),
+      moderationStatus: resolveModerationStatus(listing, vehicle.rawProfile, vehicle.moderationStatus || 'not_reviewed'),
       latestOwnerMessage: latestMessage?.body || '',
       latestOwnerMessageAt: latestMessage?.created_at || null,
       latestOwnerMessageType: latestMessage?.message_type || 'message',
@@ -534,8 +561,8 @@ const normalizeOwnerVehicle = (profile, listing) => {
     pickupAddress: profile?.pickup_address || '',
     marketplaceVisible: Boolean(profile?.marketplace_visible),
     isActive: profile?.is_active !== false,
-    listingStatus: normalizeStatus(listing?.listing_status || listing?.status || 'draft'),
-    reviewStatus: normalizeStatus(listing?.review_status || 'not_submitted'),
+    listingStatus: resolveListingStatus(listing, profile, 'draft'),
+    reviewStatus: resolveReviewStatus(listing, profile, 'not_submitted'),
     bookingMode: listing?.booking_mode || 'request',
     hourlyPrice: safeNumber(listing?.hourly_price_amount),
     dailyPrice: safeNumber(listing?.daily_price_amount),
@@ -546,7 +573,7 @@ const normalizeOwnerVehicle = (profile, listing) => {
     depositAmount: safeNumber(listing?.deposit_amount ?? profile?.deposit_amount),
     currencyCode: listing?.currency_code || 'MAD',
     adminFeedback: listing?.admin_feedback || '',
-    moderationStatus: normalizeStatus(listing?.moderation_status || 'not_reviewed'),
+    moderationStatus: resolveModerationStatus(listing, profile, 'not_reviewed'),
     changesRequestedAt: listing?.changes_requested_at || null,
     resubmittedAt: listing?.resubmitted_at || null,
     latestOwnerMessage: '',
@@ -696,11 +723,11 @@ export const normalizeOwnerVehicleForForm = (profile, listing, linkedFleetVehicl
     currencyCode: listing?.currency_code || 'MAD',
     seasonalPricing: Array.isArray(listing?.seasonal_pricing) ? listing.seasonal_pricing : [],
     listingTitle: listing?.title || '',
-    listingStatus: normalizeStatus(listing?.listing_status || 'draft'),
-    reviewStatus: normalizeStatus(listing?.review_status || 'not_submitted'),
+    listingStatus: resolveListingStatus(listing, profile, 'draft'),
+    reviewStatus: resolveReviewStatus(listing, profile, 'not_submitted'),
     rejectionReason: listing?.rejection_reason || '',
     adminFeedback: listing?.admin_feedback || '',
-    moderationStatus: normalizeStatus(listing?.moderation_status || 'not_reviewed'),
+    moderationStatus: resolveModerationStatus(listing, profile, 'not_reviewed'),
     moderationHistory: [],
     ownerMessages: [],
     minimumDriverAge: profile?.minimum_driver_age ?? '',
@@ -766,7 +793,7 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
   const normalizedOwnerType = ['individual_owner', 'operator', 'owner'].includes(String(accountType || '').trim())
     ? String(accountType).trim()
     : 'individual_owner';
-  const listingStatus = submitForReview ? 'pending_review' : normalizeStatus(existingListing?.listing_status || 'draft');
+  const listingStatus = submitForReview ? 'pending_review' : resolveListingStatus(existingListing, formData?.rawProfile, 'draft');
   const nextListingStatus = ['pending_review', 'approved', 'live'].includes(listingStatus) && !submitForReview
     ? listingStatus
     : listingStatus;
@@ -862,9 +889,11 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     },
     media: cleanMedia,
     cover_image_url: coverImageUrl,
-    marketplace_visible: existingListing?.listing_status === 'live',
+    marketplace_visible: isListingEffectivelyLive(existingListing, formData?.rawProfile),
     is_active: true,
   };
+
+  const canonicalVehicleTitle = [profilePayload.brand_name, profilePayload.model_name].filter(Boolean).join(' ').trim();
 
   const listingPayload = {
     owner_id: ownerId,
@@ -873,7 +902,7 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     review_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.review_status || 'not_submitted'),
     moderation_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.moderation_status || 'not_reviewed'),
     booking_mode: 'request',
-    title: String(formData.listingTitle || `${profilePayload.brand_name} ${profilePayload.model_name}`).trim(),
+    title: canonicalVehicleTitle || String(formData.listingTitle || '').trim() || 'Marketplace listing',
     currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',
     daily_price_amount: optionalNumber(formData.dailyPriceAmount),
     hourly_price_amount: null,

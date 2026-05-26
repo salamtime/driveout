@@ -31,9 +31,97 @@ import { insertRentalEvent } from './_lib/rentalEvents.js';
 import { SHARED_MESSAGES_TABLE, SHARED_MESSAGE_THREADS_TABLE, buildThreadKey } from './_lib/messages.js';
 
 const WALLET_TOPUPS_TABLE = 'wallet_topups';
+const ACCOUNT_WALLET_HISTORY_LIMIT = 250;
 const BASE_PROFILE_FIELDS = 'id, email, username, full_name, first_name, last_name, role, access_enabled, permissions, phone_number, address, date_of_birth, emergency_contact, emergency_phone, preferences, staff_id_documents, whatsapp_notifications, salary_amount, created_at, updated_at, primary_organization_id';
-const BUSINESS_OWNER_PROFILE_FIELDS = `${BASE_PROFILE_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
+const BUSINESS_OWNER_PROFILE_FIELDS = `${BASE_PROFILE_FIELDS}, verification_status, profile_verification_status, verification_summary, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
 const CORE_PROFILE_FIELDS = 'id, email, username, full_name, first_name, last_name, role, permissions, primary_organization_id';
+const RENTAL_MEDIA_STORAGE_BUCKET = 'rental-videos';
+const HEIC_STORAGE_PATH_PATTERN = /\.(heic|heif)$/i;
+
+const isSafeRentalMediaStoragePath = (storagePath = '') => {
+  const normalizedPath = String(storagePath || '').trim();
+  return (
+    normalizedPath.startsWith('rentals/') &&
+    !normalizedPath.includes('..') &&
+    HEIC_STORAGE_PATH_PATTERN.test(normalizedPath)
+  );
+};
+
+const buildHeicPreviewStoragePath = (storagePath = '') => {
+  const normalizedPath = String(storagePath || '').trim();
+  const pathParts = normalizedPath.split('/').filter(Boolean);
+  const fileName = pathParts.pop() || `heic_${Date.now()}.heic`;
+  const directory = pathParts.join('/');
+  const jpegFileName = fileName.replace(/\.(heic|heif)$/i, '.jpg');
+  return `${directory}/previews/${jpegFileName}`;
+};
+
+const convertHeicBufferToJpeg = async (inputBuffer) => {
+  try {
+    const convertModule = await import('heic-convert');
+    const convert = convertModule.default || convertModule;
+    const converted = await convert({
+      buffer: inputBuffer,
+      format: 'JPEG',
+      quality: 0.9,
+    });
+    return Buffer.from(converted);
+  } catch (convertError) {
+    const sharpModule = await import('sharp');
+    const sharp = sharpModule.default || sharpModule;
+    return await sharp(inputBuffer, { failOn: 'none' })
+      .rotate()
+      .jpeg({ quality: 90, mozjpeg: true })
+      .toBuffer();
+  }
+};
+
+const convertRentalHeicStorageObject = async ({ adminClient, storagePath }) => {
+  if (!isSafeRentalMediaStoragePath(storagePath)) {
+    const error = new Error('Unsupported HEIC media path');
+    error.status = 400;
+    throw error;
+  }
+
+  const { data: heicBlob, error: downloadError } = await adminClient.storage
+    .from(RENTAL_MEDIA_STORAGE_BUCKET)
+    .download(storagePath);
+
+  if (downloadError || !heicBlob) {
+    const error = new Error(downloadError?.message || 'Unable to download HEIC media');
+    error.status = 404;
+    throw error;
+  }
+
+  const inputBuffer = Buffer.from(await heicBlob.arrayBuffer());
+  const jpegBuffer = await convertHeicBufferToJpeg(inputBuffer);
+  const previewStoragePath = buildHeicPreviewStoragePath(storagePath);
+
+  const { error: uploadError } = await adminClient.storage
+    .from(RENTAL_MEDIA_STORAGE_BUCKET)
+    .upload(previewStoragePath, jpegBuffer, {
+      contentType: 'image/jpeg',
+      upsert: true,
+    });
+
+  if (uploadError) {
+    const error = new Error(uploadError.message || 'Unable to upload HEIC preview');
+    error.status = 500;
+    throw error;
+  }
+
+  const { data: publicUrlData } = adminClient.storage
+    .from(RENTAL_MEDIA_STORAGE_BUCKET)
+    .getPublicUrl(previewStoragePath);
+
+  return {
+    storagePath: previewStoragePath,
+    publicUrl: publicUrlData?.publicUrl || null,
+    fileType: 'image/jpeg',
+    fileSize: jpegBuffer.length,
+  };
+};
+
 const splitSelectFields = (fields) =>
   String(fields || '')
     .split(',')
@@ -140,7 +228,7 @@ const ensureWalletAccountForUser = async (adminClient, userId) => {
     updated_at: new Date().toISOString(),
   };
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const { data, error } = await adminClient
       .from('app_wallet_accounts')
       .insert([payload])
@@ -184,6 +272,18 @@ const loadLatestWalletAccountByOwnerId = async (adminClient, ownerId) => {
 const buildProfileFromAuthUser = (user, profile = null) => {
   const hasProfileField = (field) => Boolean(profile) && Object.prototype.hasOwnProperty.call(profile, field);
   const fromProfile = (field, fallback = null) => (hasProfileField(field) ? profile[field] : fallback);
+  const persistedVerificationSummary = fromProfile('verification_summary', null);
+  const profileVerificationStatus = String(fromProfile('profile_verification_status', '') || '').trim().toLowerCase();
+  const summaryVerificationStatus = String(persistedVerificationSummary?.status || '').trim().toLowerCase();
+  const isProfileVerificationComplete = Boolean(
+    persistedVerificationSummary?.complete &&
+    ['approved', 'verified'].includes(summaryVerificationStatus)
+  );
+  const resolvedVerificationStatus =
+    isProfileVerificationComplete
+      ? 'approved'
+      : profileVerificationStatus ||
+        fromProfile('verification_status', user?.user_metadata?.verification_status || null);
 
   const resolvePermissionsMap = (value) => {
     if (!value) return {};
@@ -221,7 +321,9 @@ const buildProfileFromAuthUser = (user, profile = null) => {
     emergency_phone: fromProfile('emergency_phone', user?.user_metadata?.emergency_phone || null),
     preferences: fromProfile('preferences', user?.user_metadata?.preferences || {}),
     staff_id_documents: fromProfile('staff_id_documents', user?.user_metadata?.staff_id_documents || []),
-    verification_status: fromProfile('verification_status', user?.user_metadata?.verification_status || null),
+    verification_status: resolvedVerificationStatus,
+    profile_verification_status: profileVerificationStatus || fromProfile('profile_verification_status', null),
+    verification_summary: persistedVerificationSummary || null,
     approved_at: fromProfile('approved_at', user?.user_metadata?.approved_at || null),
     approved_by: fromProfile('approved_by', user?.user_metadata?.approved_by || null),
     rejection_reason: fromProfile('rejection_reason', user?.user_metadata?.rejection_reason || null),
@@ -647,6 +749,9 @@ const loadCustomerMarketplaceRequests = async (adminClient, user) => {
 
   const listingsById = new Map((listings || []).map((row) => [String(row.id), row]));
   const profileIds = [...new Set((listings || []).map((row) => row?.vehicle_public_profile_id).filter(Boolean))];
+  const requestIds = normalizedRequestRows
+    .map((row) => String(row?.id || '').trim())
+    .filter(Boolean);
 
   let profilesById = new Map();
   if (profileIds.length > 0) {
@@ -662,14 +767,71 @@ const loadCustomerMarketplaceRequests = async (adminClient, user) => {
     profilesById = new Map((profiles || []).map((row) => [String(row.id), row]));
   }
 
+  let rentalsByMarketplaceRequestId = new Map();
+  if (requestIds.length > 0) {
+    const { data: executionRecords, error: executionRecordsError } = await adminClient
+      .from(RENTAL_EXECUTION_RECORDS_TABLE)
+      .select('marketplace_request_id,rental_id,execution_stage,updated_at,created_at')
+      .in('marketplace_request_id', requestIds);
+
+    if (executionRecordsError && !isMissingTableError(executionRecordsError) && !isSchemaCompatibilityError(executionRecordsError)) {
+      throw executionRecordsError;
+    }
+
+    const executionRows = Array.isArray(executionRecords) ? executionRecords : [];
+    const rentalIds = [...new Set(
+      executionRows
+        .map((row) => String(row?.rental_id || '').trim())
+        .filter(Boolean)
+    )];
+    let rentalsById = new Map();
+
+    if (rentalIds.length > 0) {
+      const { data: linkedRentals, error: linkedRentalsError } = await adminClient
+        .from('app_4c3a7a6153_rentals')
+        .select('id,rental_id,status,rental_status,updated_at,created_at')
+        .in('id', rentalIds);
+
+      if (linkedRentalsError) {
+        throw linkedRentalsError;
+      }
+
+      rentalsById = new Map((linkedRentals || []).map((row) => [String(row?.id || '').trim(), row]));
+    }
+
+    rentalsByMarketplaceRequestId = new Map(
+      executionRows
+        .sort((left, right) => new Date(right?.updated_at || right?.created_at || 0).getTime() - new Date(left?.updated_at || left?.created_at || 0).getTime())
+        .map((row) => {
+          const requestId = String(row?.marketplace_request_id || '').trim();
+          const rentalId = String(row?.rental_id || '').trim();
+          const rental = rentalId ? rentalsById.get(rentalId) || null : null;
+          return [
+            requestId,
+            rental || {
+              id: rentalId || null,
+              rental_id: null,
+              status: row?.execution_stage || null,
+              rental_status: row?.execution_stage || null,
+            },
+          ];
+        })
+        .filter(([requestId, rental]) => Boolean(requestId && rental?.id))
+    );
+  }
+
   return normalizedRequestRows.map((request) => {
     const listing = listingsById.get(String(request.listing_id)) || null;
     const profile = listing ? profilesById.get(String(listing.vehicle_public_profile_id)) || null : null;
+    const linkedRental = rentalsByMarketplaceRequestId.get(String(request?.id || '').trim()) || null;
 
     return {
       ...request,
       listing,
       profile,
+      linked_rental_id: linkedRental?.id || null,
+      linked_rental_reference: linkedRental?.rental_id || null,
+      linked_rental_status: linkedRental?.status || linkedRental?.rental_status || null,
     };
   });
 };
@@ -743,10 +905,11 @@ const buildSyntheticMarketplaceRentalRow = (requestRow = {}, timingSettings = DE
   const depositAmount = Math.max(0, Number(counterOffer?.damage_deposit_amount || 0) || 0);
   const vehicleName =
     String(
-      listing?.title ||
-      profile?.title ||
+      [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
       [profile?.brand, profile?.model].filter(Boolean).join(' ') ||
       [profile?.make, profile?.model].filter(Boolean).join(' ') ||
+      listing?.title ||
+      profile?.title ||
       ''
     ).trim() || 'Marketplace vehicle';
 
@@ -1254,13 +1417,27 @@ const expireMarketplaceApprovalHold = async (adminClient, requestRow, nowIso = n
 const insertWalletTransactionWithCompatibility = async (adminClient, payload) => {
   let nextPayload = { ...payload };
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const { error } = await adminClient.from('app_wallet_transactions').insert([nextPayload]);
     if (!error) return null;
 
     const message = String(error?.message || error?.details || '');
     const missingColumnMatch = message.match(/column "([^"]+)"/i) || message.match(/'([^']+)'\s+column/i);
     const missingColumn = missingColumnMatch?.[1] || null;
+
+    if (
+      (error?.code === '22P02' || /invalid input value for enum/i.test(message)) &&
+      /wallet_transaction_type/i.test(message)
+    ) {
+      if (nextPayload.type && nextPayload.type !== 'manual_adjustment') {
+        nextPayload = { ...nextPayload, type: 'manual_adjustment' };
+        continue;
+      }
+      if (nextPayload.transaction_type && nextPayload.transaction_type !== 'manual_adjustment') {
+        nextPayload = { ...nextPayload, transaction_type: 'manual_adjustment' };
+        continue;
+      }
+    }
 
     if (missingColumn && Object.prototype.hasOwnProperty.call(nextPayload, missingColumn)) {
       const { [missingColumn]: _removed, ...reducedPayload } = nextPayload;
@@ -1272,6 +1449,402 @@ const insertWalletTransactionWithCompatibility = async (adminClient, payload) =>
   }
 
   return null;
+};
+
+const resolveMarketplaceRentalChargeAmount = ({ requestRow = {}, listingRow = {}, counterOffer = {} }) => {
+  const duration = Math.max(1, Number(requestRow?.duration || 1) || 1);
+  const rentalType = String(requestRow?.rental_type || 'hourly').trim().toLowerCase();
+  const counterPrice = Math.max(0, Number(counterOffer?.price_amount || 0) || 0);
+  const quotedAmount = Math.max(0, Number(requestRow?.quoted_amount || 0) || 0);
+  const listingPrice = Math.max(0, Number(listingRow?.price_amount || 0) || 0);
+  const dailyPrice = Math.max(0, Number(listingRow?.daily_price_amount || 0) || 0);
+  const hourlyPrice = Math.max(0, Number(listingRow?.hourly_price_amount || 0) || 0);
+
+  if (counterPrice > 0) return counterPrice;
+  if (quotedAmount > 0) return quotedAmount;
+
+  if (rentalType === 'daily' && dailyPrice > 0) return dailyPrice * duration;
+  if (hourlyPrice > 0) return hourlyPrice * duration;
+  if (dailyPrice > 0) return dailyPrice * duration;
+
+  return listingPrice;
+};
+
+const getMarketplaceRequestPublicReference = (requestRow = {}) =>
+  String(
+    requestRow?.request_reference ||
+    requestRow?.reference ||
+    requestRow?.public_reference ||
+    requestRow?.id ||
+    ''
+  ).trim();
+
+const buildMarketplaceWalletNote = (label, requestRow = {}) => {
+  const requestReference = getMarketplaceRequestPublicReference(requestRow);
+  return requestReference ? `${label} for request ${requestReference}` : label;
+};
+
+const maybeReleaseCustomerDamageDeposit = async ({
+  adminClient,
+  requestRow,
+  counterOffer,
+  executionDraft,
+  nowIso = new Date().toISOString(),
+}) => {
+  const safeCounterOffer = counterOffer && typeof counterOffer === 'object' ? counterOffer : {};
+  const safeDraft = executionDraft && typeof executionDraft === 'object' ? executionDraft : {};
+  const completionReceipt = safeDraft?.completionReceipt && typeof safeDraft.completionReceipt === 'object'
+    ? safeDraft.completionReceipt
+    : {};
+  const depositOutcome = String(
+    safeDraft?.depositOutcome ||
+    completionReceipt?.depositOutcome ||
+    completionReceipt?.deposit_outcome ||
+    ''
+  ).trim().toLowerCase();
+
+  if (depositOutcome !== 'refund_full') {
+    return { counterOffer: safeCounterOffer, released: false };
+  }
+
+  const currentDepositStatus = String(safeCounterOffer?.damage_deposit_status || '').trim().toLowerCase();
+  if (currentDepositStatus === 'released' || safeCounterOffer?.customer_deposit_released_at) {
+    return { counterOffer: safeCounterOffer, released: false };
+  }
+
+  const refundAmount = Math.max(
+    0,
+    Number(
+      safeDraft?.depositRefundAmount ??
+      completionReceipt?.refundAmount ??
+      completionReceipt?.refund_amount ??
+      safeCounterOffer?.damage_deposit_amount ??
+      requestRow?.damage_deposit ??
+      requestRow?.deposit_amount ??
+      0
+    ) || 0
+  );
+
+  if (refundAmount <= 0) {
+    return { counterOffer: safeCounterOffer, released: false };
+  }
+
+  const customerWalletOwnerIdCandidates = [...new Set(
+    [
+      requestRow?.customer_id,
+      requestRow?.customer_ext_id,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter((value) => value && isUuidLike(value))
+  )];
+
+  const customerWalletRows = (
+    await Promise.all(
+      customerWalletOwnerIdCandidates.map((ownerId) => loadLatestWalletAccountByOwnerId(adminClient, ownerId))
+    )
+  ).filter(Boolean);
+  const customerWalletRow = pickPreferredWalletAccount(customerWalletRows);
+  const customerWalletId = String(customerWalletRow?.id || customerWalletRow?.wallet_id || '').trim();
+
+  if (!customerWalletRow || !customerWalletId) {
+    throw new Error('Customer wallet not found; damage deposit cannot be released safely.');
+  }
+
+  const nextWalletBalance = getWalletBalance(customerWalletRow) + refundAmount;
+  const { error: walletUpdateError } = await adminClient
+    .from('app_wallet_accounts')
+    .update({
+      current_balance: nextWalletBalance,
+      updated_at: nowIso,
+    })
+    .eq('id', customerWalletId);
+
+  if (walletUpdateError) throw walletUpdateError;
+
+  const releaseNote = buildMarketplaceWalletNote('Damage deposit released', requestRow);
+  const transactionError = await insertWalletTransactionWithCompatibility(adminClient, {
+    wallet_account_id: customerWalletId,
+    wallet_id: customerWalletId,
+    owner_id: String(customerWalletRow?.owner_id || customerWalletOwnerIdCandidates[0] || '').trim() || null,
+    amount: refundAmount,
+    status: 'approved',
+    transaction_status: 'approved',
+    type: 'manual_adjustment',
+    transaction_type: 'manual_adjustment',
+    description: releaseNote,
+    notes: 'Rental completed and the damage deposit was returned to the renter wallet.',
+    admin_notes: releaseNote,
+    created_at: safeDraft?.depositRefundSignedAt || completionReceipt?.refundSignedAt || nowIso,
+    updated_at: nowIso,
+  });
+
+  if (transactionError) throw transactionError;
+
+  return {
+    counterOffer: {
+      ...safeCounterOffer,
+      damage_deposit_status: 'released',
+      customer_deposit_released_at: nowIso,
+      customer_deposit_release_amount: refundAmount,
+      customer_wallet_balance_after: nextWalletBalance,
+    },
+    released: true,
+  };
+};
+
+const maybeChargeCustomerRentalPayment = async ({
+  adminClient,
+  requestRow,
+  listingRow,
+  counterOffer,
+  nowIso = new Date().toISOString(),
+}) => {
+  const safeCounterOffer = counterOffer && typeof counterOffer === 'object' ? counterOffer : {};
+  const requestId = String(requestRow?.id || '').trim();
+
+  if (!requestId) {
+    return { counterOffer: safeCounterOffer, charged: false };
+  }
+
+  const existingPaymentStatus = String(safeCounterOffer?.rental_payment_status || '').trim().toLowerCase();
+  if (existingPaymentStatus === 'charged' || safeCounterOffer?.customer_rental_payment_charged_at) {
+    return { counterOffer: safeCounterOffer, charged: false };
+  }
+
+  const chargeAmount = Math.max(
+    0,
+    Number(
+      safeCounterOffer?.customer_rental_payment_amount ||
+        resolveMarketplaceRentalChargeAmount({ requestRow, listingRow, counterOffer: safeCounterOffer })
+    ) || 0
+  );
+
+  if (chargeAmount <= 0) {
+    return { counterOffer: safeCounterOffer, charged: false };
+  }
+
+  const customerWalletOwnerIdCandidates = [...new Set(
+    [
+      requestRow?.customer_id,
+      requestRow?.customer_ext_id,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter((value) => value && isUuidLike(value))
+  )];
+
+  const customerWalletRows = (
+    await Promise.all(
+      customerWalletOwnerIdCandidates.map((ownerId) => loadLatestWalletAccountByOwnerId(adminClient, ownerId))
+    )
+  ).filter(Boolean);
+  const customerWalletRow = pickPreferredWalletAccount(customerWalletRows);
+  const customerWalletId = String(customerWalletRow?.id || customerWalletRow?.wallet_id || '').trim();
+
+  if (!customerWalletRow || !customerWalletId) {
+    throw new Error('Customer wallet not found; rental payment cannot be charged safely.');
+  }
+
+  const publicChargeNote = buildMarketplaceWalletNote('Rental payment charged', requestRow);
+  const internalChargeNote = `Rental payment charged for request ${requestId}`;
+  let { data: existingChargeRows, error: existingChargeError } = await adminClient
+    .from('app_wallet_transactions')
+    .select('id, amount, admin_notes, created_at')
+    .eq('wallet_account_id', customerWalletId)
+    .ilike('admin_notes', `%${internalChargeNote}%`)
+    .limit(1);
+
+  if (existingChargeError && !isMissingTableError(existingChargeError) && !isSchemaCompatibilityError(existingChargeError)) {
+    throw existingChargeError;
+  }
+
+  if (!existingChargeRows?.length && publicChargeNote !== internalChargeNote) {
+    const { data: publicChargeRows, error: publicChargeError } = await adminClient
+      .from('app_wallet_transactions')
+      .select('id, amount, admin_notes, created_at')
+      .eq('wallet_account_id', customerWalletId)
+      .ilike('admin_notes', `%${publicChargeNote}%`)
+      .limit(1);
+
+    if (publicChargeError && !isMissingTableError(publicChargeError) && !isSchemaCompatibilityError(publicChargeError)) {
+      throw publicChargeError;
+    }
+
+    existingChargeRows = publicChargeRows;
+  }
+
+  const existingCharge = Array.isArray(existingChargeRows) ? existingChargeRows[0] : null;
+  if (existingCharge) {
+    return {
+      counterOffer: {
+        ...safeCounterOffer,
+        rental_payment_status: 'charged',
+        customer_rental_payment_charged_at: existingCharge?.created_at || nowIso,
+        customer_rental_payment_amount: Math.max(0, Number(existingCharge?.amount || chargeAmount) || chargeAmount),
+        customer_wallet_balance_after: getWalletBalance(customerWalletRow),
+      },
+      charged: false,
+    };
+  }
+
+  const walletBalance = getWalletBalance(customerWalletRow);
+  if (walletBalance < chargeAmount) {
+    throw new Error(`Customer wallet needs ${chargeAmount} MAD available before closing this rental.`);
+  }
+
+  const nextWalletBalance = Math.max(0, walletBalance - chargeAmount);
+  const { error: walletUpdateError } = await adminClient
+    .from('app_wallet_accounts')
+    .update({
+      current_balance: nextWalletBalance,
+      updated_at: nowIso,
+    })
+    .eq('id', customerWalletId);
+
+  if (walletUpdateError) throw walletUpdateError;
+
+  const transactionError = await insertWalletTransactionWithCompatibility(adminClient, {
+    wallet_account_id: customerWalletId,
+    wallet_id: customerWalletId,
+    owner_id: String(customerWalletRow?.owner_id || customerWalletOwnerIdCandidates[0] || '').trim() || null,
+    amount: chargeAmount,
+    running_balance_after: nextWalletBalance,
+    status: 'approved',
+    transaction_status: 'approved',
+    type: 'manual_adjustment',
+    transaction_type: 'manual_adjustment',
+    description: publicChargeNote,
+    notes: 'Rental payment deducted from the renter wallet after completion.',
+    admin_notes: publicChargeNote,
+    created_at: safeCounterOffer?.final_receipt_generated_at || nowIso,
+    updated_at: nowIso,
+  });
+
+  if (transactionError) throw transactionError;
+
+  return {
+    counterOffer: {
+      ...safeCounterOffer,
+      rental_payment_status: 'charged',
+      customer_rental_payment_charged_at: nowIso,
+      customer_rental_payment_amount: chargeAmount,
+      customer_wallet_balance_after: nextWalletBalance,
+    },
+    charged: true,
+  };
+};
+
+const maybeCreditOwnerRentalPayout = async ({
+  adminClient,
+  requestRow,
+  listingRow,
+  counterOffer,
+  nowIso = new Date().toISOString(),
+}) => {
+  const safeCounterOffer = counterOffer && typeof counterOffer === 'object' ? counterOffer : {};
+  const requestId = String(requestRow?.id || '').trim();
+  const ownerUserId = String(requestRow?.owner_id || '').trim();
+
+  if (!requestId || !ownerUserId || !isUuidLike(ownerUserId)) {
+    return { counterOffer: safeCounterOffer, credited: false };
+  }
+
+  const currentPayoutStatus = String(safeCounterOffer?.owner_payout_status || '').trim().toLowerCase();
+  if (currentPayoutStatus === 'paid' || safeCounterOffer?.owner_payout_paid_at) {
+    return { counterOffer: safeCounterOffer, credited: false };
+  }
+
+  const payoutAmount = Math.max(
+    0,
+    Number(
+      safeCounterOffer?.owner_payout_amount ||
+        safeCounterOffer?.customer_rental_payment_amount ||
+        resolveMarketplaceRentalChargeAmount({ requestRow, listingRow, counterOffer: safeCounterOffer })
+    ) || 0
+  );
+
+  if (payoutAmount <= 0) {
+    return { counterOffer: safeCounterOffer, credited: false };
+  }
+
+  const ownerWalletRow = await loadLatestWalletAccountByOwnerId(adminClient, ownerUserId);
+  const ownerWalletId = String(ownerWalletRow?.id || ownerWalletRow?.wallet_id || '').trim();
+
+  if (!ownerWalletRow || !ownerWalletId) {
+    throw new Error('Owner wallet not found; rental payout cannot be credited safely.');
+  }
+
+  const payoutNote = buildMarketplaceWalletNote('Owner payout', requestRow);
+  const internalPayoutNote = `Owner payout for request ${requestId}`;
+  let { data: existingPayoutRows, error: existingPayoutError } = await adminClient
+    .from('app_wallet_transactions')
+    .select('id, amount, running_balance_after, created_at, description, notes, admin_notes, transaction_type, type')
+    .eq('wallet_account_id', ownerWalletId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (existingPayoutError && !isMissingTableError(existingPayoutError) && !isSchemaCompatibilityError(existingPayoutError)) {
+    throw existingPayoutError;
+  }
+
+  const existingPayout = Array.isArray(existingPayoutRows)
+    ? existingPayoutRows.find((row) => {
+        const text = `${row?.type || ''} ${row?.transaction_type || ''} ${row?.description || ''} ${row?.notes || ''} ${row?.admin_notes || ''}`.toLowerCase();
+        return text.includes(internalPayoutNote.toLowerCase()) || text.includes(payoutNote.toLowerCase());
+      })
+    : null;
+  if (existingPayout) {
+    return {
+      counterOffer: {
+        ...safeCounterOffer,
+        owner_payout_status: 'paid',
+        owner_payout_paid_at: existingPayout?.created_at || nowIso,
+        owner_payout_amount: Math.max(0, Number(existingPayout?.amount || payoutAmount) || payoutAmount),
+        owner_wallet_balance_after: Number(existingPayout?.running_balance_after ?? getWalletBalance(ownerWalletRow)),
+      },
+      credited: false,
+    };
+  }
+
+  const nextWalletBalance = getWalletBalance(ownerWalletRow) + payoutAmount;
+  const { error: walletUpdateError } = await adminClient
+    .from('app_wallet_accounts')
+    .update({
+      current_balance: nextWalletBalance,
+      updated_at: nowIso,
+    })
+    .eq('id', ownerWalletId);
+
+  if (walletUpdateError) throw walletUpdateError;
+
+  const transactionError = await insertWalletTransactionWithCompatibility(adminClient, {
+    wallet_account_id: ownerWalletId,
+    wallet_id: ownerWalletId,
+    owner_id: ownerUserId,
+    amount: payoutAmount,
+    running_balance_after: nextWalletBalance,
+    status: 'approved',
+    transaction_status: 'approved',
+    type: 'manual_adjustment',
+    transaction_type: 'manual_adjustment',
+    description: payoutNote,
+    notes: 'Rental payment credited to the owner wallet after completion.',
+    admin_notes: payoutNote,
+    created_at: safeCounterOffer?.final_receipt_generated_at || nowIso,
+    updated_at: nowIso,
+  });
+
+  if (transactionError) throw transactionError;
+
+  return {
+    counterOffer: {
+      ...safeCounterOffer,
+      owner_payout_status: 'paid',
+      owner_payout_paid_at: nowIso,
+      owner_payout_amount: payoutAmount,
+      owner_wallet_balance_after: nextWalletBalance,
+    },
+    credited: true,
+  };
 };
 
 const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, ownerMessage = '') => {
@@ -1425,8 +1998,9 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
     amount: commissionAmount,
     status: 'approved',
     transaction_status: 'approved',
-    type: 'marketplace_commission',
-    transaction_type: 'marketplace_commission',
+    running_balance_after: ownerWalletBalanceAfter,
+    type: 'manual_adjustment',
+    transaction_type: 'manual_adjustment',
     description: `Marketplace commission reserved for request ${normalizedRequestId}`,
     notes: 'Owner approval reserved the platform fee.',
     created_at: approvedAt,
@@ -1438,6 +2012,7 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
   }
 
   if (depositAmount > 0) {
+    const holdNote = buildMarketplaceWalletNote('Damage deposit hold', requestRow);
     const customerTransactionError = await insertWalletTransactionWithCompatibility(adminClient, {
       wallet_account_id: customerWalletId,
       wallet_id: customerWalletId,
@@ -1445,10 +2020,11 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
       amount: depositAmount,
       status: 'approved',
       transaction_status: 'approved',
-      type: 'damage_deposit_hold',
-      transaction_type: 'damage_deposit_hold',
-      description: `Damage deposit hold for request ${normalizedRequestId}`,
+      type: 'manual_adjustment',
+      transaction_type: 'manual_adjustment',
+      description: holdNote,
       notes: 'Owner approval placed the renter damage deposit on hold.',
+      admin_notes: holdNote,
       created_at: approvedAt,
       updated_at: approvedAt,
     });
@@ -1847,6 +2423,35 @@ const saveOwnerMarketplaceExecution = async (adminClient, user, requestId, execu
       throw new Error('Finish the return review before ending this rental.');
     }
 
+    if (normalizedNextStatus === 'completed') {
+      const depositRelease = await maybeReleaseCustomerDamageDeposit({
+        adminClient,
+        requestRow,
+        counterOffer: updates.counter_offer,
+        executionDraft: normalizedExecutionDraft,
+        nowIso: updates.updated_at,
+      });
+      updates.counter_offer = depositRelease.counterOffer;
+
+      const rentalPaymentCharge = await maybeChargeCustomerRentalPayment({
+        adminClient,
+        requestRow,
+        listingRow: executionListingRow || {},
+        counterOffer: updates.counter_offer,
+        nowIso: updates.updated_at,
+      });
+      updates.counter_offer = rentalPaymentCharge.counterOffer;
+
+      const ownerPayoutCredit = await maybeCreditOwnerRentalPayout({
+        adminClient,
+        requestRow,
+        listingRow: executionListingRow || {},
+        counterOffer: updates.counter_offer,
+        nowIso: updates.updated_at,
+      });
+      updates.counter_offer = ownerPayoutCredit.counterOffer;
+    }
+
     if (!['active', 'completed'].includes(normalizedNextStatus)) {
       updates.request_status = normalizedNextStatus;
     }
@@ -2049,8 +2654,9 @@ const confirmCustomerMarketplaceRequest = async (adminClient, user, requestId) =
     amount: commissionAmount,
     status: 'approved',
     transaction_status: 'approved',
-    type: 'marketplace_commission',
-    transaction_type: 'marketplace_commission',
+    running_balance_after: nextBalance,
+    type: 'manual_adjustment',
+    transaction_type: 'manual_adjustment',
     description: `Marketplace commission reserved for request ${requestId}`,
     notes: 'Final approval unlocked marketplace chat.',
     created_at: new Date().toISOString(),
@@ -2538,6 +3144,120 @@ const loadCustomerTourDetail = async (adminClient, user, tourLookupId) => {
   };
 };
 
+const syncCustomerAccountForAuthUser = async (adminClient, user, profile = {}) => {
+  const userId = String(user?.id || '').trim();
+  const authEmail = normalizeEmail(user?.email);
+  const contactEmail = normalizeEmail(profile?.contactEmail || profile?.customerEmail || profile?.email || authEmail);
+  const email = authEmail || contactEmail;
+
+  if (!userId || !email) {
+    return { skipped: true };
+  }
+
+  const now = new Date().toISOString();
+  const metadata = user?.user_metadata && typeof user.user_metadata === 'object' ? user.user_metadata : {};
+  const appMetadata = user?.app_metadata && typeof user.app_metadata === 'object' ? user.app_metadata : {};
+  const displayName = String(
+    profile?.fullName ||
+    metadata.full_name ||
+    metadata.name ||
+    appMetadata.full_name ||
+    appMetadata.name ||
+    email ||
+    'Customer'
+  ).trim();
+  const avatarUrl = profile?.avatarUrl || metadata.avatar_url || metadata.picture || metadata.photo_url || null;
+  const authCustomerId = `cust_auth_${userId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+
+  const [authEmailLookupResult, contactEmailLookupResult, idLookupResult] = await Promise.all([
+    adminClient
+      .from('app_4c3a7a6153_customers')
+      .select('*')
+      .ilike('email', authEmail || email)
+      .limit(1),
+    contactEmail && contactEmail !== authEmail
+      ? adminClient
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .ilike('email', contactEmail)
+          .limit(1)
+      : Promise.resolve({ data: [], error: null }),
+    adminClient
+      .from('app_4c3a7a6153_customers')
+      .select('*')
+      .eq('id', authCustomerId)
+      .maybeSingle(),
+  ]);
+
+  if (authEmailLookupResult.error) throw authEmailLookupResult.error;
+  if (contactEmailLookupResult.error) throw contactEmailLookupResult.error;
+  if (idLookupResult.error && idLookupResult.error.code !== 'PGRST116') throw idLookupResult.error;
+
+  const existingCustomer =
+    idLookupResult.data ||
+    authEmailLookupResult.data?.[0] ||
+    contactEmailLookupResult.data?.[0] ||
+    null;
+  const baseScanMetadata =
+    existingCustomer?.scan_metadata && typeof existingCustomer.scan_metadata === 'object'
+      ? existingCustomer.scan_metadata
+      : {};
+  const nextScanMetadata = {
+    ...baseScanMetadata,
+    auth_user_id: userId,
+    auth_email: authEmail || email,
+    contact_email: contactEmail || email,
+    auth_provider: 'google',
+    account_source: baseScanMetadata.account_source || 'gmail_signup',
+    account_type: 'customer',
+    avatar_url: avatarUrl || baseScanMetadata.avatar_url || null,
+    last_auth_sync_at: now,
+  };
+
+  if (existingCustomer) {
+    const { data, error } = await adminClient
+      .from('app_4c3a7a6153_customers')
+      .update({
+        email: contactEmail || existingCustomer.email || email,
+        full_name: String(profile?.fullName || '').trim() || existingCustomer.full_name || displayName,
+        phone: String(profile?.phone || metadata.phone || '').trim() || existingCustomer.phone || null,
+        data_source: existingCustomer.data_source || 'gmail_signup',
+        customer_type: existingCustomer.customer_type || 'primary',
+        scan_metadata: nextScanMetadata,
+        updated_at: now,
+      })
+      .eq('id', existingCustomer.id)
+      .select()
+      .maybeSingle();
+
+    if (error) throw error;
+    return { synced: true, created: false, customer: data };
+  }
+
+  const { data, error } = await adminClient
+    .from('app_4c3a7a6153_customers')
+    .insert([{
+      id: authCustomerId,
+      full_name: displayName,
+      email: contactEmail || email,
+      phone: String(profile?.phone || metadata.phone || '').trim() || null,
+      data_source: 'gmail_signup',
+      customer_type: 'primary',
+      initial_scan_complete: false,
+      scan_metadata: {
+        ...nextScanMetadata,
+        created_from_auth_at: now,
+      },
+      created_at: now,
+      updated_at: now,
+    }])
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  return { synced: true, created: true, customer: data };
+};
+
 const loadCustomerAccountSnapshot = async (adminClient, user) => {
   const userId = String(user?.id || '').trim();
   const email = normalizeEmail(user?.email);
@@ -2586,7 +3306,8 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
       .from('app_wallet_accounts')
       .select('*')
       .eq('owner_id', userId)
-      .order('created_at', { ascending: false })
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle(),
     email
@@ -2626,7 +3347,8 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
         .from('app_wallet_accounts')
         .select('*')
         .eq('owner_id', alternateWalletOwnerId)
-        .order('created_at', { ascending: false })
+        .order('updated_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false, nullsFirst: false })
         .limit(1)
         .maybeSingle();
 
@@ -2655,14 +3377,14 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
         .select('*')
         .eq('wallet_account_id', walletId)
         .order('created_at', { ascending: false })
-        .limit(12)
+        .limit(ACCOUNT_WALLET_HISTORY_LIMIT)
     : { data: [], error: null };
   const walletTopupsResult = await adminClient
     .from(WALLET_TOPUPS_TABLE)
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
-    .limit(12);
+    .limit(ACCOUNT_WALLET_HISTORY_LIMIT);
 
   if (walletTransactionsResult.error) {
     throw walletTransactionsResult.error;
@@ -2707,6 +3429,8 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
     return {
       id: String(row.id),
       rentalId: row.rental_id || `RNT-${row.id}`,
+      marketplaceRequestId: row.marketplace_request_id || null,
+      marketplace_request_id: row.marketplace_request_id || null,
       status,
       total,
       paid,
@@ -2742,6 +3466,43 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
 
   const walletTransactions = Array.isArray(walletTransactionsResult.data) ? walletTransactionsResult.data : [];
   const walletTopups = Array.isArray(walletTopupsResult.data) ? walletTopupsResult.data : [];
+  const walletRequestIds = [...new Set(
+    walletTransactions
+      .flatMap((row) => String(row?.note || row?.description || row?.notes || row?.admin_notes || row?.reason || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig) || [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  let walletRequestReferenceMap = new Map();
+
+  if (walletRequestIds.length) {
+    const { data: walletRequestRows, error: walletRequestError } = await adminClient
+      .from(BOOKING_REQUESTS_TABLE)
+      .select('id, request_reference')
+      .in('id', walletRequestIds);
+
+    if (!walletRequestError && Array.isArray(walletRequestRows)) {
+      walletRequestReferenceMap = new Map(
+        walletRequestRows
+          .map((row) => [String(row?.id || '').trim(), String(row?.request_reference || '').trim()])
+          .filter(([id, reference]) => id && reference)
+      );
+    }
+  }
+
+  const formatWalletTransactionNote = (value) =>
+    String(value || '').replace(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig,
+      (match) => walletRequestReferenceMap.get(String(match || '').trim()) || match
+    );
+
+  const latestRunningBalanceAfter = walletTransactions.find((row) => (
+    row?.running_balance_after !== null &&
+    row?.running_balance_after !== undefined &&
+    row?.running_balance_after !== ''
+  ))?.running_balance_after;
+  const effectiveWalletBalance = latestRunningBalanceAfter !== undefined
+    ? toNumber(latestRunningBalanceAfter)
+    : toNumber(walletRow?.current_balance ?? walletRow?.balance ?? walletRow?.wallet_balance);
   const approvedTopups = walletTopups.length
     ? walletTopups
         .filter((row) => String(row?.status || '').toLowerCase() === 'approved')
@@ -2774,8 +3535,7 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
           : 'Submitted for manual bank transfer review.'),
     }));
   const combinedWalletTransactions = [...pendingOrRejectedTopups, ...walletTransactions]
-    .sort((left, right) => new Date(right?.createdAt || right?.created_at || 0).getTime() - new Date(left?.createdAt || left?.created_at || 0).getTime())
-    .slice(0, 12);
+    .sort((left, right) => new Date(right?.createdAt || right?.created_at || 0).getTime() - new Date(left?.createdAt || left?.created_at || 0).getTime());
 
   return {
     profile: {
@@ -2790,7 +3550,7 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
     },
     wallet: {
       id: walletId || null,
-      balance: Math.max(0, toNumber(walletRow?.current_balance ?? walletRow?.balance ?? walletRow?.wallet_balance)),
+      balance: Math.max(0, effectiveWalletBalance),
       currencyCode: String(walletRow?.currency_code || 'MAD'),
       verificationState: String(walletRow?.verification_status || walletRow?.wallet_status || 'not_active'),
       approvedTopups: Math.round(approvedTopups),
@@ -2802,7 +3562,7 @@ const loadCustomerAccountSnapshot = async (adminClient, user) => {
       amount: toNumber(row?.amount),
       status: String(row?.status || row?.transaction_status || 'pending'),
       createdAt: row?.createdAt || row?.created_at || row?.updated_at || null,
-      note: row?.note || row?.description || row?.notes || row?.reason || '',
+      note: formatWalletTransactionNote(row?.note || row?.description || row?.notes || row?.admin_notes || row?.reason || ''),
     })),
     loyalty: {
       points,
@@ -3130,6 +3890,42 @@ const updateProfileWithCompatibility = async (adminClient, userId, profileUpdate
   };
 };
 
+const persistProfilePreferencesWithCompatibility = async (
+  adminClient,
+  user,
+  preferences,
+  nowIso = new Date().toISOString()
+) => {
+  const normalizedPreferences =
+    preferences && typeof preferences === 'object' && !Array.isArray(preferences)
+      ? preferences
+      : {};
+  const userId = String(user?.id || '').trim();
+  const updateResult = await updateProfileWithCompatibility(adminClient, userId, {
+    preferences: normalizedPreferences,
+    updated_at: nowIso,
+  });
+
+  if (updateResult.error || updateResult.data) {
+    return updateResult;
+  }
+
+  return upsertProfileWithCompatibility(adminClient, {
+    id: userId,
+    email: user?.email || null,
+    full_name:
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.name ||
+      user?.email ||
+      null,
+    role: String(user?.user_metadata?.role || user?.app_metadata?.role || 'customer')
+      .trim()
+      .toLowerCase() || 'customer',
+    preferences: normalizedPreferences,
+    updated_at: nowIso,
+  });
+};
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.status(200).end();
@@ -3193,6 +3989,31 @@ export default async function handler(req, res) {
     if (req.method === 'GET' && resource === 'booking-identity') {
       const identity = await loadCustomerBookingIdentity(adminClient, user);
       res.status(200).json({ identity });
+      return;
+    }
+
+    if (req.method === 'POST' && resource === 'customer-account-sync') {
+      const payload = req.body && typeof req.body === 'object' ? req.body : {};
+      const result = await syncCustomerAccountForAuthUser(adminClient, user, payload.profile || {});
+      res.status(200).json(result);
+      return;
+    }
+
+    if (req.method === 'POST' && resource === 'rental-heic-preview') {
+      const storagePath = String(req.body?.storagePath || '').trim();
+      if (!storagePath) {
+        res.status(400).json({ error: 'Missing HEIC storage path' });
+        return;
+      }
+
+      try {
+        const preview = await convertRentalHeicStorageObject({ adminClient, storagePath });
+        res.status(200).json({ preview });
+      } catch (conversionError) {
+        res.status(conversionError.status || 422).json({
+          error: conversionError.message || 'Unable to convert HEIC media',
+        });
+      }
       return;
     }
 
@@ -3399,28 +4220,38 @@ export default async function handler(req, res) {
         const {
           data: updatedProfile,
           error: updateError,
-        } = await updateProfileWithCompatibility(adminClient, user.id, {
-          preferences,
-          updated_at: nowIso,
-        });
+          appliedPayload,
+        } = await persistProfilePreferencesWithCompatibility(adminClient, user, preferences, nowIso);
 
         if (updateError) {
           throw updateError;
         }
 
+        const nextPreferences = appliedPayload?.preferences ?? preferences;
+        const nextUserMetadata = {
+          ...(user.user_metadata || {}),
+          preferences: nextPreferences,
+        };
+        const { error: authUpdateError } = await adminClient.auth.admin.updateUserById(user.id, {
+          user_metadata: nextUserMetadata,
+        });
+
+        if (authUpdateError) {
+          console.warn('Profile preference metadata update failed after app profile save:', authUpdateError);
+        }
+
+        const nextUser = {
+          ...user,
+          user_metadata: nextUserMetadata,
+        };
+
         res.status(200).json({
           profile: buildProfileFromAuthUser(
-            {
-              ...user,
-              user_metadata: {
-                ...(user.user_metadata || {}),
-                preferences,
-              },
-            },
+            nextUser,
             updatedProfile || {
               id: user.id,
               email: user.email,
-              preferences,
+              preferences: nextPreferences,
             }
           ),
         });

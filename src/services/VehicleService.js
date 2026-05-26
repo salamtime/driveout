@@ -181,11 +181,15 @@ class VehicleService {
     }
   }
 
-  async getFleetVehicles() {
+  async getFleetVehicles(options = {}) {
+    const includeArchived = options?.includeArchived === true;
     const organizationIdForCache = shouldScopeSharedTenantData() && isTenantOwnedSharedTable(VEHICLES_TABLE)
       ? (await getCurrentOrganizationId()) || 'tenant:unknown'
       : 'global';
-    const cacheKey = this.getCacheKey('fleet_vehicles', { organizationId: organizationIdForCache });
+    const cacheKey = this.getCacheKey('fleet_vehicles', {
+      organizationId: organizationIdForCache,
+      includeArchived,
+    });
     const cached = this.getCache(cacheKey);
     if (cached) return cached;
 
@@ -311,10 +315,14 @@ class VehicleService {
           'Fleet vehicles returned rows outside the active workspace.'
         );
 
+        const fleetVehicles = includeArchived
+          ? (data || [])
+          : (data || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle));
+
         console.log(
-          `✅ Loaded ${data?.length || 0} fleet vehicles from shared vehicle service`
+          `✅ Loaded ${fleetVehicles.length} fleet vehicles from shared vehicle service (${data?.length || 0} raw, includeArchived=${includeArchived})`
         );
-        return (data || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle));
+        return fleetVehicles;
       });
 
       this.setCache(cacheKey, result);

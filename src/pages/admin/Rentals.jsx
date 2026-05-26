@@ -1145,8 +1145,9 @@ const getDurationBadge = (rental) => {
 const Rentals = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, hasFeature } = useAuth();
+  const { user, hasFeature, tenantSession } = useAuth();
   const hostContext = useMemo(() => getHostContext(), []);
+  const shouldSkipTenantSecondaryReads = hostContext?.kind === 'tenant';
   const organizationId = useMemo(() => getScopedOrganizationId(user), [user]);
   const shouldScopeSharedTenantData = useMemo(
     () => shouldScopeSharedTenantDataForHost(hostContext),
@@ -1371,6 +1372,28 @@ const Rentals = () => {
     let cancelled = false;
 
     const loadRentalTimingSettings = async () => {
+      if (shouldSkipTenantSecondaryReads) {
+        const tenantSettings =
+          tenantSession?.tenantSettings && typeof tenantSession.tenantSettings === 'object'
+            ? tenantSession.tenantSettings
+            : {};
+        if (!cancelled) {
+          setRentalTimingSettings({
+            graceMinutes: Number(
+              tenantSettings.rental_grace_period_minutes ??
+              tenantSettings.rentalGracePeriodMinutes ??
+              DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes
+            ),
+            softLockMinutes: Number(
+              tenantSettings.rental_soft_lock_minutes ??
+              tenantSettings.rentalSoftLockMinutes ??
+              DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes
+            ),
+          });
+        }
+        return;
+      }
+
       try {
         const data = await fetchSystemSettings();
         if (cancelled || !data) return;
@@ -1399,7 +1422,7 @@ const Rentals = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [shouldSkipTenantSecondaryReads, tenantSession]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -2154,6 +2177,11 @@ const Rentals = () => {
   };
 
   const fetchVehicleFuelStates = async () => {
+    if (shouldSkipTenantSecondaryReads) {
+      setVehicleFuelStateMap({});
+      return;
+    }
+
     try {
       const states = await FuelTransactionService.getVehicleFuelStates();
       const nextMap = {};
@@ -2173,6 +2201,14 @@ const Rentals = () => {
   };
 
   const fetchRentalOverviewSnapshot = async () => {
+    if (shouldSkipTenantSecondaryReads) {
+      setRentalOverviewSnapshot({
+        activeVehicleIds: [],
+        scheduledVehicleIds: [],
+      });
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from('app_4c3a7a6153_rentals')
@@ -2214,6 +2250,11 @@ const Rentals = () => {
   };
 
   const fetchDateFocusCounts = useCallback(async (currentStatusFilter = statusFilter, currentPaymentStatusFilter = paymentStatusFilter) => {
+    if (shouldSkipTenantSecondaryReads) {
+      setDateFocusCounts({ day: 0, week: 0 });
+      return;
+    }
+
     try {
       const now = new Date();
       const { start: startOfToday, end: endOfToday } = getCalendarDayWindow(now);
@@ -2276,12 +2317,14 @@ const Rentals = () => {
       }
       console.error('❌ Error fetching day/week rental counts:', err);
     }
-  }, [matchesRentalStatusFilter, paymentStatusFilter, statusFilter]);
+  }, [matchesRentalStatusFilter, paymentStatusFilter, shouldSkipTenantSecondaryReads, statusFilter]);
 
   const refreshSecondaryRentalData = () => {
     void fetchVehicles();
-    void fetchVehicleFuelStates();
-    void fetchRentalOverviewSnapshot();
+    if (!shouldSkipTenantSecondaryReads) {
+      void fetchVehicleFuelStates();
+      void fetchRentalOverviewSnapshot();
+    }
   };
 
   const applyVehicleStatusChangeToRentalRows = useCallback((vehicleUpdate = {}) => {
@@ -2756,6 +2799,26 @@ const Rentals = () => {
       )
       .subscribe();
 
+    const extensionSubscription = supabase
+      .channel('rental_extension_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rental_extensions',
+        },
+        () => {
+          appWarmupService.invalidateModule('rentals');
+          fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
+          scheduleBackgroundTask(() => {
+            void fetchRentalOverviewSnapshot();
+            void fetchDateFocusCounts(statusFilter, paymentStatusFilter);
+          });
+        }
+      )
+      .subscribe();
+
     const vehicleSubscription = supabase
       .channel('vehicle_changes')
       .on('postgres_changes', 
@@ -2787,6 +2850,7 @@ const Rentals = () => {
         clearTimeout(scheduledId);
       }
       supabase.removeChannel(rentalSubscription);
+      supabase.removeChannel(extensionSubscription);
       supabase.removeChannel(vehicleSubscription);
     };
   }, [applyVehicleStatusChangeToRentalRows, doesRentalMatchFilters, fetchDateFocusCounts, statusFilter, paymentStatusFilter, scheduleRentalRefresh, workspaceTab]);

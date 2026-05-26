@@ -174,7 +174,12 @@ const formatMoney = (amount, currencyCode = 'MAD', locale = 'en') =>
     maximumFractionDigits: 0,
   }).format(Number(amount || 0)) + ` ${currencyCode}`;
 
-const ProfileEntryCard = ({ to, state, eyebrow, value, label, ctaLabel, onClick }) => (
+const buildCustomerRentalHref = (booking) => {
+  const rentalId = String(booking?.id || '').trim();
+  return rentalId ? `/account/rentals/${encodeURIComponent(rentalId)}` : '/account/rentals';
+};
+
+const ProfileEntryCard = ({ to, state, eyebrow, value, label, ctaLabel, onClick, valueVariant = 'metric' }) => (
   <Link
     to={to}
     state={state}
@@ -184,7 +189,13 @@ const ProfileEntryCard = ({ to, state, eyebrow, value, label, ctaLabel, onClick 
     <div>
       <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">{eyebrow}</p>
       <div className="mt-2 flex items-end justify-between gap-3">
-        <p className="text-2xl font-black tracking-tight text-slate-950">{value}</p>
+        <p className={
+          valueVariant === 'status'
+            ? 'text-xl font-bold tracking-[-0.01em] text-slate-950'
+            : 'text-2xl font-black tracking-tight text-slate-950'
+        }>
+          {value}
+        </p>
         <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-50 text-violet-600 transition group-hover:bg-violet-50 group-hover:text-violet-700">
           <ArrowRight className="h-4 w-4" />
         </span>
@@ -684,7 +695,12 @@ const AccountOverview = () => {
   const upcomingBookings = resolvedSnapshot?.upcoming || [];
   const linkedMarketplaceRequestIds = useMemo(() => {
     const requestIds = [...activeBookings, ...upcomingBookings, ...recentBookings]
-      .map((booking) => String(booking?.raw?.marketplace_request_id || '').trim())
+      .map((booking) => String(
+        booking?.marketplaceRequestId ||
+        booking?.marketplace_request_id ||
+        booking?.raw?.marketplace_request_id ||
+        ''
+      ).trim())
       .filter(Boolean);
     return new Set(requestIds);
   }, [activeBookings, upcomingBookings, recentBookings]);
@@ -708,6 +724,7 @@ const AccountOverview = () => {
   const openCustomerRequests = useMemo(
     () => customerRequests.filter((request) => {
       const requestId = String(request?.id || '').trim();
+      if (request?.linkedRentalId || request?.linked_rental_id) return false;
       if (requestId && linkedMarketplaceRequestIds.has(requestId)) return false;
       return isMarketplaceRequestOpen(request?.requestStatus);
     }),
@@ -884,6 +901,7 @@ const AccountOverview = () => {
       ) || null,
     [recentBookings]
   );
+  const isCustomerTripsHydrating = Boolean(!isOwnerWorkspace && loading && !resolvedSnapshot);
   const nextOwnerRequest = useMemo(() => {
     if (!effectiveOwnerRequests.length) return null;
     const pending = effectiveOwnerRequests.filter((request) => isMarketplaceRequestOpen(request?.requestStatus));
@@ -1251,17 +1269,16 @@ const AccountOverview = () => {
       };
     }
 
-    if (totalInboxSignalCount > 0) {
+    if (isCustomerTripsHydrating) {
       return {
-        title: tr('Check your inbox', 'Vérifiez votre inbox'),
-        detail: totalInboxSignalCount === 1
-          ? tr('You have 1 unread message waiting.', 'Vous avez 1 message non lu en attente.')
-          : tr(`You have ${totalInboxSignalCount} unread messages waiting.`, `Vous avez ${totalInboxSignalCount} messages non lus en attente.`),
-        to: '/account/messages',
-        state: { from: currentPath },
-        ctaLabel: tr('Open Inbox', 'Ouvrir Inbox'),
-        icon: MessageSquare,
-        tone: 'amber',
+        title: tr('Loading latest rental', 'Chargement de la dernière location'),
+        detail: tr('Home is syncing your completed trips now.', 'Accueil synchronise vos trajets terminés.'),
+        to: '',
+        state: undefined,
+        ctaLabel: tr('Loading…', 'Chargement…'),
+        icon: CalendarClock,
+        tone: 'slate',
+        disabled: true,
       };
     }
 
@@ -1287,11 +1304,25 @@ const AccountOverview = () => {
         ]
           .filter(Boolean)
           .join(' • '),
-        to: '/account/rentals',
+        to: buildCustomerRentalHref(latestCompletedRental),
         state: { from: currentPath },
-        ctaLabel: tr('Open history', "Ouvrir l'historique"),
+        ctaLabel: tr('View details', 'Voir les détails'),
         icon: CalendarClock,
         tone: 'slate',
+      };
+    }
+
+    if (totalInboxSignalCount > 0) {
+      return {
+        title: tr('Check your inbox', 'Vérifiez votre inbox'),
+        detail: totalInboxSignalCount === 1
+          ? tr('You have 1 unread message waiting.', 'Vous avez 1 message non lu en attente.')
+          : tr(`You have ${totalInboxSignalCount} unread messages waiting.`, `Vous avez ${totalInboxSignalCount} messages non lus en attente.`),
+        to: '/account/messages',
+        state: { from: currentPath },
+        ctaLabel: tr('Open Inbox', 'Ouvrir Inbox'),
+        icon: MessageSquare,
+        tone: 'amber',
       };
     }
 
@@ -1313,6 +1344,7 @@ const AccountOverview = () => {
     hasPendingVerificationReview,
     hasRejectedVerification,
     isOwnerWorkspace,
+    isCustomerTripsHydrating,
     isOwnerOperationsHydrating,
     listingHasPassedAdminReview,
     marketplaceVerificationReady,
@@ -1336,7 +1368,7 @@ const AccountOverview = () => {
   const reviewSignals = useMemo(() => {
     const items = [];
 
-    if (hasRejectedVerification || hasPendingVerificationReview || identityStatusDisplay.tone === 'violet') {
+    if (isOwnerWorkspace && (hasRejectedVerification || hasPendingVerificationReview || identityStatusDisplay.tone === 'violet')) {
       items.push({
         key: 'account_verification',
         label:
@@ -1520,14 +1552,15 @@ const AccountOverview = () => {
       return {
         eyebrow: tr('Latest rental', 'Dernière location'),
         value: tr('Done', 'Terminée'),
+        valueVariant: 'status',
         label: [
           latestCompletedRental?.rentalId,
           latestCompletedRental?.packageName || latestCompletedRental?.selectedPackageName,
         ]
           .filter(Boolean)
           .join(' • '),
-        to: '/account/rentals',
-        ctaLabel: tr('Open history', "Ouvrir l'historique"),
+        to: buildCustomerRentalHref(latestCompletedRental),
+        ctaLabel: tr('View rental', 'Voir la location'),
       };
     }
 
@@ -1817,10 +1850,19 @@ const AccountOverview = () => {
     'open_listings',
   ].includes(nextActionKind);
   const shouldSuppressListingProgressForOwnerExecution = isOwnerWorkspace && hasActiveOwnerExecution;
-  const showHeroPrimaryAction = !hasActiveOwnerExecution;
+  const showHeroPrimaryAction = isOwnerWorkspace
+    ? !hasActiveOwnerExecution
+    : Boolean(nextActivity || (!latestCompletedRental && !nextBestAction.disabled));
   const shouldShowOwnerOperationsLoading = isOwnerOperationsHydrating && !ownerOperationMeta;
   const showNextStepSection = !hasActiveOwnerExecution && !isOwnerOperationsHydrating && !shouldMergeOwnerNextStepIntoProgress;
   const shouldShowWorkspaceHero = !ownerOperationMeta && !isOwnerOperationsHydrating;
+  const showReviewStatusSection = Boolean(
+    reviewSignals.length &&
+    !loading &&
+    !showNextStepSection &&
+    !ownerOperationMeta &&
+    !shouldShowOwnerOperationsLoading
+  );
   const shouldShowLiveActivity = Boolean(
     nextActivity && (!ownerOperationMeta || String(nextActivity.href || '') !== String(ownerOperationMeta.href || ''))
   );
@@ -2015,7 +2057,7 @@ const AccountOverview = () => {
         </section>
       ) : null}
 
-      {reviewSignals.length ? (
+      {showReviewStatusSection ? (
         <section className="rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
           <AccountWorkspaceSectionHeader
             title={tr('Review status', 'Statut des validations')}
@@ -2080,6 +2122,7 @@ const AccountOverview = () => {
               state={{ from: currentPath }}
               eyebrow={card.eyebrow}
               value={card.entry.value}
+              valueVariant={card.entry.valueVariant}
               label={card.entry.label}
               ctaLabel={card.entry.ctaLabel}
             />

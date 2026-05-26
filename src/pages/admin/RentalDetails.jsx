@@ -43,6 +43,7 @@ import FleetLocationService from '../../services/FleetLocationService';
 import VerificationService from '../../services/VerificationService';
 import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getCompressedVideoRecorderOptions } from '../../utils/videoRecording';
+import { needsImageConversion, processImage } from '../../utils/mediaProcessor';
 import { uploadFile } from '../../utils/storageUpload';
 import { captureElementToCanvas } from '../../utils/pdfCapture';
 import i18n from '../../i18n';
@@ -101,6 +102,135 @@ const MOBILE_FOOTER_SUCCESS_CLASS = rentalFlowMobileFooterSuccessClass;
 const MOBILE_FOOTER_DISABLED_CLASS = rentalFlowMobileFooterDisabledClass;
 const LIGHT_RENTAL_ACTION_DOCK_CLASS = rentalFlowActionDockClass;
 const VEHICLE_ISSUE_RESOLUTION_MARKER = '[vehicle_issue_resolution]';
+const RENTAL_IMAGE_UPLOAD_EXTENSION_PATTERN = /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/i;
+const RENTAL_VIDEO_UPLOAD_EXTENSION_PATTERN = /\.(avi|m4v|mov|mp4|webm)$/i;
+
+const getRentalUploadFileName = (file = {}) =>
+  String(
+    file?.name ||
+    file?.fileName ||
+    file?.filename ||
+    file?.original_filename ||
+    file?.file_name ||
+    ''
+  );
+
+const inferRentalImageMimeTypeFromName = (fileName = '') => {
+  const normalizedName = String(fileName || '').toLowerCase();
+  if (normalizedName.endsWith('.png')) return 'image/png';
+  if (normalizedName.endsWith('.webp')) return 'image/webp';
+  if (normalizedName.endsWith('.gif')) return 'image/gif';
+  if (normalizedName.endsWith('.avif')) return 'image/avif';
+  if (normalizedName.endsWith('.svg')) return 'image/svg+xml';
+  if (normalizedName.endsWith('.heic')) return 'image/heic';
+  if (normalizedName.endsWith('.heif')) return 'image/heif';
+  return 'image/jpeg';
+};
+
+const inferRentalVideoMimeTypeFromName = (fileName = '') => {
+  const normalizedName = String(fileName || '').toLowerCase();
+  if (normalizedName.endsWith('.mov')) return 'video/quicktime';
+  if (normalizedName.endsWith('.m4v')) return 'video/x-m4v';
+  if (normalizedName.endsWith('.webm')) return 'video/webm';
+  if (normalizedName.endsWith('.avi')) return 'video/x-msvideo';
+  return 'video/mp4';
+};
+
+const resolveRentalUploadMimeType = (file = {}, blob = null) => {
+  const fileName = getRentalUploadFileName(file) || getRentalUploadFileName(blob);
+  const candidates = [
+    file?.mimeType,
+    file?.type,
+    file?.mediaType,
+    file?.file_type,
+    blob?.type,
+  ];
+
+  for (const candidate of candidates) {
+    const normalizedType = String(candidate || '').toLowerCase();
+    if (!normalizedType) continue;
+    if (normalizedType === 'image') return inferRentalImageMimeTypeFromName(fileName);
+    if (normalizedType === 'video') return inferRentalVideoMimeTypeFromName(fileName);
+    if (normalizedType.includes('/')) return normalizedType;
+  }
+
+  if (RENTAL_IMAGE_UPLOAD_EXTENSION_PATTERN.test(fileName)) {
+    return inferRentalImageMimeTypeFromName(fileName);
+  }
+
+  if (RENTAL_VIDEO_UPLOAD_EXTENSION_PATTERN.test(fileName)) {
+    return inferRentalVideoMimeTypeFromName(fileName);
+  }
+
+  return 'application/octet-stream';
+};
+
+const isRentalImageUploadFile = (file = {}, blob = null) => {
+  const fileName = getRentalUploadFileName(file) || getRentalUploadFileName(blob);
+  const mimeType = resolveRentalUploadMimeType(file, blob);
+  return (
+    mimeType.startsWith('image/') ||
+    String(file?.type || '').toLowerCase() === 'image' ||
+    String(file?.mediaType || '').toLowerCase() === 'image' ||
+    RENTAL_IMAGE_UPLOAD_EXTENSION_PATTERN.test(fileName)
+  );
+};
+
+const isRentalVideoUploadFile = (file = {}, blob = null) => {
+  const fileName = getRentalUploadFileName(file) || getRentalUploadFileName(blob);
+  const mimeType = resolveRentalUploadMimeType(file, blob);
+  return (
+    mimeType.startsWith('video/') ||
+    String(file?.type || '').toLowerCase() === 'video' ||
+    String(file?.mediaType || '').toLowerCase() === 'video' ||
+    RENTAL_VIDEO_UPLOAD_EXTENSION_PATTERN.test(fileName)
+  );
+};
+
+const isInterruptedVideoPlayError = (error = {}) => {
+  const name = String(error?.name || '');
+  const message = String(error?.message || '');
+  return name === 'AbortError' || /play\(\) request was interrupted/i.test(message);
+};
+
+const buildConvertedRentalImageFileName = (fileName = '') => {
+  const normalizedName = String(fileName || '').trim();
+  if (!normalizedName) return `photo_${Date.now()}.jpg`;
+  const jpegName = normalizedName.replace(/\.(heic|heif)$/i, '.jpg');
+  return /\.[a-z0-9]+$/i.test(jpegName) ? jpegName : `${jpegName}.jpg`;
+};
+
+const isHeicRentalUploadFile = (file = {}, blob = null, mimeType = '', fileName = '') => {
+  const probeText = [
+    mimeType,
+    file?.mimeType,
+    file?.type,
+    file?.file_type,
+    blob?.type,
+    fileName,
+    file?.name,
+    file?.originalName,
+    blob?.name,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  return /\bimage\/hei[cf]\b/.test(probeText) || /\.(heic|heif)(?=$|[\s?#])/i.test(probeText);
+};
+
+const convertRentalHeicStoragePreview = async ({ storagePath }) => {
+  const result = await adminApiRequest('/api/me?resource=rental-heic-preview', {
+    method: 'POST',
+    body: JSON.stringify({ storagePath }),
+  });
+  const preview = result?.preview || {};
+  if (!preview.publicUrl || !preview.storagePath) {
+    throw new Error('HEIC preview conversion did not return a JPEG media URL');
+  }
+  return preview;
+};
+
 const RENTAL_CANCELLATION_REASON_OPTIONS = [
   {
     value: 'customer_cancelled',
@@ -3261,8 +3391,8 @@ const openReplacementResumeWorkflow = useCallback(() => {
 
   // Calculate media counts and update completion status
   const updateMediaCounts = (media) => {
-    const photos = media.filter(m => m.type?.startsWith('image/')).length;
-    const videos = media.filter(m => m.type?.startsWith('video/')).length;
+    const photos = media.filter(m => isRentalImageUploadFile(m, m?.blob || m?.file)).length;
+    const videos = media.length - photos;
     setMediaCount({ photos, videos });
     setMediaStepComplete(photos + videos > 0);
   };
@@ -3284,6 +3414,28 @@ const openReplacementResumeWorkflow = useCallback(() => {
     const updated = capturedMedia.filter(m => m.id !== mediaId);
     setCapturedMedia(updated);
     updateMediaCounts(updated);
+  };
+
+  const renderCapturedPhotoPreview = (file, index, className = 'w-full h-full object-cover') => {
+    if (file?.previewUnavailable) {
+      return (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-slate-100 px-2 text-center text-slate-500">
+          <FileImage className="h-5 w-5 text-slate-400" />
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em]">HEIC</span>
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={file.url}
+        alt={`Photo ${index + 1}`}
+        className={className}
+        onError={(event) => {
+          event.currentTarget.style.display = 'none';
+        }}
+      />
+    );
   };
 
   const clearCapturedMediaState = () => {
@@ -3919,12 +4071,16 @@ const openReplacementResumeWorkflow = useCallback(() => {
   // Upload a single media item
   const uploadMediaItem = async (media) => {
     const isOpening = media.isOpening !== false; // default to opening if not specified
+    const mediaBlob = media.file || media.blob || media;
+    const isImage = isRentalImageUploadFile(media, mediaBlob);
     const fileName = `${isOpening ? 'opening' : 'closing'}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const filePath = `${id}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
       .from('rental-videos')
-      .upload(filePath, media.file);
+      .upload(filePath, mediaBlob, {
+        contentType: resolveRentalUploadMimeType(media, mediaBlob),
+      });
 
     if (uploadError) throw uploadError;
 
@@ -3938,16 +4094,16 @@ const openReplacementResumeWorkflow = useCallback(() => {
         rental_id: id,
         video_url: publicUrl,
         video_type: isOpening ? 'opening' : 'closing',
-        file_type: media.type?.startsWith('image/') ? 'image' : 'video'
+        file_type: isImage ? 'image' : 'video'
       });
 
     if (dbError) throw dbError;
 
     // Refresh media list
     if (isOpening) {
-      setOpeningMedia(prev => [...prev, { video_url: publicUrl, file_type: media.type?.startsWith('image/') ? 'image' : 'video' }]);
+      setOpeningMedia(prev => [...prev, { video_url: publicUrl, file_type: isImage ? 'image' : 'video' }]);
     } else {
-      setClosingMedia(prev => [...prev, { video_url: publicUrl, file_type: media.type?.startsWith('image/') ? 'image' : 'video' }]);
+      setClosingMedia(prev => [...prev, { video_url: publicUrl, file_type: isImage ? 'image' : 'video' }]);
     }
   };
   
@@ -5580,7 +5736,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
         }
 
         try {
-          await loadRentalMedia(rentalData.id);
+          await loadRentalMedia(rentalData.id, finalRentalData);
         } catch (mediaLoadError) {
           console.error('❌ Non-critical rental media load failure:', mediaLoadError);
         }
@@ -6141,53 +6297,10 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
 
 
   const inferredShortReturnVoidedExtension = useMemo(() => {
-    const thresholdMinutes = Number(
-      rentalTimingSettings?.extraHourThresholdMinutes
-        ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
-    );
-    const safeExtensions = (Array.isArray(extensions) ? extensions : [])
-      .filter((ext) => String(ext?.status || '').toLowerCase() === 'approved')
-      .sort((a, b) => {
-        const aTime = new Date(a?.approved_at || a?.created_at || 0).getTime();
-        const bTime = new Date(b?.approved_at || b?.created_at || 0).getTime();
-        return bTime - aTime;
-      });
-
-    if (
-      !rental ||
-      String(rental?.rental_status || '').toLowerCase() !== 'completed' ||
-      safeExtensions.length === 0 ||
-      !Number.isFinite(thresholdMinutes) ||
-      thresholdMinutes <= 0
-    ) {
-      return null;
-    }
-
-    const latestExtension = safeExtensions[0];
-    const extensionHours = parseFloat(latestExtension?.extension_hours) || 0;
-    const currentEndTime = new Date(rental?.rental_end_date || '').getTime();
-    const completedTime = new Date(rental?.actual_end_date || rental?.completed_at || '').getTime();
-
-    if (!Number.isFinite(currentEndTime) || !Number.isFinite(completedTime) || extensionHours <= 0) {
-      return null;
-    }
-
-    const extensionStartTime = currentEndTime - (extensionHours * 60 * 60 * 1000);
-    if (completedTime < extensionStartTime || completedTime > currentEndTime) {
-      return null;
-    }
-
-    const elapsedMinutesInExtension = (completedTime - extensionStartTime) / 60000;
-    if (elapsedMinutesInExtension > thresholdMinutes) {
-      return null;
-    }
-
-    return {
-      ...latestExtension,
-      elapsedMinutesInExtension,
-      rolledBackEndDate: new Date(extensionStartTime).toISOString(),
-    };
-  }, [extensions, rental, rentalTimingSettings]);
+    // Approved extensions are contractual billing history. Returning early should
+    // not hide or subtract them from receipts, contracts, or the completed total.
+    return null;
+  }, []);
 
   // ✅ MEMOIZED: Calculate extension totals to prevent unnecessary recalculations
   const approvedExtensions = useMemo(
@@ -7204,6 +7317,8 @@ Click the link above to review and approve the extension.`;
   // ✅ MODIFIED: Remove auto-WhatsApp trigger from extension creation
   const handleExtensionCreated = async (extensionContext = null) => {
     if (RENTAL_DEBUG) console.log('🔄 Extension created, reloading data...');
+    const shouldSkipExtensionTelegram = Boolean(extensionContext?.skipTelegram || extensionContext?.duplicate);
+
     if (extensionContext?.extension) {
       setExtensions((prev) => {
         const safePrev = Array.isArray(prev) ? prev : [];
@@ -7269,7 +7384,7 @@ Click the link above to review and approve the extension.`;
         })
       );
     }
-    if (extensionContext?.extension?.id) {
+    if (extensionContext?.extension?.id && !shouldSkipExtensionTelegram) {
       try {
         await notifyRentalTelegramEvent(
           'rental_extension_requested',
@@ -7312,6 +7427,13 @@ Click the link above to review and approve the extension.`;
   const handleApproveExtension = async (extensionId) => {
     if (actionLoading?.[extensionId]) return;
     const localHandledKey = String(extensionId || '').trim();
+    const approverDisplayName = String(
+      currentUser?.full_name ||
+      currentUser?.fullName ||
+      currentUser?.name ||
+      currentUser?.email ||
+      ''
+    ).trim();
 
     try {
       setActionLoading(prev => ({ ...prev, [extensionId]: true }));
@@ -7386,7 +7508,8 @@ Click the link above to review and approve the extension.`;
         .update({
           status: 'approved',
           approved_at: new Date().toISOString(),
-          approved_by: currentUser?.id
+          approved_by: currentUser?.id,
+          approved_by_name: approverDisplayName || null,
         })
         .eq('id', extensionId)
         .eq('status', 'pending')
@@ -7420,12 +7543,7 @@ Click the link above to review and approve the extension.`;
         status: 'approved',
         approved_at: approvedAt,
         approved_by: currentUser?.id || extension?.approved_by || null,
-        approved_by_name:
-          currentUser?.full_name ||
-          currentUser?.fullName ||
-          currentUser?.email ||
-          extension?.approved_by_name ||
-          '',
+        approved_by_name: approverDisplayName || extension?.approved_by_name || '',
         updated_at: approvedAt,
       };
       upsertExtensionRecord(approvedExtensionRecord);
@@ -7481,6 +7599,13 @@ Click the link above to review and approve the extension.`;
   const handleRejectExtension = async (extensionId) => {
     if (!confirm('Cancel this extension request?')) return;
     const localHandledKey = String(extensionId || '').trim();
+    const rejecterDisplayName = String(
+      currentUser?.full_name ||
+      currentUser?.fullName ||
+      currentUser?.name ||
+      currentUser?.email ||
+      ''
+    ).trim();
     
     try {
       setActionLoading(prev => ({ ...prev, [extensionId]: true }));
@@ -7488,7 +7613,7 @@ Click the link above to review and approve the extension.`;
       if (localHandledKey) {
         locallyHandledExtensionIdsRef.current.add(localHandledKey);
       }
-      await ExtensionPricingService.rejectExtension(extensionId, currentUser?.id, null);
+      await ExtensionPricingService.rejectExtension(extensionId, currentUser?.id, null, rejecterDisplayName);
       const rejectedAt = new Date().toISOString();
       const rejectedExtensionRecord = {
         ...(existingExtension || {}),
@@ -7496,12 +7621,7 @@ Click the link above to review and approve the extension.`;
         status: 'rejected',
         rejected_at: rejectedAt,
         rejected_by: currentUser?.id || existingExtension?.rejected_by || null,
-        rejected_by_name:
-          currentUser?.full_name ||
-          currentUser?.fullName ||
-          currentUser?.email ||
-          existingExtension?.rejected_by_name ||
-          '',
+        rejected_by_name: rejecterDisplayName || existingExtension?.rejected_by_name || '',
         updated_at: rejectedAt,
       };
       upsertExtensionRecord(rejectedExtensionRecord);
@@ -10949,105 +11069,9 @@ const handleFuelChargeToggle = async (enabled) => {
     completedAt,
     currentRental = rental,
   }) => {
-    const thresholdMinutes = Number(
-      rentalTimingSettings?.extraHourThresholdMinutes
-        ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
-    );
-
-    if (!currentRental?.id || !Number.isFinite(thresholdMinutes) || thresholdMinutes <= 0) {
-      return { rental: currentRental, autoVoided: false };
-    }
-
-    const latestExtension = await ExtensionPricingService.getLatestVoidableExtension(currentRental.id);
-    if (!latestExtension) {
-      return { rental: currentRental, autoVoided: false };
-    }
-
-    const extensionHours = parseFloat(latestExtension.extension_hours) || 0;
-    const extensionPrice = parseFloat(latestExtension.extension_price) || 0;
-    const currentEndTime = new Date(
-      currentRental?.rental_end_date || currentRental?.actual_end_date || ''
-    ).getTime();
-    const completedTime = new Date(completedAt || '').getTime();
-
-    if (!Number.isFinite(currentEndTime) || !Number.isFinite(completedTime) || extensionHours <= 0) {
-      return { rental: currentRental, autoVoided: false };
-    }
-
-    const extensionStartTime = currentEndTime - (extensionHours * 60 * 60 * 1000);
-    if (completedTime < extensionStartTime || completedTime > currentEndTime) {
-      return { rental: currentRental, autoVoided: false };
-    }
-
-    const elapsedMinutesInExtension = (completedTime - extensionStartTime) / 60000;
-    if (elapsedMinutesInExtension > thresholdMinutes) {
-      return { rental: currentRental, autoVoided: false };
-    }
-
-    await ExtensionPricingService.voidExtension(
-      latestExtension.id,
-      currentUser?.id,
-      `Auto-voided on return after ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes of extension time`
-    );
-
-    const approvedSummary = await ExtensionPricingService.getApprovedExtensionSummary(currentRental.id);
-    const nextEndDate = new Date(extensionStartTime).toISOString();
-    const isHourlyRental = currentRental?.rental_type === 'hourly';
-    const currentQuantityHours = parseFloat(currentRental?.quantity_hours) || 0;
-    const currentQuantityDays = parseFloat(currentRental?.quantity_days) || 0;
-    const nextQuantityHours = isHourlyRental
-      ? Math.max(0, currentQuantityHours - extensionHours)
-      : Math.max(0, (currentQuantityDays - (extensionHours / 24)) * 24);
-    const nextQuantityDays = isHourlyRental
-      ? nextQuantityHours
-      : Math.max(0, currentQuantityDays - (extensionHours / 24));
-    const currentTotalAmount = parseFloat(currentRental?.total_amount) || 0;
-    const currentRemainingAmount = parseFloat(currentRental?.remaining_amount) || 0;
-    const nextTotalAmount = Math.max(0, currentTotalAmount - extensionPrice);
-    const nextRemainingAmount = Math.max(0, currentRemainingAmount - extensionPrice);
-
-    const autoVoidPayload = {
-      rental_end_date: nextEndDate,
-      extension_count: approvedSummary.extensionCount,
-      total_extended_hours: approvedSummary.totalExtendedHours,
-      total_extension_price: approvedSummary.totalExtensionPrice,
-      current_extension_id: approvedSummary.currentExtensionId,
-      total_amount: nextTotalAmount,
-      remaining_amount: nextRemainingAmount,
-      quantity_hours: nextQuantityHours,
-      quantity_days: nextQuantityDays,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data: updatedRental, error: autoVoidError } = await updateRentalWithSchemaFallback(autoVoidPayload);
-    if (autoVoidError) {
-      throw autoVoidError;
-    }
-
-    setExtensions((prev) => Array.isArray(prev)
-      ? prev.map((item) => (
-          item.id === latestExtension.id
-            ? { ...item, status: 'voided', voided_at: new Date().toISOString(), voided_by: currentUser?.id || null }
-            : item
-        ))
-      : prev);
-
-    toast.success(
-      tr(
-        `Last extension voided automatically after ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes.`,
-        `Dernière prolongation annulée automatiquement après ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes.`
-      )
-    );
-
-    return {
-      rental: updatedRental || {
-        ...currentRental,
-        ...autoVoidPayload,
-      },
-      autoVoided: true,
-      voidedExtension: latestExtension,
-      elapsedMinutesInExtension,
-    };
+    // Closing a rental should preserve approved extension billing and audit
+    // history. Any refund/discount must be an explicit balance adjustment.
+    return { rental: currentRental, autoVoided: false };
   };
 
   const calculateBaseHourlyOvertimeAdjustment = (currentRental = rental, completedAt) => {
@@ -12041,19 +12065,109 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 };
 
 
+  const MEDIA_IMAGE_EXTENSION_PATTERN = /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)(?=$|[\s?#])/i;
+  const MEDIA_VIDEO_EXTENSION_PATTERN = /\.(m4v|mov|mp4|mpeg|mpg|ogg|ogv|quicktime|webm)(?=$|[\s?#])/i;
+
+  const getRentalMediaProbeText = (record = {}) => [
+    record.file_type,
+    record.media_category,
+    record.original_filename,
+    record.file_name,
+    record.storage_path,
+    record.public_url,
+    record.url,
+    record.video_url,
+    record.thumbnail_url,
+    record.poster_url,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  const inferRentalMediaKind = (record = {}) => {
+    const normalizedFileType = String(record.file_type || '').toLowerCase();
+    const probeText = getRentalMediaProbeText(record);
+
+    if (
+      normalizedFileType.startsWith('image/') ||
+      normalizedFileType === 'image' ||
+      record.media_category === 'image' ||
+      MEDIA_IMAGE_EXTENSION_PATTERN.test(probeText)
+    ) {
+      return 'image';
+    }
+
+    if (
+      normalizedFileType.startsWith('video/') ||
+      normalizedFileType === 'video' ||
+      record.media_category === 'video' ||
+      MEDIA_VIDEO_EXTENSION_PATTERN.test(probeText)
+    ) {
+      return 'video';
+    }
+
+    return 'video';
+  };
+
+  const buildLegacyRentalMediaFallbacks = (rentalLike = {}, existingRecords = []) => {
+    const existingKeys = new Set(
+      existingRecords
+        .flatMap((record) => [record.public_url, record.url, record.video_url, record.storage_path, record.file_name, record.original_filename])
+        .filter(Boolean)
+        .map((value) => String(value))
+    );
+
+    const createFallbackRecord = ({ id: fallbackId, phase, url, thumbnailUrl, fallbackName }) => {
+      const publicUrl = String(url || '').trim();
+      if (!publicUrl || existingKeys.has(publicUrl)) return null;
+      return {
+        id: `${rentalLike.id || rentalLike.rental_id}-${fallbackId}`,
+        rental_id: rentalLike.id,
+        phase,
+        file_type: MEDIA_IMAGE_EXTENSION_PATTERN.test(publicUrl.toLowerCase()) ? 'image/jpeg' : 'video',
+        file_name: fallbackName,
+        original_filename: fallbackName,
+        storage_path: publicUrl,
+        public_url: publicUrl,
+        thumbnail_url: thumbnailUrl || null,
+        duration: 0,
+        file_size: 0,
+        created_at: rentalLike.started_at || rentalLike.created_at || new Date().toISOString(),
+        isLegacyFallback: true,
+      };
+    };
+
+    return [
+      createFallbackRecord({
+        id: 'opening-media-fallback',
+        phase: 'out',
+        url: rentalLike.opening_video_url,
+        thumbnailUrl: rentalLike.opening_video_thumbnail,
+        fallbackName: `opening_${rentalLike.rental_id || rentalLike.id || 'rental'}`,
+      }),
+      createFallbackRecord({
+        id: 'closing-media-fallback',
+        phase: 'in',
+        url: rentalLike.closing_video_url,
+        thumbnailUrl: rentalLike.closing_video_thumbnail,
+        fallbackName: `closing_${rentalLike.rental_id || rentalLike.id || 'rental'}`,
+      }),
+    ].filter(Boolean);
+  };
+
   // Helper function to get media counts
   const getMediaCounts = (mediaArray) => {
-    const images = mediaArray.filter(m => m.file_type?.startsWith('image/')).length;
-    const videos = mediaArray.filter(m => m.file_type?.startsWith('video/')).length;
+    const images = mediaArray.filter(m => inferRentalMediaKind(m) === 'image').length;
+    const videos = mediaArray.filter(m => inferRentalMediaKind(m) === 'video').length;
     const parts = [];
     if (images > 0) parts.push(`${images} image${images !== 1 ? 's' : ''}`);
     if (videos > 0) parts.push(`${videos} video${videos !== 1 ? 's' : ''}`);
     return parts.join(', ');
   };
 
-  const loadRentalMedia = async (rentalId) => {
+  const loadRentalMedia = async (rentalId, rentalLike = rental) => {
     try {
-      const { data: mediaRecords, error: mediaError } = await supabase
+      const { data: loadedMediaRecords, error: mediaError } = await supabase
         .from('app_2f7bf469b0_rental_media')
         .select('*')
         .eq('rental_id', rentalId)
@@ -12061,22 +12175,27 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
       if (mediaError) {
         console.error('❌ Error:', mediaError);
-        return;
       }
 
-      if (mediaRecords && mediaRecords.length > 0) {
+      const mediaRecords = mediaError ? [] : (loadedMediaRecords || []);
+      const normalizedMediaRecords = [
+        ...mediaRecords,
+        ...buildLegacyRentalMediaFallbacks(rentalLike, mediaRecords),
+      ];
+
+      if (normalizedMediaRecords.length > 0) {
         const decorateMediaRecord = (record) => ({
           ...record,
           url: record.public_url,
-          isImage: record.file_type?.startsWith('image/') || false,
-          isVideo: record.file_type?.startsWith('video/') || false
+          isImage: inferRentalMediaKind(record) === 'image',
+          isVideo: inferRentalMediaKind(record) === 'video'
         });
 
-        const openingMedia = mediaRecords
+        const openingMedia = normalizedMediaRecords
           .filter(r => r.phase === 'out')
           .map(decorateMediaRecord);
         
-        const closingMedia = mediaRecords
+        const closingMedia = normalizedMediaRecords
           .filter(r => r.phase === 'in')
           .map(decorateMediaRecord);
 
@@ -12447,7 +12566,13 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
         videoRef.current.muted = true;
         videoRef.current.playsInline = true;
         videoRef.current.autoplay = true;
-        await videoRef.current.play();
+        try {
+          await videoRef.current.play();
+        } catch (playError) {
+          if (!isInterruptedVideoPlayError(playError)) {
+            throw playError;
+          }
+        }
       }
     } catch (err) {
       console.error('Camera error:', err);
@@ -12525,7 +12650,9 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
             drawFrame();
             window.dispatchEvent(new Event('resize'));
           }).catch(err => {
-            console.error('❌ Video play failed after switch:', err);
+            if (!isInterruptedVideoPlayError(err)) {
+              console.error('❌ Video play failed after switch:', err);
+            }
           });
         };
       }
@@ -12711,6 +12838,9 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       paintFrame();
       
     } catch (err) {
+      if (isInterruptedVideoPlayError(err)) {
+        return;
+      }
       console.error('❌ Video play failed:', err);
     }
     
@@ -12851,6 +12981,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           blob: blob,
           name: fileName,
           type: 'image/jpeg',
+          mimeType: 'image/jpeg',
           url: URL.createObjectURL(blob),
           thumbnail: URL.createObjectURL(blob),
           source: 'camera',
@@ -13077,7 +13208,7 @@ useEffect(() => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = resolvedMode === 'photo'
-      ? 'image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.JPG,.JPEG,.PNG,.WEBP,.HEIC,.HEIF'
+      ? 'image/*,image/heic,image/heif,image/heic-sequence,image/heif-sequence,.jpg,.jpeg,.png,.webp,.heic,.heif,.JPG,.JPEG,.PNG,.WEBP,.HEIC,.HEIF'
       : 'video/*,.mov,.MOV,.mp4,.MP4,.m4v,.M4V'; // Accept all video formats
     input.multiple = true; // Allow multiple file selection
     
@@ -13092,6 +13223,7 @@ useEffect(() => {
       // Process each file sequentially
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        let shouldResetConversionState = false;
         if (RENTAL_DEBUG) console.log(`📹 Processing file ${i + 1}/${files.length}:`, file.name, file.type, `${(file.size / 1024 / 1024).toFixed(2)}MB`);
 
         // Check file size (50MB limit per file)
@@ -13102,32 +13234,79 @@ useEffect(() => {
         }
 
         try {
-          if (resolvedMode === 'photo') {
-            if (!String(file.type || '').startsWith('image/')) {
-              toast.error(`"${file.name}" is not an image. Skipping this file.`);
+          const fileIsImage = isRentalImageUploadFile(file);
+          const fileIsVideo = isRentalVideoUploadFile(file);
+          const fileMode = fileIsImage ? 'photo' : fileIsVideo ? 'video' : resolvedMode;
+
+          if (fileMode === 'photo') {
+            if (!isRentalImageUploadFile(file)) {
+              toast.error(`"${file.name}" is not a supported image. JPG, PNG, WEBP, HEIC, and HEIF are accepted.`);
               continue;
             }
 
             const timestamp = Date.now();
-            const blobUrl = URL.createObjectURL(file);
+            const originalName = file.name || `photo_${timestamp}.jpg`;
+            let imageBlob = file;
+            let imageName = originalName;
+            let imageMimeType = resolveRentalUploadMimeType(file, file);
+            let converted = false;
+            let previewUnavailable = false;
+
+            if (needsImageConversion(file)) {
+              shouldResetConversionState = true;
+              setIsConverting(true);
+              setConversionProgress(0);
+              try {
+                const processedImage = await processImage(
+                  file,
+                  (progress) => {
+                    setConversionProgress(Math.round(progress));
+                  },
+                  { silent: true }
+                );
+                imageBlob = new File(
+                  [processedImage.blob],
+                  buildConvertedRentalImageFileName(originalName),
+                  { type: 'image/jpeg' }
+                );
+                imageName = imageBlob.name;
+                imageMimeType = 'image/jpeg';
+                converted = Boolean(processedImage.converted);
+              } catch (conversionError) {
+                if (RENTAL_DEBUG) {
+                  console.warn('⚠️ HEIC conversion failed; uploading original HEIC image instead:', conversionError);
+                }
+                imageMimeType = resolveRentalUploadMimeType(file, file);
+                imageBlob = file.type
+                  ? file
+                  : new File([file], originalName, { type: imageMimeType });
+                imageName = originalName;
+                previewUnavailable = true;
+              }
+            }
+
+            const blobUrl = URL.createObjectURL(imageBlob);
             const fileObj = {
               id: timestamp + Math.random(),
-              type: 'image',
+              type: imageMimeType,
               mediaType: 'image',
-              mimeType: file.type || 'image/jpeg',
-              blob: file,
+              mimeType: imageMimeType,
+              blob: imageBlob,
               url: blobUrl,
-              name: file.name || `photo_${timestamp}.jpg`,
+              name: imageName,
+              originalName,
               timestamp: new Date().toISOString(),
-              size: file.size,
+              size: imageBlob.size,
               source: 'gallery',
-              converted: false,
+              converted,
+              previewUnavailable,
             };
 
             setCapturedMedia(prev => [...prev, fileObj]);
             continue;
           }
 
+          shouldResetConversionState = true;
           setIsConverting(true);
           setConversionProgress(0);
 
@@ -13183,7 +13362,7 @@ useEffect(() => {
           console.error(`❌ Gallery processing failed for ${file.name}:`, error);
           toast.error(`Failed to process "${file.name}": ${error.message} | Skipping this file.`);
         } finally {
-          if (resolvedMode === 'video') {
+          if (shouldResetConversionState) {
             setIsConverting(false);
             setConversionProgress(0);
           }
@@ -13234,7 +13413,9 @@ useEffect(() => {
         url,
         name: `photo_${Date.now()}.jpg`,
         size: blob.size,
-        mediaType: 'image'
+        type: blob.type || 'image/jpeg',
+        mediaType: 'image',
+        mimeType: blob.type || 'image/jpeg'
       };
       
       setCapturedMedia(prev => [...prev, photoFile]);
@@ -13427,9 +13608,10 @@ useEffect(() => {
         
         // Normalize file object - handle both File objects and our custom structure
         const fileBlob = file.blob || file;
-        const fileName_orig = file.name || (file instanceof File ? file.name : `media_${Date.now()}`);
-        const fileType = file.type || file.mediaType || (fileBlob.type || 'application/octet-stream');
-        const isImage = fileType.startsWith('image/');
+        const fileName_orig = file.originalName || file.name || (file instanceof File ? file.name : `media_${Date.now()}`);
+        const fileNameForPath = file.name || fileName_orig;
+        const fileType = resolveRentalUploadMimeType(file, fileBlob);
+        const isImage = isRentalImageUploadFile(file, fileBlob);
         const baseProgress = (i / totalFiles) * 100;
         const progressRange = 100 / totalFiles;
 
@@ -13440,7 +13622,7 @@ useEffect(() => {
 
         // Generate unique filename with timestamp
         const timestamp = Date.now();
-        const sanitizedName = fileName_orig.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const sanitizedName = fileNameForPath.replace(/[^a-zA-Z0-9.-]/g, '_');
         const fileName = `${type}_${rental.rental_id}_${timestamp}_${sanitizedName}`;
         const mediaFolder = isImage ? 'images' : 'videos';
         const filePath = `rentals/${rental.rental_id}/${type}/${mediaFolder}/${fileName}`;
@@ -13448,19 +13630,49 @@ useEffect(() => {
         if (RENTAL_DEBUG) console.log(`📤 Upload path: ${filePath}`);
 
         // Upload with progress tracking
-        const uploadResult = await uploadWithProgress(fileBlob, filePath, (progress) => {
-          const overallProgress = Math.round(baseProgress + (progress * progressRange / 100));
-          setUploadProgress(overallProgress);
-          if (RENTAL_DEBUG) console.log(`📤 Upload progress: ${overallProgress}%`);
-        });
+        const uploadResult = await uploadWithProgress(
+          fileBlob,
+          filePath,
+          (progress) => {
+            const overallProgress = Math.round(baseProgress + (progress * progressRange / 100));
+            setUploadProgress(overallProgress);
+            if (RENTAL_DEBUG) console.log(`📤 Upload progress: ${overallProgress}%`);
+          },
+          fileType
+        );
 
       if (RENTAL_DEBUG) console.log('✅ Upload successful:', uploadResult.url);
+
+        let savedFileType = fileType;
+        let savedFileName = fileName;
+        let savedFileSize = parseInt(fileBlob.size) || 0;
+        let savedStoragePath = filePath;
+        let savedPublicUrl = uploadResult.url;
+        const isHeicImageUpload = isImage && isHeicRentalUploadFile(file, fileBlob, fileType, fileName_orig);
+
+        if (isHeicImageUpload) {
+          try {
+            if (RENTAL_DEBUG) console.log('🔄 Creating JPEG preview for HEIC rental media...');
+            const heicPreview = await convertRentalHeicStoragePreview({ storagePath: filePath });
+            savedFileType = heicPreview.fileType || 'image/jpeg';
+            savedStoragePath = heicPreview.storagePath;
+            savedPublicUrl = heicPreview.publicUrl;
+            savedFileSize = parseInt(heicPreview.fileSize) || savedFileSize;
+            savedFileName = String(savedStoragePath || '').split('/').filter(Boolean).pop() || buildConvertedRentalImageFileName(fileName);
+            if (RENTAL_DEBUG) console.log('✅ HEIC preview created:', savedPublicUrl);
+          } catch (heicPreviewError) {
+            console.error('❌ HEIC preview conversion failed:', heicPreviewError);
+            throw new Error('This HEIC photo could not be converted into a previewable image. Please retry the upload.');
+          }
+        }
 
         // Generate thumbnail for videos, use image itself for images
         let thumbnailUrl = null;
         
         if (isImage) {
-          thumbnailUrl = uploadResult.url; // Use the image itself as thumbnail
+          thumbnailUrl = isHeicImageUpload && savedFileType !== 'image/jpeg'
+            ? null
+            : savedPublicUrl;
         } else {
           try {
             if (RENTAL_DEBUG) console.log('🖼️ Generating video thumbnail...');
@@ -13485,12 +13697,12 @@ useEffect(() => {
           rental_id: rental.id,
           rental_vehicle_history_id: getCurrentVehicleHistoryEntry()?.id || null,
           phase: phase,
-          file_type: fileType,
-          file_name: fileName,
+          file_type: savedFileType,
+          file_name: savedFileName,
           original_filename: fileName_orig,
-          file_size: parseInt(fileBlob.size) || 0,
-          storage_path: filePath,
-          public_url: uploadResult.url,
+          file_size: savedFileSize,
+          storage_path: savedStoragePath,
+          public_url: savedPublicUrl,
           thumbnail_url: thumbnailUrl || null,
           duration: durationValue,
           created_at: new Date().toISOString()
@@ -13507,7 +13719,7 @@ useEffect(() => {
           throw new Error(`Failed to save media record: ${mediaError.message}`);
         }
 
-        uploadedMedia.push({ url: uploadResult.url, thumbnailUrl, isImage });
+        uploadedMedia.push({ url: savedPublicUrl, thumbnailUrl, isImage });
         if (RENTAL_DEBUG) console.log(`✅ ${isImage ? 'Image' : 'Video'} ${i + 1}/${totalFiles} saved successfully`);
       }
 
@@ -13604,7 +13816,7 @@ useEffect(() => {
    * Uses XMLHttpRequest for upload progress events
    * Retries only on network errors with exponential backoff
    */
-  const uploadWithProgress = async (blob, path, onProgress) => {
+  const uploadWithProgress = async (blob, path, onProgress, contentType = 'application/octet-stream') => {
     const maxRetries = 3;
     let attempt = 0;
 
@@ -13617,7 +13829,7 @@ useEffect(() => {
         const { data, error } = await supabase.storage
           .from('rental-videos')
           .upload(path, blob, {
-            contentType: 'video/mp4',
+            contentType: contentType || blob?.type || 'application/octet-stream',
             upsert: false,
             onUploadProgress: (progress) => {
               const percent = Math.round((progress.loaded / progress.total) * 100);
@@ -14122,6 +14334,31 @@ useEffect(() => {
       });
       await loadRentalData(true);
       setReturnWorkflowBillingResult(null);
+
+      try {
+        await broadcastRentalWorkflowUpdate('finish', 'workflow_closed', {
+          showWorkflow: false,
+          rental_status: 'completed',
+          status: 'completed',
+          completed_at: completedAt,
+          actual_end_date: actualReturnEndTime,
+        });
+
+        await supabase.channel('rental-updates').send({
+          type: 'broadcast',
+          event: 'status_updated',
+          payload: {
+            rental_id: rental.id,
+            rental_status: 'completed',
+            status: 'completed',
+            completed_at: completedAt,
+            actual_end_date: actualReturnEndTime,
+            updated_at: completedAt,
+          },
+        });
+      } catch (broadcastError) {
+        console.warn('⚠️ Rental completion broadcast failed:', broadcastError);
+      }
       
       toast.success('Rental completed successfully!');
     } catch (err) {
@@ -17158,6 +17395,7 @@ useEffect(() => {
   const displayRentalStatus = hasHistoricalImpoundStatus ? 'impounded' : operationalRentalStatus;
   const isActive = operationalRentalStatus === 'active';
   const isScheduled = operationalRentalStatus === 'scheduled';
+  const isExpired = operationalRentalStatus === 'expired';
   const isWebsiteScheduledReservation = isScheduled && isWebsiteCustomerBooking(rental);
   const canEditWebsiteReservationSecurity = Boolean(
     isWebsiteScheduledReservation &&
@@ -18834,13 +19072,27 @@ useEffect(() => {
   const openingVehicleMediaCount = openingMedia.length;
   const additionalVehicleMediaCount = closingMedia.filter(isAdditionalVehicleMediaRecord).length;
   const closingInspectionMediaCount = Math.max(0, closingMedia.length - additionalVehicleMediaCount);
-  const completedVehicleMediaCount = closingMedia.length;
+  const hasVehicleMediaEvidence = Boolean(
+    openingMedia.length > 0 ||
+    closingMedia.length > 0 ||
+    rental?.opening_video_url ||
+    rental?.closing_video_url
+  );
+  const completedVehicleMediaCount = openingMedia.length + closingMedia.length;
   const hasCompletedVehicleMedia = completedVehicleMediaCount > 0;
+  const shouldShowRentalMediaSection = Boolean(
+    isScheduled ||
+    isActive ||
+    isCompleted ||
+    isExpired ||
+    hasVehicleMediaEvidence
+  );
   const vehicleMediaPreviewCountSegments = [
     openingVehicleMediaCount > 0 ? `${tr('Opening', 'Départ')} ${openingVehicleMediaCount}` : null,
     closingInspectionMediaCount > 0 ? `${tr('Closing', 'Retour')} ${closingInspectionMediaCount}` : null,
     additionalVehicleMediaCount > 0 ? `${tr('Media', 'Médias')} ${additionalVehicleMediaCount}` : null,
   ].filter(Boolean);
+
   const lightReadyToStartCardsByKey = {
     customer_verification: {
       key: 'customer_verification',
@@ -24442,8 +24694,8 @@ useEffect(() => {
                             <div className="grid grid-cols-4 gap-1 mb-2">
                               {capturedMedia.slice(0, 4).map((media, idx) => (
                                 <div key={media.id || idx} className="relative aspect-square bg-gray-100 rounded overflow-hidden border">
-                                  {media.type?.startsWith('image/') ? (
-                                    <img src={media.url} alt="" className="w-full h-full object-cover" />
+                                  {isRentalImageUploadFile(media, media?.blob) ? (
+                                    renderCapturedPhotoPreview(media, idx)
                                   ) : (
                                     <video src={media.url} className="w-full h-full object-cover" muted />
                                   )}
@@ -24456,7 +24708,7 @@ useEffect(() => {
                                     <X className="h-3 w-3" />
                                   </button>
                                   <div className="absolute bottom-0 right-0 bg-black/60 text-white text-[8px] px-1">
-                                    {media.type?.startsWith('image/') ? '📷' : '🎥'}
+                                    {isRentalImageUploadFile(media, media?.blob) ? '📷' : '🎥'}
                                   </div>
                                 </div>
                               ))}
@@ -26441,7 +26693,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         )
       )}
       
-      {(isScheduled || isActive || isCompleted) && (
+      {shouldShowRentalMediaSection && (
         isLightRentalDetailsMode ? (
           <div className="mb-6" ref={rentalMediaSectionRef}>
             {renderLightRentalInfoSection({
@@ -26466,7 +26718,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           ref={approvalExtensionSectionRef}
           className={`mb-6 transition-all duration-300 ${
             shouldHighlightExtensionApproval
-              ? 'rounded-[24px] ring-2 ring-amber-200 shadow-[0_0_0_4px_rgba(251,191,36,0.08)]'
+              ? 'rounded-[24px] ring-1 ring-amber-100/80 shadow-[0_0_0_3px_rgba(251,191,36,0.05)]'
               : ''
           }`}
         >
@@ -29122,11 +29374,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         const fileUrl = file.url || (file instanceof File ? URL.createObjectURL(file) : null);
                         return (
                           <div key={file.id || index} className={`relative group rounded-lg overflow-hidden bg-gray-100 border ${mediaViewMode === 'grid' ? 'aspect-square' : 'flex flex-row h-20'}`}>
-                            <img 
-                              src={fileUrl} 
-                              alt={`Photo ${index + 1}`}
-                              className="w-full h-full object-cover"
-                            />
+                            {renderCapturedPhotoPreview({ ...file, url: file.url || fileUrl }, index)}
                             <Button 
                               onClick={() => {
                                 if (file.url) URL.revokeObjectURL(file.url);
@@ -29285,11 +29533,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     <div className="flex gap-2 overflow-x-auto pb-2">
                       {capturedMedia.map((file, index) => (
                         <div key={file.id || index} className="relative flex-shrink-0">
-                          <img 
-                            src={file.url} 
-                            alt={`Capture ${index + 1}`}
-                            className="w-16 h-16 rounded-lg object-cover border-2 border-blue-500"
-                          />
+                          {renderCapturedPhotoPreview(file, index, 'w-16 h-16 rounded-lg object-cover border-2 border-blue-500')}
                           <button
                             type="button"
                             onClick={() => removeCapturedMedia(file.id)}
@@ -29344,10 +29588,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                               playsInline
                               onClick={(e) => {
                                 e.preventDefault();
-                                if (e.target.paused) {
-                                  e.target.play();
+                                if (e.currentTarget.paused) {
+                                  e.currentTarget.play()?.catch?.((playError) => {
+                                    if (!isInterruptedVideoPlayError(playError)) {
+                                      console.warn('Video preview play failed:', playError);
+                                    }
+                                  });
                                 } else {
-                                  e.target.pause();
+                                  e.currentTarget.pause();
                                 }
                               }}
                             />
@@ -29706,11 +29954,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         const fileUrl = file.url || (file instanceof File ? URL.createObjectURL(file) : null);
                         return (
                           <div key={file.id || index} className={`relative group rounded-lg overflow-hidden bg-gray-100 border ${mediaViewMode === 'grid' ? 'aspect-square' : 'flex flex-row h-20'}`}>
-                            <img 
-                              src={fileUrl} 
-                              alt={`Photo ${index + 1}`}
-                              className="w-full h-full object-cover"
-                            />
+                            {renderCapturedPhotoPreview({ ...file, url: file.url || fileUrl }, index)}
                             <Button 
                               onClick={() => {
                                 if (file.url) URL.revokeObjectURL(file.url);
@@ -29858,11 +30102,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     <div className="flex gap-2 overflow-x-auto pb-2">
                       {capturedMedia.map((file, index) => (
                         <div key={index} className="relative flex-shrink-0">
-                          <img 
-                            src={file.url} 
-                            alt={`Capture ${index + 1}`}
-                            className="w-16 h-16 rounded-lg object-cover border-2 border-blue-500"
-                          />
+                          {renderCapturedPhotoPreview(file, index, 'w-16 h-16 rounded-lg object-cover border-2 border-blue-500')}
                         </div>
                       ))}
                     </div>
@@ -29909,10 +30149,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                               playsInline
                               onClick={(e) => {
                                 e.preventDefault();
-                                if (e.target.paused) {
-                                  e.target.play();
+                                if (e.currentTarget.paused) {
+                                  e.currentTarget.play()?.catch?.((playError) => {
+                                    if (!isInterruptedVideoPlayError(playError)) {
+                                      console.warn('Video preview play failed:', playError);
+                                    }
+                                  });
                                 } else {
-                                  e.target.pause();
+                                  e.currentTarget.pause();
                                 }
                               }}
                             />

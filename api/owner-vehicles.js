@@ -118,6 +118,33 @@ const normalizeStatus = (status) => {
   return aliases[normalized] || normalized;
 };
 
+const isListingEffectivelyLive = (listing = null, profile = null) => {
+  if (!listing && !profile) return false;
+  const listingStatus = normalizeStatus(listing?.listing_status || listing?.status || '');
+  if (listingStatus === 'live') return true;
+
+  return Boolean(
+    profile?.marketplace_visible &&
+    listing?.published_at &&
+    !['rejected', 'changes_requested', 'unpublished'].includes(listingStatus)
+  );
+};
+
+const resolveListingStatus = (listing = null, profile = null, fallback = 'draft') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'live'
+    : normalizeStatus(listing?.listing_status || listing?.status || fallback);
+
+const resolveReviewStatus = (listing = null, profile = null, fallback = 'not_submitted') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'approved'
+    : normalizeStatus(listing?.review_status || fallback);
+
+const resolveModerationStatus = (listing = null, profile = null, fallback = 'not_reviewed') =>
+  isListingEffectivelyLive(listing, profile)
+    ? 'approved'
+    : normalizeStatus(listing?.moderation_status || fallback);
+
 const getMissingSchemaColumn = (error) => {
   const message = String(error?.message || error?.details || '');
   const singleQuoteMatch = message.match(/'([^']+)'\s+column/i);
@@ -683,7 +710,7 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
   const normalizedOwnerType = ['individual_owner', 'operator', 'owner'].includes(String(accountType || '').trim())
     ? String(accountType).trim()
     : 'individual_owner';
-  const listingStatus = submitForReview ? 'pending_review' : normalizeStatus(existingListing?.listing_status || 'draft');
+  const listingStatus = submitForReview ? 'pending_review' : resolveListingStatus(existingListing, formData?.rawProfile, 'draft');
 
   const profilePayload = {
     owner_id: ownerId,
@@ -776,18 +803,20 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     },
     media: cleanMedia,
     cover_image_url: coverImageUrl,
-    marketplace_visible: existingListing?.listing_status === 'live',
+    marketplace_visible: isListingEffectivelyLive(existingListing, formData?.rawProfile),
     is_active: true,
   };
+
+  const canonicalVehicleTitle = [profilePayload.brand_name, profilePayload.model_name].filter(Boolean).join(' ').trim();
 
   const listingPayload = {
     owner_id: ownerId,
     owner_type: normalizedOwnerType,
     listing_status: listingStatus,
-    review_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.review_status || 'not_submitted'),
-    moderation_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.moderation_status || 'not_reviewed'),
+    review_status: submitForReview ? 'pending_review' : resolveReviewStatus(existingListing, formData?.rawProfile, 'not_submitted'),
+    moderation_status: submitForReview ? 'pending_review' : resolveModerationStatus(existingListing, formData?.rawProfile, 'not_reviewed'),
     booking_mode: 'request',
-    title: String(formData.listingTitle || `${profilePayload.brand_name} ${profilePayload.model_name}`).trim(),
+    title: canonicalVehicleTitle || String(formData.listingTitle || '').trim() || 'Marketplace listing',
     currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',
     daily_price_amount: optionalNumber(formData.dailyPriceAmount),
     hourly_price_amount: null,
@@ -1247,7 +1276,7 @@ const saveListingCopySection = async ({ adminClient, ownerId, accountType, vehic
 
   const fallbackTitle = [savedProfile.brand_name, savedProfile.model_name].filter(Boolean).join(' ').trim() || 'Marketplace listing';
   const listingCopyPayload = {
-    title: listingTitle || fallbackTitle,
+    title: fallbackTitle || listingTitle || 'Marketplace listing',
     short_description: shortDescription,
     full_description: fullDescription,
     updated_at: now,
@@ -1440,8 +1469,9 @@ const saveListingWorkspaceSection = async ({ adminClient, ownerId, accountType, 
     throw listingLookupError;
   }
 
+  const canonicalListingTitle = [savedProfile.brand_name, savedProfile.model_name].filter(Boolean).join(' ').trim();
   const listingPayload = {
-    title: listingTitle || [savedProfile.brand_name, savedProfile.model_name].filter(Boolean).join(' ').trim() || 'Marketplace listing',
+    title: canonicalListingTitle || listingTitle || 'Marketplace listing',
     short_description: shortDescription,
     full_description: fullDescription,
     currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',

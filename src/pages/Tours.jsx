@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowRight,
@@ -905,8 +905,13 @@ const Tours = () => {
   const tr = (en, fr) => (isFrench ? fr : en);
   const { user } = useAuth();
   const isAuthenticated = Boolean(user);
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const returnPath = useMemo(() => {
+    const from = String(location.state?.from || '').trim();
+    return from && from.startsWith('/') ? from : '/website';
+  }, [location.state]);
   const selectedCity = searchParams.get('city') || DEFAULT_CITY;
   const [packages, setPackages] = useState([]);
   const [pricingRows, setPricingRows] = useState([]);
@@ -1280,10 +1285,10 @@ const Tours = () => {
       <section className="mx-auto max-w-6xl px-5 pb-10 pt-8 sm:px-6 lg:pt-12">
         <button
           type="button"
-          onClick={() => navigate('/website')}
+          onClick={() => navigate(returnPath)}
           className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-violet-100 bg-white text-slate-600 shadow-sm transition hover:bg-violet-50"
-          title="Back to website"
-          aria-label="Back to website"
+          title={returnPath === '/website' ? 'Back to website' : 'Back'}
+          aria-label={returnPath === '/website' ? 'Back to website' : 'Back'}
         >
           <ArrowLeft className="h-5 w-5" />
         </button>

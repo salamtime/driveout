@@ -344,6 +344,7 @@ const normalizeListingRow = (listing = {}, profile = {}, latestMessage = null) =
 const buildListingDetail = (listing = {}, profile = {}) => {
   const pricing = listing?.pricing && typeof listing.pricing === 'object' ? listing.pricing : {};
   const distancePricing = pricing?.distance && typeof pricing.distance === 'object' ? pricing.distance : {};
+  const canonicalVehicleTitle = [profile.brand_name, profile.model_name].filter(Boolean).join(' ').trim();
 
   return {
     id: String(listing.id),
@@ -353,7 +354,7 @@ const buildListingDetail = (listing = {}, profile = {}) => {
     listingStatus: normalizeStatus(listing.listing_status || listing.status, 'draft'),
     reviewStatus: normalizeStatus(listing.review_status, 'not_submitted'),
     bookingMode: listing.booking_mode || 'request',
-    title: listing.title || [profile.brand_name, profile.model_name].filter(Boolean).join(' ') || 'Marketplace listing',
+    title: canonicalVehicleTitle || listing.title || 'Marketplace listing',
     adminNotes: listing.admin_notes || '',
     adminFeedback: listing.admin_feedback || '',
     moderationStatus: normalizeStatus(listing.moderation_status, 'not_reviewed'),

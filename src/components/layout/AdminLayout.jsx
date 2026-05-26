@@ -11,7 +11,6 @@ import WebsiteBookingExpiryService from '../../services/WebsiteBookingExpiryServ
 import appWarmupService from '../../services/AppWarmupService';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { getTaskStats } from '../../services/TaskService';
-import { shouldScopeSharedTenantData } from '../../services/OrganizationService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../services/systemSettingsApi';
 import { prefetchAdminModuleChunk, prewarmAdminModuleChunks } from '../../utils/adminModulePreloader';
 import { isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
@@ -113,7 +112,7 @@ const AdminLayout = () => {
   const activeLanguage = isFrench ? 'fr' : 'en';
   const inheritedTenantLogoUrl = getTenantLogoFallback();
   const hostContext = getHostContext();
-  const isIsolatedTenantWorkspace = shouldScopeSharedTenantData(hostContext);
+  const isTenantHostWorkspace = hostContext?.kind === 'tenant';
   const resolvedTenantSettings =
     tenantSettings && typeof tenantSettings === 'object'
       ? tenantSettings
@@ -484,10 +483,12 @@ const AdminLayout = () => {
     let cancelled = false;
 
     const loadTenantBranding = async () => {
-      if (isIsolatedTenantWorkspace) {
+      if (isTenantHostWorkspace) {
         const tenantSettings =
-          tenantSession?.tenantSettings && typeof tenantSession.tenantSettings === 'object'
-            ? tenantSession.tenantSettings
+          Object.keys(resolvedTenantSettings || {}).length > 0
+            ? resolvedTenantSettings
+            : tenantSession?.tenantSettings && typeof tenantSession.tenantSettings === 'object'
+              ? tenantSession.tenantSettings
             : {};
         if (!cancelled) {
           setTenantLogoUrl(String(tenantSettings.logo_url || '').trim());
@@ -520,7 +521,7 @@ const AdminLayout = () => {
       cancelled = true;
       window.removeEventListener(SYSTEM_SETTINGS_UPDATED_EVENT, handleBrandingUpdate);
     };
-  }, [isIsolatedTenantWorkspace, tenantSession]);
+  }, [isTenantHostWorkspace, resolvedTenantSettings, tenantSession]);
 
   useEffect(() => {
     setProfileMenuOpen(false);
@@ -625,7 +626,7 @@ const AdminLayout = () => {
   }, [modalFocusDepth, location.pathname]);
 
   useEffect(() => {
-    if (!userProfile || !hasPermission('Fuel Logs')) {
+    if (!userProfile || !hasPermission('Fuel Logs') || isTenantHostWorkspace) {
       return undefined;
     }
 
@@ -640,10 +641,10 @@ const AdminLayout = () => {
         clearTimeout(backgroundTask);
       }
     };
-  }, [userProfile, hasPermission]);
+  }, [userProfile, hasPermission, isTenantHostWorkspace]);
 
   useEffect(() => {
-    if (!userProfile?.id) return;
+    if (!userProfile?.id || isTenantHostWorkspace) return;
 
     let cancelled = false;
     const refreshTaskStats = () => {
@@ -663,10 +664,10 @@ const AdminLayout = () => {
       cancelled = true;
       window.removeEventListener('task-comments-read', refreshTaskStats);
     };
-  }, [userProfile?.id, location.pathname]);
+  }, [userProfile?.id, location.pathname, isTenantHostWorkspace]);
 
   useEffect(() => {
-    if (!userProfile) {
+    if (!userProfile || isTenantHostWorkspace) {
       return;
     }
 
@@ -681,9 +682,13 @@ const AdminLayout = () => {
         clearTimeout(backgroundTask);
       }
     };
-  }, [userProfile, location.pathname]);
+  }, [userProfile, location.pathname, isTenantHostWorkspace]);
 
   useEffect(() => {
+    if (isTenantHostWorkspace) {
+      return undefined;
+    }
+
     const userId = String(user?.id || '').trim();
     if (!userId) return undefined;
 
@@ -709,9 +714,13 @@ const AdminLayout = () => {
       userRole: workspaceRole,
       pagePath: location.pathname,
     });
-  }, [user?.id, user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name, user?.user_metadata?.role, userProfile?.fullName, userProfile?.display_name, userProfile?.email, userProfile?.role, location.pathname]);
+  }, [user?.id, user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name, user?.user_metadata?.role, userProfile?.fullName, userProfile?.display_name, userProfile?.email, userProfile?.role, location.pathname, isTenantHostWorkspace]);
 
   useEffect(() => {
+    if (isTenantHostWorkspace) {
+      return undefined;
+    }
+
     let cancelled = false;
 
     const runAutomaticRentalMediaCleanup = async () => {
@@ -736,9 +745,13 @@ const AdminLayout = () => {
     return () => {
       cancelled = true;
     };
-  }, [userProfile?.role]);
+  }, [userProfile?.role, isTenantHostWorkspace]);
 
   useEffect(() => {
+    if (isTenantHostWorkspace) {
+      return undefined;
+    }
+
     let cancelled = false;
 
     const runAutomaticMessageMediaCleanup = async () => {
@@ -763,9 +776,13 @@ const AdminLayout = () => {
     return () => {
       cancelled = true;
     };
-  }, [userProfile?.role]);
+  }, [userProfile?.role, isTenantHostWorkspace]);
 
   useEffect(() => {
+    if (isTenantHostWorkspace) {
+      return undefined;
+    }
+
     let cancelled = false;
 
     const runAutomaticWebsiteBookingCleanup = async () => {
@@ -790,7 +807,7 @@ const AdminLayout = () => {
     return () => {
       cancelled = true;
     };
-  }, [userProfile?.role]);
+  }, [userProfile?.role, isTenantHostWorkspace]);
 
   // Get current module for breadcrumb
   const getCurrentModule = () => {

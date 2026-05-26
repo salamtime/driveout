@@ -1,14 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, Copy, Gift, Loader2, MessageCircle, Share2, Upload, Wallet } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, Copy, FileText, Gift, Loader2, MessageCircle, Share2, Upload } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
-import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import CustomerRewardsService from '../../services/CustomerRewardsService';
 import GrowthLoopApiService from '../../services/GrowthLoopApiService';
+import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
 import { uploadFile } from '../../utils/storageUpload';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { getMarketplaceRequestDisplay } from '../../utils/marketplaceRequestState';
@@ -44,6 +44,27 @@ const formatDateTime = (value, locale) => {
 const safeNumber = (value) => {
   const next = Number(value || 0);
   return Number.isFinite(next) ? next : 0;
+};
+
+const getShortRequestReference = (...values) => {
+  const text = values
+    .flatMap((value) => {
+      if (!value) return [];
+      if (typeof value === 'object') {
+        return Object.values(value);
+      }
+      return [value];
+    })
+    .map((value) => String(value || ''))
+    .join(' ');
+
+  const explicitReference = text.match(/\bRQ-[A-Z0-9]+\b/i);
+  if (explicitReference) return explicitReference[0].toUpperCase();
+
+  const uuidReference = text.match(/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/i);
+  if (uuidReference) return `RQ-${uuidReference[0].slice(0, 8).toUpperCase()}`;
+
+  return '';
 };
 
 const getCustomerRewardsStorageKey = (userId, suffix) => `${CUSTOMER_REWARDS_STORAGE_PREFIX}:${userId}:${suffix}`;
@@ -85,7 +106,7 @@ const getActivityTone = (status) => {
   if (['paid', 'completed', 'approved', 'released'].includes(key)) {
     return 'bg-emerald-50 text-emerald-700 border-emerald-100';
   }
-  if (['partial', 'pending', 'submitted', 'review', 'pre_approved', 'unpaid'].includes(key)) {
+  if (['partial', 'pending', 'submitted', 'review', 'pre_approved', 'unpaid', 'reserved', 'held'].includes(key)) {
     return 'bg-amber-50 text-amber-700 border-amber-100';
   }
   if (['rejected', 'failed', 'refunded'].includes(key)) {
@@ -95,18 +116,22 @@ const getActivityTone = (status) => {
 };
 
 const WalletHeroCard = ({ stats = [] }) => (
-  <section className="overflow-hidden rounded-[2rem] border border-violet-200 bg-[linear-gradient(135deg,#f5f3ff_0%,#eef2ff_44%,#f8fafc_100%)] p-5 shadow-[0_24px_70px_rgba(91,33,182,0.08)] sm:p-6">
-    <div className="rounded-[1.8rem] border border-white/70 bg-white/96 p-5 shadow-sm sm:p-6">
-      <div className={`grid gap-4 ${stats.length >= 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
-        {stats.map((stat) => (
-          <div key={stat.label} className="rounded-[1.45rem] bg-slate-50/80 px-4 py-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{stat.label}</p>
-            <p className="mt-3 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">{stat.value}</p>
-          </div>
-        ))}
+  <div className="grid gap-2 sm:grid-cols-2 sm:gap-3 xl:grid-cols-4">
+    {stats.map((stat) => (
+      <div
+        key={stat.label}
+        className="rounded-[1.2rem] border border-slate-200 bg-white px-4 py-3 shadow-sm shadow-slate-200/50 sm:rounded-[1.35rem] sm:px-5 sm:py-4"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-bold text-slate-500">{stat.label}</p>
+          <span className={`h-2.5 w-2.5 rounded-full ${stat.dotClassName || 'bg-slate-300'}`} />
+        </div>
+        <p className={`mt-2 text-2xl font-black tracking-tight sm:mt-3 sm:text-3xl ${stat.valueClassName || 'text-slate-950'}`}>
+          {stat.value}
+        </p>
       </div>
-    </div>
-  </section>
+    ))}
+  </div>
 );
 
 const WalletActionItem = ({ title, detail, ctaLabel, to, state, onClick, tone = 'violet', ctaTone = 'default' }) => {
@@ -211,7 +236,7 @@ const WalletActivityFeed = ({ items, locale, emptyTitle, emptyDetail, actionLabe
           key={item.id}
           className="rounded-[1.45rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_14px_36px_rgba(15,23,42,0.05)]"
         >
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${getActivityTone(item.status)}`}>
@@ -226,7 +251,7 @@ const WalletActivityFeed = ({ items, locale, emptyTitle, emptyDetail, actionLabe
               <h3 className="mt-3 text-base font-bold text-slate-950">{item.title}</h3>
               <p className="mt-1 text-sm leading-6 text-slate-600">{item.description}</p>
             </div>
-            <div className="shrink-0 text-right">
+            <div className="shrink-0 text-left sm:text-right">
               {item.amount ? (
                 <p className="text-base font-black text-slate-950">{item.amount}</p>
               ) : null}
@@ -273,15 +298,25 @@ const WalletTopupComposer = ({
   onViewStatus,
   tr,
 }) => (
-  <section className="rounded-[2rem] border border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf5ff_100%)] p-5 shadow-[0_18px_46px_rgba(91,33,182,0.08)] sm:p-6">
-    <AccountWorkspaceSectionHeader
-      eyebrow={tr('Add funds', 'Ajouter des fonds')}
-      title={tr('Add funds via bank transfer', 'Ajouter des fonds par virement bancaire')}
-      description={tr(
-        'Upload your transfer receipt and our team will review it manually.',
-        'Téléversez votre reçu de virement et notre équipe le vérifiera manuellement.'
-      )}
-    />
+  <details className="group rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_18px_44px_rgba(15,23,42,0.06)] sm:rounded-[2rem] sm:p-6">
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-4 [&::-webkit-details-marker]:hidden">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700">
+          <Upload className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {tr('Add funds', 'Ajouter des fonds')}
+          </p>
+          <h2 className="mt-2 truncate text-xl font-bold text-slate-950">
+            {tr('Bank transfer top-up', 'Recharge par virement')}
+          </h2>
+        </span>
+      </div>
+      <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition group-open:rotate-180">
+        <ChevronDown className="h-5 w-5" />
+      </span>
+    </summary>
 
     <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.9fr)]">
       <div className="space-y-4">
@@ -382,7 +417,7 @@ const WalletTopupComposer = ({
         ) : null}
       </div>
     </div>
-  </section>
+  </details>
 );
 
 const AccountRevenue = () => {
@@ -398,6 +433,7 @@ const AccountRevenue = () => {
   const [rewardsSnapshot, setRewardsSnapshot] = useState(null);
   const [rentals, setRentals] = useState([]);
   const [marketplaceRequests, setMarketplaceRequests] = useState([]);
+  const [ownerVehicleCount, setOwnerVehicleCount] = useState(0);
   const [rewardsLedger, setRewardsLedger] = useState([]);
   const [activeRewardIds, setActiveRewardIds] = useState([]);
   const [activeTab, setActiveTab] = useState(MONEY_TABS.renting);
@@ -417,6 +453,7 @@ const AccountRevenue = () => {
   const resolvedSnapshot = snapshot || cachedSnapshot;
   const creditsSectionRef = useRef(null);
   const moneyRecordSectionRef = useRef(null);
+  const activeTabManuallySelectedRef = useRef(false);
   const creditsPanelRequested = useMemo(
     () => new URLSearchParams(location.search).get('panel') === 'credits',
     [location.search]
@@ -444,16 +481,18 @@ const AccountRevenue = () => {
       try {
         setLoading(true);
         setError('');
-        const [accountSnapshot, rentalHistory, customerRequests] = await Promise.all([
+        const [accountSnapshot, rentalHistory, customerRequests, ownerVehicleCountResult] = await Promise.all([
           CustomerExperienceService.getCustomerAccountSnapshot(user, { forceRefresh: true }),
           CustomerExperienceService.getCustomerRentalHistory(user),
           CustomerExperienceService.getCustomerMarketplaceRequests(user),
+          BusinessMarketplaceService.getOwnerVehicleCount(user.id).catch(() => ({ count: 0 })),
         ]);
 
         if (cancelled) return;
         setSnapshot(accountSnapshot);
         setRentals(Array.isArray(rentalHistory) ? rentalHistory : []);
         setMarketplaceRequests(Array.isArray(customerRequests) ? customerRequests : []);
+        setOwnerVehicleCount(Number(ownerVehicleCountResult?.count || 0));
       } catch (loadError) {
         if (!cancelled) {
           setError(
@@ -594,11 +633,40 @@ const AccountRevenue = () => {
   );
 
   const pendingTopups = Number(wallet.pendingTopups || 0);
+  const handleMoneyTabChange = useCallback((nextTab) => {
+    activeTabManuallySelectedRef.current = true;
+    setActiveTab(nextTab);
+  }, []);
+  const isRentalPaymentChargeText = (value = '') => {
+    const normalized = String(value || '').toLowerCase();
+    return (
+      normalized.includes('rental payment charged') ||
+      normalized.includes('rental charge') ||
+      normalized.includes('booking payment charged')
+    );
+  };
+
+  const getWalletTransactionReference = (transaction = {}) =>
+    getShortRequestReference(
+      transaction?.requestReference,
+      transaction?.request_reference,
+      transaction?.reference,
+      transaction?.referenceId,
+      transaction?.reference_id,
+      transaction?.metadata,
+      transaction?.description,
+      transaction?.notes,
+      transaction?.admin_notes,
+      transaction?.note
+    );
+
   const inferWalletTransactionDirection = (transaction) => {
     const type = String(transaction?.type || transaction?.transaction_type || '').toLowerCase();
     const status = String(transaction?.status || transaction?.transaction_status || '').toLowerCase();
-    const description = String(transaction?.description || transaction?.notes || transaction?.note || '').toLowerCase();
+    const description = String(transaction?.description || transaction?.notes || transaction?.admin_notes || transaction?.note || '').toLowerCase();
     if (status === 'refunded') return 1;
+    if (description.includes('damage deposit release')) return 1;
+    if (isRentalPaymentChargeText(description)) return -1;
     if (
       type.includes('withdraw') ||
       type.includes('debit') ||
@@ -611,7 +679,8 @@ const AccountRevenue = () => {
       description.includes('fee') ||
       description.includes('commission') ||
       description.includes('withdraw') ||
-      description.includes('held')
+      description.includes('held') ||
+      description.includes('hold')
     ) {
       return -1;
     }
@@ -621,6 +690,7 @@ const AccountRevenue = () => {
   const getWalletTransactionTitle = (transaction) => {
     const type = String(transaction?.type || transaction?.transaction_type || '').toLowerCase();
     const status = String(transaction?.status || transaction?.transaction_status || '').toLowerCase();
+    const searchText = `${type} ${transaction?.description || transaction?.notes || transaction?.admin_notes || transaction?.note || ''}`.toLowerCase();
 
     if (type.includes('topup')) {
       return status === 'approved'
@@ -628,16 +698,32 @@ const AccountRevenue = () => {
         : tr('Wallet top-up pending', 'Recharge portefeuille en attente');
     }
 
-    if (type.includes('manual_adjustment')) {
-      return tr('Manual balance adjustment', 'Ajustement manuel du solde');
+    if (searchText.includes('damage deposit') && searchText.includes('release')) {
+      return tr('Deposit released', 'Caution libérée');
     }
 
-    if (type.includes('commission')) {
+    if (searchText.includes('damage deposit') && (searchText.includes('hold') || searchText.includes('reservation'))) {
+      return tr('Deposit reserved', 'Caution réservée');
+    }
+
+    if (isRentalPaymentChargeText(searchText)) {
+      return tr('Rental payment', 'Paiement location');
+    }
+
+    if (searchText.includes('opening wallet balance') || searchText.includes('opening balance')) {
+      return tr('Opening balance', 'Solde initial');
+    }
+
+    if (searchText.includes('owner payout') || type.includes('payout')) {
+      return tr('Owner payout movement', 'Mouvement de versement propriétaire');
+    }
+
+    if (searchText.includes('commission') || type.includes('commission')) {
       return tr('Marketplace fee movement', 'Mouvement des frais marketplace');
     }
 
-    if (type.includes('payout')) {
-      return tr('Owner payout movement', 'Mouvement de versement propriétaire');
+    if (type.includes('manual_adjustment')) {
+      return tr('Manual balance adjustment', 'Ajustement manuel du solde');
     }
 
     if (type.includes('refund')) {
@@ -652,41 +738,59 @@ const AccountRevenue = () => {
   };
 
   const getWalletTransactionDetail = (transaction) => {
-    const explicitDescription = transaction?.description || transaction?.notes || transaction?.note || '';
-    if (explicitDescription) return explicitDescription;
-
+    const explicitDescription = transaction?.description || transaction?.notes || transaction?.admin_notes || transaction?.note || '';
     const type = String(transaction?.type || transaction?.transaction_type || '').toLowerCase();
     const status = String(transaction?.status || transaction?.transaction_status || '').toLowerCase();
-
-    if (type.includes('manual_adjustment')) {
-      return tr(
-        'Added or corrected manually by the team. This is usually an admin credit or balance fix.',
-        "Ajouté ou corrigé manuellement par l'équipe. Il s'agit généralement d'un crédit admin ou d'une correction de solde."
-      );
-    }
+    const searchText = `${type} ${explicitDescription}`.toLowerCase();
+    const requestReference = getWalletTransactionReference(transaction);
+    const withReference = (value) => (requestReference ? `${value} · ${requestReference}` : value);
 
     if (type.includes('topup')) {
       return status === 'approved'
-        ? tr('Bank transfer receipt approved and funds added to your wallet.', 'Reçu de virement approuvé et fonds ajoutés au portefeuille.')
-        : tr('Waiting for the transfer receipt to be reviewed.', 'En attente de la revue du reçu de virement.');
+        ? tr('Bank transfer approved.', 'Virement bancaire approuvé.')
+        : tr('Waiting for review.', 'En attente de revue.');
     }
 
-    if (type.includes('commission')) {
+    if (searchText.includes('opening wallet balance') || searchText.includes('opening balance')) {
       return tr(
-        'Marketplace fees or reservations connected to a booking request.',
-        'Frais marketplace ou réservations liées à une demande de réservation.'
+        'Carryover balance from before detailed wallet tracking.',
+        "Solde repris d'avant le suivi détaillé du portefeuille."
       );
     }
 
-    if (type.includes('payout')) {
-      return tr('Owner payout linked to hosting revenue.', 'Versement propriétaire lié au revenu hébergement.');
+    if (searchText.includes('owner payout') || type.includes('payout')) {
+      return withReference(tr('Owner payout from hosting revenue.', 'Versement propriétaire du revenu hébergement.'));
+    }
+
+    if (searchText.includes('commission') || type.includes('commission')) {
+      return withReference(tr('DriveOut fee for this booking.', 'Frais DriveOut pour cette réservation.'));
+    }
+
+    if (type.includes('manual_adjustment')) {
+      return withReference(tr('Manual wallet correction.', 'Correction manuelle du portefeuille.'));
+    }
+
+    if (searchText.includes('damage deposit') && searchText.includes('release')) {
+      return withReference(tr('Returned to available balance.', 'Revenue dans le solde disponible.'));
+    }
+
+    if (searchText.includes('damage deposit') && (searchText.includes('hold') || searchText.includes('reservation'))) {
+      return withReference(tr('Held while the booking was active.', 'Bloquée pendant la réservation active.'));
+    }
+
+    if (isRentalPaymentChargeText(searchText)) {
+      return withReference(tr('Paid from wallet after completion.', 'Payé depuis le portefeuille après clôture.'));
     }
 
     if (type.includes('hold') || type.includes('reservation')) {
-      return tr('Temporarily reserved during a live booking or request flow.', 'Temporairement réservé pendant un flux actif de réservation ou de demande.');
+      return withReference(tr('Temporarily held for a booking.', 'Temporairement bloqué pour une réservation.'));
     }
 
-    return tr('Recorded in your wallet ledger.', 'Enregistré dans votre historique portefeuille.');
+    if (explicitDescription && !/request\s+[a-f0-9-]{8,}/i.test(explicitDescription)) {
+      return explicitDescription;
+    }
+
+    return withReference(tr('Wallet ledger entry.', 'Écriture portefeuille.'));
   };
 
   const walletLedgerEntries = useMemo(() => {
@@ -821,28 +925,38 @@ const AccountRevenue = () => {
     }
   };
 
-  const jumpToCreditsSection = () => {
-    creditsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   const heroStats = useMemo(() => {
     const stats = [
       {
         label: tr('Available', 'Disponible'),
         value: formatMoney(wallet.balance || 0, wallet.currencyCode || 'MAD', locale),
+        valueClassName: 'text-slate-950',
+        dotClassName: 'bg-emerald-500',
       },
       {
-        label: tr('Ride credits', 'Crédits Ride'),
-        value: formatCount(creditsBalance, locale),
+        label: tr('Pending', 'En attente'),
+        value: formatMoney(pendingTopups, wallet.currencyCode || 'MAD', locale),
+        valueClassName: pendingTopups > 0 ? 'text-amber-700' : 'text-slate-950',
+        dotClassName: pendingTopups > 0 ? 'bg-amber-500' : 'bg-slate-300',
       },
       {
-        label: tr('Referral value', 'Valeur parrainage'),
+        label: tr('Rewards', 'Récompenses'),
         value: formatMoney(referralMadValue, 'MAD', locale),
+        valueClassName: referralMadValue > 0 || creditsBalance > 0 ? 'text-violet-700' : 'text-slate-950',
+        dotClassName: referralMadValue > 0 || creditsBalance > 0 ? 'bg-violet-500' : 'bg-slate-300',
       },
     ];
 
     return stats;
-  }, [wallet.balance, wallet.currencyCode, creditsBalance, referralMadValue, locale, tr]);
+  }, [
+    wallet.balance,
+    wallet.currencyCode,
+    pendingTopups,
+    creditsBalance,
+    referralMadValue,
+    locale,
+    tr,
+  ]);
 
   const actionItems = useMemo(() => {
     const items = [];
@@ -897,6 +1011,15 @@ const AccountRevenue = () => {
     const rentalItems = rentals.map((rental) => {
       const paymentStatus = String(rental?.paymentStatus || '').toLowerCase();
       const hasOutstanding = Number(rental?.outstanding || 0) > 0;
+      const rentalReference = getShortRequestReference(
+        rental?.requestReference,
+        rental?.request_reference,
+        rental?.marketplaceRequestReference,
+        rental?.marketplace_request_reference,
+        rental?.marketplaceRequestId,
+        rental?.marketplace_request_id,
+        rental?.raw
+      );
 
       return {
         id: `rental-${rental.id}`,
@@ -913,14 +1036,8 @@ const AccountRevenue = () => {
           ? tr('Payment pending', 'Paiement en attente')
           : tr('Payment completed', 'Paiement terminé'),
         description: hasOutstanding
-          ? tr(
-              `${rental?.modelName || tr('Rental', 'Location')} still has ${formatMoney(rental.outstanding, 'MAD', locale)} due.`,
-              `${rental?.modelName || tr('Location', 'Location')} a encore ${formatMoney(rental.outstanding, 'MAD', locale)} à régler.`
-            )
-          : tr(
-              `${rental?.modelName || tr('Rental', 'Location')} has been settled.`,
-              `${rental?.modelName || tr('Location', 'Location')} a été réglée.`
-            ),
+          ? `${rental?.modelName || tr('Rental', 'Location')} · ${formatMoney(rental.outstanding, 'MAD', locale)} ${tr('due', 'restant')}${rentalReference ? ` · ${rentalReference}` : ''}`
+          : `${rental?.modelName || tr('Rental', 'Location')} · ${tr('Settled', 'Réglé')}${rentalReference ? ` · ${rentalReference}` : ''}`,
         amount: formatMoney(hasOutstanding ? rental.outstanding : rental.total || 0, 'MAD', locale),
         at: rental?.startDate || rental?.endDate ? new Date(rental.startDate || rental.endDate) : null,
       };
@@ -962,6 +1079,7 @@ const AccountRevenue = () => {
     const walletItems = walletTransactions
       .map((transaction) => {
         const type = String(transaction?.type || transaction?.transaction_type || '').toLowerCase();
+        const searchText = `${type} ${transaction?.description || transaction?.notes || transaction?.admin_notes || transaction?.note || ''}`.toLowerCase();
         const status = String(transaction?.status || 'pending').toLowerCase();
 
         if (type.includes('topup')) {
@@ -971,11 +1089,7 @@ const AccountRevenue = () => {
             badge: status === 'approved' ? tr('Completed', 'Terminé') : tr('Pending', 'En attente'),
             context: tr('Wallet', 'Portefeuille'),
             title: status === 'approved' ? tr('Top-up completed', 'Recharge terminée') : tr('Top-up pending', 'Recharge en attente'),
-            description:
-              transaction?.note ||
-              (status === 'approved'
-                ? tr('Balance was added to your wallet.', 'Le solde a été ajouté à votre portefeuille.')
-                : tr('Your top-up is still being processed.', 'Votre recharge est encore en cours de traitement.')),
+            description: getWalletTransactionDetail(transaction),
             amount: formatMoney(transaction?.amount || 0, wallet.currencyCode || 'MAD', locale),
             at: transaction?.createdAt ? new Date(transaction.createdAt) : null,
           };
@@ -987,13 +1101,47 @@ const AccountRevenue = () => {
             status,
             badge: tr('Reserved', 'Réservé'),
             context: tr('Wallet', 'Portefeuille'),
-            title: tr('DriveOut fee reserved', 'Frais DriveOut réservés'),
-            description:
-              transaction?.note ||
-              tr(
-                'Reserved from wallet before the owner payout moves.',
-                'Réservés depuis le portefeuille avant le versement au propriétaire.'
-              ),
+            title: tr('DriveOut fee', 'Frais DriveOut'),
+            description: getWalletTransactionDetail(transaction),
+            amount: formatMoney(transaction?.amount || 0, wallet.currencyCode || 'MAD', locale),
+            at: transaction?.createdAt ? new Date(transaction.createdAt) : null,
+          };
+        }
+
+        if (isRentalPaymentChargeText(searchText)) {
+          return {
+            id: `wallet-${transaction.id}`,
+            status: 'paid',
+            badge: tr('Paid', 'Payé'),
+            context: tr('Wallet', 'Portefeuille'),
+            title: tr('Rental payment', 'Paiement location'),
+            description: getWalletTransactionDetail(transaction),
+            amount: `-${formatMoney(transaction?.amount || 0, wallet.currencyCode || 'MAD', locale)}`,
+            at: transaction?.createdAt ? new Date(transaction.createdAt) : null,
+          };
+        }
+
+        if (searchText.includes('damage deposit') && (searchText.includes('hold') || searchText.includes('reservation'))) {
+          return {
+            id: `wallet-${transaction.id}`,
+            status: 'reserved',
+            badge: tr('Reserved', 'Réservé'),
+            context: tr('Wallet', 'Portefeuille'),
+            title: tr('Deposit reserved', 'Caution réservée'),
+            description: getWalletTransactionDetail(transaction),
+            amount: formatMoney(transaction?.amount || 0, wallet.currencyCode || 'MAD', locale),
+            at: transaction?.createdAt ? new Date(transaction.createdAt) : null,
+          };
+        }
+
+        if (searchText.includes('damage deposit') && searchText.includes('release')) {
+          return {
+            id: `wallet-${transaction.id}`,
+            status: 'released',
+            badge: tr('Released', 'Libéré'),
+            context: tr('Wallet', 'Portefeuille'),
+            title: tr('Deposit released', 'Caution libérée'),
+            description: getWalletTransactionDetail(transaction),
             amount: formatMoney(transaction?.amount || 0, wallet.currencyCode || 'MAD', locale),
             at: transaction?.createdAt ? new Date(transaction.createdAt) : null,
           };
@@ -1043,6 +1191,48 @@ const AccountRevenue = () => {
     [walletTransactions, wallet.currencyCode, locale, tr]
   );
 
+  useEffect(() => {
+    if (loading || activeTabManuallySelectedRef.current) return;
+
+    const hasHostingSignal = ownerVehicleCount > 0 || hostingActivity.length > 0;
+    const hasRentingSignal =
+      rentals.length > 0 ||
+      actionableMarketplaceRequests.length > 0 ||
+      rentingActivity.length > 0;
+
+    if (hasHostingSignal && !hasRentingSignal) {
+      setActiveTab(MONEY_TABS.hosting);
+      return;
+    }
+
+    if (!hasHostingSignal) {
+      setActiveTab(MONEY_TABS.renting);
+      return;
+    }
+
+    const latestHostingAt = new Date(hostingActivity[0]?.at || 0).getTime();
+    const latestRentingAt = new Date(rentingActivity[0]?.at || 0).getTime();
+
+    if (latestHostingAt > latestRentingAt) {
+      setActiveTab(MONEY_TABS.hosting);
+      return;
+    }
+
+    if (latestRentingAt > latestHostingAt) {
+      setActiveTab(MONEY_TABS.renting);
+      return;
+    }
+
+    setActiveTab(MONEY_TABS.hosting);
+  }, [
+    loading,
+    ownerVehicleCount,
+    hostingActivity,
+    rentingActivity,
+    rentals.length,
+    actionableMarketplaceRequests.length,
+  ]);
+
   const activeFeed = activeTab === MONEY_TABS.hosting ? hostingActivity : rentingActivity;
   const hasAnyWalletSignal =
     Number(wallet.balance || 0) > 0 ||
@@ -1059,6 +1249,76 @@ const AccountRevenue = () => {
     isTransitionFlow: loading,
   });
 
+  const moneyActivitySection = (
+    <section className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_18px_44px_rgba(15,23,42,0.06)] sm:rounded-[2rem] sm:p-5">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {tr('Transactions', 'Transactions')}
+          </p>
+          <h2 className="mt-2 text-xl font-bold text-slate-950">
+            {tr('Recent money movement', "Mouvements d'argent récents")}
+          </h2>
+        </div>
+        <WalletTabs
+          tabs={[
+            { id: MONEY_TABS.renting, label: tr('Renting', 'Location') },
+            { id: MONEY_TABS.hosting, label: tr('Hosting', 'Hébergement') },
+          ]}
+          activeTab={activeTab}
+          onChange={handleMoneyTabChange}
+        />
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {activeTab === MONEY_TABS.renting && outstandingTotal > 0 ? (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+            {tr('Outstanding', 'Restant')}: {formatMoney(outstandingTotal, 'MAD', locale)}
+          </span>
+        ) : null}
+        {activeTab === MONEY_TABS.renting && pendingTopups > 0 ? (
+          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+            {tr('Pending top-ups', 'Recharges en attente')}: {formatMoney(pendingTopups, wallet.currencyCode || 'MAD', locale)}
+          </span>
+        ) : null}
+        {activeTab === MONEY_TABS.renting && pendingMarketplaceCount > 0 ? (
+          <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
+            {pendingMarketplaceCount} {tr('request(s) moving', 'demande(s) en cours')}
+          </span>
+        ) : null}
+        {activeTab === MONEY_TABS.hosting && hostingActivity.length > 0 ? (
+          <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
+            {hostingActivity.length} {tr('payout event(s)', 'événement(s) de versement')}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mt-5">
+        <WalletActivityFeed
+          items={activeFeed}
+          locale={locale}
+          emptyTitle={
+            activeTab === MONEY_TABS.hosting
+              ? tr('No hosting payouts yet', 'Aucun versement propriétaire pour le moment')
+              : tr('No renting money activity yet', "Aucune activité financière location pour le moment")
+          }
+          emptyDetail={
+            activeTab === MONEY_TABS.hosting
+              ? tr('Hosting payouts will appear here once money starts moving.', "Les versements apparaîtront ici dès que l'argent commencera à bouger.")
+              : tr('Payments and wallet moves will appear here as they happen.', 'Les paiements et mouvements portefeuille apparaîtront ici au fur et à mesure.')
+          }
+          actionLabel={
+            activeTab === MONEY_TABS.hosting
+              ? tr('Open listings', 'Ouvrir les annonces')
+              : tr('Browse vehicles', 'Explorer les véhicules')
+          }
+          actionTo={activeTab === MONEY_TABS.hosting ? '/account/vehicles' : '/marketplace'}
+          actionState={{ from: currentPath }}
+        />
+      </div>
+    </section>
+  );
+
   if (loading && !suppressBlockingLoader) {
     return (
       <div className="space-y-6">
@@ -1072,7 +1332,7 @@ const AccountRevenue = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {location.state?.from ? (
         <button
           type="button"
@@ -1084,18 +1344,24 @@ const AccountRevenue = () => {
         </button>
       ) : null}
 
-      <AccountWorkspaceHero
-        eyebrow={tr('Wallet', 'Portefeuille')}
-        title={tr('Money, at a glance', "L'argent, en un regard")}
-        description={tr(
-          'See what is available now, what needs action, and what is still moving.',
-          'Voyez ce qui est disponible maintenant, ce qui demande une action, et ce qui est encore en cours.'
-        )}
-      >
-        <div className="mt-6">
-          <WalletHeroCard stats={heroStats} />
+      <section className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_18px_44px_rgba(15,23,42,0.06)] sm:rounded-[2rem] sm:p-5">
+        <div className="mb-4 flex flex-col gap-3 sm:mb-5 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              {tr('Wallet', 'Portefeuille')}
+            </p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+              {tr('Money', 'Argent')}
+            </h1>
+          </div>
+          <p className="text-sm font-semibold text-slate-500">
+            {walletLedgerSummary.count
+              ? tr(`${walletLedgerSummary.count} wallet movement${walletLedgerSummary.count === 1 ? '' : 's'}`, `${walletLedgerSummary.count} mouvement${walletLedgerSummary.count === 1 ? '' : 's'} portefeuille`)
+              : tr('No wallet movement yet', 'Aucun mouvement portefeuille')}
+          </p>
         </div>
-      </AccountWorkspaceHero>
+        <WalletHeroCard stats={heroStats} />
+      </section>
 
       {error ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
@@ -1106,28 +1372,45 @@ const AccountRevenue = () => {
         </section>
       ) : null}
 
-      <section
+      {moneyActivitySection}
+
+      <details
         ref={creditsSectionRef}
-        className={`rounded-[2rem] border p-5 shadow-[0_20px_52px_rgba(91,33,182,0.08)] sm:p-6 ${
+        open={creditsPanelRequested}
+        className={`group rounded-[1.75rem] border p-4 shadow-[0_20px_52px_rgba(91,33,182,0.08)] sm:rounded-[2rem] sm:p-6 ${
           creditsPanelRequested
             ? 'border-violet-300 bg-[linear-gradient(180deg,#faf5ff_0%,#ffffff_100%)]'
             : 'border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#faf5ff_100%)]'
         }`}
       >
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 [&::-webkit-details-marker]:hidden">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
+              <Gift className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Rewards', 'Récompenses')}
+              </p>
+              <h2 className="mt-2 truncate text-xl font-bold text-slate-950">
+                {tr('Credits & referrals', 'Crédits & parrainage')}
+              </h2>
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="hidden rounded-full border border-violet-100 bg-white px-3 py-1.5 text-xs font-bold text-violet-700 sm:inline-flex">
+              {formatMoney(referralMadValue, 'MAD', locale)}
+            </span>
+            <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-700 transition group-open:rotate-180">
+              <ChevronDown className="h-5 w-5" />
+            </span>
+          </div>
+        </summary>
+        <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-2xl">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-              {tr('Credits & referrals', 'Crédits & parrainage')}
-            </p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-950">
-              {tr('Keep rewards inside the wallet', 'Gardez les récompenses dans le portefeuille')}
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              {tr(
-                'Ride credits, referral earnings, and share links now live here so your money picture stays in one place.',
-                "Les crédits Ride, gains de parrainage et liens de partage vivent maintenant ici pour garder votre vision d'argent au même endroit."
-              )}
-            </p>
+            <h3 className="mt-5 text-lg font-bold text-slate-950">
+              {tr('Referral tools', 'Outils de parrainage')}
+            </h3>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[360px] lg:max-w-[420px]">
@@ -1246,16 +1529,12 @@ const AccountRevenue = () => {
             </p>
           )}
         </div>
-      </section>
+      </details>
 
       {actionItems.length ? (
         <section className="space-y-3">
           <AccountWorkspaceSectionHeader
             title={tr('Needs attention', "À traiter")}
-            description={tr(
-              'Only the next money actions that matter right now.',
-              "Uniquement les prochaines actions financières qui comptent maintenant."
-            )}
           />
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {actionItems.map((item) => (
@@ -1279,89 +1558,22 @@ const AccountRevenue = () => {
         tr={tr}
       />
 
-      <section className="rounded-[2rem] border border-violet-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-[0_22px_58px_rgba(91,33,182,0.08)] sm:p-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-              {tr('Payments & payouts', 'Paiements & virements')}
-            </p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-950">{tr('Money by role', "Argent par rôle")}</h2>
-          </div>
-          <WalletTabs
-            tabs={[
-              { id: MONEY_TABS.renting, label: tr('Renting', 'Location') },
-              { id: MONEY_TABS.hosting, label: tr('Hosting', 'Hébergement') },
-            ]}
-            activeTab={activeTab}
-            onChange={setActiveTab}
-          />
-        </div>
-
-        <div className="mt-5 flex flex-wrap gap-2">
-          {activeTab === MONEY_TABS.renting && outstandingTotal > 0 ? (
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
-              {tr('Outstanding', 'Restant')}: {formatMoney(outstandingTotal, 'MAD', locale)}
-            </span>
-          ) : null}
-          {activeTab === MONEY_TABS.renting && pendingTopups > 0 ? (
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-              {tr('Pending top-ups', 'Recharges en attente')}: {formatMoney(pendingTopups, wallet.currencyCode || 'MAD', locale)}
-            </span>
-          ) : null}
-          {activeTab === MONEY_TABS.renting && pendingMarketplaceCount > 0 ? (
-            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
-              {pendingMarketplaceCount} {tr('request(s) moving', 'demande(s) en cours')}
-            </span>
-          ) : null}
-          {activeTab === MONEY_TABS.hosting && hostingActivity.length > 0 ? (
-            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
-              {hostingActivity.length} {tr('payout event(s)', 'événement(s) de versement')}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="mt-6">
-          <WalletActivityFeed
-            items={activeFeed}
-            locale={locale}
-            emptyTitle={
-              activeTab === MONEY_TABS.hosting
-                ? tr('No hosting payouts yet', 'Aucun versement propriétaire pour le moment')
-                : tr('No renting money activity yet', "Aucune activité financière location pour le moment")
-            }
-            emptyDetail={
-              activeTab === MONEY_TABS.hosting
-                ? tr(
-                    'Owner payouts will appear here once hosting money starts moving.',
-                    'Les versements propriétaire apparaîtront ici dès que les flux hébergement commenceront.'
-                  )
-                : tr(
-                    'Payments, request confirmations, and wallet moves will collect here as they happen.',
-                    'Paiements, confirmations de demande et mouvements de portefeuille apparaîtront ici au fur et à mesure.'
-                  )
-            }
-            actionLabel={
-              activeTab === MONEY_TABS.hosting
-                ? tr('Open listings', 'Ouvrir les annonces')
-                : tr('Browse vehicles', 'Explorer les véhicules')
-            }
-            actionTo={activeTab === MONEY_TABS.hosting ? '/account/vehicles' : '/marketplace'}
-            actionState={{ from: currentPath }}
-          />
-        </div>
-      </section>
-
       <section ref={moneyRecordSectionRef} className="scroll-mt-24 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <button
           type="button"
           onClick={() => setShowDetails((current) => !current)}
           className="flex w-full items-center justify-between gap-4 text-left"
         >
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Deep details', 'Détails')}</p>
-            <h2 className="mt-2 text-xl font-bold text-slate-950">
-              {tr('See the full money record', "Voir l'historique complet")}
-            </h2>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
+              <FileText className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Deep details', 'Détails')}</p>
+              <h2 className="mt-2 truncate text-xl font-bold text-slate-950">
+                {tr('See the full money record', "Voir l'historique complet")}
+              </h2>
+            </span>
           </div>
           <span className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition ${showDetails ? 'rotate-180' : ''}`}>
             <ChevronDown className="h-5 w-5" />
@@ -1480,54 +1692,6 @@ const AccountRevenue = () => {
           )}
         />
       ) : null}
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <button
-          type="button"
-          onClick={jumpToCreditsSection}
-          className="group rounded-[1.75rem] border border-violet-200 bg-[linear-gradient(135deg,#ffffff_0%,#faf5ff_55%,#eef2ff_100%)] p-5 text-left shadow-[0_18px_46px_rgba(91,33,182,0.08)] transition hover:translate-y-[-1px] hover:shadow-[0_22px_52px_rgba(91,33,182,0.11)]"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Credits', 'Crédits')}</p>
-              <h2 className="mt-2 text-xl font-bold text-slate-950">
-                {tr('Credits now live here', 'Les crédits vivent maintenant ici')}
-              </h2>
-            </div>
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
-              <Gift className="h-5 w-5" />
-            </div>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
-            {tr(
-              'Referral links, reward value, and recent credits are part of Wallet now.',
-              'Les liens de parrainage, la valeur gagnée et les crédits récents font maintenant partie du Portefeuille.'
-            )}
-          </p>
-        </button>
-
-        <Link
-          to="/account/settings"
-          state={{ from: currentPath }}
-          className="group rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition hover:translate-y-[-1px] hover:border-violet-200 hover:shadow-[0_18px_40px_rgba(15,23,42,0.08)]"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Settings', 'Paramètres')}</p>
-              <h2 className="mt-2 text-xl font-bold text-slate-950">{tr('Payments & payouts', 'Paiements & virements')}</h2>
-            </div>
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
-              <Wallet className="h-5 w-5" />
-            </div>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
-            {tr(
-              'Open cards, payout setup, and account payment preferences.',
-              'Ouvrez cartes, configuration de versement et préférences de paiement du compte.'
-            )}
-          </p>
-        </Link>
-      </section>
     </div>
   );
 };

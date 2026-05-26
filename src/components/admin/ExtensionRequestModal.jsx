@@ -13,6 +13,38 @@ const normalizeInitialExtensionHours = (value) => {
   return Math.min(24, parsed);
 };
 
+const toComparableId = (value) => String(value ?? '').trim();
+const toAmount = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const isSameExtensionRequest = (existingExtension, candidateExtension) => {
+  if (!existingExtension || !candidateExtension) return false;
+
+  return (
+    toAmount(existingExtension.extension_hours) === toAmount(candidateExtension.extension_hours) &&
+    toAmount(existingExtension.extension_value) === toAmount(candidateExtension.extension_value) &&
+    Math.abs(toAmount(existingExtension.extension_price) - toAmount(candidateExtension.extension_price)) < 0.01 &&
+    String(existingExtension.extension_type || '') === String(candidateExtension.extension_type || '') &&
+    toComparableId(existingExtension.package_id) === toComparableId(candidateExtension.package_id)
+  );
+};
+
+const isRecentlyApprovedDuplicate = (extension) => {
+  const approvedAt = Date.parse(extension?.approved_at || extension?.updated_at || extension?.created_at || '');
+  if (!Number.isFinite(approvedAt)) return false;
+  return Date.now() - approvedAt < 30 * 60 * 1000;
+};
+
+const getActorDisplayName = (actor) => String(
+  actor?.full_name ||
+  actor?.fullName ||
+  actor?.name ||
+  actor?.email ||
+  ''
+).trim();
+
 export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null, initialExtensionHours = 1, initialQuickExtensionConfig = null }) {
   const [extensionType, setExtensionType] = useState('hours');
   const [selectedHours, setSelectedHours] = useState(1);
@@ -313,8 +345,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
         extension_value: extensionValue,
         extension_price: finalPrice,
         requested_by: currentUser?.id,
+        requested_by_name: getActorDisplayName(currentUser) || null,
         status: autoApprove ? 'approved' : 'pending',
         approved_by: autoApprove ? currentUser?.id : null,
+        approved_by_name: autoApprove ? (getActorDisplayName(currentUser) || null) : null,
         approved_at: autoApprove ? new Date().toISOString() : null,
         price_source: usePackagePricing ? 'package' : 
                       (manualPriceOverride ? 'manual' : 
@@ -431,6 +465,43 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           newEndDate,
         }));
       } else {
+        const { data: recentExtensions, error: duplicateCheckError } = await supabase
+          .from('rental_extensions')
+          .select('id,status,extension_hours,extension_type,extension_value,extension_price,package_id,requested_at,approved_at,created_at,updated_at')
+          .eq('rental_id', rental.id)
+          .in('status', ['pending', 'approved', 'active', 'completed'])
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        if (duplicateCheckError) throw duplicateCheckError;
+
+        const duplicateExtension = (recentExtensions || []).find((existingExtension) => {
+          const status = String(existingExtension?.status || '').toLowerCase();
+          if (!isSameExtensionRequest(existingExtension, extensionData)) return false;
+          return status === 'pending' || isRecentlyApprovedDuplicate(existingExtension);
+        });
+
+        if (duplicateExtension) {
+          const duplicateStatus = String(duplicateExtension.status || '').toLowerCase();
+          setError(
+            duplicateStatus === 'pending'
+              ? 'This exact extension request is already pending approval. Admins have already been notified.'
+              : 'This exact extension was already approved. Refreshing the rental now.'
+          );
+
+          await Promise.resolve(onExtensionCreated?.({
+            extension: duplicateExtension,
+            duplicate: true,
+            skipTelegram: true,
+            status: duplicateExtension.status,
+            extensionHours,
+            extensionType,
+            extensionValue,
+            extensionPrice: finalPrice,
+          }));
+          return;
+        }
+
         const { extension } = await ExtensionPricingService.validateAndCalculateExtensionPrice(
           rental.id, 
           extensionHours, 

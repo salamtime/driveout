@@ -97,6 +97,21 @@ const getLatestByType = (requests = []) =>
     return acc;
   }, {});
 
+const getLatestByTypeFromSummary = (summary = null) => {
+  const latestByType = summary?.latestByType && typeof summary.latestByType === 'object'
+    ? summary.latestByType
+    : {};
+
+  return Object.entries(latestByType).reduce((acc, [type, request]) => {
+    if (!type || !request || typeof request !== 'object') return acc;
+    acc[type] = {
+      ...request,
+      verification_type: request.verification_type || type,
+    };
+    return acc;
+  }, {});
+};
+
 const mapRequestStatusToTone = (status) => {
   const normalized = String(status || '').toLowerCase();
   if (normalized === 'approved') return 'success';
@@ -403,10 +418,31 @@ const AccountVerification = () => {
     };
   }, [isFrench, loadVerification, user?.id]);
 
-  const latestByType = useMemo(() => getLatestByType(verificationRequests), [verificationRequests]);
+  const userProfileVerificationSummary =
+    userProfile?.verificationSummary ||
+    userProfile?.verification_summary ||
+    null;
+  const latestByType = useMemo(() => {
+    const latestFromProfileSummary = getLatestByTypeFromSummary(userProfileVerificationSummary);
+    const latestFromSummary = getLatestByTypeFromSummary(verificationSummary);
+    const latestFromRequests = getLatestByType(verificationRequests);
+
+    return {
+      ...latestFromProfileSummary,
+      ...latestFromSummary,
+      ...latestFromRequests,
+    };
+  }, [userProfileVerificationSummary, verificationRequests, verificationSummary]);
+  const userProfileSummaryApproved = Boolean(
+    userProfileVerificationSummary?.complete &&
+      ['approved', 'verified'].includes(String(userProfileVerificationSummary?.status || '').toLowerCase())
+  );
   const effectiveVerificationStatus = String(
+    (userProfileSummaryApproved ? userProfileVerificationSummary?.status : '') ||
     verificationSummary?.status ||
     userProfile?.verificationStatus ||
+    userProfile?.profileVerificationStatus ||
+    userProfile?.profile_verification_status ||
     ''
   ).toLowerCase();
 
@@ -423,10 +459,12 @@ const AccountVerification = () => {
     [effectiveVerificationStatus, hasProfileBasics, hasIdentityDoc, hasDriverLicense, latestByType, isFrench]
   );
 
-  const completedRequiredCount = REQUIRED_TYPES.filter((type) => {
-    const status = String(latestByType?.[type]?.status || '').toLowerCase();
-    return ['approved', 'pending'].includes(status) || (type === 'driver_license' ? hasDriverLicense : hasIdentityDoc);
-  }).length;
+  const completedRequiredCount = ['approved', 'verified'].includes(effectiveVerificationStatus)
+    ? REQUIRED_TYPES.length
+    : REQUIRED_TYPES.filter((type) => {
+        const status = String(latestByType?.[type]?.status || '').toLowerCase();
+        return ['approved', 'pending'].includes(status) || (type === 'driver_license' ? hasDriverLicense : hasIdentityDoc);
+      }).length;
   const pendingCount = verificationRequests.filter((request) => String(request?.status || '').toLowerCase() === 'pending').length;
   const latestRejection = verificationRequests.find((request) => String(request?.status || '').toLowerCase() === 'rejected') || null;
   const rejectedTypes = verificationRequests

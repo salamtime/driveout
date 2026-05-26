@@ -183,18 +183,22 @@ export const buildOwnerListingSetupProgress = ({
       key: OWNER_LISTING_SETUP_STEP_KEYS.ownerVerification,
       stepNumber: 1,
       title: tr('Owner verification', 'Vérification propriétaire'),
-      detail: ownerVerificationPending
-        ? tr('Your identity files are with admin. Keep building while review continues.', 'Vos fichiers identité sont chez l’admin. Continuez pendant la revue.')
-        : tr('Upload profile ID and driver license so the listing can be reviewed.', 'Téléversez pièce d’identité et permis pour que l’annonce puisse être revue.'),
+      detail: ownerVerificationReady
+        ? tr('Owner trust is approved.', 'La confiance propriétaire est approuvée.')
+        : ownerVerificationPending
+          ? tr('Your identity files are with admin. Keep building while review continues.', 'Vos fichiers identité sont chez l’admin. Continuez pendant la revue.')
+          : tr('Upload profile ID and driver license so the listing can be reviewed.', 'Téléversez pièce d’identité et permis pour que l’annonce puisse être revue.'),
       status: getActionStatus({
         done: ownerVerificationReady,
         waiting: ownerVerificationPending,
         issue: ownerVerificationIssue,
         active: setupStarted,
       }),
-      ctaLabel: ownerVerificationPending
-        ? tr('Review verification', 'Voir la vérification')
-        : tr('Open trust center', 'Ouvrir le centre de confiance'),
+      ctaLabel: ownerVerificationReady
+        ? tr('View trust center', 'Voir le centre de confiance')
+        : ownerVerificationPending
+          ? tr('Review verification', 'Voir la vérification')
+          : tr('Open trust center', 'Ouvrir le centre de confiance'),
       target: buildStepTarget({ route: '/account/verification', currentPath }),
       taskKeys: [OWNER_LISTING_SETUP_TASK_KEYS.ownerVerification],
     },

@@ -1953,6 +1953,7 @@ const AccountMarketplaceVehicleProfile = () => {
   const [vehicleLegalScanResults, setVehicleLegalScanResults] = useState({});
   const [formData, setFormData] = useState(() => buildFormData(null));
   const [fieldErrors, setFieldErrors] = useState({});
+  const [oilChangeQuickEditOpen, setOilChangeQuickEditOpen] = useState(false);
   const [vehicleRequests, setVehicleRequests] = useState(() => (routeOwnerOperationRequest ? [routeOwnerOperationRequest] : []));
   const loadVehicleProfileRunRef = useRef(0);
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
@@ -2195,6 +2196,8 @@ const AccountMarketplaceVehicleProfile = () => {
         return;
       }
       if (isNewVehicle) {
+        const ownerVerificationResult = await VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true })
+          .catch(() => ({ summary: null }));
         setVehicle(null);
         setFormData(buildFormData(null));
         setIsEditingVehicle(true);
@@ -2203,7 +2206,7 @@ const AccountMarketplaceVehicleProfile = () => {
         setAnnualTaxRecords([]);
         setVehicleFinanceOverview(null);
         setVehicleVerificationSummary(null);
-        setOwnerVerificationSummary(null);
+        setOwnerVerificationSummary(ownerVerificationResult?.summary || null);
         setLoading(false);
         return;
       }
@@ -5957,11 +5960,75 @@ const AccountMarketplaceVehicleProfile = () => {
     linkedFleetVehicleId,
     vehicleFinanceOverview,
   ]);
+  const currentOdometerNumber = Number(formData.currentOdometer);
+  const nextOilChangeOdometerNumber = Number(formData.nextOilChangeOdometer);
+  const hasCurrentOdometer = Number.isFinite(currentOdometerNumber) && currentOdometerNumber > 0;
+  const hasNextOilChangeOdometer = Number.isFinite(nextOilChangeOdometerNumber) && nextOilChangeOdometerNumber > 0;
+  const oilChangeDate = formData.nextOilChangeDue ? new Date(formData.nextOilChangeDue) : null;
+  const hasValidOilChangeDate = oilChangeDate && !Number.isNaN(oilChangeDate.getTime());
+  const oilChangeDaysUntil = hasValidOilChangeDate
+    ? Math.ceil((new Date(oilChangeDate).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24))
+    : null;
+  const oilChangeKmUntil = hasCurrentOdometer && hasNextOilChangeOdometer
+    ? Math.round(nextOilChangeOdometerNumber - currentOdometerNumber)
+    : null;
+  const oilChangeAlertActive = oilChangeKmUntil !== null
+    ? oilChangeKmUntil <= 100
+    : oilChangeDaysUntil !== null && oilChangeDaysUntil <= 30;
+  const oilChangeOverdue = oilChangeKmUntil !== null
+    ? oilChangeKmUntil <= 0
+    : oilChangeDaysUntil !== null && oilChangeDaysUntil <= 0;
+  const oilChangeStatus = !hasNextOilChangeOdometer && !hasValidOilChangeDate
+    ? {
+        label: tr('Not set', 'Non défini'),
+        detail: tr('Add the next oil-change odometer or date to activate alerts.', 'Ajoutez le prochain kilométrage ou la date de vidange pour activer les alertes.'),
+        tone: 'border-slate-200 bg-slate-50 text-slate-600',
+      }
+    : oilChangeOverdue
+      ? {
+          label: tr('Overdue', 'En retard'),
+          detail: oilChangeKmUntil !== null
+            ? tr(`${Math.abs(oilChangeKmUntil)} km overdue`, `${Math.abs(oilChangeKmUntil)} km de retard`)
+            : tr(`${Math.abs(oilChangeDaysUntil || 0)} day(s) overdue`, `${Math.abs(oilChangeDaysUntil || 0)} jour(s) de retard`),
+          tone: 'border-rose-200 bg-rose-50 text-rose-700',
+        }
+      : oilChangeAlertActive
+        ? {
+            label: tr('Due soon', 'Bientôt due'),
+            detail: oilChangeKmUntil !== null
+              ? tr(`${oilChangeKmUntil} km left`, `${oilChangeKmUntil} km restants`)
+              : tr(`${oilChangeDaysUntil} day(s) left`, `${oilChangeDaysUntil} jour(s) restants`),
+            tone: 'border-amber-200 bg-amber-50 text-amber-700',
+          }
+        : {
+            label: tr('OK', 'OK'),
+            detail: oilChangeKmUntil !== null
+              ? tr(`Next service in ${oilChangeKmUntil} km`, `Prochaine vidange dans ${oilChangeKmUntil} km`)
+              : tr(`Next service on ${formatDate(formData.nextOilChangeDue, isFrench ? 'fr' : 'en')}`, `Prochaine vidange le ${formatDate(formData.nextOilChangeDue, isFrench ? 'fr' : 'en')}`),
+            tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+          };
   const ownerProfileAlerts = [
-    formData.nextOilChangeDue ? { id: 'oil', label: tr('Oil change due', 'Vidange à prévoir') } : null,
+    oilChangeAlertActive ? { id: 'oil', label: oilChangeOverdue ? tr('Oil change overdue', 'Vidange en retard') : tr('Oil change due soon', 'Vidange bientôt due') } : null,
     formData.registrationExpiryDate ? { id: 'registration', label: tr('Registration tracked', "Immatriculation suivie") } : null,
     insuranceExpired ? { id: 'insurance', label: tr('Insurance expired', 'Assurance expirée') } : null,
   ].filter(Boolean);
+  const openOilChangeFields = () => {
+    setIsEditingVehicle(true);
+    setOilChangeQuickEditOpen(true);
+    setActiveTab('overview');
+    setFocusedSectionId('');
+    window.setTimeout(() => {
+      setFocusedSectionId('oil-change-alert');
+    }, 0);
+  };
+  const openOilChangeReadinessFields = () => {
+    setIsEditingVehicle(true);
+    setActiveTab('bookings');
+    setFocusedSectionId('');
+    window.setTimeout(() => {
+      setFocusedSectionId('registration-insurance');
+    }, 0);
+  };
   const vehicleLegalScanCards = ['registration', 'insurance']
     .map((category) => {
       const result = vehicleLegalScanResults[category];
@@ -6332,9 +6399,9 @@ const AccountMarketplaceVehicleProfile = () => {
         statusKey: 'done',
         statusLabel: tr('Done', 'Fait'),
         statusTone: 'bg-emerald-100 text-emerald-700',
-        title: tr('Verify owner', 'Vérifier le propriétaire'),
+        title: tr('Owner verified', 'Propriétaire vérifié'),
         body: '',
-        actionLabel: tr('Review owner verification', 'Voir la vérification propriétaire'),
+        actionLabel: tr('View trust center', 'Voir le centre de confiance'),
       }
     : ownerVerificationStatus === 'pending'
       ? {
@@ -6813,18 +6880,36 @@ const AccountMarketplaceVehicleProfile = () => {
   };
   const handleOwnerListingSetupStepAction = (step) => {
     if (!step) return false;
+    const navigateToStepTarget = () => {
+      const target = step.target || {};
+      if (navigateWithinVehicleProfile(target)) {
+        return true;
+      }
+
+      const targetPath = String(target?.to || '').trim();
+      if (!targetPath) {
+        return false;
+      }
+
+      const targetState = target?.state && typeof target.state === 'object'
+        ? target.state
+        : { from: getCurrentLocationPath(location) };
+      navigate(targetPath, { state: targetState });
+      return true;
+    };
+
     if (step.key === 'review_publish') {
       if (listingApproved && !listingIsLive) {
         void handlePublishApprovedListing();
         return true;
       }
-      return navigateWithinVehicleProfile(step.target || {});
+      return navigateToStepTarget();
     }
     if (step.actionMode === 'submit-review') {
       void persistVehicle(true);
       return true;
     }
-    return navigateWithinVehicleProfile(step.target || {});
+    return navigateToStepTarget();
   };
 
   useEffect(() => {
@@ -7245,10 +7330,90 @@ const AccountMarketplaceVehicleProfile = () => {
                     <p className="mt-2 text-base font-semibold text-slate-900">{vehicleDocuments.length}</p>
                   </div>
                 </div>
-                <div className={workspaceMetricCardClass}>
+                <div id="oil-change-alert" className={`${workspaceMetricCardClass} ${getFocusedSectionClass(focusedSectionId, 'oil-change-alert')}`}>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Fleet Alerts', 'Alertes flotte')}</p>
+                  <div className={`mt-3 rounded-2xl border px-4 py-3 ${oilChangeStatus.tone}`}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-start gap-3">
+                        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-current/15 bg-white/70">
+                          <Wrench className="h-5 w-5" />
+                        </span>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-black text-slate-950">{tr('Oil change alert', 'Alerte vidange')}</p>
+                            <span className="rounded-full border border-current/20 bg-white/70 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-[0.12em]">
+                              {oilChangeStatus.label}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm font-semibold">{oilChangeStatus.detail}</p>
+                          <p className="mt-1 text-xs font-medium opacity-80">
+                            {hasCurrentOdometer
+                              ? tr(`Current odometer: ${Math.round(currentOdometerNumber)} km`, `Kilométrage actuel : ${Math.round(currentOdometerNumber)} km`)
+                              : tr('Current odometer is not set yet.', "Le kilométrage actuel n'est pas encore défini.")}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={openOilChangeFields}
+                        className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+                      >
+                        {hasNextOilChangeOdometer || hasValidOilChangeDate
+                          ? tr('Update', 'Mettre à jour')
+                          : tr('Set alert', "Configurer l'alerte")}
+                      </button>
+                    </div>
+                    {oilChangeQuickEditOpen ? (
+                      <div className="mt-4 rounded-2xl border border-white/70 bg-white/75 p-3">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <OwnerField label={tr('Current odometer', 'Kilométrage actuel')}>
+                            <input
+                              type="number"
+                              value={formData.currentOdometer}
+                              onChange={(event) => updateField('currentOdometer', event.target.value)}
+                              className={baseFieldClassName}
+                            />
+                          </OwnerField>
+                          <OwnerField label={tr('Next oil change odometer', 'Kilométrage prochaine vidange')}>
+                            <input
+                              type="number"
+                              value={formData.nextOilChangeOdometer}
+                              onChange={(event) => updateField('nextOilChangeOdometer', event.target.value)}
+                              className={baseFieldClassName}
+                            />
+                          </OwnerField>
+                          <OwnerField label={tr('Next oil change date', 'Date prochaine vidange')}>
+                            <input
+                              type="date"
+                              value={formData.nextOilChangeDue}
+                              onChange={(event) => updateField('nextOilChangeDue', event.target.value)}
+                              className={baseFieldClassName}
+                            />
+                          </OwnerField>
+                        </div>
+                        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <button
+                            type="button"
+                            onClick={openOilChangeReadinessFields}
+                            className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
+                          >
+                            {tr('Open full readiness fields', 'Ouvrir les champs complets')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleSaveVehicleSection('oilChangeAlert', 'oil_change_alert_save')}
+                            disabled={saving || submitting}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-2 text-xs font-bold text-white transition hover:bg-violet-700 disabled:opacity-60"
+                          >
+                            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                            {tr('Save alert', "Enregistrer l'alerte")}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                   {ownerProfileAlerts.length === 0 ? (
-                    <p className="mt-2 text-sm text-slate-500">{tr('No active oil change or document expiry alerts.', 'Aucune alerte active de vidange ou d’expiration de document.')}</p>
+                    <p className="mt-3 text-sm text-slate-500">{tr('No urgent fleet alerts right now.', 'Aucune alerte flotte urgente pour le moment.')}</p>
                   ) : (
                     <div className="mt-3 space-y-3">
                       <div className="flex flex-wrap gap-2">
@@ -9617,15 +9782,6 @@ const AccountMarketplaceVehicleProfile = () => {
               </div>
             )}
           </SectionCard>
-          </div>
-        </div>
-      ) : null}
-
-      {!vehicle && !canRenderOperationsFastShell ? (
-        <div className={`${workspacePanelClass} border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700`}>
-          <div className="flex items-start gap-2">
-            <AlertCircle className="mt-0.5 h-4 w-4" />
-            <span>{tr('This vehicle is not fully configured yet.', 'Ce véhicule n’est pas encore configuré.')}</span>
           </div>
         </div>
       ) : null}

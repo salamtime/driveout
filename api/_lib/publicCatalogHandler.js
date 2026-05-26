@@ -4,6 +4,8 @@ import { normalizeVehicleImageUrl } from '../../src/utils/vehicleImage.js';
 
 const DEFAULT_CURRENCY = 'MAD';
 const BOOST_REDEMPTIONS_TABLE = process.env.BOOST_REDEMPTIONS_TABLE || 'owner_listing_boost_redemptions';
+const VERIFICATION_REQUESTS_TABLE = 'verification_requests';
+const VEHICLE_DOCUMENT_VERIFICATION_TYPES = ['vehicle_registration', 'vehicle_insurance'];
 const setupErrorCodes = new Set(['42P01', '42501', '42703', '22P02', 'PGRST116', 'PGRST204']);
 const CERTIFIED_FLEET_CITY_PROVIDERS = {
   tangier: {
@@ -38,6 +40,56 @@ const loadOptionalQuery = async (factory, fallbackValue) => {
 const formatMoney = (value) => {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
+};
+
+const getVehicleVerificationLookupIds = (profile = {}) => {
+  const candidates = [
+    profile?.id,
+    profile?.linked_fleet_vehicle_id,
+    profile?.fleet_vehicle_id,
+    profile?.vehicle_ref_id,
+  ];
+
+  return [...new Set(
+    candidates
+      .map((value) => safeText(value))
+      .filter(Boolean)
+  )];
+};
+
+const isActiveApprovedVerification = (row = {}) => {
+  if (safeText(row?.status).toLowerCase() !== 'approved') return false;
+  const verificationType = safeText(row?.verification_type).toLowerCase();
+  if (verificationType === 'vehicle_insurance' && row?.expires_at) {
+    const expiresAt = new Date(row.expires_at).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt < Date.now()) return false;
+  }
+  return VEHICLE_DOCUMENT_VERIFICATION_TYPES.includes(verificationType);
+};
+
+const buildVehicleDocumentVerificationMap = (rows = []) => {
+  const verifiedByEntityId = new Map();
+
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!isActiveApprovedVerification(row)) return;
+    const entityId = safeText(row?.entity_id);
+    const verificationType = safeText(row?.verification_type).toLowerCase();
+    if (!entityId || !verificationType) return;
+
+    const current = verifiedByEntityId.get(entityId) || new Set();
+    current.add(verificationType);
+    verifiedByEntityId.set(entityId, current);
+  });
+
+  return verifiedByEntityId;
+};
+
+const hasVerifiedVehicleDocuments = (profile = {}, verifiedByEntityId = new Map()) => {
+  const lookupIds = getVehicleVerificationLookupIds(profile);
+  return lookupIds.some((entityId) => {
+    const verifiedTypes = verifiedByEntityId.get(entityId);
+    return VEHICLE_DOCUMENT_VERIFICATION_TYPES.every((type) => verifiedTypes?.has(type));
+  });
 };
 
 const formatQuantity = (value) => {
@@ -424,6 +476,7 @@ const buildMarketplaceListing = (listingRow) => {
   const halfDayMinHours = Number(halfDayPricing?.min_hours || 0) || null;
   const halfDayMaxHours = Number(halfDayPricing?.max_hours || 0) || null;
   const distancePricing = pricing?.distance && typeof pricing.distance === 'object' ? pricing.distance : {};
+  const canonicalVehicleTitle = [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ').trim();
 
   return {
     id: `marketplace-${listingRow.id}`,
@@ -435,10 +488,7 @@ const buildMarketplaceListing = (listingRow) => {
     bookingMode: safeText(listingRow?.booking_mode, 'request'),
     listingStatus: normalizeMarketplaceStatus(listingRow?.listing_status, 'live'),
     reviewStatus: normalizeMarketplaceStatus(listingRow?.review_status, 'approved'),
-    title: safeText(
-      listingRow?.title || [profile?.brand_name, profile?.model_name].filter(Boolean).join(' '),
-      safeText(profile?.short_description, 'Marketplace Listing')
-    ),
+    title: safeText(canonicalVehicleTitle || listingRow?.title, safeText(profile?.short_description, 'Marketplace Listing')),
     brand: safeText(profile?.brand_name, 'Marketplace'),
     model: safeText(profile?.model_name, 'Vehicle'),
     category: safeText(profile?.category_code, 'ATV'),
@@ -460,6 +510,7 @@ const buildMarketplaceListing = (listingRow) => {
     badge: listingRow?.owner_type === 'operator' ? 'Verified Operator' : 'Owner Listing',
     ownerLabel: listingRow?.owner_type === 'operator' ? 'Verified operator listing' : 'Independent owner listing',
     ownerDisplayName: safeText(profile?.owner_display_name),
+    vehicleDocumentsVerified: Boolean(listingRow?.vehicle_documents_verified),
     riderCapacity: Number(profile?.seats || 0) || null,
     powerCc: Number(profile?.engine_cc || 0) || null,
     powerCcLabel: profile?.engine_cc ? `${profile.engine_cc}cc` : '',
@@ -697,15 +748,35 @@ const fetchMarketplaceListings = async (adminClient, tenantScope = null) => {
     const profileIds = [...new Set(rows.map((row) => row.vehicle_public_profile_id).filter(Boolean))];
 
     let profilesById = new Map();
+    let profileRows = [];
     if (profileIds.length > 0) {
-      const { data: profileRows, error: profileError } = await adminClient
+      const { data: loadedProfileRows, error: profileError } = await adminClient
         .from('app_vehicle_public_profiles')
         .select('*')
         .in('id', profileIds);
 
       if (profileError) throw profileError;
+      profileRows = loadedProfileRows || [];
       profilesById = new Map((profileRows || []).map((row) => [String(row.id), row]));
     }
+
+    const vehicleVerificationLookupIds = [...new Set(
+      profileRows.flatMap((profile) => getVehicleVerificationLookupIds(profile))
+    )];
+    const vehicleVerificationRows = vehicleVerificationLookupIds.length > 0
+      ? await loadOptionalQuery(
+          () =>
+            adminClient
+              .from(VERIFICATION_REQUESTS_TABLE)
+              .select('entity_id, verification_type, status, expires_at')
+              .eq('entity_type', 'vehicle')
+              .in('entity_id', vehicleVerificationLookupIds)
+              .in('verification_type', VEHICLE_DOCUMENT_VERIFICATION_TYPES)
+              .eq('status', 'approved'),
+          []
+        )
+      : [];
+    const verifiedDocumentsByEntityId = buildVehicleDocumentVerificationMap(vehicleVerificationRows);
 
     const listingIds = rows.map((row) => row.id).filter(Boolean);
     const activeBoostRows = listingIds.length > 0
@@ -746,6 +817,10 @@ const fetchMarketplaceListings = async (adminClient, tenantScope = null) => {
           boost_rewards: boostsByListingId.get(String(row.id)) || [],
           boost_score: getBoostScore(boostsByListingId.get(String(row.id)) || []),
           vehicle_public_profile: profilesById.get(String(row.vehicle_public_profile_id)) || {},
+          vehicle_documents_verified: hasVerifiedVehicleDocuments(
+            profilesById.get(String(row.vehicle_public_profile_id)) || {},
+            verifiedDocumentsByEntityId
+          ),
         })
       )
       .filter((listing) => listing.isAvailable);

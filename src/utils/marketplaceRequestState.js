@@ -68,6 +68,36 @@ export const normalizeRentalState = (statusOrRequest) => {
 
 export const normalizeMarketplaceRequestLifecycleStatus = normalizeRentalState;
 
+export const getRawMarketplaceRequestStatus = (statusOrRequest) => {
+  const source = statusOrRequest && typeof statusOrRequest === 'object' ? statusOrRequest : null;
+  const rawStatus = source
+    ? (
+        source?.request_status ??
+        source?.requestStatus ??
+        source?.status ??
+        'pending'
+      )
+    : statusOrRequest;
+
+  return String(rawStatus || 'pending')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]+/g, '')
+    .replace(/\s+/g, '_');
+};
+
+export const TERMINAL_MARKETPLACE_REQUEST_STATUSES = new Set([
+  'completed',
+  'expired',
+  'declined',
+  'rejected',
+  'cancelled',
+  'canceled',
+]);
+
+export const isTerminalMarketplaceRequestStatus = (statusOrRequest) =>
+  TERMINAL_MARKETPLACE_REQUEST_STATUSES.has(getRawMarketplaceRequestStatus(statusOrRequest));
+
 export const MARKETPLACE_COMMISSION_RATE = 0.15;
 export const MARKETPLACE_APPROVAL_HOLD_MINUTES = 15;
 export const MARKETPLACE_CHAT_GRACE_MINUTES = 12 * 60;
@@ -123,6 +153,8 @@ export const canMarketplaceParticipantReply = (status, senderRole = 'customer') 
 export const isMarketplaceRequestReadOnly = (status) => !isMarketplaceChatUnlocked(status);
 
 export const isMarketplaceRequestOpen = (status) => {
+  if (isTerminalMarketplaceRequestStatus(status)) return false;
+
   const normalized = normalizeMarketplaceRequestLifecycleStatus(status);
   return ['pending', 'countered', 'pre_approved', 'approved'].includes(normalized);
 };

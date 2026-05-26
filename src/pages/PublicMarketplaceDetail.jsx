@@ -8,8 +8,11 @@ import PublicBookingService from '../services/PublicBookingService';
 import VerificationService from '../services/VerificationService';
 import { useAuth } from '../contexts/AuthContext';
 import { buildMarketplaceRequestPath, buildMarketplaceWhatsappShareHref } from '../utils/marketplaceShareLinks';
-import { getMarketplaceRequestDisplay, normalizeMarketplaceRequestLifecycleStatus } from '../utils/marketplaceRequestState';
-import { getCachedMarketplaceRequestForUsers } from '../utils/marketplaceRequestCache';
+import {
+  getMarketplaceRequestDisplay,
+  isTerminalMarketplaceRequestStatus,
+  normalizeMarketplaceRequestLifecycleStatus,
+} from '../utils/marketplaceRequestState';
 import { resolveReturnPath } from '../utils/navigationReturn';
 
 const VERIFIED_BADGE_SRC = '/images/certified-badge.png';
@@ -216,34 +219,26 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
     listing?.powerCcLabel || null,
     listing?.transmission || null,
   ].filter(Boolean);
+  const listingTitle = [listing?.brand, listing?.model].filter(Boolean).join(' ').trim() || listing?.title || 'Marketplace listing';
   const whatsappHref = listing
     ? buildMarketplaceWhatsappShareHref({
         listingId: listing.id,
-        title: listing.title,
+        title: listingTitle,
         dailyPrice: listing.dailyPrice,
         currencyCode: listing.currencyCode || 'MAD',
         locationLabel: listing?.location?.label || listing?.location?.city || '',
         source: 'public-share',
       })
     : '';
-  const cachedRequestedState = getCachedMarketplaceRequestForUsers({
-    userIds: [
-      userProfile?.id || user?.id || '',
-      userProfile?.email || user?.email || '',
-    ],
-    listingId: listing?.sourceId || listing?.id,
-  });
-  const effectiveExistingRequest = existingRequest || cachedRequestedState || null;
+  const effectiveExistingRequest = isTerminalMarketplaceRequestStatus(existingRequest)
+    ? null
+    : existingRequest || null;
   const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(effectiveExistingRequest || '');
   const existingRequestDisplay = effectiveExistingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
   const shouldShowRequestedState = Boolean(!isOwnerViewingOwnListing && effectiveExistingRequest);
   const existingRequestHref = existingRequest?.id
     ? `/account/messages?requestId=${encodeURIComponent(String(existingRequest.id))}`
-    : cachedRequestedState?.requestId
-      ? `/account/messages?requestId=${encodeURIComponent(String(cachedRequestedState.requestId))}`
-      : '';
-  const isResolvingBookingAccess = Boolean(user?.id && !isOwnerViewingOwnListing && (verificationLoading || existingRequestLoading));
-
+    : '';
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#fcfbff_0%,#f8fafc_45%,#ffffff_100%)]">
       {!embeddedInAccount ? <PublicSiteChrome current="marketplace" /> : null}
@@ -269,10 +264,10 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
         ) : (
           <div className="mt-6 grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
             <section className="overflow-hidden rounded-[2rem] border border-violet-100 bg-white shadow-[0_24px_70px_rgba(79,70,229,0.10)]">
-              <div className="relative min-h-[360px] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.9),rgba(237,233,254,0.9))]">
+              <div className="relative min-h-[360px] bg-white">
                 <img
                   src={activeImageUrl}
-                  alt={listing.title}
+                  alt={listingTitle}
                   className="h-full min-h-[360px] w-full rounded-[2rem] object-contain p-4"
                 />
                 <div className="absolute left-5 top-5 rounded-full bg-white/90 px-4 py-2 text-sm font-black text-violet-700 shadow-sm ring-1 ring-violet-100">
@@ -330,10 +325,16 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
                     {signal}
                   </span>
                 ))}
+                {listing?.vehicleDocumentsVerified ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-black text-sky-700">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Documents verified
+                  </span>
+                ) : null}
               </div>
 
               <h1 className="mt-5 text-4xl font-black tracking-tight text-slate-950">
-                {listing.title}
+                {listingTitle}
               </h1>
               <p className="mt-3 text-base font-semibold text-slate-600">
                 {listing.location?.label || listing.location?.city || 'Morocco'}
@@ -412,10 +413,6 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
                   >
                     Open owner workspace
                   </Link>
-                ) : isResolvingBookingAccess ? (
-                  <span className="inline-flex flex-1 items-center justify-center rounded-2xl border border-slate-300 bg-slate-100 px-5 py-4 text-sm font-black text-slate-500 shadow-[0_10px_24px_rgba(148,163,184,0.10)]">
-                    Checking your booking access...
-                  </span>
                 ) : shouldShowRequestedState ? (
                   <Link
                     to={existingRequestHref || '#'}

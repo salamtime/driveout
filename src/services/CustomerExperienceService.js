@@ -12,6 +12,7 @@ import {
   isMarketplaceChatUnlocked,
   normalizeMarketplaceRequestLifecycleStatus,
 } from '../utils/marketplaceRequestState';
+import { normalizeRentalExecutionDraft } from '../utils/rentalExecutionFlow';
 import walletTopupApi from './walletTopupApi';
 import RentalEventService from './RentalEventService';
 
@@ -23,6 +24,43 @@ const toNumber = (value) => {
 const cleanOptionalValue = (value) => {
   if (value === undefined || value === null || value === '') return null;
   return value;
+};
+
+const cleanUrl = (value) => String(value || '').trim();
+
+const resolveRentalDocumentLinks = (row = {}, ownerExecution = {}) => {
+  const rowDocumentLinks = row?.documentLinks && typeof row.documentLinks === 'object'
+    ? row.documentLinks
+    : row?.document_links && typeof row.document_links === 'object'
+      ? row.document_links
+      : {};
+  const completionReceipt = ownerExecution?.completionReceipt || ownerExecution?.completion_receipt || {};
+  const rentalId = cleanUrl(row?.id);
+
+  return {
+    contract:
+      cleanUrl(ownerExecution?.contractDocumentUrl) ||
+      cleanUrl(ownerExecution?.contract_document_url) ||
+      cleanUrl(ownerExecution?.contractUrl) ||
+      cleanUrl(rowDocumentLinks?.contract) ||
+      cleanUrl(rowDocumentLinks?.contractUrl) ||
+      cleanUrl(row?.contractDocumentUrl) ||
+      cleanUrl(row?.contract_document_url) ||
+      cleanUrl(row?.contract_url) ||
+      (rentalId ? `/view/rental/${encodeURIComponent(rentalId)}?type=contract` : ''),
+    receipt:
+      cleanUrl(completionReceipt?.url) ||
+      cleanUrl(completionReceipt?.href) ||
+      cleanUrl(ownerExecution?.finalReceiptUrl) ||
+      cleanUrl(ownerExecution?.final_receipt_url) ||
+      cleanUrl(ownerExecution?.receiptUrl) ||
+      cleanUrl(rowDocumentLinks?.receipt) ||
+      cleanUrl(rowDocumentLinks?.receiptUrl) ||
+      cleanUrl(row?.finalReceiptUrl) ||
+      cleanUrl(row?.final_receipt_url) ||
+      cleanUrl(row?.receipt_url) ||
+      (rentalId ? `/view/rental/${encodeURIComponent(rentalId)}?type=receipt` : ''),
+  };
 };
 
 const normalizeComparableText = (value) =>
@@ -93,6 +131,7 @@ const normalizeDate = (value) => {
 
 const customerRequestCache = createTimedRequestCache(30000);
 const CUSTOMER_ACCOUNT_SNAPSHOT_STORAGE_PREFIX = 'driveout_customer_account_snapshot';
+const CUSTOMER_ACCOUNT_SNAPSHOT_CACHE_MAX_AGE_MS = 60 * 1000;
 
 const buildCustomerCacheIdentity = (user) => {
   const userId = String(user?.id || '').trim();
@@ -258,10 +297,13 @@ const normalizeRentalRecord = (row = {}) => {
           : row?.marketplace_request_counter_offer?.owner_execution && typeof row.marketplace_request_counter_offer.owner_execution === 'object'
             ? row.marketplace_request_counter_offer.owner_execution
             : {};
+  const normalizedOwnerExecution = normalizeRentalExecutionDraft(rawOwnerExecution);
   const ownerExecution = {
-    handoffPhotos: normalizeEvidencePhotos(rawOwnerExecution?.handoffPhotos),
-    returnPhotos: normalizeEvidencePhotos(rawOwnerExecution?.returnPhotos),
+    ...normalizedOwnerExecution,
+    handoffPhotos: normalizeEvidencePhotos(normalizedOwnerExecution?.handoffPhotos || rawOwnerExecution?.handoffPhotos),
+    returnPhotos: normalizeEvidencePhotos(normalizedOwnerExecution?.returnPhotos || rawOwnerExecution?.returnPhotos),
   };
+  const documentLinks = resolveRentalDocumentLinks(row, ownerExecution);
 
   return {
     id: String(row.id),
@@ -338,10 +380,7 @@ const normalizeRentalRecord = (row = {}) => {
     owner_execution: ownerExecution,
     raw: row,
     href: `/rent?category=${encodeURIComponent(String(category).toLowerCase())}&search=${encodeURIComponent(modelName)}`,
-    documentLinks: {
-      contract: `/view/rental/${encodeURIComponent(row.id)}?type=contract`,
-      receipt: `/view/rental/${encodeURIComponent(row.id)}?type=receipt`,
-    },
+    documentLinks,
   };
 };
 
@@ -387,8 +426,8 @@ const normalizeMarketplaceRequestRecord = (row = {}) => {
     rentalType,
     duration,
     listingTitle:
-      listing?.title ||
       [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
+      listing?.title ||
       'Marketplace vehicle',
     cityName: profile?.city_name || 'Tangier',
     areaName: profile?.area_name || '',
@@ -518,6 +557,10 @@ class CustomerExperienceService {
 
       const parsed = JSON.parse(rawValue);
       if (!parsed || typeof parsed !== 'object') return null;
+      const cachedAt = Number(parsed?._cachedAt || 0);
+      if (!cachedAt || Date.now() - cachedAt > CUSTOMER_ACCOUNT_SNAPSHOT_CACHE_MAX_AGE_MS) {
+        return null;
+      }
 
       return {
         profile: parsed?.profile && typeof parsed.profile === 'object' ? parsed.profile : {},
@@ -542,7 +585,10 @@ class CustomerExperienceService {
     if (!storageKey) return;
 
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        ...snapshot,
+        _cachedAt: Date.now(),
+      }));
     } catch {
       // Ignore storage write failures and keep the live response path working.
     }

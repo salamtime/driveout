@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CalendarClock, ChevronDown, FileText, Fuel, Gauge, MapPinned, MessageSquare, Receipt, ShieldCheck, Wallet, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, Camera, ChevronDown, FileText, Fuel, Gauge, MapPinned, MessageSquare, Receipt, ShieldCheck, Wallet, X } from 'lucide-react';
 import i18n from '../../i18n';
 import CustomerRentalTimer from './CustomerRentalTimer';
 import RentalEvidenceGallery from './RentalEvidenceGallery';
@@ -69,6 +69,92 @@ const DetailList = ({ items, emptyLabel }) => {
         </div>
       ))}
     </div>
+  );
+};
+
+const CompletedDetailRow = ({ icon: Icon, eyebrow, title, subtitle, children }) => (
+  <details className="group overflow-hidden rounded-[1.35rem] border border-slate-200 bg-white shadow-sm">
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-left transition hover:bg-slate-50 sm:gap-4 [&::-webkit-details-marker]:hidden">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 sm:h-12 sm:w-12">
+          <Icon className="h-[18px] w-[18px] sm:h-5 sm:w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{eyebrow}</span>
+          <span className="mt-1 block truncate text-sm font-bold text-slate-950 sm:text-base">{title}</span>
+          {subtitle ? <span className="mt-1 block truncate text-sm font-medium text-slate-500">{subtitle}</span> : null}
+        </span>
+      </div>
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-slate-50 text-slate-500 transition group-open:rotate-180 sm:h-10 sm:w-10">
+        <ChevronDown className="h-5 w-5" />
+      </span>
+    </summary>
+    <div className="border-t border-slate-100 px-4 py-4">
+      {children}
+    </div>
+  </details>
+);
+
+const getMediaPreviewUrl = (photo) =>
+  String(photo?.thumbnailUrl || photo?.thumbnail_url || photo?.publicUrl || photo?.public_url || '').trim();
+
+const CompactTripMediaPreview = ({ title, countLabel, photos = [], emptyLabel }) => {
+  const normalizedPhotos = (Array.isArray(photos) ? photos : [])
+    .map((photo, index) => ({
+      id: String(photo?.id || `media-${index}`).trim(),
+      url: getMediaPreviewUrl(photo),
+      name: String(photo?.originalFilename || photo?.original_filename || title).trim(),
+    }))
+    .filter((photo) => photo.url);
+  const previewPhotos = normalizedPhotos.slice(0, 4);
+  const hiddenPhotoCount = Math.max(0, normalizedPhotos.length - previewPhotos.length);
+
+  return (
+    <details className="group overflow-hidden rounded-[1.35rem] border border-slate-200 bg-white shadow-sm">
+      <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 transition hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center [&::-webkit-details-marker]:hidden">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600">
+            <Camera className="h-5 w-5" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-base font-bold text-slate-950">{title}</span>
+            <span className="mt-1 block text-sm font-medium text-slate-500">{countLabel}</span>
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {previewPhotos.length > 0 ? (
+            <div className="grid w-32 grid-cols-4 gap-1.5">
+              {previewPhotos.map((photo, index) => (
+                <span key={photo.id} className="relative block overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                  <img src={photo.url} alt={photo.name} className="h-12 w-full object-cover" />
+                  {hiddenPhotoCount > 0 && index === previewPhotos.length - 1 ? (
+                    <span className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-xs font-bold text-white">
+                      +{hiddenPhotoCount}
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="hidden rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-400 sm:inline-flex">
+              {emptyLabel}
+            </span>
+          )}
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-50 text-slate-500 transition group-open:rotate-180">
+            <ChevronDown className="h-5 w-5" />
+          </span>
+        </div>
+      </summary>
+      <div className="border-t border-slate-100 px-4 py-4">
+        <RentalEvidenceGallery
+          title={title}
+          photos={photos}
+          emptyLabel={emptyLabel}
+          variant="flat"
+          hideHeader
+        />
+      </div>
+    </details>
   );
 };
 
@@ -412,44 +498,89 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
       value: formatMoney(totalCost, 'MAD', locale),
     };
   });
+  const rentalDateRange = [formatDateTime(rental?.startDate, locale), formatDateTime(rental?.endDate, locale)].filter(Boolean).join(' → ');
+  const completedHeroFacts = [
+    { key: 'customer', label: tr('Customer', 'Client'), value: rental?.customerName || '—' },
+    { key: 'dates', label: tr('Dates', 'Dates'), value: rentalDateRange || '—' },
+    { key: 'package', label: tr('Package', 'Forfait'), value: packageLabel || '—' },
+    { key: 'media', label: tr('Trip media', 'Médias trajet'), value: totalMediaCount > 0 ? tr(`${totalMediaCount} saved`, `${totalMediaCount} enregistré(s)`) : tr('No media', 'Aucun média') },
+  ];
+  const completedPaymentSummary = [
+    {
+      key: 'total',
+      label: tr('Total', 'Total'),
+      value: formatMoney(rental?.total, 'MAD', locale),
+      valueClassName: 'text-slate-950',
+    },
+    {
+      key: 'paid',
+      label: tr('Paid', 'Payé'),
+      value: formatMoney(rental?.paid, 'MAD', locale),
+      valueClassName: 'text-emerald-700',
+    },
+    {
+      key: 'due',
+      label: tr('Due', 'Reste'),
+      value: formatMoney(rental?.outstanding, 'MAD', locale),
+      valueClassName: Number(rental?.outstanding || 0) > 0 ? 'text-rose-600' : 'text-slate-950',
+    },
+    {
+      key: 'payment',
+      label: tr('Payment', 'Paiement'),
+      value: paymentStatusLabel,
+      valueClassName: 'text-slate-950',
+    },
+    {
+      key: 'deposit',
+      label: tr('Deposit', 'Caution'),
+      value: depositAmountLabel,
+      valueClassName: 'text-slate-950',
+    },
+    {
+      key: 'receipt',
+      label: tr('Receipt', 'Reçu'),
+      value: rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente'),
+      valueClassName: rental?.receiptIssued ? 'text-emerald-700' : 'text-slate-950',
+    },
+  ];
 
   const content = (
     <>
-      <div className={`sticky top-0 z-10 px-5 py-4 backdrop-blur-xl ${isPage ? 'bg-transparent sm:px-6' : 'border-b border-slate-200 bg-white/95'}`}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Rental details', 'Détails location')}</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-950">{rental?.modelName || tr('Rental', 'Location')}</h2>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
-              <span className="rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-                {rental?.rentalId || tr('Reference pending', 'Référence en attente')}
-              </span>
+      {isPage ? (
+        <div className="sticky top-0 z-10 bg-white/80 px-5 py-4 backdrop-blur-xl sm:px-6">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {tr('Back', 'Retour')}
+          </button>
+        </div>
+      ) : (
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur-xl">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Rental details', 'Détails location')}</p>
+              <h2 className="mt-2 text-2xl font-bold text-slate-950">{rental?.modelName || tr('Rental', 'Location')}</h2>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+                <span className="rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                  {rental?.rentalId || tr('Reference pending', 'Référence en attente')}
+                </span>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {isPage ? (
-              <button
-                type="button"
-                onClick={onBack}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                {tr('Back', 'Retour')}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
-                aria-label="Close rental details"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+              aria-label="Close rental details"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
         </div>
-      </div>
+      )}
 
       <div className={`space-y-5 px-5 py-5 ${isPage ? 'sm:px-6 sm:py-6' : ''}`}>
         {loading ? (
@@ -479,99 +610,132 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
           </div>
         ) : (
           <>
-            <section className={`overflow-hidden rounded-[1.75rem] border border-violet-100 bg-[radial-gradient(circle_at_top_left,_rgba(79,70,229,0.18),_transparent_34%),linear-gradient(135deg,_#ffffff_0%,_#eef2ff_58%,_#f8f5ff_100%)] p-5 shadow-[0_18px_50px_rgba(76,29,149,0.08)]`}>
-              <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-2xl font-bold tracking-tight text-slate-950">{rental?.modelName || tr('Rental', 'Location')}</h3>
-                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
-                  </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Customer', 'Client')}</p>
-                      <p className="mt-2 text-sm font-bold text-slate-950">{rental?.customerName || '—'}</p>
-                    </div>
-                    <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Dates', 'Dates')}</p>
-                      <p className="mt-2 text-sm font-bold text-slate-950">
-                        {[formatDateTime(rental?.startDate, locale), formatDateTime(rental?.endDate, locale)].filter(Boolean).join(' → ') || '—'}
-                      </p>
-                    </div>
-                    <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Reference', 'Référence')}</p>
-                      <p className="mt-2 text-sm font-bold text-slate-950">{rental?.rentalId || '—'}</p>
-                    </div>
-                    <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Status', 'Statut')}</p>
-                      <p className="mt-2 text-sm font-bold text-slate-950">{statusLabel}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="min-w-[260px] rounded-[1.5rem] border border-white/70 bg-white/95 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Payment', 'Paiement')}</p>
-                  <div className="mt-4 space-y-3">
-                    <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
-                    <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
-                    <DetailRow label={tr('Deposit', 'Caution')} value={depositStatusLabel} />
-                    <DetailRow label={tr('Receipt', 'Reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
-                  </div>
-                </div>
-              </div>
-            </section>
-
             {isCompletedRental ? (
-              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Completed trip', 'Trajet terminé')}</p>
-                <h3 className="mt-2 text-2xl font-bold text-slate-950">{tr('Everything is closed and ready to review', 'Tout est clôturé et prêt à être consulté')}</h3>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
-                  {receiptLink ? (
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                      {tr('Receipt ready', 'Reçu prêt')}
-                    </span>
-                  ) : null}
-                  {totalMediaCount > 0 ? (
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                      {tr(`${totalMediaCount} trip media`, `${totalMediaCount} média du trajet`)}
-                    </span>
-                  ) : null}
+              <section className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm sm:rounded-[1.75rem] sm:p-5">
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Completed rental', 'Location terminée')}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <h3 className="text-xl font-bold tracking-tight text-slate-950 sm:text-2xl">{rental?.modelName || tr('Rental', 'Location')}</h3>
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+                      {rental?.rentalId ? (
+                        <span className="rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                          {rental.rentalId}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-3 max-w-3xl text-sm font-medium leading-6 text-slate-500">
+                      {[rental?.customerName, rentalDateRange].filter(Boolean).join(' • ') || tr('Completed trip ready to review', 'Trajet terminé prêt à consulter')}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {receiptLink ? (
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          {tr('Receipt ready', 'Reçu prêt')}
+                        </span>
+                      ) : null}
+                      {totalMediaCount > 0 ? (
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                          {tr(`${totalMediaCount} trip media`, `${totalMediaCount} média du trajet`)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 lg:justify-end">
+                    {receiptLink ? (
+                      <a
+                        href={receiptLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(91,33,182,0.24)] transition hover:translate-y-[-1px] sm:w-auto"
+                      >
+                        <Receipt className="h-4 w-4" />
+                        {tr('Open receipt', 'Ouvrir le reçu')}
+                      </a>
+                    ) : null}
+                    {contractLink ? (
+                      <a
+                        href={contractLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 sm:w-auto"
+                      >
+                        <FileText className="h-4 w-4" />
+                        {tr('Open contract', 'Ouvrir le contrat')}
+                      </a>
+                    ) : null}
+                    {marketplaceRequestId ? (
+                      <a
+                        href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 sm:w-auto"
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                        {tr('Open chat', 'Ouvrir le chat')}
+                      </a>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="mt-5 flex flex-wrap gap-3">
-                  {receiptLink ? (
-                    <a
-                      href={receiptLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(91,33,182,0.28)] transition hover:translate-y-[-1px]"
-                    >
-                      <Receipt className="h-4 w-4" />
-                      {tr('Open receipt', 'Ouvrir le reçu')}
-                    </a>
-                  ) : null}
-                  {contractLink ? (
-                    <a
-                      href={contractLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                    >
-                      <FileText className="h-4 w-4" />
-                      {tr('Open contract', 'Ouvrir le contrat')}
-                    </a>
-                  ) : null}
-                  {marketplaceRequestId ? (
-                    <a
-                      href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
-                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                    >
-                      <MessageSquare className="h-4 w-4" />
-                      {tr('Open chat', 'Ouvrir le chat')}
-                    </a>
-                  ) : null}
+
+                <div className="mt-5 grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {completedHeroFacts.map((item) => (
+                    <div key={item.key} className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
+                      <p className="mt-2 truncate text-sm font-bold text-slate-950">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-5 overflow-hidden rounded-[1.35rem] border border-slate-200 bg-slate-200">
+                  <div className="grid gap-px sm:grid-cols-2 lg:grid-cols-6">
+                    {completedPaymentSummary.map((item) => (
+                      <div key={item.key} className="min-w-0 bg-slate-50/95 px-4 py-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
+                        <p className={`mt-2 truncate text-sm font-bold ${item.valueClassName}`}>{item.value}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </section>
-            ) : null}
+            ) : (
+              <section className="overflow-hidden rounded-[1.75rem] border border-violet-100 bg-[radial-gradient(circle_at_top_left,_rgba(79,70,229,0.18),_transparent_34%),linear-gradient(135deg,_#ffffff_0%,_#eef2ff_58%,_#f8f5ff_100%)] p-5 shadow-[0_18px_50px_rgba(76,29,149,0.08)]">
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-2xl font-bold tracking-tight text-slate-950">{rental?.modelName || tr('Rental', 'Location')}</h3>
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone}`}>{statusLabel}</span>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Customer', 'Client')}</p>
+                        <p className="mt-2 text-sm font-bold text-slate-950">{rental?.customerName || '—'}</p>
+                      </div>
+                      <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Dates', 'Dates')}</p>
+                        <p className="mt-2 text-sm font-bold text-slate-950">{rentalDateRange || '—'}</p>
+                      </div>
+                      <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Reference', 'Référence')}</p>
+                        <p className="mt-2 text-sm font-bold text-slate-950">{rental?.rentalId || '—'}</p>
+                      </div>
+                      <div className="rounded-[1.25rem] border border-white/80 bg-white/90 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Status', 'Statut')}</p>
+                        <p className="mt-2 text-sm font-bold text-slate-950">{statusLabel}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="min-w-[260px] rounded-[1.5rem] border border-white/70 bg-white/95 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Payment', 'Paiement')}</p>
+                    <div className="mt-4 space-y-3">
+                      <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
+                      <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
+                      <DetailRow label={tr('Deposit', 'Caution')} value={depositStatusLabel} />
+                      <DetailRow label={tr('Receipt', 'Reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
 
             {workflowAction ? (
               <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
@@ -605,27 +769,54 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
               <CustomerRentalTimer rental={rental} variant="panel" />
             ) : null}
 
-            <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Journey', 'Parcours')}</p>
-              <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Rental timeline', 'Timeline location')}</h3>
-              <div className="mt-5 space-y-3">
-                {journeySteps.map((step, index) => (
-                  <div key={step.key} className="flex gap-3">
-                    <div className="flex flex-col items-center">
-                      <div className={`mt-0.5 h-3 w-3 rounded-full ${step.state === 'done' ? 'bg-emerald-500' : step.state === 'current' ? 'bg-violet-600 ring-4 ring-violet-100' : 'bg-slate-200'}`} />
-                      {index < journeySteps.length - 1 ? <div className="mt-1 h-full min-h-[28px] w-px bg-slate-200" /> : null}
+            {isCompletedRental ? (
+              <CompletedDetailRow
+                icon={CalendarClock}
+                eyebrow={tr('Journey', 'Parcours')}
+                title={tr('Rental timeline', 'Timeline location')}
+                subtitle={tr('Completed steps, timestamps, and payout state', 'Étapes terminées, horaires et versement')}
+              >
+                <div className="space-y-3">
+                  {journeySteps.map((step, index) => (
+                    <div key={step.key} className="flex gap-3">
+                      <div className="flex flex-col items-center">
+                        <div className={`mt-0.5 h-3 w-3 rounded-full ${step.state === 'done' ? 'bg-emerald-500' : step.state === 'current' ? 'bg-violet-600 ring-4 ring-violet-100' : 'bg-slate-200'}`} />
+                        {index < journeySteps.length - 1 ? <div className="mt-1 h-full min-h-[28px] w-px bg-slate-200" /> : null}
+                      </div>
+                      <div className="min-w-0 pb-3">
+                        <p className="text-sm font-semibold text-slate-950">{step.label}</p>
+                        <p className="mt-1 text-xs font-medium uppercase tracking-[0.14em] text-slate-400">
+                          {step.state === 'done' ? tr('Done', 'Terminée') : step.state === 'current' ? tr('Current', 'En cours') : tr('Upcoming', 'À venir')}
+                          {step.timestamp ? ` • ${formatDateTime(step.timestamp, locale)}` : ''}
+                        </p>
+                      </div>
                     </div>
-                    <div className="min-w-0 pb-3">
-                      <p className="text-sm font-semibold text-slate-950">{step.label}</p>
-                      <p className="mt-1 text-xs font-medium uppercase tracking-[0.14em] text-slate-400">
-                        {step.state === 'done' ? tr('Done', 'Terminée') : step.state === 'current' ? tr('Current', 'En cours') : tr('Upcoming', 'À venir')}
-                        {step.timestamp ? ` • ${formatDateTime(step.timestamp, locale)}` : ''}
-                      </p>
+                  ))}
+                </div>
+              </CompletedDetailRow>
+            ) : (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Journey', 'Parcours')}</p>
+                <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Rental timeline', 'Timeline location')}</h3>
+                <div className="mt-5 space-y-3">
+                  {journeySteps.map((step, index) => (
+                    <div key={step.key} className="flex gap-3">
+                      <div className="flex flex-col items-center">
+                        <div className={`mt-0.5 h-3 w-3 rounded-full ${step.state === 'done' ? 'bg-emerald-500' : step.state === 'current' ? 'bg-violet-600 ring-4 ring-violet-100' : 'bg-slate-200'}`} />
+                        {index < journeySteps.length - 1 ? <div className="mt-1 h-full min-h-[28px] w-px bg-slate-200" /> : null}
+                      </div>
+                      <div className="min-w-0 pb-3">
+                        <p className="text-sm font-semibold text-slate-950">{step.label}</p>
+                        <p className="mt-1 text-xs font-medium uppercase tracking-[0.14em] text-slate-400">
+                          {step.state === 'done' ? tr('Done', 'Terminée') : step.state === 'current' ? tr('Current', 'En cours') : tr('Upcoming', 'À venir')}
+                          {step.timestamp ? ` • ${formatDateTime(step.timestamp, locale)}` : ''}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </section>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {['confirmed', 'pickup_ready'].includes(canonicalStage) ? (
               <section ref={openingInspectionRef} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
@@ -669,53 +860,59 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
               </section>
             ) : null}
 
-            <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-              <button
-                type="button"
-                onClick={() => setShowMoneyDetails((current) => !current)}
-                className="flex w-full items-center justify-between gap-4 text-left"
-              >
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Payment', 'Paiement')}</p>
-                  <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Final payment summary', 'Résumé final du paiement')}</h3>
-                </div>
-                <span className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition ${showMoneyDetails ? 'rotate-180' : ''}`}>
-                  <ChevronDown className="h-5 w-5" />
-                </span>
-              </button>
-              {showMoneyDetails ? (
-                <div className="mt-5 space-y-3">
-                  <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
-                  <DetailRow label={tr('Amount paid', 'Montant payé')} value={formatMoney(rental?.paid, 'MAD', locale)} />
-                  <DetailRow label={tr('Still due', 'Reste à payer')} value={formatMoney(rental?.outstanding, 'MAD', locale)} />
-                  <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
-                  <DetailRow label={tr('Deposit state', 'État de la caution')} value={depositStatusLabel} />
-                  {rental?.totalExtensionFees > 0 ? (
-                    <DetailRow label={tr('Approved extensions', 'Extensions approuvées')} value={formatMoney(rental.totalExtensionFees, 'MAD', locale)} />
-                  ) : null}
-                  {rental?.overageCharge > 0 ? (
-                    <DetailRow label={tr('Extra kilometers', 'Kilomètres supplémentaires')} value={formatMoney(rental.overageCharge, 'MAD', locale)} />
-                  ) : null}
-                  {rental?.fuelCharge > 0 ? (
-                    <DetailRow label={tr('Fuel adjustment', 'Ajustement carburant')} value={formatMoney(rental.fuelCharge, 'MAD', locale)} />
-                  ) : null}
-                  <DetailRow label={tr('Receipt status', 'Statut du reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
-                </div>
-              ) : null}
-            </section>
+            {!isCompletedRental ? (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setShowMoneyDetails((current) => !current)}
+                  className="flex w-full items-center justify-between gap-4 text-left"
+                >
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Payment', 'Paiement')}</p>
+                    <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Final payment summary', 'Résumé final du paiement')}</h3>
+                  </div>
+                  <span className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition ${showMoneyDetails ? 'rotate-180' : ''}`}>
+                    <ChevronDown className="h-5 w-5" />
+                  </span>
+                </button>
+                {showMoneyDetails ? (
+                  <div className="mt-5 space-y-3">
+                    <DetailRow label={tr('Final total', 'Total final')} value={formatMoney(rental?.total, 'MAD', locale)} />
+                    <DetailRow label={tr('Amount paid', 'Montant payé')} value={formatMoney(rental?.paid, 'MAD', locale)} />
+                    <DetailRow label={tr('Still due', 'Reste à payer')} value={formatMoney(rental?.outstanding, 'MAD', locale)} />
+                    <DetailRow label={tr('Payment status', 'Statut paiement')} value={paymentStatusLabel} />
+                    <DetailRow label={tr('Deposit state', 'État de la caution')} value={depositStatusLabel} />
+                    {rental?.totalExtensionFees > 0 ? (
+                      <DetailRow label={tr('Approved extensions', 'Extensions approuvées')} value={formatMoney(rental.totalExtensionFees, 'MAD', locale)} />
+                    ) : null}
+                    {rental?.overageCharge > 0 ? (
+                      <DetailRow label={tr('Extra kilometers', 'Kilomètres supplémentaires')} value={formatMoney(rental.overageCharge, 'MAD', locale)} />
+                    ) : null}
+                    {rental?.fuelCharge > 0 ? (
+                      <DetailRow label={tr('Fuel adjustment', 'Ajustement carburant')} value={formatMoney(rental.fuelCharge, 'MAD', locale)} />
+                    ) : null}
+                    <DetailRow label={tr('Receipt status', 'Statut du reçu')} value={rental?.receiptIssued ? tr('Ready', 'Prêt') : tr('Pending', 'En attente')} />
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {isCompletedRental ? (
-              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Trip media', 'Médias du trajet')}</p>
-                <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Open and closed media', 'Médias d’ouverture et de clôture')}</h3>
-                <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                  <RentalEvidenceGallery
+              <section className="space-y-3">
+                <div className="px-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Trip media', 'Médias du trajet')}</p>
+                  <h3 className="mt-1 text-xl font-bold text-slate-950">{tr('Open and closed media', 'Médias d’ouverture et de clôture')}</h3>
+                </div>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <CompactTripMediaPreview
                     title={tr('Open media', 'Média ouverture')}
+                    countLabel={handoffPhotos.length > 0 ? tr(`${handoffPhotos.length} saved`, `${handoffPhotos.length} enregistré(s)`) : tr('No media saved', 'Aucun média enregistré')}
                     photos={handoffPhotos}
                     emptyLabel={tr('No opening media saved for this rental.', 'Aucun média d’ouverture enregistré pour cette location.')}
                   />
-                  <RentalEvidenceGallery
+                  <CompactTripMediaPreview
                     title={tr('Closed media', 'Média clôture')}
+                    countLabel={returnPhotos.length > 0 ? tr(`${returnPhotos.length} saved`, `${returnPhotos.length} enregistré(s)`) : tr('No media saved', 'Aucun média enregistré')}
                     photos={returnPhotos}
                     emptyLabel={tr('No closing media saved for this rental.', 'Aucun média de clôture enregistré pour cette location.')}
                   />
@@ -723,62 +920,129 @@ const AccountRentalDetailDrawer = ({ rental, loading, onClose, variant = 'drawer
               </section>
             ) : null}
 
-            <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Customer', 'Client')}</p>
-              <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Customer card', 'Carte client')}</h3>
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <DetailRow label={tr('Name', 'Nom')} value={rental?.customerName || '—'} />
-                <DetailRow label={tr('Verification', 'Vérification')} value={customerVerificationStatus || tr('Status unavailable', 'Statut indisponible')} />
-                <DetailRow label={tr('Rental count', 'Nombre de locations')} value={customerRentalCount > 0 ? String(customerRentalCount) : tr('Current rental', 'Location actuelle')} />
-                <DetailRow label={tr('Contact', 'Contact')} value={rental?.customerPhone || rental?.customerEmail || '—'} />
-              </div>
-              {marketplaceRequestId ? (
-                <div className="mt-5">
-                  <a
-                    href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
-                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                  >
-                    <MessageSquare className="h-4 w-4" />
-                    {tr('Open chat', 'Ouvrir le chat')}
-                  </a>
+            {isCompletedRental ? (
+              <CompletedDetailRow
+                icon={ShieldCheck}
+                eyebrow={tr('Customer', 'Client')}
+                title={tr('Customer card', 'Carte client')}
+                subtitle={[rental?.customerName, customerVerificationStatus || tr('Verification status unavailable', 'Statut vérification indisponible')].filter(Boolean).join(' • ')}
+              >
+                <div className="grid gap-4 md:grid-cols-2">
+                  <DetailRow label={tr('Name', 'Nom')} value={rental?.customerName || '—'} />
+                  <DetailRow label={tr('Verification', 'Vérification')} value={customerVerificationStatus || tr('Status unavailable', 'Statut indisponible')} />
+                  <DetailRow label={tr('Rental count', 'Nombre de locations')} value={customerRentalCount > 0 ? String(customerRentalCount) : tr('Current rental', 'Location actuelle')} />
+                  <DetailRow label={tr('Contact', 'Contact')} value={rental?.customerPhone || rental?.customerEmail || '—'} />
                 </div>
-              ) : null}
-            </section>
+                {marketplaceRequestId ? (
+                  <div className="mt-5">
+                    <a
+                      href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      <MessageSquare className="h-4 w-4" />
+                      {tr('Open chat', 'Ouvrir le chat')}
+                    </a>
+                  </div>
+                ) : null}
+              </CompletedDetailRow>
+            ) : (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Customer', 'Client')}</p>
+                <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Customer card', 'Carte client')}</h3>
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <DetailRow label={tr('Name', 'Nom')} value={rental?.customerName || '—'} />
+                  <DetailRow label={tr('Verification', 'Vérification')} value={customerVerificationStatus || tr('Status unavailable', 'Statut indisponible')} />
+                  <DetailRow label={tr('Rental count', 'Nombre de locations')} value={customerRentalCount > 0 ? String(customerRentalCount) : tr('Current rental', 'Location actuelle')} />
+                  <DetailRow label={tr('Contact', 'Contact')} value={rental?.customerPhone || rental?.customerEmail || '—'} />
+                </div>
+                {marketplaceRequestId ? (
+                  <div className="mt-5">
+                    <a
+                      href={`/account/messages?requestId=${encodeURIComponent(marketplaceRequestId)}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                    >
+                      <MessageSquare className="h-4 w-4" />
+                      {tr('Open chat', 'Ouvrir le chat')}
+                    </a>
+                  </div>
+                ) : null}
+              </section>
+            )}
 
-            <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Documents', 'Documents')}</p>
-              <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Receipt and contract', 'Reçu et contrat')}</h3>
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                {contractLink ? (
-                  <a
-                    href={contractLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <FileText className="h-4 w-4" />
-                      {tr('Open contract', 'Ouvrir le contrat')}
-                    </span>
-                    <span aria-hidden="true" className="text-xs text-violet-500">{tr('View', 'Voir')}</span>
-                  </a>
-                ) : null}
-                {receiptLink ? (
-                  <a
-                    href={receiptLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <Receipt className="h-4 w-4" />
-                      {tr('Open receipt', 'Ouvrir le reçu')}
-                    </span>
-                    <span aria-hidden="true" className="text-xs text-slate-500">{tr('View', 'Voir')}</span>
-                  </a>
-                ) : null}
-              </div>
-            </section>
+            {isCompletedRental ? (
+              <CompletedDetailRow
+                icon={FileText}
+                eyebrow={tr('Documents', 'Documents')}
+                title={tr('Receipt and contract', 'Reçu et contrat')}
+                subtitle={tr(`${receiptLink ? 'Receipt ready' : 'Receipt pending'} • ${contractLink ? 'Contract ready' : 'Contract pending'}`, `${receiptLink ? 'Reçu prêt' : 'Reçu en attente'} • ${contractLink ? 'Contrat prêt' : 'Contrat en attente'}`)}
+              >
+                <div className="grid gap-3 md:grid-cols-2">
+                  {contractLink ? (
+                    <a
+                      href={contractLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        {tr('Open contract', 'Ouvrir le contrat')}
+                      </span>
+                      <span aria-hidden="true" className="text-xs text-violet-500">{tr('View', 'Voir')}</span>
+                    </a>
+                  ) : null}
+                  {receiptLink ? (
+                    <a
+                      href={receiptLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Receipt className="h-4 w-4" />
+                        {tr('Open receipt', 'Ouvrir le reçu')}
+                      </span>
+                      <span aria-hidden="true" className="text-xs text-slate-500">{tr('View', 'Voir')}</span>
+                    </a>
+                  ) : null}
+                </div>
+              </CompletedDetailRow>
+            ) : (
+              <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Documents', 'Documents')}</p>
+                <h3 className="mt-2 text-xl font-bold text-slate-950">{tr('Receipt and contract', 'Reçu et contrat')}</h3>
+                <div className="mt-5 grid gap-3 md:grid-cols-2">
+                  {contractLink ? (
+                    <a
+                      href={contractLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        {tr('Open contract', 'Ouvrir le contrat')}
+                      </span>
+                      <span aria-hidden="true" className="text-xs text-violet-500">{tr('View', 'Voir')}</span>
+                    </a>
+                  ) : null}
+                  {receiptLink ? (
+                    <a
+                      href={receiptLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-between gap-3 rounded-[1.35rem] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Receipt className="h-4 w-4" />
+                        {tr('Open receipt', 'Ouvrir le reçu')}
+                      </span>
+                      <span aria-hidden="true" className="text-xs text-slate-500">{tr('View', 'Voir')}</span>
+                    </a>
+                  ) : null}
+                </div>
+              </section>
+            )}
           </>
         )}
       </div>

@@ -164,8 +164,39 @@ const inferRoleFromPermissions = (permissionsMap = {}) => {
   return 'customer';
 };
 
+const resolveProfileVerificationState = (authUser, appUserRecord, fallbackStatus = 'pending') => {
+  const verificationSummary =
+    appUserRecord?.verification_summary && typeof appUserRecord.verification_summary === 'object'
+      ? appUserRecord.verification_summary
+      : null;
+  const summaryStatus = String(verificationSummary?.status || '').trim().toLowerCase();
+  const profileVerificationStatus = String(
+    appUserRecord?.profile_verification_status ||
+    summaryStatus ||
+    ''
+  ).trim().toLowerCase();
+  const isComplete = Boolean(
+    verificationSummary?.complete &&
+      ['approved', 'verified'].includes(summaryStatus)
+  );
+  const verificationStatus = isComplete
+    ? 'approved'
+    : profileVerificationStatus ||
+      appUserRecord?.verification_status ||
+      authUser?.user_metadata?.verification_status ||
+      authUser?.app_metadata?.verification_status ||
+      fallbackStatus;
+
+  return {
+    verificationStatus,
+    profileVerificationStatus: profileVerificationStatus || null,
+    verificationSummary,
+  };
+};
+
 const buildApprovedBusinessOwnerProfile = (authUser, appUserRecord, fullName) => {
   const businessOwnerPermissions = buildBusinessOwnerPermissionMap();
+  const verificationState = resolveProfileVerificationState(authUser, appUserRecord, 'approved');
   const profilePictureUrl =
     appUserRecord?.profile_picture_url ||
     appUserRecord?.avatar_url ||
@@ -195,7 +226,11 @@ const buildApprovedBusinessOwnerProfile = (authUser, appUserRecord, fullName) =>
       has_access,
     })),
     accessEnabled: appUserRecord?.access_enabled ?? true,
-    verificationStatus: appUserRecord?.verification_status || authUser.user_metadata?.verification_status || 'approved',
+    verificationStatus: verificationState.verificationStatus,
+    profileVerificationStatus: verificationState.profileVerificationStatus,
+    profile_verification_status: verificationState.profileVerificationStatus,
+    verificationSummary: verificationState.verificationSummary,
+    verification_summary: verificationState.verificationSummary,
     approvedAt: appUserRecord?.approved_at || authUser.user_metadata?.approved_at || null,
     approvedBy: appUserRecord?.approved_by || authUser.user_metadata?.approved_by || null,
     rejectionReason: appUserRecord?.rejection_reason || authUser.user_metadata?.rejection_reason || '',
@@ -616,6 +651,8 @@ export const AuthProvider = ({ children }) => {
           window.localStorage.setItem('saharax_user_role', userRole);
         }
       }
+
+      const verificationState = resolveProfileVerificationState(authUser, appUserRecord, 'pending');
       
       const profile = approvedBusinessOwner
         ? buildApprovedBusinessOwnerProfile(authUser, appUserRecord, fullName)
@@ -655,7 +692,11 @@ export const AuthProvider = ({ children }) => {
             accountType: authUser.user_metadata?.account_type || authUser.app_metadata?.account_type || 'customer',
             permissions: userPermissions,
             accessEnabled: appUserRecord?.access_enabled ?? true,
-            verificationStatus: appUserRecord?.verification_status || authUser.user_metadata?.verification_status || authUser.app_metadata?.verification_status || 'pending',
+            verificationStatus: verificationState.verificationStatus,
+            profileVerificationStatus: verificationState.profileVerificationStatus,
+            profile_verification_status: verificationState.profileVerificationStatus,
+            verificationSummary: verificationState.verificationSummary,
+            verification_summary: verificationState.verificationSummary,
             approvedAt: appUserRecord?.approved_at || authUser.user_metadata?.approved_at || authUser.app_metadata?.approved_at || null,
             approvedBy: appUserRecord?.approved_by || authUser.user_metadata?.approved_by || authUser.app_metadata?.approved_by || null,
             rejectionReason: appUserRecord?.rejection_reason || authUser.user_metadata?.rejection_reason || authUser.app_metadata?.rejection_reason || '',

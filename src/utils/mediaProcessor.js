@@ -190,7 +190,9 @@ export const needsImageConversion = (file) => {
   const name = getSafeFileName(file).toLowerCase();
   const type = getSafeFileType(file).toLowerCase();
   return name.endsWith('.heic') || name.endsWith('.heif') || 
-         type === 'image/heic' || type === 'image/heif';
+         type === 'image/heic' || type === 'image/heif' ||
+         type === 'image/heic-sequence' || type === 'image/heif-sequence' ||
+         type.includes('heic') || type.includes('heif');
 };
 
 /**
@@ -366,7 +368,8 @@ export const compressImage = async (file, options = {}) => {
 /**
  * Convert HEIC to JPEG using heic2any library
  */
-export const convertHeicToJpeg = async (file, onProgress = () => {}) => {
+export const convertHeicToJpeg = async (file, onProgress = () => {}, options = {}) => {
+  const { silent = false } = options;
   try {
     onProgress(10);
     
@@ -386,11 +389,15 @@ export const convertHeicToJpeg = async (file, onProgress = () => {}) => {
     // Compress the converted image
     const compressed = await compressImage(blob, { onProgress: (p) => onProgress(70 + p * 0.3) });
     
-    console.log('✅ HEIC converted to JPEG');
+    if (!silent) {
+      console.log('✅ HEIC converted to JPEG');
+    }
     return compressed;
     
   } catch (error) {
-    console.error('❌ HEIC conversion failed:', error);
+    if (!silent) {
+      console.warn('⚠️ HEIC conversion failed:', error);
+    }
     throw new Error(`HEIC conversion failed: ${error.message}`);
   }
 };
@@ -401,21 +408,28 @@ export const convertHeicToJpeg = async (file, onProgress = () => {}) => {
  * @param {Function} onProgress - Progress callback
  * @returns {Promise<{blob: Blob, converted: boolean}>}
  */
-export const processImage = async (file, onProgress = () => {}) => {
+export const processImage = async (file, onProgress = () => {}, options = {}) => {
+  const { silent = false } = options;
   try {
     const needsConv = needsImageConversion(file);
     
     if (needsConv) {
-      console.log('🔄 HEIC image requires conversion...');
-      const convertedBlob = await convertHeicToJpeg(file, onProgress);
+      if (!silent) {
+        console.log('🔄 HEIC image requires conversion...');
+      }
+      const convertedBlob = await convertHeicToJpeg(file, onProgress, { silent });
       return { blob: convertedBlob, converted: true };
     } else {
-      console.log('🔄 Processing image (compression + orientation)...');
+      if (!silent) {
+        console.log('🔄 Processing image (compression + orientation)...');
+      }
       const processedBlob = await compressImage(file, { onProgress });
       return { blob: processedBlob, converted: false };
     }
   } catch (error) {
-    console.error('❌ Image processing failed:', error);
+    if (!silent) {
+      console.warn('⚠️ Image processing failed:', error);
+    }
     throw error;
   }
 };

@@ -27,6 +27,143 @@ import {
 import i18n from '../i18n';
 import DeleteMediaDialog from './media/DeleteMediaDialog';
 
+const IMAGE_FILE_EXTENSION_PATTERN = /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)(?=$|[\s?#])/i;
+const VIDEO_FILE_EXTENSION_PATTERN = /\.(m4v|mov|mp4|mpeg|mpg|ogg|ogv|quicktime|webm)(?=$|[\s?#])/i;
+
+const getMediaProbeText = (record = {}) => [
+  record.file_type,
+  record.media_category,
+  record.original_filename,
+  record.file_name,
+  record.storage_path,
+  record.public_url,
+  record.thumbnail_url,
+  record.poster_url,
+]
+  .filter(Boolean)
+  .map((value) => String(value).toLowerCase())
+  .join(' ');
+
+const inferMediaKind = (record = {}) => {
+  const normalizedFileType = String(record.file_type || '').toLowerCase();
+  const probeText = getMediaProbeText(record);
+
+  if (
+    normalizedFileType.startsWith('image/') ||
+    normalizedFileType === 'image' ||
+    record.media_category === 'image' ||
+    IMAGE_FILE_EXTENSION_PATTERN.test(probeText)
+  ) {
+    return 'image';
+  }
+
+  if (
+    normalizedFileType.startsWith('video/') ||
+    normalizedFileType === 'video' ||
+    record.media_category === 'video' ||
+    VIDEO_FILE_EXTENSION_PATTERN.test(probeText)
+  ) {
+    return 'video';
+  }
+
+  return 'video';
+};
+
+const isHeicMediaItem = (item = {}) => {
+  const previewSourceText = [
+    item.type,
+    item.mimeType,
+    item.file_type,
+    item.file_name,
+    item.storage_path,
+    item.url,
+    item.public_url,
+    item.thumbnailUrl,
+    item.thumbnail_url,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  if (
+    /\bimage\/(jpe?g|png|webp|gif|avif|svg\+xml)\b/.test(previewSourceText) ||
+    /\.(jpe?g|png|webp|gif|avif|svg)(?=$|[\s?#])/i.test(previewSourceText)
+  ) {
+    return false;
+  }
+
+  const probeText = [
+    item.type,
+    item.mimeType,
+    item.file_type,
+    item.media_category,
+    item.file_name,
+    item.storage_path,
+    item.url,
+    item.public_url,
+    item.thumbnailUrl,
+    item.thumbnail_url,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  return /\bimage\/hei[cf]\b/.test(probeText) || /\.(heic|heif)(?=$|[\s?#])/i.test(probeText);
+};
+
+const HeicImagePlaceholder = ({ label = 'HEIC image' }) => (
+  <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-slate-100 px-3 text-center text-slate-500">
+    <ImageIcon className="h-7 w-7 text-slate-400" />
+    <span className="text-xs font-bold uppercase tracking-[0.18em]">{label}</span>
+  </div>
+);
+
+const createFallbackRentalMediaRecords = (rental = {}, existingRecords = []) => {
+  const existingKeys = new Set(
+    existingRecords
+      .flatMap((record) => [record.public_url, record.storage_path, record.file_name, record.original_filename])
+      .filter(Boolean)
+      .map((value) => String(value))
+  );
+
+  const createRecord = ({ id, phase, url, thumbnailUrl, fallbackName }) => {
+    const publicUrl = String(url || '').trim();
+    if (!publicUrl || existingKeys.has(publicUrl)) return null;
+    return {
+      id: `${rental.id || rental.rental_id}-${id}`,
+      rental_id: rental.id,
+      phase,
+      file_type: IMAGE_FILE_EXTENSION_PATTERN.test(publicUrl.toLowerCase()) ? 'image/jpeg' : 'video',
+      file_name: fallbackName,
+      original_filename: fallbackName,
+      public_url: publicUrl,
+      thumbnail_url: thumbnailUrl || null,
+      storage_path: publicUrl,
+      created_at: rental.started_at || rental.created_at || new Date().toISOString(),
+      file_size: 0,
+      duration: 0,
+      isFallbackMedia: true,
+    };
+  };
+
+  return [
+    createRecord({
+      id: 'opening-media-fallback',
+      phase: 'out',
+      url: rental.opening_video_url,
+      thumbnailUrl: rental.opening_video_thumbnail,
+      fallbackName: `opening_${rental.rental_id || rental.id || 'rental'}`,
+    }),
+    createRecord({
+      id: 'closing-media-fallback',
+      phase: 'in',
+      url: rental.closing_video_url,
+      thumbnailUrl: rental.closing_video_thumbnail,
+      fallbackName: `closing_${rental.rental_id || rental.id || 'rental'}`,
+    }),
+  ].filter(Boolean);
+};
+
 const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -91,7 +228,7 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
 
         console.log('📹 Loading media for rental:', rental.id);
 
-        const { data: mediaRecords, error: mediaError } = await supabase
+        const { data: loadedMediaRecords, error: mediaError } = await supabase
           .from('app_2f7bf469b0_rental_media')
           .select('*')
           .eq('rental_id', rental.id)
@@ -99,23 +236,30 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
 
         if (mediaError) {
           console.error('Database error:', mediaError);
-          throw new Error(`Failed to load media: ${mediaError.message}`);
         }
 
-        if (mediaRecords && mediaRecords.length > 0) {
-          const mediaItems = mediaRecords.map(record => {
-            const normalizedFileType = record.file_type?.toLowerCase?.() || '';
-            const isImage = normalizedFileType.startsWith('image/') ||
-                           normalizedFileType === 'image' ||
-                           record.media_category === 'image' ||
-                           /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(record.original_filename || '');
+        const mediaRecords = mediaError ? [] : (loadedMediaRecords || []);
+        const normalizedRecords = [
+          ...mediaRecords,
+          ...createFallbackRentalMediaRecords(rental, mediaRecords),
+        ];
 
+        if (normalizedRecords.length > 0) {
+          const mediaItems = normalizedRecords.map(record => {
+            const mediaKind = inferMediaKind(record);
+            const isImage = mediaKind === 'image';
+            const isHeicImage = isImage && isHeicMediaItem(record);
+            const fallbackThumbnailUrl = record.thumbnail_url || record.poster_url || null;
+            const safeFallbackThumbnailUrl = fallbackThumbnailUrl && !isHeicMediaItem({ ...record, url: fallbackThumbnailUrl, public_url: fallbackThumbnailUrl })
+              ? fallbackThumbnailUrl
+              : null;
             return {
               id: record.id,
-              type: isImage ? 'image' : 'video',
+              type: mediaKind,
               isImage: isImage,
+              mimeType: record.file_type,
               url: record.public_url,
-              thumbnailUrl: isImage ? record.public_url : (record.thumbnail_url || record.poster_url),
+              thumbnailUrl: isImage && !isHeicImage ? record.public_url : safeFallbackThumbnailUrl,
               duration: record.duration || 0,
               timestamp: record.created_at,
               original_filename: record.original_filename,
@@ -142,7 +286,14 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
     };
 
     loadMedia();
-  }, [rental?.id, retryCount]);
+  }, [
+    rental?.id,
+    rental?.opening_video_url,
+    rental?.opening_video_thumbnail,
+    rental?.closing_video_url,
+    rental?.closing_video_thumbnail,
+    retryCount,
+  ]);
 
   // Filter media based on selected type
   const filteredMedia = media.filter(item => {
@@ -430,6 +581,7 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   // Compact thumbnail component for grid view
   const CompactThumbnail = ({ item }) => {
     const thumbnailSrc = item.isImage ? item.url : (item.thumbnailUrl || item.generatedThumbnail);
+    const isHeicImage = item.isImage && isHeicMediaItem(item);
     const isGenerating = !item.isImage && thumbnailStates[item.id] === 'generating';
     const hasError = !item.isImage && thumbnailStates[item.id] === 'error';
 
@@ -442,7 +594,9 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
         tabIndex={0}
         aria-label={`${item.isImage ? tr('View', 'Voir') : tr('Play', 'Lire')} ${getPhaseLabel(item)} ${item.isImage ? tr('image', 'image') : tr('video', 'vidéo')}: ${item.original_filename}`}
       >
-        {item.isImage ? (
+        {isHeicImage ? (
+          <HeicImagePlaceholder label="HEIC" />
+        ) : item.isImage ? (
           <img
             src={item.url}
             alt={`${getPhaseLabel(item)} ${tr('condition', 'état')}`}
@@ -540,6 +694,7 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   // List view item component
   const ListViewItem = ({ item }) => {
     const thumbnailSrc = item.isImage ? item.url : (item.thumbnailUrl || item.generatedThumbnail);
+    const isHeicImage = item.isImage && isHeicMediaItem(item);
 
     return (
       <div className="flex items-center gap-3 p-2 bg-white border rounded-lg hover:shadow-md transition-shadow">
@@ -551,7 +706,9 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
           tabIndex={0}
           aria-label={`${item.isImage ? 'View' : 'Play'} ${getPhaseLabel(item)} ${item.isImage ? 'image' : 'video'}: ${item.original_filename}`}
         >
-          {thumbnailSrc ? (
+          {isHeicImage ? (
+            <HeicImagePlaceholder label="HEIC" />
+          ) : thumbnailSrc ? (
             <img src={thumbnailSrc} alt="" className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600">
@@ -908,11 +1065,27 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
                 </>
               )}
 
-              <img
-                src={viewingImage.url}
-                alt={`${getPhaseLabel(viewingImage.phase)} ${tr('condition', 'état')}`}
-                className="max-w-full max-h-[80vh] object-contain rounded"
-              />
+              {isHeicMediaItem(viewingImage) ? (
+                <div className="flex min-h-[40vh] w-full max-w-xl flex-col items-center justify-center gap-4 rounded-2xl bg-white p-8 text-center text-slate-600">
+                  <ImageIcon className="h-12 w-12 text-slate-400" />
+                  <div>
+                    <p className="text-lg font-bold text-slate-900">HEIC image saved</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {tr('This browser cannot preview this HEIC file. Download it to open it on a supported device.', 'Ce navigateur ne peut pas prévisualiser ce fichier HEIC. Téléchargez-le pour l’ouvrir sur un appareil compatible.')}
+                    </p>
+                  </div>
+                  <Button onClick={(event) => handleDownload(viewingImage, event)}>
+                    <Download className="mr-2 h-4 w-4" />
+                    {tr('Download image', 'Télécharger l’image')}
+                  </Button>
+                </div>
+              ) : (
+                <img
+                  src={viewingImage.url}
+                  alt={`${getPhaseLabel(viewingImage.phase)} ${tr('condition', 'état')}`}
+                  className="max-w-full max-h-[80vh] object-contain rounded"
+                />
+              )}
             </div>
 
             <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/70 to-transparent">

@@ -52,6 +52,53 @@ const getStatusMeta = (status, tr) => {
   };
 };
 
+const getListingReviewStatusMeta = (reviewState, tr) => {
+  const normalized = String(reviewState || '').trim().toLowerCase();
+
+  if (normalized === 'live') {
+    return {
+      icon: CheckCircle2,
+      chip: 'bg-emerald-100 text-emerald-700',
+      shell: 'border-emerald-200 bg-emerald-50',
+      label: tr('Live', 'En ligne'),
+    };
+  }
+
+  if (normalized === 'approved') {
+    return {
+      icon: CheckCircle2,
+      chip: 'bg-emerald-100 text-emerald-700',
+      shell: 'border-emerald-200 bg-emerald-50',
+      label: tr('Approved', 'Approuvée'),
+    };
+  }
+
+  if (normalized === 'changes_requested') {
+    return {
+      icon: AlertTriangle,
+      chip: 'bg-amber-100 text-amber-700',
+      shell: 'border-amber-200 bg-amber-50',
+      label: tr('Needs changes', 'Corrections requises'),
+    };
+  }
+
+  if (normalized === 'waiting_for_admin') {
+    return {
+      icon: Clock3,
+      chip: 'bg-sky-100 text-sky-700',
+      shell: 'border-sky-200 bg-sky-50',
+      label: tr('In review', 'En révision'),
+    };
+  }
+
+  return {
+    icon: Clock3,
+    chip: 'bg-violet-100 text-violet-700',
+    shell: 'border-violet-200 bg-violet-50',
+    label: tr('Setup', 'Configuration'),
+  };
+};
+
 const getInitialActiveVerificationPost = (posts = [], preferredPost = null) => {
   if (!Array.isArray(posts) || posts.length === 0) return null;
   if (preferredPost?.id) {
@@ -100,7 +147,13 @@ const WorkflowThreadView = ({
   onExitReadingMode,
   floatingBackLabel = '',
 }) => {
-  const topStatusMeta = getStatusMeta(verificationStatus || selectedThread?.status || '', tr);
+  const shouldShowWorkflowContextAction = Boolean(
+    typeof openWorkflowContext === 'function' &&
+    workflowKind !== 'listing_review'
+  );
+  const topStatusMeta = workflowKind === 'listing_review' && marketplaceModerationProgress
+    ? getListingReviewStatusMeta(marketplaceModerationProgress.reviewState, tr)
+    : getStatusMeta(verificationStatus || selectedThread?.status || '', tr);
   const TopStatusIcon = topStatusMeta.icon;
   const showVerificationActions = workflowKind === 'identity_review' && currentSenderRole === 'admin' && nextVerificationPost;
   const [activeVerificationPostId, setActiveVerificationPostId] = React.useState(() => getInitialActiveVerificationPost(workflowDocuments, nextVerificationPost)?.id || null);
@@ -198,7 +251,7 @@ const WorkflowThreadView = ({
               </button>
               {headerMenuOpen ? (
                 <div className="absolute right-0 top-12 z-30 min-w-[15rem] rounded-[22px] border border-slate-200 bg-white p-1.5 shadow-[0_18px_36px_rgba(15,23,42,0.14)]">
-                  {typeof openWorkflowContext === 'function' ? (
+                  {shouldShowWorkflowContextAction ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -256,7 +309,7 @@ const WorkflowThreadView = ({
                 </div>
               ) : null}
             </div>
-          ) : typeof openWorkflowContext === 'function' ? (
+          ) : shouldShowWorkflowContextAction ? (
             <button
               type="button"
               onClick={openWorkflowContext}

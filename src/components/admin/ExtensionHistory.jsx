@@ -46,9 +46,14 @@ const ExtensionHistory = ({
   };
 
   const getRequesterDisplay = (extension) => {
+    const requester = Array.isArray(extension?.requester)
+      ? extension.requester[0]
+      : extension?.requester;
+
     return (
-      extension?.requester?.full_name ||
-      extension?.requester?.email ||
+      requester?.full_name ||
+      requester?.name ||
+      requester?.email ||
       extension?.requested_by_name ||
       extension?.created_by_name ||
       (typeof extension?.requested_by === 'string' && !/^[0-9a-f-]{32,}$/i.test(extension.requested_by) ? extension.requested_by : null) ||
@@ -57,11 +62,20 @@ const ExtensionHistory = ({
   };
 
   const getApproverDisplay = (extension) => {
+    const approver = Array.isArray(extension?.approver)
+      ? extension.approver[0]
+      : extension?.approver;
+    const rejecter = Array.isArray(extension?.rejecter)
+      ? extension.rejecter[0]
+      : extension?.rejecter;
+
     return (
-      extension?.approver?.full_name ||
-      extension?.approver?.email ||
-      extension?.rejecter?.full_name ||
-      extension?.rejecter?.email ||
+      approver?.full_name ||
+      approver?.name ||
+      approver?.email ||
+      rejecter?.full_name ||
+      rejecter?.name ||
+      rejecter?.email ||
       extension?.approved_by_name ||
       extension?.rejected_by_name ||
       (typeof extension?.approved_by === 'string' && !/^[0-9a-f-]{32,}$/i.test(extension.approved_by) ? extension.approved_by : null) ||
@@ -73,7 +87,7 @@ const ExtensionHistory = ({
   const getStatusBadge = (status) => {
     const normalizedStatus = String(status || 'pending').toLowerCase();
     const statusConfig = {
-      pending: { color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle, label: tr('Pending', 'En attente') },
+      pending: { color: 'border border-amber-200/70 bg-amber-50 text-amber-800', icon: AlertCircle, label: tr('Pending', 'En attente') },
       approved: { color: 'bg-green-100 text-green-800', icon: CheckCircle, label: tr('Approved', 'Approuvée') },
       rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
       declined: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Cancelled', 'Annulée') },
@@ -108,22 +122,20 @@ const ExtensionHistory = ({
             const isHighlighted = String(highlightedExtensionId || '') === String(extension.id || '');
             const approverName = getApproverDisplay(extension);
             const isActionLoading = Boolean(actionLoading?.[extension.id]);
+            const normalizedStatus = String(extension.status || 'pending').toLowerCase();
+            const isPending = normalizedStatus === 'pending';
+            const cardSurfaceClass = isPending
+              ? 'border-amber-200/60 bg-amber-50/20 shadow-[0_14px_34px_rgba(120,53,15,0.05)]'
+              : 'border-slate-200 bg-slate-50/70';
+            const highlightClass = isHighlighted
+              ? 'ring-1 ring-amber-100/80 shadow-[0_0_0_3px_rgba(251,191,36,0.05),0_14px_34px_rgba(120,53,15,0.05)]'
+              : '';
             
             return (
               <div
                 key={extension.id}
                 data-extension-id={extension.id}
-                className={`rounded-[20px] border p-4 transition-all duration-300 ${
-                  isHighlighted
-                    ? 'border-amber-200 bg-amber-50/30 ring-2 ring-amber-200 shadow-[0_0_0_4px_rgba(251,191,36,0.08)] '
-                    : ''
-                }${
-                  extension.status === 'pending'
-                    ? 'border-yellow-300 bg-yellow-50/80'
-                    : isHighlighted
-                      ? ''
-                      : 'border-slate-200 bg-slate-50/70'
-                }`}
+                className={`rounded-[20px] border p-4 transition-all duration-300 ${cardSurfaceClass} ${highlightClass}`}
               >
                 {/* Header */}
                 <div className="mb-3 flex items-start justify-between gap-3">
@@ -179,7 +191,7 @@ const ExtensionHistory = ({
                       ) : extension.tier_applied ? (
                         <Badge className="bg-blue-100 text-blue-800 text-xs">⚡ Tier</Badge>
                       ) : isManualExtension ? (
-                        <Badge className="bg-yellow-100 text-yellow-800 text-xs">✏️ {tr('Manual', 'Manuel')}</Badge>
+                        <Badge className="border border-amber-200/70 bg-amber-50 text-amber-800 text-xs">✏️ {tr('Manual', 'Manuel')}</Badge>
                       ) : (
                         <Badge className="bg-gray-100 text-gray-800 text-xs">📊 {tr('Base Rate', 'Tarif de base')}</Badge>
                       )}
@@ -211,13 +223,13 @@ const ExtensionHistory = ({
 
                 {/* WhatsApp Notification Button - FOR MANUAL EXTENSIONS ONLY (NON-ADMIN) */}
                 {extension.status === 'pending' && !isAdmin && isManualExtension && (
-                  <div className="mt-3 pt-3 border-t border-yellow-200">
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                      <h4 className="flex items-center gap-2 text-sm font-semibold text-amber-950">
-                        <AlertTriangle className="h-4 w-4" />
+                  <div className="mt-3 pt-3 border-t border-amber-100/80">
+                    <div className="rounded-xl border border-amber-100/80 bg-white/75 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+                      <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                        <AlertTriangle className="h-4 w-4 text-amber-600" />
                         {tr('Request sent', 'Demande envoyée')}
                       </h4>
-                      <p className="mt-1 text-xs font-medium text-amber-800">
+                      <p className="mt-1 text-xs font-medium text-slate-600">
                         {tr('Admins were notified on Telegram. Waiting for approval.', 'Les admins ont été notifiés sur Telegram. En attente d’approbation.')}
                       </p>
                     </div>
@@ -226,12 +238,12 @@ const ExtensionHistory = ({
 
                 {/* Admin Actions for Pending Extensions - ONLY FOR ADMINS */}
                 {extension.status === 'pending' && isAdmin && onApprove && onReject && (
-                  <div className="mt-3 border-t border-yellow-200 pt-3">
-                    <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 p-3">
-                      <h4 className="text-sm font-semibold text-blue-950">
+                  <div className="mt-3 border-t border-amber-100/80 pt-3">
+                    <div className="mb-3 rounded-xl border border-amber-100/80 bg-white/75 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+                      <h4 className="text-sm font-semibold text-slate-900">
                         {tr('Review extension request', 'Examiner la demande de prolongation')}
                       </h4>
-                      <p className="mt-1 text-xs text-blue-800">
+                      <p className="mt-1 text-xs text-slate-600">
                         {tr('Requested by', 'Demandée par')} <strong>{getRequesterDisplay(extension)}</strong>
                       </p>
                     </div>

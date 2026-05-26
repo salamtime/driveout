@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import PublicCatalogService from '../services/PublicCatalogService';
 import DynamicPricingService from '../services/DynamicPricingService';
 import PublicBookingService from '../services/PublicBookingService';
-import CustomerExperienceService from '../services/CustomerExperienceService';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveManagedAccountType } from '../utils/accountType';
 import PublicListingCard from '../components/public/PublicListingCard';
@@ -14,7 +13,7 @@ import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import { buildInstantBookingHref } from '../utils/publicBookingFlow';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
 import { resolveReturnPath } from '../utils/navigationReturn';
-import { markMarketplaceListingRequested } from '../utils/marketplaceRequestCache';
+import { isTerminalMarketplaceRequestStatus, normalizeMarketplaceRequestLifecycleStatus } from '../utils/marketplaceRequestState';
 
 const LAST_OWNER_VEHICLE_ID_KEY = 'driveout_last_owner_vehicle_id';
 const LAST_OWNER_VEHICLE_COUNT_KEY = 'driveout_last_owner_vehicle_count';
@@ -347,16 +346,17 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
       }
 
       try {
-        const [publicRows, customerRows] = await Promise.all([
-          PublicBookingService.getExistingMarketplaceRequests().catch(() => []),
-          user?.id || user?.email
-            ? CustomerExperienceService.getCustomerMarketplaceRequests(user).catch(() => [])
-            : Promise.resolve([]),
-        ]);
+        const publicRows = await PublicBookingService.getExistingMarketplaceRequests().catch(() => []);
         if (!active) return;
 
         const nextMap = {};
-        const rows = [...(Array.isArray(publicRows) ? publicRows : []), ...(Array.isArray(customerRows) ? customerRows : [])];
+        const rows = (Array.isArray(publicRows) ? publicRows : [])
+          .filter((row) => {
+            if (isTerminalMarketplaceRequestStatus(row)) return false;
+
+            const status = normalizeMarketplaceRequestLifecycleStatus(row || 'pending');
+            return ['pending', 'countered', 'pre_approved', 'approved', 'active'].includes(status);
+          });
 
         rows.forEach((row) => {
           const rawListingId = String(row?.listing_id || '').trim();
@@ -381,38 +381,6 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
           if (normalizedVehiclePublicProfileId) {
             nextMap[normalizedVehiclePublicProfileId] = row;
           }
-        });
-
-        const cacheIdentities = [
-          userProfile?.id || '',
-          user?.id || '',
-          userProfile?.email || '',
-          user?.email || '',
-        ]
-          .map((value) => String(value || '').trim().toLowerCase())
-          .filter(Boolean);
-
-        rows.forEach((row) => {
-          const cacheListingIds = [
-            row?.listing_id,
-            row?.listingId,
-            row?.vehicle_public_profile_id,
-            row?.vehiclePublicProfileId,
-            row?.listingId,
-          ]
-            .map((value) => String(value || '').trim())
-            .filter(Boolean);
-
-          cacheIdentities.forEach((identity) => {
-            cacheListingIds.forEach((listingKey) => {
-              markMarketplaceListingRequested({
-                userId: identity,
-                listingId: listingKey,
-                requestId: row?.id,
-                status: row?.request_status || row?.requestStatus || 'requested',
-              });
-            });
-          });
         });
 
         setExistingMarketplaceRequests(nextMap);

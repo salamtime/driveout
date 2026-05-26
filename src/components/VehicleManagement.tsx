@@ -578,7 +578,7 @@ const VehicleManagement: React.FC = () => {
     setError(null);
     
     try {
-      const vehiclesData = await VehicleService.getFleetVehicles();
+      const vehiclesData = await VehicleService.getFleetVehicles({ includeArchived: true });
 
       const [fetchedLocations] = await Promise.all([
         FleetLocationService.listLocations(true).catch((locationError) => {

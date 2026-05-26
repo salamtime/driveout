@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Bell, Camera, ChevronRight, Globe2, ShieldCheck, SlidersHorizontal, Star, Trash2, UserRound, Wallet } from 'lucide-react';
+import { ArrowLeft, Bell, Camera, CheckCircle2, ChevronRight, Globe2, Pencil, Save, ShieldCheck, SlidersHorizontal, Star, Trash2, UserRound, Wallet, X } from 'lucide-react';
 import i18n from '../../i18n';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import {
@@ -26,19 +26,41 @@ const SettingsSectionCard = ({ icon: Icon, title, description, items }) => (
     </div>
 
     <div className={`mt-5 divide-y divide-slate-200 overflow-hidden ${workspaceInsetPanelClass} bg-slate-50/70 p-0`}>
-      {items.map((item) => (
-        <Link
-          key={item.href}
-          to={item.href}
-          className="flex items-center justify-between gap-3 bg-white px-4 py-3.5 transition hover:bg-violet-50/50"
-        >
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-900">{item.label}</p>
-            <p className="mt-0.5 text-xs text-slate-500">{item.cta}</p>
-          </div>
-          <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-        </Link>
-      ))}
+      {items.map((item) => {
+        const ItemIcon = item.icon || ChevronRight;
+        const verified = item.status === 'verified';
+        const iconClassName = verified
+          ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+          : item.tone === 'amber'
+            ? 'border-amber-100 bg-amber-50 text-amber-700'
+            : 'border-violet-100 bg-violet-50 text-violet-700';
+        const ctaClassName = verified
+          ? 'text-emerald-700'
+          : 'text-slate-500';
+
+        return (
+          <Link
+            key={item.href}
+            to={item.href}
+            state={item.state}
+            className="flex items-center justify-between gap-3 bg-white px-4 py-3.5 transition hover:bg-violet-50/50"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border ${iconClassName}`}>
+                <ItemIcon className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-900">{item.label}</p>
+                <p className={`mt-0.5 inline-flex items-center gap-1.5 text-xs font-bold ${ctaClassName}`}>
+                  {verified ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+                  {item.cta}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+          </Link>
+        );
+      })}
     </div>
   </section>
 );
@@ -63,6 +85,15 @@ const AccountSettings = () => {
   const [customerMessageNotificationsEnabled, setCustomerMessageNotificationsEnabled] = useState(true);
   const [notificationsSaving, setNotificationsSaving] = useState(false);
   const [notificationsNotice, setNotificationsNotice] = useState('');
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileNotice, setProfileNotice] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [profileForm, setProfileForm] = useState({
+    fullName: '',
+    username: '',
+    phone: '',
+  });
   const previewObjectUrlRef = useRef('');
   const fileInputRef = useRef(null);
 
@@ -139,6 +170,7 @@ const AccountSettings = () => {
     ),
     [isFrench, isVerifiedAccount]
   );
+  const currentPath = `${location.pathname}${location.search || ''}${location.hash || ''}`;
 
   const sections = [
     {
@@ -147,19 +179,19 @@ const AccountSettings = () => {
       description: tr('Manage your profile, trust status, and owner identity setup.', 'Gérez votre profil, votre statut de confiance et votre identité propriétaire.'),
       items: [
         {
-          href: '/customer/profile',
-          label: tr('Profile details', 'Détails du profil'),
-          cta: tr('Open profile', 'Ouvrir le profil'),
-        },
-        {
           href: '/account/verification',
+          icon: isVerifiedAccount ? CheckCircle2 : ShieldCheck,
           label: tr('Trust center', 'Centre de confiance'),
           cta: verificationCta,
+          status: isVerifiedAccount ? 'verified' : '',
         },
         {
           href: '/account/reviews',
+          icon: Star,
+          tone: 'amber',
           label: tr('Reputation', 'Reputation'),
           cta: tr('Open reputation', 'Ouvrir la reputation'),
+          state: { from: currentPath },
         },
       ],
     },
@@ -170,6 +202,7 @@ const AccountSettings = () => {
       items: [
         {
           href: '/account/revenue',
+          icon: Wallet,
           label: tr('Wallet', 'Portefeuille'),
           cta: tr('Open wallet', 'Ouvrir le portefeuille'),
         },
@@ -178,22 +211,13 @@ const AccountSettings = () => {
     {
       icon: SlidersHorizontal,
       title: tr('Preferences', 'Préférences'),
-      description: tr('Control notifications, language, and app settings.', 'Gérez les notifications, la langue et les réglages de l’application.'),
+      description: tr('Control account alerts and Inbox notification behavior.', "Gérez les alertes du compte et le comportement des notifications d'Inbox."),
       items: [
         {
           href: '/account/settings#message-notifications',
+          icon: Bell,
           label: tr('Notifications', 'Notifications'),
           cta: tr('Manage notifications', 'Gérer les notifications'),
-        },
-        {
-          href: '/customer/profile?section=language',
-          label: tr('Language', 'Langue'),
-          cta: tr('Change language', 'Changer la langue'),
-        },
-        {
-          href: '/customer/profile?section=settings',
-          label: tr('App settings', 'Réglages de l’application'),
-          cta: tr('Open settings', 'Ouvrir les réglages'),
         },
       ],
     },
@@ -249,8 +273,100 @@ const AccountSettings = () => {
     session?.user?.user_metadata?.phone ||
     ''
   ).trim();
+
+  useEffect(() => {
+    if (profileEditing) return;
+    setProfileForm({
+      fullName: profileFullName,
+      username: profileUsername,
+      phone: profilePhone,
+    });
+  }, [profileEditing, profileFullName, profilePhone, profileUsername]);
+
   const profileInitials = buildInitials(profileFullName, profileEmail);
   const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
+
+  const handleStartProfileEditing = () => {
+    setProfileForm({
+      fullName: profileFullName,
+      username: profileUsername,
+      phone: profilePhone,
+    });
+    setProfileNotice('');
+    setProfileError('');
+    setProfileEditing(true);
+  };
+
+  const handleCancelProfileEditing = () => {
+    setProfileForm({
+      fullName: profileFullName,
+      username: profileUsername,
+      phone: profilePhone,
+    });
+    setProfileNotice('');
+    setProfileError('');
+    setProfileEditing(false);
+  };
+
+  const handleProfileFormChange = (field, value) => {
+    if (!profileEditing) return;
+    setProfileForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+    setProfileNotice('');
+    setProfileError('');
+  };
+
+  const handleSaveProfileDetails = async () => {
+    if (!user?.id || profileSaving) return;
+
+    const nextProfile = {
+      full_name: profileForm.fullName.trim(),
+      username: profileForm.username.trim(),
+      phone: profileForm.phone.trim(),
+      phone_number: profileForm.phone.trim(),
+    };
+    const validation = UserProfileService.validateProfileData({
+      username: nextProfile.username,
+      phone: nextProfile.phone,
+    });
+
+    if (!validation.isValid) {
+      setProfileError(Object.values(validation.errors)[0] || tr('Please check your profile details.', 'Veuillez vérifier les détails du profil.'));
+      return;
+    }
+
+    setProfileSaving(true);
+    setProfileNotice('');
+    setProfileError('');
+
+    try {
+      const { data, error } = await UserProfileService.updateUserProfile(user.id, nextProfile);
+      if (error) {
+        throw error;
+      }
+
+      const normalizedProfile = data || nextProfile;
+      updateCurrentUserProfile?.({
+        ...normalizedProfile,
+        fullName: normalizedProfile.fullName || normalizedProfile.full_name || nextProfile.full_name,
+        full_name: normalizedProfile.full_name || nextProfile.full_name,
+        username: normalizedProfile.username ?? nextProfile.username,
+        phone: normalizedProfile.phone ?? nextProfile.phone,
+        phone_number: normalizedProfile.phone_number ?? nextProfile.phone_number,
+      });
+      setProfileEditing(false);
+      setProfileNotice(tr('Profile updated.', 'Profil mis à jour.'));
+    } catch (error) {
+      setProfileError(
+        error?.message ||
+        tr('Unable to update your profile right now.', 'Impossible de mettre à jour votre profil pour le moment.')
+      );
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   const applyProfilePictureUpdate = (url) => {
     setProfilePictureUrl(String(url || '').trim());
@@ -414,31 +530,112 @@ const AccountSettings = () => {
               <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
                 {tr('Your profile', 'Votre profil')}
               </p>
-              <h2 className="mt-2 text-2xl font-bold tracking-[-0.02em] text-slate-950">
-                {profileFullName || tr('Your account', 'Votre compte')}
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                {tr('Manage your profile photo and quickly review your account details here.', 'Gérez votre photo de profil et consultez rapidement les informations de votre compte ici.')}
-              </p>
+              <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <h2 className="text-2xl font-bold tracking-[-0.02em] text-slate-950">
+                    {profileFullName || tr('Your account', 'Votre compte')}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {profileEditing
+                      ? tr('Edit your profile here. Email stays locked for login security.', 'Modifiez votre profil ici. L’e-mail reste verrouillé pour la sécurité de connexion.')
+                      : tr('Manage your profile photo and quickly review your account details here.', 'Gérez votre photo de profil et consultez rapidement les informations de votre compte ici.')}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {profileEditing ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleCancelProfileEditing}
+                        disabled={profileSaving}
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <X className="h-4 w-4" />
+                        {tr('Cancel', 'Annuler')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveProfileDetails()}
+                        disabled={profileSaving}
+                        className="inline-flex items-center gap-2 rounded-full bg-violet-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Save className="h-4 w-4" />
+                        {profileSaving ? tr('Saving…', 'Enregistrement…') : tr('Save', 'Enregistrer')}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleStartProfileEditing}
+                      className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                    >
+                      <Pencil className="h-4 w-4" />
+                      {tr('Edit profile', 'Modifier le profil')}
+                    </button>
+                  )}
+                </div>
+              </div>
 
               <div className={`mt-4 grid gap-3 ${workspaceInsetPanelClass} bg-slate-50/70 p-4 sm:grid-cols-2 xl:grid-cols-4`}>
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{tr('Full name', 'Nom complet')}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">{profileFullName || '—'}</p>
+                  {profileEditing ? (
+                    <input
+                      value={profileForm.fullName}
+                      onChange={(event) => handleProfileFormChange('fullName', event.target.value)}
+                      className="mt-2 w-full rounded-2xl border border-violet-100 bg-violet-50/40 px-3 py-2 text-sm font-bold text-slate-950 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100"
+                      placeholder={tr('Full name', 'Nom complet')}
+                    />
+                  ) : (
+                    <p className="mt-1 text-sm font-semibold text-slate-900">{profileFullName || '—'}</p>
+                  )}
                 </div>
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{tr('Email', 'E-mail')}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900 break-all">{profileEmail || '—'}</p>
+                  <p className="mt-1 break-all text-sm font-semibold text-slate-900">{profileEmail || '—'}</p>
+                  {profileEditing ? (
+                    <p className="mt-1 text-[11px] font-bold text-slate-400">
+                      {tr('Login email cannot be changed here.', 'L’e-mail de connexion ne peut pas être modifié ici.')}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{tr('Username', 'Nom d’utilisateur')}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">{profileUsername || '—'}</p>
+                  {profileEditing ? (
+                    <input
+                      value={profileForm.username}
+                      onChange={(event) => handleProfileFormChange('username', event.target.value)}
+                      className="mt-2 w-full rounded-2xl border border-violet-100 bg-violet-50/40 px-3 py-2 text-sm font-bold text-slate-950 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100"
+                      placeholder={tr('Username', 'Nom d’utilisateur')}
+                    />
+                  ) : (
+                    <p className="mt-1 text-sm font-semibold text-slate-900">{profileUsername || '—'}</p>
+                  )}
                 </div>
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{tr('Phone', 'Téléphone')}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">{profilePhone || '—'}</p>
+                  {profileEditing ? (
+                    <input
+                      value={profileForm.phone}
+                      onChange={(event) => handleProfileFormChange('phone', event.target.value)}
+                      className="mt-2 w-full rounded-2xl border border-violet-100 bg-violet-50/40 px-3 py-2 text-sm font-bold text-slate-950 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100"
+                      placeholder={tr('Phone', 'Téléphone')}
+                    />
+                  ) : (
+                    <p className="mt-1 text-sm font-semibold text-slate-900">{profilePhone || '—'}</p>
+                  )}
                 </div>
               </div>
+              {profileError ? (
+                <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+                  {profileError}
+                </div>
+              ) : null}
+              {profileNotice ? (
+                <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
+                  {profileNotice}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -475,13 +672,6 @@ const AccountSettings = () => {
                   {tr('Remove photo', 'Supprimer la photo')}
                 </button>
               ) : null}
-              <Link
-                to="/customer/profile"
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-              >
-                <UserRound className="h-4 w-4" />
-                {tr('Open full profile', 'Ouvrir le profil complet')}
-              </Link>
             </div>
             {profilePictureBusyAction ? (
               <p className="text-xs font-medium text-slate-400">
@@ -513,7 +703,7 @@ const AccountSettings = () => {
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-slate-950">{tr('Inbox notifications', "Notifications d'Inbox")}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              {tr('Support updates always reach you. Customer Inbox alerts can be turned on or off here.', "Les mises à jour du support vous parviennent toujours. Les alertes de l'Inbox client peuvent être activées ou désactivées ici.")}
+              {tr('Critical account alerts stay on. Customer conversation alerts can be muted here.', "Les alertes critiques du compte restent activées. Les alertes de conversation client peuvent être coupées ici.")}
             </p>
           </div>
         </div>
@@ -521,21 +711,21 @@ const AccountSettings = () => {
         <div className={`mt-5 space-y-3 ${workspaceInsetPanelClass} bg-slate-50/70 p-4`}>
           <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900">{tr('Support Inbox', 'Inbox support')}</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('Account & support alerts', 'Alertes compte et support')}</p>
               <p className="mt-1 text-xs text-slate-500">
-                {tr('Always on so account and support updates are never missed.', 'Toujours activé pour ne jamais manquer les mises à jour du compte et du support.')}
+                {tr('Always on for trust, payment, booking, and support updates.', 'Toujours activé pour les mises à jour de confiance, paiement, réservation et support.')}
               </p>
             </div>
             <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-              {tr('Required', 'Obligatoire')}
+              {tr('Always on', 'Toujours actif')}
             </span>
           </div>
 
           <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900">{tr('Customer Inbox', 'Inbox client')}</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('Conversation alerts', 'Alertes de conversation')}</p>
               <p className="mt-1 text-xs text-slate-500">
-                {tr('Show or hide floating Inbox alerts for incoming customer or renter conversations.', "Afficher ou masquer les alertes flottantes d'Inbox pour les conversations entrantes des clients ou locataires.")}
+                {tr('Show floating alerts for incoming renter or customer conversations. Muted messages still stay in Inbox.', "Afficher les alertes flottantes pour les conversations entrantes des locataires ou clients. Les messages coupés restent dans l'Inbox.")}
               </p>
             </div>
             <button

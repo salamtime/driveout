@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import PublicCatalogService from '../services/PublicCatalogService';
 import PublicBookingService from '../services/PublicBookingService';
@@ -8,7 +9,11 @@ import CustomerExperienceService from '../services/CustomerExperienceService';
 import PhoneInputWithCountryCode from '../components/forms/PhoneInputWithCountryCode';
 import GrowthLoopApiService from '../services/GrowthLoopApiService';
 import { buildMarketplaceRequestPath } from '../utils/marketplaceShareLinks';
-import { getMarketplaceRequestDisplay, normalizeMarketplaceRequestLifecycleStatus } from '../utils/marketplaceRequestState';
+import {
+  getMarketplaceRequestDisplay,
+  isTerminalMarketplaceRequestStatus,
+  normalizeMarketplaceRequestLifecycleStatus,
+} from '../utils/marketplaceRequestState';
 import { markMarketplaceListingRequested } from '../utils/marketplaceRequestCache';
 import { getMarketplaceWalletGuidance } from '../utils/marketplaceUiGuidance';
 
@@ -474,10 +479,11 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
     }
   };
 
-  const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(existingRequest || '');
-  const existingRequestDisplay = existingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
-  const existingRequestHref = existingRequest?.id
-    ? `/account/messages?requestId=${encodeURIComponent(String(existingRequest.id))}`
+  const effectiveExistingRequest = isTerminalMarketplaceRequestStatus(existingRequest) ? null : existingRequest;
+  const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(effectiveExistingRequest || '');
+  const existingRequestDisplay = effectiveExistingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
+  const existingRequestHref = effectiveExistingRequest?.id
+    ? `/account/messages?requestId=${encodeURIComponent(String(effectiveExistingRequest.id))}`
     : '';
   const isResolvingBookingAccess = Boolean(user?.id && !isOwnerViewingOwnListing && (verificationLoading || existingRequestLoading));
 
@@ -506,41 +512,59 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
   }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-6 py-10">
+    <div className="min-h-screen bg-white px-4 py-6 sm:px-6 sm:py-10">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-6 flex items-center justify-between">
-          <Link to={detailHref} className="text-sm font-semibold text-amber-700">
-            ← Back to listing
+        <div className="mb-6 flex items-center justify-between gap-3">
+          <Link
+            to={detailHref}
+            className="inline-flex items-center gap-2 text-sm font-bold text-violet-700 transition hover:text-violet-900"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to listing
           </Link>
-          <span className="rounded-full bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-800">
+          <span className="rounded-full border border-violet-100 bg-white px-4 py-2 text-xs font-black text-violet-700 shadow-sm sm:text-sm">
             {listing.badge}
           </span>
         </div>
 
-        <div className="grid gap-8 lg:grid-cols-[0.7fr_1.3fr]">
+        <div className="grid gap-6 lg:grid-cols-[0.78fr_1.22fr] lg:items-start">
           <aside className="space-y-6">
-            <div className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
-              <img src={listing.imageUrl} alt={listing.title} className="h-64 w-full object-cover" />
-              <div className="space-y-4 p-6">
+            <div className="overflow-hidden rounded-[2rem] border border-violet-100 bg-white shadow-[0_20px_60px_rgba(79,70,229,0.08)]">
+              <div className="bg-white px-4 py-5">
+                <img
+                  src={listing.imageUrl}
+                  alt={listing.title}
+                  className="mx-auto h-72 w-full max-w-[440px] object-contain sm:h-80 lg:h-[22rem]"
+                />
+              </div>
+              <div className="space-y-5 border-t border-violet-50 p-5 sm:p-6">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-600">{listing.category}</p>
-                  <h1 className="mt-2 text-2xl font-semibold text-slate-900">{listing.title}</h1>
+                  <p className="text-xs font-black uppercase tracking-[0.24em] text-violet-500">{listing.category}</p>
+                  <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950">{listing.title}</h1>
                 </div>
-                <p className="text-sm leading-6 text-slate-600">{listing.description}</p>
-                <div className="rounded-3xl bg-slate-50 px-5 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Booking flow</p>
-                  <p className="mt-2 text-lg font-semibold text-slate-900">Owner review required</p>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-2xl bg-violet-50 px-4 py-3">
+                    <p className="text-[11px] font-black uppercase tracking-[0.18em] text-violet-500">Price</p>
+                    <p className="mt-1 text-lg font-black text-slate-950">
+                      {listing.dailyPrice || listing.halfDayPrice || 0} {listing.currencyCode}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Flow</p>
+                    <p className="mt-1 text-lg font-black text-slate-950">Owner review</p>
+                  </div>
                 </div>
+                <p className="line-clamp-5 text-sm leading-7 text-slate-600">{listing.description}</p>
               </div>
             </div>
           </aside>
 
-          <section className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-            <div className="mb-8">
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-amber-600">Booking Request</p>
-              <h2 className="mt-2 text-3xl font-semibold text-slate-900">Send a marketplace request</h2>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-                This creates the pre-booking request layer for marketplace supply. The owner or operator reviews it before it becomes a real booking.
+          <section className="rounded-[2rem] border border-violet-100 bg-white p-5 shadow-[0_24px_70px_rgba(79,70,229,0.08)] sm:p-8">
+            <div className="mb-7">
+              <p className="text-xs font-black uppercase tracking-[0.24em] text-violet-500">Booking request</p>
+              <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Request this vehicle</h2>
+              <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-slate-500">
+                Choose your date and send it to the owner for approval.
               </p>
             </div>
 
@@ -594,7 +618,7 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                   ) : null}
                 </div>
               </div>
-            ) : existingRequest ? (
+            ) : effectiveExistingRequest ? (
               <div className="rounded-[28px] border border-amber-200 bg-amber-50 p-6">
                 <h3 className="text-2xl font-semibold text-amber-950">Request already sent</h3>
                 <p className="mt-3 text-sm text-amber-900">
@@ -608,7 +632,7 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-700">Requested</p>
                     <p className="mt-1 font-semibold">
-                      {formatDateTime(existingRequest?.requested_start_at || existingRequest?.requestedStartAt)} → {formatDateTime(existingRequest?.requested_end_at || existingRequest?.requestedEndAt)}
+                      {formatDateTime(effectiveExistingRequest?.requested_start_at || effectiveExistingRequest?.requestedStartAt)} → {formatDateTime(effectiveExistingRequest?.requested_end_at || effectiveExistingRequest?.requestedEndAt)}
                     </p>
                   </div>
                 </div>
@@ -624,7 +648,7 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleSubmit} className="space-y-6">
+              <form onSubmit={handleSubmit} className="space-y-6 pb-4 sm:pb-0">
                 {!isVerifiedAccount && !isResolvingBookingAccess ? (
                   <div className="rounded-[28px] border border-violet-200 bg-violet-50 p-6">
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-600">Verification required</p>
@@ -661,12 +685,12 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Full name</span>
-                    <input value={form.customerName} onChange={(e) => updateField('customerName', e.target.value)} required className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400" />
+                    <span className="text-sm font-bold text-slate-700">Full name</span>
+                    <input value={form.customerName} onChange={(e) => updateField('customerName', e.target.value)} required className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100" />
                   </label>
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Email</span>
-                    <input type="email" value={form.customerEmail} onChange={(e) => updateField('customerEmail', e.target.value)} required className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400" />
+                    <span className="text-sm font-bold text-slate-700">Email</span>
+                    <input type="email" value={form.customerEmail} onChange={(e) => updateField('customerEmail', e.target.value)} required className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100" />
                   </label>
                   <div>
                     <PhoneInputWithCountryCode
@@ -677,28 +701,28 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                     />
                   </div>
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Rental type</span>
-                    <select value={form.rentalType} onChange={(e) => updateField('rentalType', e.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400">
+                    <span className="text-sm font-bold text-slate-700">Rental type</span>
+                    <select value={form.rentalType} onChange={(e) => updateField('rentalType', e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100">
                       <option value="daily">Daily</option>
                       <option value="half_day">Half-day package</option>
                     </select>
                   </label>
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Requested start date</span>
-                    <input type="date" value={form.startDate} min={new Date().toISOString().split('T')[0]} onChange={(e) => updateField('startDate', e.target.value)} required className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400" />
+                    <span className="text-sm font-bold text-slate-700">Requested start date</span>
+                    <input type="date" value={form.startDate} min={new Date().toISOString().split('T')[0]} onChange={(e) => updateField('startDate', e.target.value)} required className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100" />
                   </label>
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700">Requested start time</span>
-                    <input type="time" value={form.startTime} onChange={(e) => updateField('startTime', e.target.value)} required className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400" />
+                    <span className="text-sm font-bold text-slate-700">Requested start time</span>
+                    <input type="time" value={form.startTime} onChange={(e) => updateField('startTime', e.target.value)} required className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100" />
                   </label>
                   <label className="space-y-2 md:col-span-2">
-                    <span className="text-sm font-medium text-slate-700">{form.rentalType === 'half_day' ? 'Half-day hours' : 'Requested days'}</span>
+                    <span className="text-sm font-bold text-slate-700">{form.rentalType === 'half_day' ? 'Half-day hours' : 'Requested days'}</span>
                     {form.rentalType === 'half_day' ? (
                       <span className="block text-xs font-semibold text-slate-500">
                         Owner half-day window: {halfDayHourOptions[0] || 4}-{halfDayHourOptions[halfDayHourOptions.length - 1] || 5} hours.
                       </span>
                     ) : null}
-                    <select value={form.duration} onChange={(e) => updateField('duration', Number(e.target.value))} className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400">
+                    <select value={form.duration} onChange={(e) => updateField('duration', Number(e.target.value))} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100">
                       {(form.rentalType === 'half_day'
                         ? halfDayHourOptions
                         : [1, 2, 3, 4, 5, 7]
@@ -708,8 +732,8 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                     </select>
                   </label>
                   <label className="space-y-2 md:col-span-2">
-                    <span className="text-sm font-medium text-slate-700">Message to owner/operator</span>
-                    <textarea value={form.message} onChange={(e) => updateField('message', e.target.value)} rows={4} className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-amber-400" placeholder="Pickup preference, experience level, or anything that helps the owner review this request faster." />
+                    <span className="text-sm font-bold text-slate-700">Message to owner/operator</span>
+                    <textarea value={form.message} onChange={(e) => updateField('message', e.target.value)} rows={4} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold outline-none transition placeholder:text-slate-400 focus:border-violet-400 focus:ring-4 focus:ring-violet-100" placeholder="Pickup preference, experience level, or anything that helps the owner review this request faster." />
                   </label>
                 </div>
 
@@ -738,12 +762,12 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                   )
                 ) : null}
 
-                <div className="flex items-center justify-between rounded-[28px] bg-slate-50 px-6 py-5">
+                <div className="sticky bottom-3 z-30 flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white/95 px-4 py-4 shadow-[0_18px_50px_rgba(15,23,42,0.16)] backdrop-blur sm:static sm:flex-row sm:items-center sm:justify-between sm:bg-slate-50 sm:px-6 sm:py-5 sm:shadow-none">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Request type</p>
-                    <p className="mt-2 text-xl font-semibold text-slate-900">Marketplace review flow</p>
+                    <p className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Request type</p>
+                    <p className="mt-1 text-lg font-black text-slate-950 sm:mt-2 sm:text-xl">Marketplace review</p>
                   </div>
-                  <button type="submit" disabled={saving || Boolean(walletPreflightHelper) || isResolvingBookingAccess} className="rounded-full bg-amber-600 px-6 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">
+                  <button type="submit" disabled={saving || Boolean(walletPreflightHelper) || isResolvingBookingAccess} className="w-full rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-4 text-sm font-black text-white shadow-[0_18px_36px_rgba(79,70,229,0.24)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:rounded-full">
                     {saving
                       ? 'Sending request...'
                       : isResolvingBookingAccess

@@ -12,6 +12,30 @@ const safeText = (value, fallback = '') => {
   return text || fallback;
 };
 
+const getCanonicalListingTitle = (listing = {}) =>
+  [listing?.brand, listing?.model].map((value) => safeText(value)).filter(Boolean).join(' ').trim() ||
+  safeText(listing?.title, 'Marketplace listing');
+
+const normalizeCatalogListing = (listing) => {
+  if (!listing || typeof listing !== 'object') return listing;
+  return {
+    ...listing,
+    title: getCanonicalListingTitle(listing),
+  };
+};
+
+const normalizeCatalogPayload = (body = {}) => {
+  if (!body || typeof body !== 'object') return body;
+  return {
+    ...body,
+    listing: body.listing ? normalizeCatalogListing(body.listing) : body.listing,
+    listings: Array.isArray(body.listings) ? body.listings.map(normalizeCatalogListing) : body.listings,
+    featuredListings: Array.isArray(body.featuredListings)
+      ? body.featuredListings.map(normalizeCatalogListing)
+      : body.featuredListings,
+  };
+};
+
 const getPackageDurationRank = (pkg = {}) => {
   const name = safeText(pkg.name).toLowerCase();
   const durationUnits = Number(pkg.durationUnits || 0);
@@ -81,7 +105,7 @@ class PublicCatalogService {
       throw new Error(body?.error || 'Failed to load public catalog');
     }
 
-    return body;
+    return normalizeCatalogPayload(body);
   }
 
   static async fetchCertifiedFleet() {

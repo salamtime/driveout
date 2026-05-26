@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { getCachedMarketplaceRequestForUsers } from '../../utils/marketplaceRequestCache';
+import { isTerminalMarketplaceRequestStatus } from '../../utils/marketplaceRequestState';
 
 const CERTIFIED_BADGE_SRC =
   '/images/certified-badge.png';
@@ -19,8 +20,6 @@ const PublicListingCard = ({
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
   const effectiveUserId = String(userProfile?.id || user?.id || '').trim();
-  const effectiveUserEmail = String(userProfile?.email || user?.email || '').trim().toLowerCase();
-  const cacheIdentities = [effectiveUserId, effectiveUserEmail].filter(Boolean);
   const isMarketplace = listing.inventorySource === 'marketplace';
   const listingOwnerId = resolveListingOwnerId(listing);
   const isOwnerViewingOwnListing = Boolean(
@@ -29,11 +28,8 @@ const PublicListingCard = ({
     listingOwnerId &&
     effectiveUserId === listingOwnerId
   );
-  const cachedRequestedState = getCachedMarketplaceRequestForUsers({
-    userIds: cacheIdentities,
-    listingId: listing?.sourceId || listing?.id,
-  });
-  const showRequestedState = Boolean(isMarketplace && !isOwnerViewingOwnListing && (existingRequest || cachedRequestedState));
+  const activeExistingRequest = isTerminalMarketplaceRequestStatus(existingRequest) ? null : existingRequest;
+  const showRequestedState = Boolean(isMarketplace && !isOwnerViewingOwnListing && activeExistingRequest);
   const ownerPrimaryPrice = listing.dailyPrice || listing.halfDayPrice || 0;
   const ownerPrimaryLabel = listing.dailyPrice
     ? '/ day'
@@ -50,12 +46,14 @@ const PublicListingCard = ({
   const marketplaceLocationLabel = [listing.location?.city || listing.location?.label, riderLabel].filter(Boolean).join(' • ');
   const specLabel = [listing.powerCcLabel, listing.transmission].filter(Boolean).join(' • ');
   const showVerifiedBadge = listing.badge === 'Certified Fleet' || Boolean(listing.isVerified || listing.verifiedOwner || listing.verifiedListing);
+  const showVehicleDocumentsBadge = Boolean(listing.vehicleDocumentsVerified);
+  const listingTitle = [listing.brand, listing.model].filter(Boolean).join(' ').trim() || listing.title || 'Marketplace listing';
 
   return (
     <div
       role="link"
       tabIndex={0}
-      aria-label={`Open ${listing.title}`}
+      aria-label={`Open ${listingTitle}`}
       onClick={() => navigate(primaryHref)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -69,7 +67,7 @@ const PublicListingCard = ({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="text-[1.75rem] font-black leading-none tracking-tight text-slate-950 sm:text-[2rem]">
-              {listing.title}
+              {listingTitle}
             </h3>
             {isMarketplace ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -81,6 +79,12 @@ const PublicListingCard = ({
                       className="h-3.5 w-3.5 rounded-full object-cover"
                     />
                     Verified owner
+                  </span>
+                ) : null}
+                {showVehicleDocumentsBadge ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Documents verified
                   </span>
                 ) : null}
                 <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
@@ -117,7 +121,7 @@ const PublicListingCard = ({
           ) : null}
           <img
             src={listing.imageUrl}
-            alt={listing.title}
+            alt={listingTitle}
             className={`relative z-[1] h-full w-full object-contain transition duration-500 ${
               isMarketplace ? 'scale-[1.14] px-0 py-0 sm:scale-[1.18]' : 'scale-[1.22] px-0 py-0 group-hover:scale-[1.28]'
             }`}

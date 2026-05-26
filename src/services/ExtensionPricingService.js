@@ -17,6 +17,92 @@ const PRICING_TIERS_TABLE = 'pricing_tiers';
 const RENTAL_EXTENSIONS_TABLE = 'rental_extensions';
 
 export class ExtensionPricingService {
+  static formatActorName(actor) {
+    return String(
+      actor?.full_name ||
+      actor?.fullName ||
+      actor?.name ||
+      actor?.display_name ||
+      actor?.email ||
+      ''
+    ).trim();
+  }
+
+  static mergeActorMap(actorMap, rows = []) {
+    rows.forEach((row) => {
+      if (!row?.id) return;
+      const name = this.formatActorName(row);
+      if (name) actorMap.set(String(row.id), { ...row, full_name: name });
+    });
+  }
+
+  static async safeLoadActorRows(tableName, ids = []) {
+    if (!ids.length) return [];
+
+    try {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select('id, full_name, email')
+        .in('id', ids);
+
+      if (error) {
+        console.warn(`Unable to load ${tableName} actor names for rental extensions:`, error);
+        return [];
+      }
+
+      return data || [];
+    } catch (error) {
+      console.warn(`Unable to load ${tableName} actor names for rental extensions:`, error);
+      return [];
+    }
+  }
+
+  static async resolveCurrentSessionActorName(userId) {
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error || !data?.user || String(data.user.id) !== String(userId || '')) {
+        return '';
+      }
+      return this.formatActorName({
+        ...data.user.user_metadata,
+        email: data.user.email || data.user.user_metadata?.email,
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  static async hydrateExtensionActors(extensions = []) {
+    const rows = Array.isArray(extensions) ? extensions : [];
+    const actorIds = [...new Set(rows.flatMap((extension) => [
+      extension?.requested_by,
+      extension?.approved_by,
+      extension?.rejected_by,
+    ]).filter(Boolean).map(String))];
+
+    if (!actorIds.length) return rows;
+
+    const actorMap = new Map();
+    this.mergeActorMap(actorMap, await this.safeLoadActorRows('users', actorIds));
+    this.mergeActorMap(actorMap, await this.safeLoadActorRows('profiles', actorIds));
+
+    return rows.map((extension) => {
+      const requester = extension?.requester || actorMap.get(String(extension?.requested_by || '')) || null;
+      const approver = extension?.approver || actorMap.get(String(extension?.approved_by || '')) || null;
+      const rejecter = extension?.rejecter || actorMap.get(String(extension?.rejected_by || '')) || null;
+
+      return {
+        ...extension,
+        requester,
+        approver,
+        rejecter,
+        requested_by_name: extension?.requested_by_name || this.formatActorName(requester) || null,
+        approved_by_name: extension?.approved_by_name || this.formatActorName(approver) || null,
+        rejected_by_name: extension?.rejected_by_name || this.formatActorName(rejecter) || null,
+      };
+    });
+  }
+
   static async scopeQuery(query, tableName, message) {
     return scopeTenantOwnedQuery(query, tableName, { message });
   }
@@ -879,18 +965,21 @@ export class ExtensionPricingService {
    * Create extension record with calculated price
    */
   static async createExtensionFromOverride(rentalId, hours, userId, autoApprove, overrideData) {
+    const actorName = String(overrideData?.requested_by_name || await this.resolveCurrentSessionActorName(userId) || '').trim();
     // Use the data exactly as provided by the modal (package pricing, manual, etc.)
     const extensionData = {
       ...overrideData,
       rental_id: rentalId,
       extension_hours: hours,
       requested_by: userId,
+      requested_by_name: actorName || null,
       requested_at: new Date().toISOString(),
       status: autoApprove ? 'approved' : 'pending',
     };
 
     if (autoApprove) {
       extensionData.approved_by = userId;
+      extensionData.approved_by_name = String(overrideData?.approved_by_name || actorName || '').trim() || null;
       extensionData.approved_at = new Date().toISOString();
     }
 
@@ -939,6 +1028,7 @@ export class ExtensionPricingService {
   ) {
     const extensionType = options.extensionType || (hours % 24 === 0 && hours >= 24 ? 'days' : 'hours');
     const extensionValue = options.extensionValue || (extensionType === 'days' ? hours / 24 : hours);
+    const actorName = String(options.requestedByName || await this.resolveCurrentSessionActorName(userId) || '').trim();
     const extensionData = {
       rental_id: rentalId,
       extension_hours: hours,
@@ -951,11 +1041,13 @@ export class ExtensionPricingService {
       tier_id: tierId,
       status: autoApprove ? 'approved' : 'pending',
       requested_by: userId,
+      requested_by_name: actorName || null,
       requested_at: new Date().toISOString()
     };
     
     if (autoApprove) {
       extensionData.approved_by = userId;
+      extensionData.approved_by_name = String(options.approvedByName || actorName || '').trim() || null;
       extensionData.approved_at = new Date().toISOString();
     }
     
@@ -1081,12 +1173,15 @@ export class ExtensionPricingService {
       'Workspace organization context is required to approve rental extensions.'
     );
     
+    const approverName = await this.resolveCurrentSessionActorName(approverId);
+
     // Update extension status
     const { error: updateError } = await supabase
       .from('rental_extensions')
       .update({
         status: 'approved',
         approved_by: approverId,
+        approved_by_name: approverName || null,
         approved_at: new Date().toISOString()
       })
       .eq('id', extensionId);
@@ -1106,7 +1201,7 @@ export class ExtensionPricingService {
   /**
    * Reject a pending extension
    */
-  static async rejectExtension(extensionId, rejecterId, reason = null) {
+  static async rejectExtension(extensionId, rejecterId, reason = null, rejecterName = null) {
     const { data: extension, error: extensionError } = await supabase
       .from('rental_extensions')
       .select('rental_id')
@@ -1126,6 +1221,8 @@ export class ExtensionPricingService {
     const rejectionNote = String(reason || '').trim();
     const updatePayload = {
       status: 'rejected',
+      rejected_by: rejecterId || null,
+      rejected_by_name: String(rejecterName || '').trim() || null,
       updated_at: new Date().toISOString()
     };
 
@@ -1203,12 +1300,17 @@ export class ExtensionPricingService {
   static async getExtensionHistory(rentalId) {
     const { data, error } = await supabase
       .from('rental_extensions')
-      .select('*')
+      .select(`
+        *,
+        requester:requested_by(full_name, email),
+        approver:approved_by(full_name, email),
+        rejecter:rejected_by(full_name, email)
+      `)
       .eq('rental_id', rentalId)
       .order('requested_at', { ascending: false });
 
     if (error) throw error;
-    return data || [];
+    return this.hydrateExtensionActors(data || []);
   }
 
   /**

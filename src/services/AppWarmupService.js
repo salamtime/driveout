@@ -55,7 +55,7 @@ class AppWarmupService {
   getAllowedWarmModules() {
     const host = getHostContext();
 
-    if (shouldScopeSharedTenantData(host)) {
+    if (host?.kind === 'tenant' || shouldScopeSharedTenantData(host)) {
       return [];
     }
 
