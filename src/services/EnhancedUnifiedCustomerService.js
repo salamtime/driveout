@@ -21,6 +21,8 @@ import {
 } from './OrganizationService.js';
 
 const CUSTOMER_TABLE = 'app_4c3a7a6153_customers';
+const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const roundMs = (value) => Math.max(0, Math.round(Number(value) || 0));
 const CUSTOMER_ORG_COLUMN_CACHE_KEY = `${CUSTOMER_TABLE}:supportsOrganizationColumn`;
 let customerTableSupportsOrganizationColumn = (() => {
   try {
@@ -268,7 +270,10 @@ class EnhancedUnifiedCustomerService {
   }
 
   async requestDirectGeminiOCR(file, prompt, mode = 'fast') {
+    const requestStartedAt = nowMs();
+    const base64StartedAt = nowMs();
     const base64Image = await this.convertFileToBase64(file);
+    const base64CompletedAt = nowMs();
     const mimeType = file?.type || 'image/jpeg';
 
     const parseJsonFromText = (rawText = '') => {
@@ -313,6 +318,7 @@ class EnhancedUnifiedCustomerService {
 
     try {
       const isFastMode = mode === 'fast';
+      const proxyStartedAt = nowMs();
       const geminiResponse = await fetch(this.geminiProxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -340,6 +346,7 @@ class EnhancedUnifiedCustomerService {
           }
         })
       });
+      const proxyCompletedAt = nowMs();
 
       if (!geminiResponse.ok) {
         const errorText = await geminiResponse.text();
@@ -360,19 +367,45 @@ class EnhancedUnifiedCustomerService {
         throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
       }
 
+      const parseStartedAt = nowMs();
       const geminiResult = await geminiResponse.json();
       const ocrText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
       ocrData = parseJsonFromText(ocrText);
+      const parseCompletedAt = nowMs();
+
+      console.log('⏱️ [OCR SERVICE] Gemini request timings', {
+        mode,
+        fileType: mimeType,
+        fileSizeMb: Number(((file?.size || 0) / 1024 / 1024).toFixed(2)),
+        base64PayloadMb: Number((base64Image.length / 1024 / 1024).toFixed(2)),
+        base64Ms: roundMs(base64CompletedAt - base64StartedAt),
+        proxyMs: roundMs(proxyCompletedAt - proxyStartedAt),
+        parseMs: roundMs(parseCompletedAt - parseStartedAt),
+        totalMs: roundMs(parseCompletedAt - requestStartedAt),
+      });
     } catch (ocrError) {
       ocrUnavailable = true;
       ocrErrorMessage = ocrError.message || 'OCR unavailable';
+      console.warn('⏱️ [OCR SERVICE] Gemini request failed after timing', {
+        mode,
+        fileType: mimeType,
+        fileSizeMb: Number(((file?.size || 0) / 1024 / 1024).toFixed(2)),
+        base64PayloadMb: Number((base64Image.length / 1024 / 1024).toFixed(2)),
+        base64Ms: roundMs(base64CompletedAt - base64StartedAt),
+        totalMs: roundMs(nowMs() - requestStartedAt),
+        error: ocrErrorMessage,
+      });
     }
 
     return {
       ocrData,
       ocrUnavailable,
       ocrErrorMessage,
+      timings: {
+        base64Ms: roundMs(base64CompletedAt - base64StartedAt),
+        totalMs: roundMs(nowMs() - requestStartedAt),
+      },
     };
   }
 
@@ -471,14 +504,27 @@ class EnhancedUnifiedCustomerService {
     } = options;
 
     const prompt = this.buildDirectOcrPrompt(ocrMode);
-    const pipelineStartedAt = performance.now();
+    const pipelineStartedAt = nowMs();
     const preparedFile = await this.prepareOcrFile(file);
-    const preparedAt = performance.now();
+    const preparedAt = nowMs();
+    let uploadMs = 0;
+    let ocrMs = 0;
+    let fallbackMs = 0;
     const [uploadResult, ocrResult] = await Promise.all([
-      this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder),
-      this.requestDirectGeminiOCR(preparedFile, prompt, ocrMode),
+      (async () => {
+        const uploadStartedAt = nowMs();
+        const result = await this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder);
+        uploadMs = roundMs(nowMs() - uploadStartedAt);
+        return result;
+      })(),
+      (async () => {
+        const ocrStartedAt = nowMs();
+        const result = await this.requestDirectGeminiOCR(preparedFile, prompt, ocrMode);
+        ocrMs = roundMs(nowMs() - ocrStartedAt);
+        return result;
+      })(),
     ]);
-    const completedAt = performance.now();
+    const completedAt = nowMs();
 
     if (!uploadResult.success) {
       console.error('❌ [UPLOAD] Failed:', uploadResult.error);
@@ -491,13 +537,16 @@ class EnhancedUnifiedCustomerService {
     if (!ocrUnavailable && ocrMode === 'fast' && !this.hasMinimumOcrIdentity(normalizedOcrData)) {
       console.warn('⚠️ [OCR PIPELINE] Fast OCR returned no usable identity. Falling back to full OCR.');
       try {
+        const fallbackStartedAt = nowMs();
         const fallbackResult = await geminiVisionOCR.processIdDocument(preparedFile);
+        fallbackMs = roundMs(nowMs() - fallbackStartedAt);
         if (fallbackResult?.success && fallbackResult?.data) {
           normalizedOcrData = this.normalizeOcrIdentityPayload(fallbackResult.data);
           ocrData = normalizedOcrData;
           console.log('✅ [OCR PIPELINE] Full OCR fallback recovered usable identity:', {
             fullName: normalizedOcrData.fullName,
             documentNumber: normalizedOcrData.document_number,
+            fallbackMs,
           });
         }
       } catch (fallbackError) {
@@ -511,9 +560,13 @@ class EnhancedUnifiedCustomerService {
 
     console.log('⚡ [OCR PIPELINE] timings', {
       mode: ocrMode,
-      prepareMs: Math.round(preparedAt - pipelineStartedAt),
-      totalMs: Math.round(completedAt - pipelineStartedAt),
-      overlapMsSaved: Math.max(0, Math.round((completedAt - preparedAt))),
+      prepareMs: roundMs(preparedAt - pipelineStartedAt),
+      uploadMs,
+      ocrMs,
+      base64Ms: ocrResult.timings?.base64Ms || 0,
+      fallbackMs,
+      totalMs: roundMs(completedAt - pipelineStartedAt),
+      overlapMsSaved: Math.max(0, roundMs(completedAt - preparedAt)),
     });
 
     return {
@@ -526,6 +579,15 @@ class EnhancedUnifiedCustomerService {
       scanId,
       ocrUnavailable,
       ocrError: ocrErrorMessage,
+      timings: {
+        mode: ocrMode,
+        prepareMs: roundMs(preparedAt - pipelineStartedAt),
+        uploadMs,
+        ocrMs,
+        base64Ms: ocrResult.timings?.base64Ms || 0,
+        fallbackMs,
+        pipelineMs: roundMs(completedAt - pipelineStartedAt),
+      },
       message: ocrUnavailable ? unavailableMessage : successMessage,
     };
   }

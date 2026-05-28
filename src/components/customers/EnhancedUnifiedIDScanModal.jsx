@@ -10,9 +10,11 @@ import enhancedUnifiedCustomerService, { saveCustomer } from '../../services/Enh
 import unifiedCustomerService from '../../services/UnifiedCustomerService';
 import i18n from '../../i18n';
 import useAdminModalFocus from '../../hooks/useAdminModalFocus';
-import { needsImageConversion, processImage as processMediaImage } from '../../utils/mediaProcessor';
+import { needsImageConversion, processOcrImage } from '../../utils/mediaProcessor';
 
 const MOBILE_SCAN_MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024;
+const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const roundMs = (value) => Math.max(0, Math.round(Number(value) || 0));
 
 const EnhancedUnifiedIDScanModal = ({ 
   isOpen, 
@@ -148,6 +150,9 @@ const EnhancedUnifiedIDScanModal = ({
 
   const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
+    const uploadStartedAt = nowMs();
+    let optimizationStartedAt = null;
+    let optimizationCompletedAt = null;
 
     if (previewObjectUrlRef.current) {
       URL.revokeObjectURL(previewObjectUrlRef.current);
@@ -156,13 +161,27 @@ const EnhancedUnifiedIDScanModal = ({
 
     try {
       let normalizedFile = file;
+      const previewStartedAt = nowMs();
+      const initialObjectUrl = URL.createObjectURL(file);
+      previewObjectUrlRef.current = initialObjectUrl;
+
+      setSelectedImage(file);
+      setImagePreview(initialObjectUrl);
+      setError(null);
+      setSuccess(null);
+      setExtractedData(null);
+      setProcessingStatus('');
+      const initialPreviewReadyAt = nowMs();
+
       const shouldOptimizeForMobileScan =
         String(file?.type || '').startsWith('image/') &&
         (needsImageConversion(file) || Number(file?.size || 0) > MOBILE_SCAN_MAX_FILE_SIZE_BYTES);
 
       if (shouldOptimizeForMobileScan) {
         try {
-          const { blob } = await processMediaImage(file);
+          optimizationStartedAt = nowMs();
+          const { blob } = await processOcrImage(file);
+          optimizationCompletedAt = nowMs();
           const inferredMimeType = inferMimeTypeFromFile(file);
           const normalizedName = String(file.name || 'document')
             .replace(/\.(heic|heif|png|webp|bmp)$/i, '')
@@ -172,21 +191,31 @@ const EnhancedUnifiedIDScanModal = ({
             type: blob?.type || (needsImageConversion(file) ? 'image/jpeg' : inferredMimeType || 'image/jpeg'),
             lastModified: Date.now(),
           });
+
+          const normalizedObjectUrl = URL.createObjectURL(normalizedFile);
+          URL.revokeObjectURL(previewObjectUrlRef.current);
+          previewObjectUrlRef.current = normalizedObjectUrl;
+          setSelectedImage(normalizedFile);
+          setImagePreview(normalizedObjectUrl);
         } catch (optimizationError) {
           console.warn('⚠️ Scan image optimization failed, continuing with original file:', optimizationError);
           normalizedFile = file;
         }
       }
 
-      const objectUrl = URL.createObjectURL(normalizedFile);
-      previewObjectUrlRef.current = objectUrl;
-
-      setSelectedImage(normalizedFile);
-      setImagePreview(objectUrl);
-      setError(null);
-      setSuccess(null);
-      setExtractedData(null);
-      setProcessingStatus('');
+      console.log('⏱️ [ID OCR MODAL] file selected', {
+        sourceType: file?.type || 'unknown',
+        sourceSizeMb: Number(((file?.size || 0) / 1024 / 1024).toFixed(2)),
+        normalizedType: normalizedFile?.type || 'unknown',
+        normalizedSizeMb: Number(((normalizedFile?.size || 0) / 1024 / 1024).toFixed(2)),
+        optimizedBeforePreview: shouldOptimizeForMobileScan,
+        optimizeMs: optimizationStartedAt && optimizationCompletedAt
+          ? roundMs(optimizationCompletedAt - optimizationStartedAt)
+          : 0,
+        initialPreviewMs: roundMs(initialPreviewReadyAt - previewStartedAt),
+        totalBeforePreviewMs: roundMs(initialPreviewReadyAt - uploadStartedAt),
+        totalBeforeOcrMs: roundMs(nowMs() - uploadStartedAt),
+      });
 
       if (autoProcessOnSelect && isOcrAvailable && !saveWithoutOcrOnly) {
         await processImage(normalizedFile);
@@ -299,6 +328,7 @@ const EnhancedUnifiedIDScanModal = ({
     }
 
     const abortController = createAbortController();
+    const processStartedAt = nowMs();
     setIsProcessing(true);
     setError(null);
     setSuccess(null);
@@ -321,13 +351,14 @@ const EnhancedUnifiedIDScanModal = ({
       if (abortController.signal.aborted) return;
 
       setProcessingStatus(scanningForSecondDriver ? tr('Processing second driver ID...', "Traitement de l'identité du second conducteur...") : tr('Scanning ID...', "Scan du document d'identité..."));
-      
+      const serviceStartedAt = nowMs();
       const result = await enhancedUnifiedCustomerService.processCustomerID(
         (fileToProcess || selectedImage), 
         targetCustomerId, 
         rentalId,
         'document'
       );
+      const serviceCompletedAt = nowMs();
       
       if (abortController.signal.aborted) return;
 
@@ -445,71 +476,34 @@ const EnhancedUnifiedIDScanModal = ({
             linked_display_id: documentNumber || ''
           };
           
-          // Save through the shared customer service so duplicate licence/ID conflicts
-          // recover against existing customer profiles instead of surfacing raw 409 errors.
           const hasMinimumCustomerIdentity = Boolean(String(customerName || '').trim());
 
-          let resolvedSavedCustomer = null;
-
-          if (!skipCustomerSave && hasMinimumCustomerIdentity) {
-            try {
-              const customerSaveResult = await saveCustomer(
-              {
-                id: targetCustomerId,
-                customer_name: customerName,
-                customer_email: verifiedEmail || fallbackFormEmail,
-                customer_phone: verifiedPhone || fallbackFormPhone,
-                customer_dob: dob,
-                customer_id_number: documentNumber,
-                customer_licence_number: documentNumber,
-                customer_nationality: nationality,
-                id_scan_url: result.publicUrl || result.imageUrl || '',
-                },
-                {
-                  file_public_url: result.publicUrl || result.imageUrl || '',
-                },
-                false
-              );
-
-              if (!customerSaveResult?.success) {
-                console.warn('Database save warning:', customerSaveResult?.error || customerSaveResult);
-              } else {
-                resolvedSavedCustomer = customerSaveResult?.data || null;
-                if (resolvedSavedCustomer && onCustomerSaved) {
-                  onCustomerSaved(
-                    {
-                      ...resolvedSavedCustomer,
-                      customer_id: resolvedSavedCustomer.id || targetCustomerId,
-                    },
-                    result.publicUrl || result.imageUrl || ''
-                  );
-                }
-                if (!result.ocrUnavailable) {
-                  setSuccess(tr(`Customer saved! ${customerName}`, `Client enregistré ! ${customerName}`));
-                }
-              }
-            } catch (dbError) {
-              console.warn('Database save warning:', dbError);
-            }
-          } else if (!skipCustomerSave) {
+          if (!skipCustomerSave && !hasMinimumCustomerIdentity) {
             console.warn('Skipping customer save because OCR returned no usable identity fields.');
           }
+
+          console.log('⏱️ [ID OCR MODAL] scan completed', {
+            serviceMs: roundMs(serviceCompletedAt - serviceStartedAt),
+            customerSaveQueued: Boolean(!skipCustomerSave && hasMinimumCustomerIdentity),
+            totalModalMs: roundMs(nowMs() - processStartedAt),
+            skipCustomerSave,
+            ocrUnavailable: Boolean(result.ocrUnavailable),
+            serviceTimings: result.timings || null,
+          });
           
           // Update parent form
           if (setFormData) {
             setFormData(prev => ({
               ...prev,
               ...formCustomerData,
-              customer_id: resolvedSavedCustomer?.id || formCustomerData.customer_id,
-              customer_name: formCustomerData.customer_name || resolvedSavedCustomer?.full_name || prev.customer_name,
-              customer_email: formCustomerData.customer_email || resolvedSavedCustomer?.email || prev.customer_email,
-              customer_phone: formCustomerData.customer_phone || resolvedSavedCustomer?.phone || prev.customer_phone,
-              customer_dob: formCustomerData.customer_dob || resolvedSavedCustomer?.date_of_birth || prev.customer_dob,
-              customer_id_number: formCustomerData.customer_id_number || resolvedSavedCustomer?.id_number || prev.customer_id_number,
-              customer_licence_number: formCustomerData.customer_licence_number || resolvedSavedCustomer?.licence_number || prev.customer_licence_number,
-              customer_nationality: formCustomerData.customer_nationality || resolvedSavedCustomer?.nationality || prev.customer_nationality,
-              customer_place_of_birth: resolvedSavedCustomer?.place_of_birth || prev.customer_place_of_birth,
-              customer_issue_date: resolvedSavedCustomer?.issue_date || prev.customer_issue_date,
+              customer_id: formCustomerData.customer_id,
+              customer_name: formCustomerData.customer_name || prev.customer_name,
+              customer_email: formCustomerData.customer_email || prev.customer_email,
+              customer_phone: formCustomerData.customer_phone || prev.customer_phone,
+              customer_dob: formCustomerData.customer_dob || prev.customer_dob,
+              customer_id_number: formCustomerData.customer_id_number || prev.customer_id_number,
+              customer_licence_number: formCustomerData.customer_licence_number || prev.customer_licence_number,
+              customer_nationality: formCustomerData.customer_nationality || prev.customer_nationality,
             }));
           }
           
@@ -530,18 +524,17 @@ const EnhancedUnifiedIDScanModal = ({
               {
                 ...ocrResult,
                 ...formCustomerData,
-                ...(resolvedSavedCustomer || {}),
-                full_name: customerName || resolvedSavedCustomer?.full_name || '',
-                fullName: customerName || resolvedSavedCustomer?.full_name || '',
-                name: customerName || resolvedSavedCustomer?.full_name || '',
-                id_number: documentNumber || resolvedSavedCustomer?.id_number || '',
-                idNumber: documentNumber || resolvedSavedCustomer?.id_number || '',
-                document_number: documentNumber || resolvedSavedCustomer?.id_number || resolvedSavedCustomer?.licence_number || '',
-                licence_number: documentNumber || resolvedSavedCustomer?.licence_number || '',
-                customer_licence_number: documentNumber || resolvedSavedCustomer?.licence_number || '',
-                customer_id: resolvedSavedCustomer?.id || formCustomerData.customer_id,
-                phone: formCustomerData.customer_phone || resolvedSavedCustomer?.phone || '',
-                email: formCustomerData.customer_email || resolvedSavedCustomer?.email || '',
+                full_name: customerName || '',
+                fullName: customerName || '',
+                name: customerName || '',
+                id_number: documentNumber || '',
+                idNumber: documentNumber || '',
+                document_number: documentNumber || '',
+                licence_number: documentNumber || '',
+                customer_licence_number: documentNumber || '',
+                customer_id: formCustomerData.customer_id,
+                phone: formCustomerData.customer_phone || '',
+                email: formCustomerData.customer_email || '',
                 imageUrl: result.publicUrl || result.imageUrl || '',
                 publicUrl: result.publicUrl || result.imageUrl || '',
                 uploadMethod: uploadMethod || 'camera',
@@ -550,6 +543,56 @@ const EnhancedUnifiedIDScanModal = ({
               },
               (fileToProcess || selectedImage)
             );
+          }
+
+          // Persist after the UI is already updated so mobile OCR feels instant.
+          if (!skipCustomerSave && hasMinimumCustomerIdentity) {
+            void (async () => {
+              const customerSaveStartedAt = nowMs();
+              try {
+                const customerSaveResult = await saveCustomer(
+                  {
+                    id: targetCustomerId,
+                    customer_name: customerName,
+                    customer_email: verifiedEmail || fallbackFormEmail,
+                    customer_phone: verifiedPhone || fallbackFormPhone,
+                    customer_dob: dob,
+                    customer_id_number: documentNumber,
+                    customer_licence_number: documentNumber,
+                    customer_nationality: nationality,
+                    id_scan_url: result.publicUrl || result.imageUrl || '',
+                  },
+                  {
+                    file_public_url: result.publicUrl || result.imageUrl || '',
+                  },
+                  false
+                );
+
+                const customerSaveMs = roundMs(nowMs() - customerSaveStartedAt);
+                if (!customerSaveResult?.success) {
+                  console.warn('Database save warning:', customerSaveResult?.error || customerSaveResult);
+                  return;
+                }
+
+                const resolvedSavedCustomer = customerSaveResult?.data || null;
+                console.log('⏱️ [ID OCR MODAL] customer save completed', {
+                  customerSaveMs,
+                  customerId: resolvedSavedCustomer?.id || targetCustomerId,
+                });
+
+                if (resolvedSavedCustomer && onCustomerSaved) {
+                  onCustomerSaved(
+                    {
+                      ...resolvedSavedCustomer,
+                      customer_id: resolvedSavedCustomer.id || targetCustomerId,
+                    },
+                    result.publicUrl || result.imageUrl || ''
+                  );
+                }
+              } catch (dbError) {
+                console.warn('Database save warning:', dbError);
+              }
+            })();
           }
           
           // Auto-close only when OCR really produced usable extracted data

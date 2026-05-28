@@ -402,6 +402,64 @@ export const convertHeicToJpeg = async (file, onProgress = () => {}, options = {
   }
 };
 
+const OCR_IMAGE_OPTIONS = {
+  maxWidth: 1600,
+  maxHeight: 1600,
+  maxSizeMB: 1.6,
+  quality: 0.82,
+};
+
+/**
+ * Process ID/OCR images with a lighter profile than general media uploads.
+ * It keeps enough text detail for OCR while reducing mobile CPU and upload cost.
+ */
+export const processOcrImage = async (file, onProgress = () => {}, options = {}) => {
+  const { silent = false } = options;
+  try {
+    const needsConv = needsImageConversion(file);
+
+    if (needsConv) {
+      if (!silent) {
+        console.log('🔄 OCR HEIC image requires conversion...');
+      }
+
+      onProgress(10);
+      const heic2any = (await import('heic2any')).default;
+      onProgress(30);
+
+      const jpegBlob = await heic2any({
+        blob: file,
+        toType: 'image/jpeg',
+        quality: 0.86,
+      });
+      onProgress(60);
+
+      const compressed = await compressImage(jpegBlob, {
+        ...OCR_IMAGE_OPTIONS,
+        onProgress: (progress) => onProgress(60 + progress * 0.4),
+      });
+
+      return { blob: compressed, converted: true, profile: 'ocr' };
+    }
+
+    if (!silent) {
+      console.log('🔄 Processing OCR image (fast resize + compression)...');
+    }
+
+    const processedBlob = await compressImage(file, {
+      ...OCR_IMAGE_OPTIONS,
+      onProgress,
+    });
+
+    return { blob: processedBlob, converted: false, profile: 'ocr' };
+  } catch (error) {
+    if (!silent) {
+      console.warn('⚠️ OCR image processing failed:', error);
+    }
+    throw error;
+  }
+};
+
 /**
  * Process image file: convert HEIC if needed, compress, fix orientation
  * @param {File} file - Input image file
