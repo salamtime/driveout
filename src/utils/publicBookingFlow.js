@@ -3,10 +3,7 @@ import { formatRentalPackageAllowanceLabel } from './rentalPackageLabels';
 const normalizePackageDisplayPrice = (amount) => {
   const numericAmount = Number(amount || 0);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return 0;
-
-  const rounded = Math.round(numericAmount);
-  const lastDigit = rounded % 10;
-  return lastDigit === 9 ? rounded : rounded + (9 - lastDigit);
+  return Math.round(numericAmount);
 };
 
 export const isHalfDayPackage = (pkg) =>
@@ -67,6 +64,12 @@ const isFlexibleHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => 
   return isFlexibleHourlyPackage(pkg) || isBaseHourlyPackageForDuration(pkg, requestedDurationUnits);
 };
 
+const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
+  if (rentalType !== 'hourly') return false;
+  if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  return Number(durationUnits || 0) > 0;
+};
+
 const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnits = 1) => {
   const basePackagePrice = Number(pkg?.fixedAmount || 0);
 
@@ -78,7 +81,10 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnit
 
   if (pkg?.kind === 'unlimited') {
     if (basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice);
+      const durationMultiplier = shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)
+        ? Math.max(1, Number(duration || 1) || 1)
+        : 1;
+      return normalizePackageDisplayPrice(basePackagePrice * durationMultiplier);
     }
 
     const fallbackUnitPrice = rentalType === 'daily'
@@ -88,12 +94,27 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnit
     return fallbackUnitPrice > 0 ? normalizePackageDisplayPrice(fallbackUnitPrice) : 0;
   }
 
-  if (rentalType === 'hourly' && isFlexibleHourlyPackageForDuration(pkg, duration)) {
+  if (
+    shouldScaleHourlyPackageByDuration(pkg, rentalType, duration) ||
+    (rentalType === 'hourly' && isFlexibleHourlyPackageForDuration(pkg, duration))
+  ) {
     const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
     return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
   }
 
   return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
+};
+
+const getEffectiveIncludedKilometers = (pkg, rentalType, fallbackDurationUnits = 1) => {
+  if (pkg?.kind === 'unlimited') return 0;
+
+  const baseKilometers = Number(pkg?.includedKilometers || 0);
+  if (!Number.isFinite(baseKilometers) || baseKilometers <= 0) return 0;
+
+  const duration = getEffectivePackageDurationUnits(pkg, fallbackDurationUnits, rentalType);
+  if (!shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)) return baseKilometers;
+
+  return Math.round(baseKilometers * Math.max(1, Number(duration || 1) || 1));
 };
 
 export const getDefaultInstantBookingPackage = (listing, rentalType = 'hourly', selectedDurationUnits = 1) => {
@@ -133,16 +154,20 @@ export const buildInstantBookingHref = (listing, options = {}) => {
   if (selectedPackage) {
     next.set('packageId', String(selectedPackage.id || ''));
     const selectedDuration = getEffectivePackageDurationUnits(selectedPackage, requestedDurationUnits, rentalType);
-    const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(selectedPackage, selectedDuration)
-      ? { ...selectedPackage, durationUnits: selectedDuration, duration_units: selectedDuration }
-      : selectedPackage;
+    const includedKilometers = getEffectiveIncludedKilometers(selectedPackage, rentalType, selectedDuration);
+    const displayPackage = {
+      ...selectedPackage,
+      durationUnits: selectedDuration,
+      duration_units: selectedDuration,
+      ...(includedKilometers ? { includedKilometers } : {}),
+    };
     next.set('packageName', formatRentalPackageAllowanceLabel(displayPackage, { rentalType, fallbackDurationUnits: selectedDuration }));
     next.set('packageAmount', String(getEffectivePackagePrice(listing, selectedPackage, rentalType, requestedDurationUnits)));
     next.set('packageKind', String(selectedPackage.kind || ''));
     next.set('durationUnits', String(selectedDuration));
 
-    if (selectedPackage.includedKilometers) {
-      next.set('includedKilometers', String(selectedPackage.includedKilometers));
+    if (includedKilometers) {
+      next.set('includedKilometers', String(includedKilometers));
     }
 
     if (selectedPackage.extraKmRate) {

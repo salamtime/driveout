@@ -91,10 +91,12 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
   const verificationStatus = String(
     verificationSummary?.status || getVerificationStatus(userProfile, user)
   ).trim().toLowerCase();
-  const isVerifiedAccount = Boolean(user?.id) && (
+  const isSignedIn = Boolean(user?.id);
+  const isVerifiedAccount = isSignedIn && (
     verificationSummary?.complete === true ||
     ['approved', 'verified'].includes(verificationStatus)
   );
+  const isSignedInButUnverified = isSignedIn && !isVerifiedAccount;
 
   useEffect(() => {
     let active = true;
@@ -377,6 +379,18 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
     return null;
   }, [isVerifiedAccount, requestResumePath, requiredDepositAmount, user?.id, wallet?.id, walletBalance, walletVerificationState]);
 
+  const loginRedirectPath = `/login?redirect=${encodeURIComponent(requestResumePath || returnPath)}`;
+  const loginRedirectState = {
+    from: requestResumePath || returnPath,
+    resumeBookingFlow: 'marketplace_request',
+    bookingContext: {
+      listingId: listing?.id || '',
+      vehicleId: listing?.vehicleId || listing?.vehiclePublicProfileId || '',
+      startDate: form.startDate,
+      endDate: '',
+    },
+  };
+
   const handleVerificationRedirect = () => {
     navigate('/account/verification', {
       state: {
@@ -392,9 +406,20 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
     });
   };
 
+  const handleLoginRedirect = () => {
+    navigate(loginRedirectPath, {
+      state: loginRedirectState,
+    });
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!listing) return;
+    if (!isSignedIn) {
+      setError('');
+      handleLoginRedirect();
+      return;
+    }
     if (!isVerifiedAccount) {
       setError('');
       handleVerificationRedirect();
@@ -649,7 +674,31 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-6 pb-4 sm:pb-0">
-                {!isVerifiedAccount && !isResolvingBookingAccess ? (
+                {!isSignedIn ? (
+                  <div className="rounded-[28px] border border-violet-200 bg-violet-50 p-6">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-600">Account required</p>
+                    <h3 className="text-2xl font-semibold text-violet-950">Sign in to request this vehicle</h3>
+                    <p className="mt-3 text-sm leading-6 text-violet-800">
+                      Create an account or sign in first. After that, we will bring you back here to continue the request.
+                    </p>
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      <Link
+                        to={loginRedirectPath}
+                        state={loginRedirectState}
+                        className="rounded-full bg-violet-600 px-6 py-3 text-sm font-semibold text-white"
+                      >
+                        Sign in
+                      </Link>
+                      <Link
+                        to={`/register?redirect=${encodeURIComponent(requestResumePath || returnPath)}`}
+                        state={loginRedirectState}
+                        className="rounded-full border border-violet-300 bg-white px-6 py-3 text-sm font-semibold text-violet-800"
+                      >
+                        Sign up
+                      </Link>
+                    </div>
+                  </div>
+                ) : isSignedInButUnverified && !isResolvingBookingAccess ? (
                   <div className="rounded-[28px] border border-violet-200 bg-violet-50 p-6">
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-600">Verification required</p>
                     <h3 className="text-2xl font-semibold text-violet-950">Verify your account to request this vehicle</h3>
@@ -774,7 +823,9 @@ const PublicBookingRequest = ({ embeddedInAccount = false, accountBasePath = '/a
                         ? 'Checking your booking access...'
                         : isVerifiedAccount
                           ? 'Request booking'
-                          : 'Complete verification'}
+                          : isSignedInButUnverified
+                            ? 'Complete verification'
+                            : 'Sign in to request'}
                   </button>
                 </div>
               </form>

@@ -2,7 +2,6 @@ import React, { useMemo, useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { ArrowLeft, BadgeCheck, CalendarClock, Gauge, MapPin, ShieldCheck, Share2, X } from 'lucide-react';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
-import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import PublicCatalogService from '../services/PublicCatalogService';
 import PublicBookingService from '../services/PublicBookingService';
 import VerificationService from '../services/VerificationService';
@@ -185,7 +184,8 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
   const verificationStatus = String(
     verificationSummary?.status || getVerificationStatus(userProfile, user)
   ).trim().toLowerCase();
-  const isVerifiedAccount = Boolean(user?.id) && (
+  const isSignedIn = Boolean(user?.id);
+  const isVerifiedAccount = isSignedIn && (
     verificationSummary?.complete === true ||
     ['approved', 'verified'].includes(verificationStatus)
   );
@@ -206,6 +206,18 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
         },
       }
     : { from: returnPath };
+  const isSignedInButUnverified = isSignedIn && !isVerifiedAccount;
+  const loginRedirectPath = `/login?redirect=${encodeURIComponent(requestPath)}`;
+  const loginRedirectState = {
+    from: requestPath,
+    resumeBookingFlow: 'marketplace_request',
+    bookingContext: {
+      listingId: listing?.id || '',
+      vehicleId: listing?.vehicleId || listing?.vehiclePublicProfileId || '',
+      startDate: '',
+      endDate: '',
+    },
+  };
   const trustSignals = useMemo(
     () => [
       listing?.badge ? 'Verified owner' : null,
@@ -422,11 +434,27 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
                   </Link>
                 ) : (
                   <Link
-                    to={isVerifiedAccount ? requestPath : '/account/verification'}
-                    state={isVerifiedAccount ? { from: returnPath } : verificationRedirectState}
+                    to={
+                      isVerifiedAccount
+                        ? requestPath
+                        : isSignedInButUnverified
+                          ? '/account/verification'
+                          : loginRedirectPath
+                    }
+                    state={
+                      isVerifiedAccount
+                        ? { from: returnPath }
+                        : isSignedInButUnverified
+                          ? verificationRedirectState
+                          : loginRedirectState
+                    }
                     className="inline-flex flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 text-sm font-black text-white shadow-[0_18px_40px_rgba(79,70,229,0.24)] transition hover:-translate-y-0.5"
                   >
-                    {isVerifiedAccount ? 'Request booking' : 'Complete verification'}
+                    {isVerifiedAccount
+                      ? 'Request booking'
+                      : isSignedInButUnverified
+                        ? 'Complete verification'
+                        : 'Sign in to request'}
                   </Link>
                 )}
                 {!isOwnerViewingOwnListing && existingRequestHref ? (
@@ -459,7 +487,6 @@ const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = 
         )}
       </main>
 
-      {!embeddedInAccount ? <PublicSiteFooter /> : null}
       {showVerificationInfo ? (
         <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 p-4 sm:items-center sm:p-6">
           <div className="w-full max-w-md rounded-[2rem] border border-violet-100 bg-white p-6 shadow-[0_30px_80px_rgba(15,23,42,0.22)]">

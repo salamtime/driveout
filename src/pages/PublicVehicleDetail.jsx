@@ -96,6 +96,12 @@ const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
   );
 };
 
+const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
+  if (rentalType !== 'hourly') return false;
+  if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  return Number(durationUnits || 0) > 0;
+};
+
 const getDurationOptionsForPackages = (packages = [], rentalType = 'hourly') => {
   const sortedOptions = Array.from(
     new Set(
@@ -133,9 +139,17 @@ const setCanonicalDurationAndPackageParams = (params, durationUnits, packageId =
 };
 
 const formatPackageDisplayName = (pkg, rentalType, tr, fallbackDurationUnits = 1) => {
-  const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)
-    ? { ...pkg, durationUnits: fallbackDurationUnits, duration_units: fallbackDurationUnits }
-    : pkg;
+  const durationUnits = getEffectivePackageDurationUnits(pkg, fallbackDurationUnits, rentalType);
+  const baseKilometers = Number(pkg?.includedKilometers || 0);
+  const includedKilometers = shouldScaleHourlyPackageByDuration(pkg, rentalType, durationUnits) && baseKilometers > 0
+    ? Math.round(baseKilometers * Math.max(1, Number(durationUnits || 1) || 1))
+    : baseKilometers;
+  const displayPackage = {
+    ...pkg,
+    durationUnits,
+    duration_units: durationUnits,
+    ...(includedKilometers ? { includedKilometers } : {}),
+  };
   return formatRentalPackageAllowanceLabel(displayPackage, { rentalType, tr, fallbackDurationUnits });
 };
 
@@ -200,10 +214,7 @@ const isPromoPackage = (pkg, rentalType) =>
 const normalizePackageDisplayPrice = (amount) => {
   const numericAmount = Number(amount || 0);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return 0;
-
-  const rounded = Math.round(numericAmount);
-  const lastDigit = rounded % 10;
-  return lastDigit === 9 ? rounded : rounded + (9 - lastDigit);
+  return Math.round(numericAmount);
 };
 
 const getTripBadge = (pkg, rentalType, tr) => {
@@ -592,7 +603,10 @@ const PublicVehicleDetail = () => {
 
     const duration = getSelectedDurationForPackage(pkg);
     if (pkg.kind === 'unlimited' && basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice);
+      const durationMultiplier = shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)
+        ? Math.max(1, Number(duration || 1) || 1)
+        : 1;
+      return normalizePackageDisplayPrice(basePackagePrice * durationMultiplier);
     }
 
     if (pkg.kind === 'unlimited') {
@@ -604,7 +618,10 @@ const PublicVehicleDetail = () => {
       return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice) : 0;
     }
 
-    if (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration)) {
+    if (
+      shouldScaleHourlyPackageByDuration(pkg, rentalType, duration) ||
+      (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration))
+    ) {
       const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
       return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
     }
@@ -612,17 +629,28 @@ const PublicVehicleDetail = () => {
     return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
   };
 
+  const getEffectiveIncludedKilometers = (pkg) => {
+    const baseKilometers = Number(pkg?.includedKilometers || 0);
+    if (!Number.isFinite(baseKilometers) || baseKilometers <= 0) return 0;
+
+    const duration = getSelectedDurationForPackage(pkg);
+    if (!shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)) return baseKilometers;
+
+    return Math.round(baseKilometers * Math.max(1, Number(duration || 1) || 1));
+  };
+
   const getDisplayedIncludedKilometers = (pkg) => {
     if (pkg.kind === 'unlimited') {
       return tr('Unlimited KM', 'Km illimités');
     }
 
-    const baseKilometers = Number(pkg?.includedKilometers || 0);
-    return `${baseKilometers} km`;
+    return `${getEffectiveIncludedKilometers(pkg)} km`;
   };
 
   const getTripDurationLabel = (pkg) => formatTripDurationLabel(getSelectedDurationForPackage(pkg), rentalType, tr);
-  const listingIncludedKm = Number(selectedPackage?.includedKilometers ?? currentListing?.includedKm ?? 0) || 0;
+  const listingIncludedKm = selectedPackage
+    ? getEffectiveIncludedKilometers(selectedPackage)
+    : Number(currentListing?.includedKm ?? 0) || 0;
   const listingExtraKmRate = Number(selectedPackage?.extraKmRate ?? currentListing?.extraKmRate ?? 0) || 0;
   const listingDistanceRule = listingIncludedKm > 0
     ? listingExtraKmRate > 0
@@ -798,8 +826,9 @@ const PublicVehicleDetail = () => {
     if (currentListing?.location?.city) {
       next.set('city', currentListing.location.city);
     }
-    if (selectedPackage.includedKilometers) {
-      next.set('includedKilometers', String(selectedPackage.includedKilometers));
+    const includedKilometers = getEffectiveIncludedKilometers(selectedPackage);
+    if (includedKilometers) {
+      next.set('includedKilometers', String(includedKilometers));
     }
     if (selectedPackage.extraKmRate) {
       next.set('extraKmRate', String(selectedPackage.extraKmRate));
@@ -836,8 +865,9 @@ const PublicVehicleDetail = () => {
           shareParams.set('durationUnits', packageDuration);
         }
 
-        if (selectedPackage.includedKilometers) {
-          shareParams.set('includedKilometers', String(selectedPackage.includedKilometers));
+        const includedKilometers = getEffectiveIncludedKilometers(selectedPackage);
+        if (includedKilometers) {
+          shareParams.set('includedKilometers', String(includedKilometers));
         }
 
         if (selectedPackage.extraKmRate) {

@@ -9,7 +9,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { resolveManagedAccountType } from '../utils/accountType';
 import PublicListingCard from '../components/public/PublicListingCard';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
-import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import { buildInstantBookingHref } from '../utils/publicBookingFlow';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
 import { resolveReturnPath } from '../utils/navigationReturn';
@@ -92,9 +91,7 @@ const formatMoney = (value) => {
 const normalizePackageDisplayPrice = (amount) => {
   const numericAmount = Number(amount || 0);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return 0;
-  const rounded = Math.round(numericAmount);
-  const lastDigit = rounded % 10;
-  return lastDigit === 9 ? rounded : rounded + (9 - lastDigit);
+  return Math.round(numericAmount);
 };
 
 const getExplicitDurationUnits = (pkg) => Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
@@ -144,6 +141,12 @@ const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
   );
 };
 
+const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
+  if (rentalType !== 'hourly') return false;
+  if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  return Number(durationUnits || 0) > 0;
+};
+
 const getDurationOptionsForPackages = (packages = [], rentalType = 'hourly') => {
   const sortedOptions = Array.from(
     new Set(
@@ -160,9 +163,17 @@ const getDurationOptionsForPackages = (packages = [], rentalType = 'hourly') => 
 };
 
 const getPackageDisplayName = (pkg, rentalType, fallbackDurationUnits = 1) => {
-  const displayPackage = rentalType === 'hourly' && isBaseHourlyPackageForDuration(pkg, fallbackDurationUnits)
-    ? { ...pkg, durationUnits: fallbackDurationUnits, duration_units: fallbackDurationUnits }
-    : pkg;
+  const durationUnits = getEffectivePackageDurationUnits(pkg, fallbackDurationUnits, rentalType);
+  const baseKilometers = Number(pkg?.includedKilometers || 0);
+  const includedKilometers = shouldScaleHourlyPackageByDuration(pkg, rentalType, durationUnits) && baseKilometers > 0
+    ? Math.round(baseKilometers * Math.max(1, Number(durationUnits || 1) || 1))
+    : baseKilometers;
+  const displayPackage = {
+    ...pkg,
+    durationUnits,
+    duration_units: durationUnits,
+    ...(includedKilometers ? { includedKilometers } : {}),
+  };
   return formatRentalPackageAllowanceLabel(displayPackage, { rentalType, fallbackDurationUnits });
 };
 
@@ -207,7 +218,10 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
 
   if (pkg?.kind === 'unlimited') {
     if (basePackagePrice > 0) {
-      return normalizePackageDisplayPrice(basePackagePrice);
+      const durationMultiplier = shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)
+        ? Math.max(1, Number(duration || 1) || 1)
+        : 1;
+      return normalizePackageDisplayPrice(basePackagePrice * durationMultiplier);
     }
 
     const unitPrice = Number(durationUnitPrices?.[String(listing.id)]?.[duration] || 0);
@@ -218,7 +232,10 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
     return resolvedUnitPrice > 0 ? normalizePackageDisplayPrice(resolvedUnitPrice) : 0;
   }
 
-  if (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration)) {
+  if (
+    shouldScaleHourlyPackageByDuration(pkg, rentalType, duration) ||
+    (rentalType === 'hourly' && isFlexibleHourlyPackage(pkg, duration))
+  ) {
     const durationMultiplier = Math.max(1, Number(duration || 1) || 1);
     return basePackagePrice > 0 ? Math.round(basePackagePrice * durationMultiplier) : 0;
   }
@@ -226,11 +243,23 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
   return basePackagePrice > 0 ? normalizePackageDisplayPrice(basePackagePrice) : 0;
 };
 
-const getDisplayedIncludedKilometers = (pkg, selectedDurationUnits) => {
-  if (pkg?.kind === 'unlimited') return 'Unlimited KM';
+const getEffectiveIncludedKilometers = (pkg, rentalType, selectedDurationUnits) => {
+  if (pkg?.kind === 'unlimited') return 0;
 
   const baseKilometers = Number(pkg?.includedKilometers || 0);
-  return `${baseKilometers} km`;
+  if (!Number.isFinite(baseKilometers) || baseKilometers <= 0) return 0;
+
+  const duration = getSelectedDurationForPackage(pkg, selectedDurationUnits, rentalType);
+  if (!shouldScaleHourlyPackageByDuration(pkg, rentalType, duration)) return baseKilometers;
+
+  return Math.round(baseKilometers * Math.max(1, Number(duration || 1) || 1));
+};
+
+const getDisplayedIncludedKilometers = (pkg, selectedDurationUnits, rentalType = 'hourly') => {
+  if (pkg?.kind === 'unlimited') return 'Unlimited KM';
+
+  const totalKilometers = getEffectiveIncludedKilometers(pkg, rentalType, selectedDurationUnits);
+  return `${totalKilometers} km`;
 };
 
 const groupModelListings = (listings = []) => {
@@ -781,8 +810,9 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     if (selectedVehicle.location?.city) {
       next.set('city', selectedVehicle.location.city);
     }
-    if (selectedPackage.includedKilometers) {
-      next.set('includedKilometers', String(selectedPackage.includedKilometers));
+    const includedKilometers = getEffectiveIncludedKilometers(selectedPackage, rentalType, selectedDurationUnits);
+    if (includedKilometers) {
+      next.set('includedKilometers', String(includedKilometers));
     }
     if (selectedPackage.extraKmRate) {
       next.set('extraKmRate', String(selectedPackage.extraKmRate));
@@ -1218,7 +1248,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                                       <div className="flex items-center justify-between gap-3">
                                         <span>Included km</span>
                                         <span className="font-semibold text-slate-900">
-                                          {getDisplayedIncludedKilometers(pkg, selectedDurationUnits)}
+                                          {getDisplayedIncludedKilometers(pkg, selectedDurationUnits, rentalType)}
                                         </span>
                                       </div>
                                       {pkg.kind !== 'unlimited' ? (
@@ -1388,7 +1418,6 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
           </div>
         </div>
       ) : null}
-      {!embeddedInAccount ? <PublicSiteFooter /> : null}
       {!isMarketplacePage ? (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3 backdrop-blur">
           <div className="mx-auto max-w-3xl">
