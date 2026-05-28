@@ -67,6 +67,10 @@ const isFlexibleHourlyPackageForDuration = (pkg, requestedDurationUnits = 1) => 
 const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
   if (rentalType !== 'hourly') return false;
   if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? 0);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) {
+    return isBaseHourlyPackageForDuration(pkg, durationUnits);
+  }
   return Number(durationUnits || 0) > 0;
 };
 
@@ -106,8 +110,6 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, fallbackDurationUnit
 };
 
 const getEffectiveIncludedKilometers = (pkg, rentalType, fallbackDurationUnits = 1) => {
-  if (pkg?.kind === 'unlimited') return 0;
-
   const baseKilometers = Number(pkg?.includedKilometers || 0);
   if (!Number.isFinite(baseKilometers) || baseKilometers <= 0) return 0;
 

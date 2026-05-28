@@ -99,6 +99,10 @@ const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
 const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
   if (rentalType !== 'hourly') return false;
   if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) {
+    return isBaseHourlyPackageForDuration(pkg, durationUnits);
+  }
   return Number(durationUnits || 0) > 0;
 };
 
@@ -640,11 +644,10 @@ const PublicVehicleDetail = () => {
   };
 
   const getDisplayedIncludedKilometers = (pkg) => {
-    if (pkg.kind === 'unlimited') {
-      return tr('Unlimited KM', 'Km illimités');
-    }
+    const includedKilometers = getEffectiveIncludedKilometers(pkg);
+    if (includedKilometers <= 0 && pkg.kind === 'unlimited') return tr('Unlimited KM', 'Km illimités');
 
-    return `${getEffectiveIncludedKilometers(pkg)} km`;
+    return `${includedKilometers} km`;
   };
 
   const getTripDurationLabel = (pkg) => formatTripDurationLabel(getSelectedDurationForPackage(pkg), rentalType, tr);

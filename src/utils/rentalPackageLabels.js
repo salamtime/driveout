@@ -40,11 +40,12 @@ export const formatRentalPackageAllowanceLabel = (pkg, options = {}) => {
   const { rentalType = 'hourly', fallbackDurationUnits = 1, tr } = options;
   const rawName = String(pkg?.displayName || pkg?.name || '').trim();
 
-  if (pkg?.kind === 'unlimited') {
+  const includedKilometers = getIncludedKilometers(pkg);
+
+  if (includedKilometers <= 0 && pkg?.kind === 'unlimited') {
     return translate(tr, 'Unlimited KM', 'KM illimités');
   }
 
-  const includedKilometers = getIncludedKilometers(pkg);
   if (includedKilometers <= 0) {
     return rawName || translate(tr, 'Package', 'Forfait');
   }

@@ -144,6 +144,10 @@ const isFlexibleHourlyPackage = (pkg, requestedDurationUnits = 1) => {
 const shouldScaleHourlyPackageByDuration = (pkg, rentalType, durationUnits = 1) => {
   if (rentalType !== 'hourly') return false;
   if (isHalfHourPackage(pkg) || isHalfDayPackage(pkg)) return false;
+  const explicitUnits = getExplicitDurationUnits(pkg);
+  if (Number.isFinite(explicitUnits) && explicitUnits > 0) {
+    return isBaseHourlyPackageForDuration(pkg, durationUnits);
+  }
   return Number(durationUnits || 0) > 0;
 };
 
@@ -244,8 +248,6 @@ const getEffectivePackagePrice = (listing, pkg, rentalType, selectedDurationUnit
 };
 
 const getEffectiveIncludedKilometers = (pkg, rentalType, selectedDurationUnits) => {
-  if (pkg?.kind === 'unlimited') return 0;
-
   const baseKilometers = Number(pkg?.includedKilometers || 0);
   if (!Number.isFinite(baseKilometers) || baseKilometers <= 0) return 0;
 
@@ -256,9 +258,9 @@ const getEffectiveIncludedKilometers = (pkg, rentalType, selectedDurationUnits) 
 };
 
 const getDisplayedIncludedKilometers = (pkg, selectedDurationUnits, rentalType = 'hourly') => {
-  if (pkg?.kind === 'unlimited') return 'Unlimited KM';
-
   const totalKilometers = getEffectiveIncludedKilometers(pkg, rentalType, selectedDurationUnits);
+  if (totalKilometers <= 0 && pkg?.kind === 'unlimited') return 'Unlimited KM';
+
   return `${totalKilometers} km`;
 };
 
