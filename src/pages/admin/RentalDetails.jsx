@@ -23283,7 +23283,11 @@ useEffect(() => {
   );
 
   const canManageVehicleMedia = currentUserRole === 'owner' || currentUserRole === 'admin';
-  const showVehicleMediaEditorCard = canManageVehicleMedia && (isCompleted || Boolean(vehicleReport?.maintenance_id) || hasCompletedVehicleMedia);
+  const canAddVehicleMedia =
+    canManageVehicleMedia ||
+    hasRentalManagementAccess ||
+    ['employee', 'staff', 'support', 'guide', 'business_owner'].includes(currentUserRole);
+  const showVehicleMediaEditorCard = canAddVehicleMedia && (isCompleted || Boolean(vehicleReport?.maintenance_id) || hasCompletedVehicleMedia);
 
   const renderVehicleMediaSectionBody = () => (
     <>
@@ -23300,7 +23304,9 @@ useEffect(() => {
             </p>
             {hasCompletedVehicleMedia ? (
               <p className="mt-2 text-xs text-slate-500">
-                {tr('Use Edit Vehicle Media to add more files, or delete items directly in the gallery below.', 'Utilisez Modifier les médias véhicule pour ajouter des fichiers, ou supprimez des éléments directement dans la galerie ci-dessous.')}
+                {canManageVehicleMedia
+                  ? tr('Use Edit Vehicle Media to add more files, or delete items directly in the gallery below.', 'Utilisez Modifier les médias véhicule pour ajouter des fichiers, ou supprimez des éléments directement dans la galerie ci-dessous.')
+                  : tr('Use Add More Media to upload more vehicle photos or videos.', 'Utilisez Ajouter plus de médias pour téléverser plus de photos ou vidéos véhicule.')}
               </p>
             ) : null}
           </div>
@@ -23314,7 +23320,7 @@ useEffect(() => {
                 </span>
               </div>
             ) : null}
-            {hasCompletedVehicleMedia ? (
+            {canManageVehicleMedia && hasCompletedVehicleMedia ? (
               <Button
                 type="button"
                 onClick={handleOpenVehicleMediaEditChooser}
