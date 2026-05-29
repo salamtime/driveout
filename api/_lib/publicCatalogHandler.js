@@ -958,7 +958,7 @@ const getListingById = async (adminClient, listingId, cityOverride, tenantScope 
 const json = (res, status, body) => {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.end(JSON.stringify(body));
 };
 

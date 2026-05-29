@@ -117,7 +117,10 @@ const applyListingUpdates = async (adminClient, listingId, listingUpdates) => {
 const insertOptionalRecord = async (adminClient, table, payload) => {
   if (!payload) return;
   const { error } = await adminClient.from(table).insert(payload);
-  if (error && !isSetupError(error)) {
+  if (error && (isSetupError(error) || String(error?.code || '') === '23503')) {
+    return;
+  }
+  if (error) {
     throw error;
   }
 };
@@ -256,7 +259,10 @@ const resolveCanonicalOwnerUserId = async (adminClient, listing = {}, profile = 
     }
   }
 
-  return '';
+  // Some private-owner marketplace listings predate auth-backed owner accounts.
+  // Their owner_id is still the durable marketplace owner reference, so keep it
+  // instead of blocking admin review/detail actions with a 409.
+  return candidateIds[0] || '';
 };
 
 const loadListingsSnapshot = async (adminClient) => {
@@ -650,15 +656,11 @@ const updateListingStatus = async ({
   const actionType = normalizeStatus(action, '');
   const previousStatus = normalizeStatus(listing.listing_status || 'draft', 'draft');
   const shouldSendToOwner = sendToOwner !== false;
-  const resolvedOwnerUserId = await resolveCanonicalOwnerUserId(adminClient, listing);
+  const resolvedOwnerUserId = (
+    await resolveCanonicalOwnerUserId(adminClient, listing)
+  ) || String(listing?.owner_id || '').trim() || userId;
   let historyPayload = null;
   let ownerMessagePayload = null;
-
-  if (!resolvedOwnerUserId) {
-    const error = new Error('Unable to resolve the canonical marketplace owner account for this listing.');
-    error.status = 409;
-    throw error;
-  }
 
   if (String(listing.owner_id || '').trim() !== resolvedOwnerUserId) {
     listingUpdates.owner_id = resolvedOwnerUserId;

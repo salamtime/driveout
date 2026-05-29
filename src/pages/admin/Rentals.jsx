@@ -5390,25 +5390,22 @@ const Rentals = () => {
 
                         {isCompactMobileCard && (
                           <div className="mt-auto pt-2.5">
-                            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2">
-                              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                                {effectiveRentalStatus === 'active'
-                                  ? tr('Action', 'Action')
-                                  : tr('Open', 'Ouvrir')}
-                              </span>
-                              <span className={`text-[11px] font-semibold ${
-                                effectiveRentalStatus === 'active'
-                                  ? 'text-orange-600'
-                                  : effectiveRentalStatus === 'scheduled'
-                                    ? 'text-blue-600'
-                                    : 'text-violet-600'
-                              }`}>
-                                {effectiveRentalStatus === 'active'
-                                  ? tr('Close', 'Clôturer')
-                                  : effectiveRentalStatus === 'scheduled'
-                                    ? tr('View / Start', 'Voir / Démarrer')
-                                    : tr('View Details', 'Voir détails')}
-                              </span>
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                onClick={(event) => handleContactCustomerWhatsApp(rental, event)}
+                                className={`inline-flex min-w-[116px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                                  canUseWhatsAppTools
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                }`}
+                                title={canUseWhatsAppTools
+                                  ? tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')
+                                  : tr('WhatsApp tools are available on Growth and Pro', 'Les outils WhatsApp sont disponibles sur Growth et Pro')}
+                              >
+                                {canUseWhatsAppTools ? <MessageCircle className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                                <span>{tr('WhatsApp', 'WhatsApp')}</span>
+                              </button>
                             </div>
                           </div>
                         )}

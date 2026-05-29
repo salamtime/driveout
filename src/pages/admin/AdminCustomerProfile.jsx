@@ -77,6 +77,21 @@ const compactCustomerId = (value) => compactIdentifier(value, 'CUST');
 const compactUserId = (value) => compactIdentifier(value, 'USER');
 const compactListingId = (value) => compactIdentifier(value, 'LIST');
 const normalizeProfilePhone = (value) => String(value || '').replace(/[^\d+]/g, '').trim();
+const normalizeMarketplaceOwnerName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const uniqueValues = (values = []) => (
+  Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
+);
+
+const mergeById = (...groups) => {
+  const merged = new Map();
+  groups.flat().filter(Boolean).forEach((item) => {
+    const id = String(item?.id || '').trim();
+    if (!id || merged.has(id)) return;
+    merged.set(id, item);
+  });
+  return Array.from(merged.values());
+};
 
 const getRentalHistoryTimestamp = (rental) => (
   rental?.updated_at ||
@@ -1026,6 +1041,26 @@ const AdminCustomerProfile = () => {
     const value = searchParams.get('rentalId');
     return value ? String(value).trim() : '';
   }, [searchParams]);
+
+  const marketplaceOwnerIdParam = useMemo(() => {
+    const value = searchParams.get('marketplaceOwnerId');
+    return value ? String(value).trim() : '';
+  }, [searchParams]);
+
+  const marketplaceListingIdParam = useMemo(() => {
+    const value = searchParams.get('marketplaceListingId');
+    return value ? String(value).trim() : '';
+  }, [searchParams]);
+
+  const marketplaceVehicleProfileIdParam = useMemo(() => {
+    const value = searchParams.get('vehicleProfileId');
+    return value ? String(value).trim() : '';
+  }, [searchParams]);
+
+  const marketplaceOwnerNameParam = useMemo(() => {
+    const value = searchParams.get('ownerName');
+    return value ? String(value).trim() : '';
+  }, [searchParams]);
   const seededVerificationDocuments = useMemo(
     () => (Array.isArray(location.state?.verificationDocuments) ? location.state.verificationDocuments.filter(Boolean) : []),
     [location.state]
@@ -1109,8 +1144,136 @@ const AdminCustomerProfile = () => {
           customerRecord?.full_name ||
           userRecord?.full_name ||
           userRecord?.name ||
+          marketplaceOwnerNameParam ||
           ''
         ).trim();
+        const loadMarketplaceFootprint = async () => {
+          const ownerIdCandidates = uniqueValues([
+            marketplaceOwnerIdParam,
+            resolvedAuthUserId,
+            customerRecord?.auth_user_id,
+            customerRecord?.owner_id,
+            customerRecord?.scan_metadata?.auth_user_id,
+            customerRecord?.scan_metadata?.owner_id,
+            customerRecord?.scan_metadata?.marketplace_owner_id,
+            userRecord?.auth_user_id,
+            userRecord?.owner_id,
+          ]);
+          const ownerName = normalizeMarketplaceOwnerName(resolvedCustomerName);
+          const profileSelect = 'id, owner_id, owner_display_name, brand_name, model_name, category_code, plate_number, marketplace_visible, is_active, city_name, updated_at, created_at';
+          const listingSelect = 'id, title, listing_status, review_status, vehicle_public_profile_id, owner_id, updated_at, created_at';
+
+          const profileQueries = [];
+          if (marketplaceVehicleProfileIdParam) {
+            profileQueries.push(
+              supabase
+                .from('app_vehicle_public_profiles')
+                .select(profileSelect)
+                .eq('id', marketplaceVehicleProfileIdParam)
+                .limit(1)
+            );
+          }
+          const metadataVehicleProfileId = String(customerRecord?.scan_metadata?.marketplace_vehicle_profile_id || '').trim();
+          if (metadataVehicleProfileId && metadataVehicleProfileId !== marketplaceVehicleProfileIdParam) {
+            profileQueries.push(
+              supabase
+                .from('app_vehicle_public_profiles')
+                .select(profileSelect)
+                .eq('id', metadataVehicleProfileId)
+                .limit(1)
+            );
+          }
+          if (ownerIdCandidates.length > 0) {
+            profileQueries.push(
+              supabase
+                .from('app_vehicle_public_profiles')
+                .select(profileSelect)
+                .in('owner_id', ownerIdCandidates)
+                .order('updated_at', { ascending: false })
+                .limit(24)
+            );
+          }
+          if (ownerName) {
+            profileQueries.push(
+              supabase
+                .from('app_vehicle_public_profiles')
+                .select(profileSelect)
+                .ilike('owner_display_name', resolvedCustomerName)
+                .order('updated_at', { ascending: false })
+                .limit(24)
+            );
+          }
+
+          const profileResults = profileQueries.length > 0 ? await Promise.all(profileQueries) : [];
+          const marketplaceProfiles = mergeById(
+            ...profileResults.map((result) => (Array.isArray(result?.data) ? result.data : []))
+          ).filter((profile) => {
+            const profileOwnerId = String(profile?.owner_id || '').trim();
+            const profileId = String(profile?.id || '').trim();
+            const profileOwnerName = normalizeMarketplaceOwnerName(profile?.owner_display_name);
+            return (
+              (marketplaceVehicleProfileIdParam && profileId === marketplaceVehicleProfileIdParam) ||
+              ownerIdCandidates.includes(profileOwnerId) ||
+              (ownerName && profileOwnerName === ownerName)
+            );
+          });
+
+          const ownerIds = uniqueValues([
+            ...ownerIdCandidates,
+            ...marketplaceProfiles.map((profile) => profile?.owner_id),
+          ]);
+          const profileIds = uniqueValues(marketplaceProfiles.map((profile) => profile?.id));
+          const listingQueries = [];
+          if (marketplaceListingIdParam) {
+            listingQueries.push(
+              supabase
+                .from('app_marketplace_listings')
+                .select(listingSelect)
+                .eq('id', marketplaceListingIdParam)
+                .limit(1)
+            );
+          }
+          const metadataListingId = String(customerRecord?.scan_metadata?.marketplace_listing_id || '').trim();
+          if (metadataListingId && metadataListingId !== marketplaceListingIdParam) {
+            listingQueries.push(
+              supabase
+                .from('app_marketplace_listings')
+                .select(listingSelect)
+                .eq('id', metadataListingId)
+                .limit(1)
+            );
+          }
+          if (ownerIds.length > 0) {
+            listingQueries.push(
+              supabase
+                .from('app_marketplace_listings')
+                .select(listingSelect)
+                .in('owner_id', ownerIds)
+                .order('updated_at', { ascending: false })
+                .limit(24)
+            );
+          }
+          if (profileIds.length > 0) {
+            listingQueries.push(
+              supabase
+                .from('app_marketplace_listings')
+                .select(listingSelect)
+                .in('vehicle_public_profile_id', profileIds)
+                .order('updated_at', { ascending: false })
+                .limit(24)
+            );
+          }
+
+          const listingResults = listingQueries.length > 0 ? await Promise.all(listingQueries) : [];
+          const listings = mergeById(
+            ...listingResults.map((result) => (Array.isArray(result?.data) ? result.data : []))
+          ).sort((left, right) => new Date(right?.updated_at || right?.created_at || 0).getTime() - new Date(left?.updated_at || left?.created_at || 0).getTime());
+
+          return {
+            listings,
+            profiles: marketplaceProfiles,
+          };
+        };
 
         if (rentalIdParam) {
           const { data } = await supabase
@@ -1288,7 +1451,7 @@ const AdminCustomerProfile = () => {
           MessageService.listSharedThreads().catch(() => ({ threads: [] })),
         ]);
 
-        const [tourRowsResult, marketplaceListingsResult, marketplaceVehicleProfilesResult] = await Promise.all([
+        const [tourRowsResult, marketplaceFootprintResult] = await Promise.all([
           resolvedEmail
             ? supabase
                 .from(TABLE_NAMES.TOUR_BOOKINGS)
@@ -1297,22 +1460,7 @@ const AdminCustomerProfile = () => {
                 .order('created_at', { ascending: false })
                 .limit(24)
             : Promise.resolve({ data: [] }),
-          resolvedAuthUserId
-            ? supabase
-                .from('app_marketplace_listings')
-                .select('id, title, listing_status, review_status, updated_at, created_at')
-                .eq('owner_id', resolvedAuthUserId)
-                .order('updated_at', { ascending: false })
-                .limit(12)
-            : Promise.resolve({ data: [] }),
-          resolvedAuthUserId
-            ? supabase
-                .from('app_vehicle_public_profiles')
-                .select('id, owner_id, brand_name, model_name, status, updated_at, created_at')
-                .eq('owner_id', resolvedAuthUserId)
-                .order('updated_at', { ascending: false })
-                .limit(24)
-            : Promise.resolve({ data: [] }),
+          loadMarketplaceFootprint(),
         ]);
 
         if (!active) return;
@@ -1430,6 +1578,28 @@ const AdminCustomerProfile = () => {
             has_active_alert_note: Boolean(customerRecord?.scan_metadata?.show_admin_note_alert),
             active_alert_note: customerRecord?.scan_metadata?.admin_note || '',
           };
+        } else if (marketplaceFootprintResult?.profiles?.length > 0 || marketplaceFootprintResult?.listings?.length > 0) {
+          const ownerProfile = marketplaceFootprintResult?.profiles?.[0] || {};
+          const ownerListing = marketplaceFootprintResult?.listings?.[0] || {};
+          const ownerName = ownerProfile?.owner_display_name || marketplaceOwnerNameParam || ownerListing?.title || 'Marketplace owner';
+          mergedCustomerData = {
+            id: resolvedCustomerId || marketplaceOwnerIdParam || ownerListing?.owner_id || ownerProfile?.owner_id || null,
+            isMarketplaceOwnerBased: true,
+            full_name: ownerName,
+            email: '',
+            phone: '',
+            address: '',
+            licence_number: '',
+            id_number: '',
+            date_of_birth: '',
+            nationality: '',
+            created_at: ownerProfile?.created_at || ownerListing?.created_at || null,
+            customer_id_scan_history: [],
+            extra_images: [],
+            scan_metadata: {},
+            _source: 'marketplace_owner',
+            _marketplaceOwnerId: ownerListing?.owner_id || ownerProfile?.owner_id || marketplaceOwnerIdParam || '',
+          };
         } else if (userRecord) {
           mergedCustomerData = {
             id: resolvedCustomerId || null,
@@ -1511,8 +1681,8 @@ const AdminCustomerProfile = () => {
         setRentalHistory([...safeRentalHistory, ...safeRecentRentals]);
         setSecondDrivers(secondDriversResult?.data || []);
         setTourGroups(groupedTours);
-        setMarketplaceListings(Array.isArray(marketplaceListingsResult?.data) ? marketplaceListingsResult.data : []);
-        setMarketplaceVehicleProfiles(Array.isArray(marketplaceVehicleProfilesResult?.data) ? marketplaceVehicleProfilesResult.data : []);
+        setMarketplaceListings(Array.isArray(marketplaceFootprintResult?.listings) ? marketplaceFootprintResult.listings : []);
+        setMarketplaceVehicleProfiles(Array.isArray(marketplaceFootprintResult?.profiles) ? marketplaceFootprintResult.profiles : []);
         setRelatedThreads(customerThreads);
         setShellCounts({
           rentals: Number(rentalsResult?.count || safeRentalHistory.length || 0),
@@ -1533,7 +1703,17 @@ const AdminCustomerProfile = () => {
     return () => {
       active = false;
     };
-  }, [authUserIdParam, customerId, customerIdQueryParam, emailParam, rentalIdParam]);
+  }, [
+    authUserIdParam,
+    customerId,
+    customerIdQueryParam,
+    emailParam,
+    marketplaceListingIdParam,
+    marketplaceOwnerIdParam,
+    marketplaceOwnerNameParam,
+    marketplaceVehicleProfileIdParam,
+    rentalIdParam,
+  ]);
 
   const verificationDocumentsForIdentity = useMemo(
     () => mergeVerificationDocuments(verificationRequests, seededVerificationDocuments),
@@ -3349,6 +3529,31 @@ const AdminCustomerProfile = () => {
                     </div>
                   ))}
                 </div>
+                {listingsPreview.length > 0 ? (
+                  <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Listed vehicles</p>
+                    {listingsPreview.map((listing) => (
+                      <div key={`${listing.id}-footprint`} className="rounded-2xl border border-slate-200 bg-white p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900">
+                              {listing.title || `Listing ${compactListingId(listing.id)}`}
+                            </p>
+                            <p className="mt-1 text-xs font-semibold text-slate-500">
+                              {String(listing.listing_status || 'draft').replace(/_/g, ' ')}
+                            </p>
+                          </div>
+                          <Link
+                            to={buildAdminMarketplaceListingPath(listing.id)}
+                            className="shrink-0 rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                          >
+                            View
+                          </Link>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <details className={ADMIN_SOFT_CARD_CLASS}>

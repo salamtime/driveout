@@ -36,10 +36,18 @@ const buildOwnerProfileHref = (row) => {
     ''
   ).trim();
   const resolvedEmail = String(row?.ownerEmail || row?.email || '').trim().toLowerCase();
+  const marketplaceOwnerId = String(row?.ownerId || row?.owner_id || row?.ownerUserId || '').trim();
+  const marketplaceListingId = String(row?.id || '').trim();
+  const vehicleProfileId = String(row?.vehiclePublicProfileId || row?.vehicle_public_profile_id || '').trim();
+  const ownerName = String(row?.ownerDisplayName || row?.owner_display_name || '').trim();
 
   if (resolvedCustomerId) params.set('customerId', resolvedCustomerId);
   if (resolvedAuthUserId) params.set('authUserId', resolvedAuthUserId);
   if (resolvedEmail) params.set('email', resolvedEmail);
+  if (marketplaceOwnerId) params.set('marketplaceOwnerId', marketplaceOwnerId);
+  if (marketplaceListingId) params.set('marketplaceListingId', marketplaceListingId);
+  if (vehicleProfileId) params.set('vehicleProfileId', vehicleProfileId);
+  if (ownerName) params.set('ownerName', ownerName);
 
   return `/admin/customers/profile${params.toString() ? `?${params.toString()}` : ''}`;
 };

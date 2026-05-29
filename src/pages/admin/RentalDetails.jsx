@@ -4204,6 +4204,8 @@ const openReplacementResumeWorkflow = useCallback(() => {
   // WhatsApp modal state
   const [whatsappModalOpen, setWhatsappModalOpen] = useState(false);
   const [pendingWhatsAppShare, setPendingWhatsAppShare] = useState(null);
+  const [customerWhatsAppPickerOpen, setCustomerWhatsAppPickerOpen] = useState(false);
+  const [customerWhatsAppCustomMessage, setCustomerWhatsAppCustomMessage] = useState('');
   const [showCancelRentalModal, setShowCancelRentalModal] = useState(false);
   const [cancelRentalSubmitting, setCancelRentalSubmitting] = useState(false);
   const [cancelRentalReason, setCancelRentalReason] = useState('customer_cancelled');
@@ -4547,6 +4549,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     nationality: linkedCustomerProfile?.nationality || rental?.customer_nationality || '',
   }), [linkedCustomerProfile, rental]);
   const syncedCustomerPhone = syncedCustomerDetails.phone || '';
+  const hasCustomerWhatsAppContact = Boolean(String(syncedCustomerPhone || '').replace(/\D/g, ''));
   // Fuel charge toggle state - use safe default
   const [fuelChargeEnabled, setFuelChargeEnabled] = useState(true);
 // Camera recording state - NEW for native camera support
@@ -13485,6 +13488,142 @@ useEffect(() => {
     toast.success(tr('WhatsApp is ready. Tap Open WhatsApp.', 'WhatsApp est prêt. Appuyez sur Ouvrir WhatsApp.'));
   };
 
+  const formatCustomerWhatsAppDate = (value) => {
+    const parsed = value ? new Date(value) : null;
+    if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) {
+      return tr('your scheduled time', 'votre horaire prévu');
+    }
+
+    return parsed.toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  const customerWhatsAppTemplateOptions = useMemo(() => {
+    const cleanPhone = String(syncedCustomerDetails.phone || rental?.customer_phone || '').replace(/\D/g, '');
+    if (!cleanPhone) return [];
+
+    const now = new Date();
+    const startDate = rental?.rental_start_date ? new Date(rental.rental_start_date) : null;
+    const endDate = rental?.rental_end_date ? new Date(rental.rental_end_date) : null;
+    const hasValidStart = startDate instanceof Date && !Number.isNaN(startDate.getTime());
+    const hasValidEnd = endDate instanceof Date && !Number.isNaN(endDate.getTime());
+    const status = String(rental?.rental_status || rental?.status || '').toLowerCase();
+    const customerName = syncedCustomerDetails.fullName || rental?.customer_name || tr('there', 'bonjour');
+    const rentalId = rental?.rental_id || '';
+    const vehicleLabel = [rental?.vehicle?.name, rental?.vehicle?.model].filter(Boolean).join(' ') || tr('your vehicle', 'votre véhicule');
+    const formattedStart = formatCustomerWhatsAppDate(rental?.rental_start_date);
+    const formattedEnd = formatCustomerWhatsAppDate(rental?.rental_end_date);
+    const startsWithin24Hours =
+      hasValidStart && startDate.getTime() > now.getTime() && startDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
+    const isLateForPickup =
+      status === 'scheduled' &&
+      hasValidStart &&
+      startDate.getTime() <= now.getTime();
+    const nearReturn =
+      status === 'active' &&
+      hasValidEnd &&
+      endDate.getTime() >= now.getTime() &&
+      endDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
+    const balanceDue = Math.max(0, Number(rentalBillingSummary?.balanceDue || rental?.remaining_amount || 0) || 0);
+
+    return [
+      {
+        id: 'general',
+        priority: 1,
+        label: tr('General contact', 'Contact général'),
+        preview: tr('General message about this rental.', 'Message général à propos de cette location.'),
+        message: isFrench
+          ? `Bonjour ${customerName}, nous vous contactons au sujet de votre location ${rentalId} pour ${vehicleLabel}.`
+          : `Hi ${customerName}, we are contacting you regarding your rental ${rentalId} for ${vehicleLabel}.`,
+      },
+      {
+        id: 'upcoming',
+        priority: startsWithin24Hours ? 0 : 3,
+        hidden: !startsWithin24Hours && status !== 'scheduled',
+        label: tr('Upcoming reminder', 'Rappel à venir'),
+        preview: tr('Reminder for the upcoming rental time.', "Rappel pour l'heure de location à venir."),
+        message: isFrench
+          ? `Bonjour ${customerName}, rappel amical : votre location ${rentalId} pour ${vehicleLabel} est prévue le ${formattedStart}. Répondez-nous ici si vous avez besoin d'aide ou d'un ajustement.`
+          : `Hi ${customerName}, friendly reminder: your rental ${rentalId} for ${vehicleLabel} is scheduled for ${formattedStart}. Reply here if you need any help or adjustment.`,
+      },
+      {
+        id: 'late',
+        priority: isLateForPickup ? 0 : 4,
+        hidden: !isLateForPickup,
+        label: tr('Customer late', 'Client en retard'),
+        preview: tr('Quick check-in when the customer is late.', 'Vérification rapide lorsque le client est en retard.'),
+        message: isFrench
+          ? `Bonjour ${customerName}, nous vous attendons pour votre location ${rentalId} prévue à ${formattedStart}. Êtes-vous en route ?`
+          : `Hi ${customerName}, we are waiting for your rental ${rentalId} scheduled at ${formattedStart}. Are you on your way?`,
+      },
+      {
+        id: 'payment',
+        priority: balanceDue > 0 ? 0 : 5,
+        hidden: balanceDue <= 0,
+        label: tr('Payment reminder', 'Rappel de paiement'),
+        preview: tr('Follow up on the remaining balance.', 'Suivi du solde restant.'),
+        message: isFrench
+          ? `Bonjour ${customerName}, il reste ${balanceDue.toFixed(0)} MAD à régler pour votre location ${rentalId}. Merci de nous confirmer votre mode de paiement.`
+          : `Hi ${customerName}, there is still ${balanceDue.toFixed(0)} MAD due for your rental ${rentalId}. Please confirm how you would like to settle it.`,
+      },
+      {
+        id: 'extension',
+        priority: status === 'active' ? 3 : 6,
+        hidden: status !== 'active',
+        label: tr('Extension follow-up', 'Suivi extension'),
+        preview: tr('Ask whether the customer wants more time.', "Demander si le client souhaite plus de temps."),
+        message: isFrench
+          ? `Bonjour ${customerName}, souhaitez-vous prolonger votre location ${rentalId} pour ${vehicleLabel} ? Nous pouvons vous confirmer les options ici sur WhatsApp.`
+          : `Hi ${customerName}, would you like to extend your rental ${rentalId} for ${vehicleLabel}? We can confirm the options here on WhatsApp.`,
+      },
+      {
+        id: 'return',
+        priority: nearReturn ? 0 : 5,
+        hidden: status !== 'active',
+        label: tr('Return reminder', 'Rappel de retour'),
+        preview: tr('Reminder about the upcoming return time.', "Rappel de l'heure de retour à venir."),
+        message: isFrench
+          ? `Bonjour ${customerName}, votre location ${rentalId} pour ${vehicleLabel} se termine le ${formattedEnd}. Merci de nous informer si vous êtes en route pour le retour.`
+          : `Hi ${customerName}, your rental ${rentalId} for ${vehicleLabel} ends on ${formattedEnd}. Please let us know when you are on your way back.`,
+      },
+    ]
+      .filter((template) => !template.hidden)
+      .sort((a, b) => a.priority - b.priority);
+  }, [isFrench, rental, rentalBillingSummary?.balanceDue, syncedCustomerDetails.fullName, syncedCustomerDetails.phone, tr]);
+
+  const closeCustomerWhatsAppPicker = () => {
+    setCustomerWhatsAppPickerOpen(false);
+    setCustomerWhatsAppCustomMessage('');
+  };
+
+  const handleSendCustomerWhatsAppMessage = (message) => {
+    const cleanPhone = String(syncedCustomerDetails.phone || rental?.customer_phone || '').replace(/\D/g, '');
+    const trimmedMessage = String(message || '').trim();
+
+    if (!cleanPhone) {
+      toast.error(tr('Customer phone number is not available.', 'Le numéro de téléphone du client n’est pas disponible.'));
+      return;
+    }
+
+    if (!trimmedMessage) {
+      toast.error(tr('Write or choose a WhatsApp message first.', 'Écrivez ou choisissez d’abord un message WhatsApp.'));
+      return;
+    }
+
+    closeCustomerWhatsAppPicker();
+    presentPreparedWhatsAppShare({
+      url: buildWhatsAppSendUrl(cleanPhone, trimmedMessage),
+      message: trimmedMessage,
+      title: tr('WhatsApp customer', 'WhatsApp client'),
+      summary: tr('Customer message is ready for WhatsApp.', 'Le message client est prêt pour WhatsApp.'),
+    });
+  };
+
   const handleContactCustomerWhatsApp = () => {
     const rawPhone = syncedCustomerDetails.phone || rental?.customer_phone || '';
     const cleanPhone = String(rawPhone).replace(/\D/g, '');
@@ -13494,14 +13633,29 @@ useEffect(() => {
       return;
     }
 
-    const customerName = syncedCustomerDetails.fullName || rental?.customer_name || '';
-    const vehicleLabel = [rental?.vehicle?.name, rental?.vehicle?.model].filter(Boolean).join(' ') || tr('your vehicle', 'votre véhicule');
-    const message = isFrench
-      ? `Bonjour ${customerName}, nous vous contactons au sujet de votre location ${rental?.rental_id || ''} pour ${vehicleLabel}.`
-      : `Hi ${customerName}, we are contacting you regarding your rental ${rental?.rental_id || ''} for ${vehicleLabel}.`;
+    setCustomerWhatsAppCustomMessage('');
+    setCustomerWhatsAppPickerOpen(true);
+  };
 
-    const whatsappUrl = buildWhatsAppSendUrl(cleanPhone, message);
-    openWhatsAppUrl(whatsappUrl);
+  const renderMobileCustomerWhatsAppButton = ({ fullWidth = false } = {}) => {
+    if (!hasCustomerWhatsAppContact) {
+      return null;
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={handleContactCustomerWhatsApp}
+        className={`inline-flex items-center justify-center gap-2 border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm transition hover:bg-emerald-100 ${
+          fullWidth
+            ? 'w-full rounded-2xl px-4 py-3 text-sm font-semibold'
+            : 'rounded-full px-3 py-2 text-xs font-semibold'
+        }`}
+      >
+        <FaWhatsapp className={fullWidth ? 'h-4 w-4' : 'h-3.5 w-3.5'} />
+        {tr('WhatsApp', 'WhatsApp')}
+      </button>
+    );
   };
 
 
@@ -19402,6 +19556,8 @@ useEffect(() => {
         <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
           {startWorkflowActionHint}
         </div>
+
+        {renderMobileCustomerWhatsAppButton({ fullWidth: true })}
       </div>
 
       <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
@@ -19548,6 +19704,7 @@ useEffect(() => {
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
+          {renderMobileCustomerWhatsAppButton()}
           {canOpenExtensionFlow && (
             <button
               type="button"
@@ -20410,6 +20567,10 @@ useEffect(() => {
             >
               {tr('Cancel workflow', 'Annuler le workflow')}
             </button>
+          </div>
+
+          <div className="mt-4">
+            {renderMobileCustomerWhatsAppButton({ fullWidth: true })}
           </div>
         </div>
 
@@ -31785,6 +31946,96 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           language={documentLanguage}
         />
       </div>
+
+      {customerWhatsAppPickerOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 backdrop-blur-[2px] sm:items-center"
+          onClick={closeCustomerWhatsAppPicker}
+        >
+          <div
+            className="w-full max-w-xl rounded-t-[2rem] border border-violet-100 bg-white p-5 shadow-[0_-18px_40px_rgba(76,29,149,0.18)] sm:rounded-[2rem] sm:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-slate-200 sm:hidden" />
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-400">
+                  {tr('Choose message', 'Choisir un message')}
+                </p>
+                <h3 className="mt-2 text-2xl font-bold text-slate-900">
+                  {tr('WhatsApp customer', 'WhatsApp client')}
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {syncedCustomerDetails.fullName || rental?.customer_name || tr('Customer', 'Client')} • {rental?.rental_id || tr('Rental', 'Location')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCustomerWhatsAppPicker}
+                className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label={tr('Close message picker', 'Fermer le sélecteur de messages')}
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 max-h-[56vh] space-y-3 overflow-y-auto pr-1">
+              {customerWhatsAppTemplateOptions.map((option, index) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => handleSendCustomerWhatsAppMessage(option.message)}
+                  className={`w-full rounded-[1.4rem] border px-4 py-4 text-left transition ${
+                    index === 0
+                      ? 'border-violet-300 bg-violet-50 shadow-[0_10px_30px_rgba(124,58,237,0.12)]'
+                      : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {option.label}
+                        {index === 0 ? (
+                          <span className="ml-2 rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white">
+                            {tr('Suggested', 'Suggéré')}
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-500">{option.preview}</p>
+                      <p className="mt-2 line-clamp-2 text-xs text-slate-400">{option.message}</p>
+                    </div>
+                    <FaWhatsapp className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-semibold text-slate-900">
+                {tr('Custom message', 'Message personnalisé')}
+              </p>
+              <textarea
+                value={customerWhatsAppCustomMessage}
+                onChange={(event) => setCustomerWhatsAppCustomMessage(event.target.value)}
+                rows={3}
+                placeholder={tr('Write your own WhatsApp message...', 'Écrivez votre propre message WhatsApp...')}
+                className="mt-3 w-full resize-none rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
+              />
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleSendCustomerWhatsAppMessage(customerWhatsAppCustomMessage)}
+                  disabled={!customerWhatsAppCustomMessage.trim()}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  <FaWhatsapp className="h-4 w-4" />
+                  {tr('Send custom message', 'Envoyer le message personnalisé')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* WhatsApp Send Modal */}
       <Dialog

@@ -74,7 +74,7 @@ const getCertifiedFleetProviderByCity = (city) => {
 
 class PublicCatalogService {
   static catalogCache = new Map();
-  static cacheTtlMs = 60 * 1000;
+  static cacheTtlMs = 0;
 
   static clearCache() {
     this.catalogCache.clear();
@@ -95,8 +95,10 @@ class PublicCatalogService {
 
     const response = await fetch(`/api/public-catalog?${search.toString()}`, {
       method: 'GET',
+      cache: 'no-store',
       headers: {
         Accept: 'application/json',
+        'Cache-Control': 'no-cache',
       },
     });
 
