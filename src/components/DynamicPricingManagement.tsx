@@ -35,36 +35,41 @@ const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
 
-const applyPricingOrganizationScope = async (query: any, label: string) => {
-  const tableName = label === 'base prices'
+const resolvePricingScopeTableName = (label: string) => (
+  label === 'base price' || label === 'base prices'
     ? 'app_4c3a7a6153_base_prices'
-    : label === 'pricing tiers'
+    : label === 'pricing tier' || label === 'pricing tiers'
       ? 'pricing_tiers'
-      : label === 'extension rules'
+      : label === 'extension rule' || label === 'extension rules'
         ? 'rental_extension_rules'
-        : label === 'package mappings'
+        : label === 'package mapping' || label === 'package mappings'
           ? 'package_vehicle_type_mapping'
-          : null;
+          : null
+);
+
+const applyPricingOrganizationScope = async (query: any, label: string) => {
+  const tableName = resolvePricingScopeTableName(label);
 
   if (!tableName) {
-    return query;
+    return { query };
   }
 
-  return scopeTenantOwnedQuery(query, tableName, {
+  const scopedQuery = await scopeTenantOwnedQuery(query, tableName, {
     message: `Workspace organization context is required to load ${label}.`,
   });
+
+  // Supabase query builders are thenable. Wrapping prevents accidental early execution
+  // before callers add terminal modifiers such as .single().
+  return { query: scopedQuery };
+};
+
+const runPricingOrganizationQuery = async (query: any, label: string) => {
+  const { query: scopedQuery } = await applyPricingOrganizationScope(query, label);
+  return scopedQuery;
 };
 
 const buildPricingOrganizationPayload = async (payload: Record<string, any>, label: string) => {
-  const tableName = label === 'base price'
-    ? 'app_4c3a7a6153_base_prices'
-    : label === 'pricing tier'
-      ? 'pricing_tiers'
-      : label === 'extension rule'
-        ? 'rental_extension_rules'
-        : label === 'package mapping'
-          ? 'package_vehicle_type_mapping'
-          : null;
+  const tableName = resolvePricingScopeTableName(label);
 
   if (!tableName) {
     return payload;
@@ -520,7 +525,7 @@ const DynamicPricingManagement: React.FC = () => {
       const shouldBlockGlobalSettings = isGlobalPricingSettingsBlocked();
       const [vehicleModelsResult, basePricesResult, appSettingsResult] = await Promise.allSettled([
         VehicleModelService.getActiveModels(),
-        applyPricingOrganizationScope(
+        runPricingOrganizationQuery(
           supabase
             .from('app_4c3a7a6153_base_prices')
             .select('*')
@@ -603,14 +608,14 @@ const DynamicPricingManagement: React.FC = () => {
 
       scheduleBackgroundTask(async () => {
         const [tiersResult, rulesResult] = await Promise.allSettled([
-          applyPricingOrganizationScope(
+          runPricingOrganizationQuery(
             supabase
               .from('pricing_tiers')
               .select('*')
               .order('min_hours', { ascending: true }),
             'pricing tiers'
           ),
-          applyPricingOrganizationScope(
+          runPricingOrganizationQuery(
             supabase
               .from('rental_extension_rules')
               .select('*'),
@@ -718,7 +723,7 @@ const DynamicPricingManagement: React.FC = () => {
     const maxValue = tierData[maxField];
 
     // Check for overlapping tiers
-    const overlappingQuery = await applyPricingOrganizationScope(
+    const { query: overlappingQuery } = await applyPricingOrganizationScope(
       supabase
         .from('pricing_tiers')
         .select('*')
@@ -742,7 +747,7 @@ const DynamicPricingManagement: React.FC = () => {
     }
 
     // Check if this creates any gaps
-    const allTiersQuery = await applyPricingOrganizationScope(
+    const { query: allTiersQuery } = await applyPricingOrganizationScope(
       supabase
         .from('pricing_tiers')
         .select('*')
@@ -819,7 +824,7 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm('Are you sure you want to delete this price?')) return;
 
     try {
-      const deleteQuery = await applyPricingOrganizationScope(
+      const deleteQuery = await runPricingOrganizationQuery(
         supabase
           .from('app_4c3a7a6153_base_prices')
           .delete()
@@ -869,7 +874,7 @@ const DynamicPricingManagement: React.FC = () => {
       let result;
       
       if (editingPrice) {
-        const updateQuery = await applyPricingOrganizationScope(
+        const { query: updateQuery } = await applyPricingOrganizationScope(
           supabase
             .from('app_4c3a7a6153_base_prices')
             .update(priceData)
@@ -888,7 +893,7 @@ const DynamicPricingManagement: React.FC = () => {
         
         console.log('✅ Price updated:', result);
       } else {
-        const insertQuery = await applyPricingOrganizationScope(
+        const { query: insertQuery } = await applyPricingOrganizationScope(
           supabase
             .from('app_4c3a7a6153_base_prices')
             .insert([{
@@ -972,7 +977,7 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm(tr('Are you sure you want to delete this tier?', 'Voulez-vous vraiment supprimer ce palier ?'))) return;
 
     try {
-      const deleteQuery = await applyPricingOrganizationScope(
+      const deleteQuery = await runPricingOrganizationQuery(
         supabase
           .from('pricing_tiers')
           .delete()
@@ -1021,7 +1026,7 @@ const DynamicPricingManagement: React.FC = () => {
     }, 'pricing tier');
 
     if (editingTier) {
-      const updateQuery = await applyPricingOrganizationScope(
+      const { query: updateQuery } = await applyPricingOrganizationScope(
         supabase
           .from('pricing_tiers')
           .update(tierData)
@@ -1037,7 +1042,7 @@ const DynamicPricingManagement: React.FC = () => {
         tier.id === editingTier.id ? data : tier
       ));
     } else {
-      const insertQuery = await applyPricingOrganizationScope(
+      const { query: insertQuery } = await applyPricingOrganizationScope(
         supabase
           .from('pricing_tiers')
           .insert([{
@@ -1097,7 +1102,7 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm('Are you sure you want to delete this extension rule?')) return;
 
     try {
-      const deleteQuery = await applyPricingOrganizationScope(
+      const deleteQuery = await runPricingOrganizationQuery(
         supabase
           .from('rental_extension_rules')
           .delete()
@@ -1133,7 +1138,7 @@ const DynamicPricingManagement: React.FC = () => {
       }, 'extension rule');
 
       if (editingExtension) {
-        const updateQuery = await applyPricingOrganizationScope(
+        const { query: updateQuery } = await applyPricingOrganizationScope(
           supabase
             .from('rental_extension_rules')
             .update(ruleData)
@@ -1152,7 +1157,7 @@ const DynamicPricingManagement: React.FC = () => {
           rule.id === editingExtension.id ? data : rule
         ));
       } else {
-        const insertQuery = await applyPricingOrganizationScope(
+        const { query: insertQuery } = await applyPricingOrganizationScope(
           supabase
             .from('rental_extension_rules')
             .insert([{
