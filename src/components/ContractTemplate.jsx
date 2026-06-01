@@ -79,13 +79,22 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     : tr('SaharaX Representative', 'Représentant SaharaX');
   const travelAreaRuleEn = isDriveOutMarketplaceContract
     ? 'This vehicle must remain within the approved pickup area during the rental. Route changes require approval from the owner or DriveOut support before departure.'
-    : 'This vehicle must remain inside Tangier during the rental. Leaving Tangier is not allowed unless SaharaX staff gives approval first. If the customer needs to leave Tangier for any reason, they must contact a staff member before departure to receive authorization.';
+    : 'This vehicle must remain inside Tangier. Leaving Tangier requires prior SaharaX staff approval.';
   const travelAreaRuleFr = isDriveOutMarketplaceContract
     ? 'Ce véhicule doit rester dans la zone de prise en charge approuvée pendant toute la durée de la location. Tout changement d’itinéraire nécessite l’accord du propriétaire ou du support DriveOut avant le départ.'
-    : 'Ce véhicule doit rester à Tanger pendant toute la durée de la location. Il est interdit de quitter Tanger sans autorisation préalable de l’équipe SaharaX. Si le client doit quitter Tanger pour quelque raison que ce soit, il doit contacter un membre du staff avant le départ afin d’obtenir une autorisation.';
+    : 'Ce véhicule doit rester à Tanger. Toute sortie de Tanger nécessite l’autorisation préalable de l’équipe SaharaX.';
   const travelAreaRuleAr = isDriveOutMarketplaceContract
     ? 'يجب أن تبقى هذه المركبة داخل منطقة الاستلام المتفق عليها طوال مدة الكراء. أي تغيير في المسار يتطلب موافقة المالك أو دعم DriveOut قبل الانطلاق.'
-    : 'يجب أن تبقى هذه المركبة داخل مدينة طنجة طوال مدة الكراء. يمنع الخروج من طنجة إلا بعد الحصول على موافقة مسبقة من فريق SaharaX. إذا احتاج الزبون إلى مغادرة طنجة لأي سبب، فيجب عليه التواصل مع أحد أعضاء الطاقم قبل المغادرة للحصول على الترخيص.';
+    : 'يجب أن تبقى هذه المركبة داخل مدينة طنجة. يمنع الخروج من طنجة إلا بموافقة مسبقة من فريق SaharaX.';
+  const documentPenaltyRuleEn = isDriveOutMarketplaceContract
+    ? 'Lost, stolen, or damaged vehicle documents may result in a penalty.'
+    : 'Lost, stolen, or damaged vehicle documents: 4000 MAD penalty, no exceptions.';
+  const documentPenaltyRuleFr = isDriveOutMarketplaceContract
+    ? 'La perte, le vol ou la détérioration des documents du véhicule peut entraîner une pénalité.'
+    : 'Perte, vol ou détérioration des documents du véhicule : pénalité de 4000 MAD, sans exception.';
+  const documentPenaltyRuleAr = isDriveOutMarketplaceContract
+    ? 'قد تؤدي خسارة أو سرقة أو إتلاف وثائق المركبة إلى غرامة.'
+    : 'غرامة 4000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف وثائق المركبة، دون استثناء.';
 
   const [basePrices, setBasePrices] = useState([]);
   const [kilometerPackages, setKilometerPackages] = useState([]);
@@ -1558,7 +1567,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
               marginBottom: '10px',
               textAlign: 'center'
             }}>
-              {tr('Travel area rule', 'Règle de zone de circulation')}
+              {tr('Travel area & document rule', 'Règle de circulation et documents')}
             </div>
             <div className="terms-grid">
               <div style={{
@@ -1577,6 +1586,12 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                     travelAreaRuleFr
                   )}
                 </div>
+                <div style={{ fontWeight: '900', marginTop: '8px' }}>
+                  {tr(
+                    documentPenaltyRuleEn,
+                    documentPenaltyRuleFr
+                  )}
+                </div>
               </div>
               <div style={{
                 padding: '0 0 0 16px',
@@ -1590,6 +1605,9 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                 </div>
                 <div>
                   {travelAreaRuleAr}
+                </div>
+                <div style={{ fontWeight: '900', marginTop: '8px' }}>
+                  {documentPenaltyRuleAr}
                 </div>
               </div>
             </div>
@@ -1649,7 +1667,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                   <p style={{ margin: '0 0 4px 0' }}>
                     {hideContractPricing
                       ? '4.3. Toute perte, vol ou détérioration des documents du véhicule sera documenté dans le dossier de location.'
-                      : '4.3. Pénalité de 2000 MAD en cas de perte, vol ou détérioration des documents du véhicule.'}
+                      : '4.3. Pénalité de 4000 MAD en cas de perte, vol ou détérioration des documents du véhicule.'}
                   </p>
                 </div>
 
@@ -1715,7 +1733,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                   <p style={{ margin: '0 0 4px 0' }}>
                     {hideContractPricing
                       ? '4.3. يتم توثيق أي فقدان أو سرقة أو إتلاف لوثائق المركبة في ملف الكراء.'
-                      : '4.3. غرامة 2000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف أي من وثائق المركبة.'}
+                      : '4.3. غرامة 4000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف أي من وثائق المركبة.'}
                   </p>
                 </div>
 

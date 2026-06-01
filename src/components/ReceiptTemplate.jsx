@@ -433,6 +433,24 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const receiptBrandName = isDriveOutMarketplaceReceipt ? 'DriveOut' : (rental?.company_name || 'SaharaX Rentals');
   const receiptBrandLegalName = isDriveOutMarketplaceReceipt ? 'DriveOut Marketplace' : (rental?.company_legal_name || 'SaharaX Rentals Morocco');
   const receiptBrandContact = isDriveOutMarketplaceReceipt ? 'www.driveout.io' : (rental?.company_contact || 'contact@saharax.co | +212 658 888 852');
+  const receiptTravelAreaRuleEn = isDriveOutMarketplaceReceipt
+    ? 'This vehicle must remain within the approved pickup area. Route changes require approval before departure.'
+    : 'This vehicle must remain inside Tangier. Leaving Tangier requires prior SaharaX staff approval.';
+  const receiptTravelAreaRuleFr = isDriveOutMarketplaceReceipt
+    ? 'Ce véhicule doit rester dans la zone de prise en charge approuvée. Tout changement d’itinéraire nécessite une autorisation avant le départ.'
+    : 'Ce véhicule doit rester à Tanger. Toute sortie de Tanger nécessite l’autorisation préalable de l’équipe SaharaX.';
+  const receiptTravelAreaRuleAr = isDriveOutMarketplaceReceipt
+    ? 'يجب أن تبقى هذه المركبة داخل منطقة الاستلام المتفق عليها. أي تغيير في المسار يتطلب موافقة مسبقة قبل الانطلاق.'
+    : 'يجب أن تبقى هذه المركبة داخل مدينة طنجة. يمنع الخروج من طنجة إلا بموافقة مسبقة من فريق SaharaX.';
+  const receiptDocumentPenaltyRuleEn = isDriveOutMarketplaceReceipt
+    ? 'Lost, stolen, or damaged vehicle documents may result in a penalty.'
+    : 'Lost, stolen, or damaged vehicle documents: 4000 MAD penalty, no exceptions.';
+  const receiptDocumentPenaltyRuleFr = isDriveOutMarketplaceReceipt
+    ? 'La perte, le vol ou la détérioration des documents du véhicule peut entraîner une pénalité.'
+    : 'Perte, vol ou détérioration des documents du véhicule : pénalité de 4000 MAD, sans exception.';
+  const receiptDocumentPenaltyRuleAr = isDriveOutMarketplaceReceipt
+    ? 'قد تؤدي خسارة أو سرقة أو إتلاف وثائق المركبة إلى غرامة.'
+    : 'غرامة 4000 درهم مغربي في حالة فقدان أو سرقة أو إتلاف وثائق المركبة، دون استثناء.';
   const resolvedReceiptLogoUrl = isDriveOutMarketplaceReceipt
     ? (normalizedReceiptLogoUrl && !normalizedReceiptLogoUrl.includes('saharax') && !normalizedReceiptLogoUrl.includes('logo.jpg')
         ? logoUrl
@@ -3653,6 +3671,68 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           </div>
         </div>
       )}
+
+      <div style={{
+        marginTop: '28px',
+        padding: '16px 18px',
+        borderRadius: '14px',
+        background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
+        border: '1px solid #fdba74',
+        boxShadow: '0 10px 24px rgba(251, 146, 60, 0.10)'
+      }}>
+        <div style={{
+          fontSize: '12px',
+          fontWeight: '800',
+          letterSpacing: '0.7px',
+          textTransform: 'uppercase',
+          color: '#c2410c',
+          marginBottom: '10px',
+          textAlign: 'center'
+        }}>
+          {tr('Travel area & document rule', 'Règle de circulation et documents')}
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobileLayout ? '1fr' : '1fr 1fr',
+          gap: isMobileLayout ? '12px' : '0'
+        }}>
+          <div style={{
+            padding: isMobileLayout ? '0' : '0 16px 0 0',
+            borderRight: isMobileLayout ? 'none' : '2px solid #fed7aa',
+            fontSize: '11px',
+            lineHeight: '1.65',
+            color: '#7c2d12'
+          }}>
+            <div style={{ fontWeight: '700', color: '#9a3412', marginBottom: '6px' }}>
+              {tr('Important', 'Important')}
+            </div>
+            <div>
+              {tr(receiptTravelAreaRuleEn, receiptTravelAreaRuleFr)}
+            </div>
+            <div style={{ fontWeight: '900', marginTop: '8px' }}>
+              {tr(receiptDocumentPenaltyRuleEn, receiptDocumentPenaltyRuleFr)}
+            </div>
+          </div>
+          <div style={{
+            padding: isMobileLayout ? '12px 0 0 0' : '0 0 0 16px',
+            borderTop: isMobileLayout ? '1px solid #fed7aa' : 'none',
+            fontSize: '11px',
+            lineHeight: '1.75',
+            color: '#7c2d12',
+            textAlign: 'right'
+          }} dir="rtl">
+            <div style={{ fontWeight: '700', color: '#9a3412', marginBottom: '6px' }}>
+              هام
+            </div>
+            <div>
+              {receiptTravelAreaRuleAr}
+            </div>
+            <div style={{ fontWeight: '900', marginTop: '8px' }}>
+              {receiptDocumentPenaltyRuleAr}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Footer with Status and Signature */}
       <div style={{
