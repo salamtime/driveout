@@ -249,6 +249,19 @@ const getFixedPackageAmount = (data = {}) => {
   return ratePerUnit * getPackageBillingMultiplier(durationUnits, packageDurationUnits);
 };
 
+const isFixedTierCalculation = (method) => String(method || '').toLowerCase() === 'fixed';
+
+const formatFixedTierLabel = (minValue, maxValue, unitLabel) => {
+  const min = Number(minValue);
+  const max = Number(maxValue);
+  const hasFiniteMin = Number.isFinite(min);
+  const hasFiniteMax = Number.isFinite(max);
+  const rangeLabel = hasFiniteMin && hasFiniteMax && min === max
+    ? `${min}`
+    : `${hasFiniteMin ? min : 1}-${hasFiniteMax ? max : '∞'}`;
+  return `${rangeLabel}-${unitLabel} fixed tier`;
+};
+
 const formatRentalDurationLabel = (rentalType, durationUnits, tr) => {
   const safeDurationUnits = Number(durationUnits || 0) || 0;
   if (safeDurationUnits <= 0) {
@@ -1826,7 +1839,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       label: ''
     };
 
-    if (rentalType !== 'hourly' || Number(quantity) !== 1.5) {
+    if (!['hourly', 'daily'].includes(rentalType) || Number(quantity) <= 0) {
       return defaultMeta;
     }
 
@@ -1841,11 +1854,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       const pricingTierQuery = await scopeRentalFormTenantQuery(
         supabase
           .from(PRICING_TIERS_TABLE)
-          .select('min_hours, max_hours, price_amount, calculation_method, is_active')
+          .select('min_hours, max_hours, price_amount, calculation_method, min_days, max_days, daily_price_amount, daily_calculation_method, duration_type, is_active')
           .eq('vehicle_model_id', modelId)
-          .eq('duration_type', 'hours')
+          .eq('duration_type', rentalType === 'hourly' ? 'hours' : 'days')
           .eq('is_active', true)
-          .order('min_hours', { ascending: true }),
+          .order(rentalType === 'hourly' ? 'min_hours' : 'min_days', { ascending: true }),
         PRICING_TIERS_TABLE,
         'Workspace organization context is required to load pricing metadata.'
       );
@@ -1856,11 +1869,16 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       }
 
       const matchingTier = pricingTiers.find((tier) => {
-        if (!tier?.price_amount || tier.min_hours === null || tier.max_hours === null) {
-          return false;
-        }
-        const min = parseFloat(tier.min_hours);
-        const max = parseFloat(tier.max_hours);
+        const min = rentalType === 'hourly'
+          ? parseFloat(tier.min_hours)
+          : parseFloat(tier.min_days ?? 1);
+        const max = rentalType === 'hourly'
+          ? parseFloat(tier.max_hours)
+          : parseFloat(tier.max_days ?? Number.MAX_SAFE_INTEGER);
+        const tierPrice = rentalType === 'hourly'
+          ? Number(tier.price_amount || 0)
+          : Number(tier.daily_price_amount || 0);
+        if (!tierPrice || !Number.isFinite(min) || !Number.isFinite(max)) return false;
         return quantity >= min && quantity <= max;
       });
 
@@ -1868,14 +1886,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         return defaultMeta;
       }
 
-      if (matchingTier.calculation_method === 'fixed') {
-        const min = parseFloat(matchingTier.min_hours);
-        const max = parseFloat(matchingTier.max_hours);
-        const rangeLabel = min === max ? `${min}` : `${min}-${max}`;
-
+      const calculationMethod = rentalType === 'hourly'
+        ? matchingTier.calculation_method
+        : matchingTier.daily_calculation_method;
+      if (isFixedTierCalculation(calculationMethod)) {
         return {
           mode: 'flat_total',
-          label: `${rangeLabel}-hour fixed tier`
+          label: rentalType === 'hourly'
+            ? formatFixedTierLabel(matchingTier.min_hours, matchingTier.max_hours, 'hour')
+            : formatFixedTierLabel(matchingTier.min_days ?? 1, matchingTier.max_days, 'day')
         };
       }
 
@@ -4087,6 +4106,24 @@ const calculateFinancials = () => {
         submissionData.remaining_amount = Math.max(0, normalizedTotalAmount - boundedDepositAmount);
       }
 
+      if (!submissionData.use_package_pricing && pricingComputationMode === 'flat_total') {
+        let existingPriceMeta = {};
+        if (typeof submissionData.price_override_reason === 'string' && submissionData.price_override_reason.trim()) {
+          try {
+            existingPriceMeta = JSON.parse(submissionData.price_override_reason);
+          } catch {
+            existingPriceMeta = { note: submissionData.price_override_reason.trim() };
+          }
+        }
+
+        submissionData.price_override_reason = JSON.stringify({
+          ...existingPriceMeta,
+          pricingComputationMode: 'flat_total',
+          pricingComputationLabel: pricingComputationLabel || '',
+          pricingComputationStoredAt: new Date().toISOString(),
+        });
+      }
+
       const cleanRentalData = { ...submissionData };
       const secondDriverFieldPatterns = ['second_driver', 'secondDriver', 'secondary_driver'];
       
@@ -4816,6 +4853,8 @@ useEffect(() => {
     autoCalculatedPrice,
     pricingComputationMode,
     pricingComputationLabel,
+    setPricingComputationMode,
+    setPricingComputationLabel,
     customers,
     rentals,
     suggestions,
@@ -6136,7 +6175,7 @@ const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculate
                   <div className="flex items-start gap-2">
                     <Info className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
                     <div className="text-xs text-purple-800">
-                      <p className="font-medium">{pricingComputationLabel || tr('1.5-hour fixed tier', 'Palier fixe de 1,5 heure')}</p>
+                      <p className="font-medium">{pricingComputationLabel || tr('Fixed tier total', 'Total fixe du palier')}</p>
                       <p className="mt-1">{tr('This amount is a flat tier total for the selected duration.', 'Ce montant est un total fixe pour la durée sélectionnée.')}</p>
                     </div>
                   </div>
@@ -7069,6 +7108,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
               tierPrice = parseFloat(matchingTier.daily_price_amount);
               const minDays = matchingTier.min_days || 1;
               const maxDays = matchingTier.max_days || '∞';
+              isFlatTierTotal = isFixedTierCalculation(matchingTier.daily_calculation_method);
               
               if (tierPrice < basePrice) {
                 const discountPercent = Math.round(((basePrice - tierPrice) / basePrice) * 100);
@@ -7114,7 +7154,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
               tierPrice = parseFloat(matchingTier.price_amount);
               const minHours = matchingTier.min_hours || 1;
               const maxHours = matchingTier.max_hours || '∞';
-              isFlatTierTotal = matchingTier.calculation_method === 'fixed' && Number(duration) === 1.5;
+              isFlatTierTotal = isFixedTierCalculation(matchingTier.calculation_method);
               
               if (tierPrice < basePrice) {
                 const discountPercent = Math.round(((basePrice - tierPrice) / basePrice) * 100);
@@ -7207,7 +7247,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         )}
         {isFlatTierTotal && (
           <div className="mt-1 text-blue-600 text-xs">
-            <span>Fixed 1.5-hour tier total</span>
+            <span>{priceInfo.tierName || 'Fixed tier total'}</span>
           </div>
         )}
         {!isPackagePricing && isTierPricing && (
@@ -7345,7 +7385,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
               
               <div className="flex justify-between text-gray-600">
                 <span>Calculation:</span>
-                <span>{isFlatTierTotal ? 'Fixed 1.5-hour tier total' : `${formatCurrency(priceInfo.tierPrice)} × ${duration}`}</span>
+                <span>{isFlatTierTotal ? 'Fixed tier total' : `${formatCurrency(priceInfo.tierPrice)} × ${duration}`}</span>
               </div>
               
               {isTierPricing && priceInfo.tierPrice < priceInfo.basePrice && (
@@ -7458,8 +7498,7 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
 
           if (matchingTier) {
             const tierPrice = Number(matchingTier.price_amount) || resolvedPrice;
-            const isFlatTierTotal =
-              matchingTier.calculation_method === 'fixed' && normalizedDuration === 1.5;
+            const isFlatTierTotal = isFixedTierCalculation(matchingTier.calculation_method);
             resolvedPrice = isFlatTierTotal ? tierPrice : tierPrice * normalizedDuration;
           } else if (basePrice > 0) {
             resolvedPrice = basePrice * normalizedDuration;
@@ -7488,7 +7527,8 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
 
           if (matchingTier) {
             const tierPrice = Number(matchingTier.daily_price_amount) || resolvedPrice;
-            resolvedPrice = tierPrice * normalizedDuration;
+            const isFlatTierTotal = isFixedTierCalculation(matchingTier.daily_calculation_method);
+            resolvedPrice = isFlatTierTotal ? tierPrice : tierPrice * normalizedDuration;
           } else if (basePrice > 0) {
             resolvedPrice = basePrice * normalizedDuration;
           }
@@ -8790,6 +8830,8 @@ const SimplifiedRentalWizard = ({
     autoCalculatedPrice,
     pricingComputationMode,
     pricingComputationLabel,
+    setPricingComputationMode,
+    setPricingComputationLabel,
     suggestions,
     customerAlert,
     isBannedCustomerBlocked,
@@ -9332,7 +9374,7 @@ const SimplifiedRentalWizard = ({
       ? (formData.quantity_hours ?? formData.quantity_days)
       : formData.quantity_days
   ) || 0;
-  const selectLightVehicle = useCallback((vehicle, mappedLightPrice = null) => {
+  const selectLightVehicle = useCallback((vehicle, mappedLightPrice = null, pricingMode = null, pricingLabel = '') => {
     const vehicleId = vehicle?.id || '';
     if (!vehicleId) return;
 
@@ -9342,8 +9384,9 @@ const SimplifiedRentalWizard = ({
     }
     const durationUnits = currentLightDurationUnits || 1;
     const mappedVehicleTotal = Number(mappedLightPrice ?? 0) || 0;
+    const shouldUseFlatTotal = pricingMode === 'flat_total' || pricingComputationMode === 'flat_total';
     const nextUnitPrice = mappedVehicleTotal > 0
-      ? (durationUnits > 1 ? mappedVehicleTotal / durationUnits : mappedVehicleTotal)
+      ? (durationUnits > 1 && !shouldUseFlatTotal ? mappedVehicleTotal / durationUnits : mappedVehicleTotal)
       : null;
 
     const nextVehicleName = vehicle?.model || vehicle?.name || tr('Vehicle', 'Véhicule');
@@ -9396,6 +9439,13 @@ const SimplifiedRentalWizard = ({
     setCustomDepositAmount('');
     setLightDepositConfirmed(false);
     setSelectedPackageDraft(null);
+    if (pricingMode === 'flat_total') {
+      setPricingComputationMode('flat_total');
+      setPricingComputationLabel(pricingLabel || '');
+    } else if (pricingMode && pricingMode !== 'package') {
+      setPricingComputationMode('per_unit');
+      setPricingComputationLabel('');
+    }
     if (manuallyClearedVehicleRef?.current !== undefined) {
       manuallyClearedVehicleRef.current = false;
     }
@@ -9438,10 +9488,13 @@ const SimplifiedRentalWizard = ({
     currentLightDurationUnits,
     formData.rental_type,
     manuallyClearedVehicleRef,
+    pricingComputationMode,
     setCustomDepositAmount,
     setFormData,
     setSelectedDepositTab,
     setSelectedPackageDraft,
+    setPricingComputationLabel,
+    setPricingComputationMode,
     tr,
   ]);
   const getLightDurationButtonLabel = (value, rentalType = formData.rental_type) => {
@@ -9537,15 +9590,21 @@ const SimplifiedRentalWizard = ({
     ) || 0;
   };
   const getStandardRentalPreviewTotal = (vehicle = null) => {
-    const mappedPrice = vehicle ? Number(lightVehiclePriceMap[String(vehicle?.id)] || 0) : 0;
+    const mappedEntry = vehicle ? lightVehiclePriceMap[String(vehicle?.id)] : null;
+    const mappedPrice = Number(
+      mappedEntry && typeof mappedEntry === 'object'
+        ? mappedEntry.total
+        : mappedEntry
+    ) || 0;
     if (mappedPrice > 0) return mappedPrice;
 
     const baseUnitPrice = Number(formData.unit_price) || 0;
     if (baseUnitPrice <= 0) return 0;
-    if (formData.rental_type === 'hourly' && currentLightDurationUnits > 1) {
+    const isFlatTierTotal = !formData.use_package_pricing && pricingComputationMode === 'flat_total';
+    if (formData.rental_type === 'hourly' && currentLightDurationUnits > 1 && !isFlatTierTotal) {
       return baseUnitPrice * currentLightDurationUnits;
     }
-    if (formData.rental_type === 'daily' && currentLightDurationUnits > 1) {
+    if (formData.rental_type === 'daily' && currentLightDurationUnits > 1 && !isFlatTierTotal) {
       return baseUnitPrice * currentLightDurationUnits;
     }
     return baseUnitPrice;
@@ -9925,9 +9984,37 @@ const SimplifiedRentalWizard = ({
   }, [clearSelectedPackage, currentStep, isLightVariant, setFormData, setFuelChargeEnabled, syncEndDateTimeFromStart]);
 
   const chooseStandardPricing = useCallback(() => {
+    const mappedEntry = selectedVehicle ? lightVehiclePriceMap[String(selectedVehicle.id || '')] : null;
+    if (mappedEntry && typeof mappedEntry === 'object') {
+      if (mappedEntry.mode === 'flat_total') {
+        setPricingComputationMode('flat_total');
+        setPricingComputationLabel(mappedEntry.label || '');
+      } else if (mappedEntry.mode && mappedEntry.mode !== 'package') {
+        setPricingComputationMode('per_unit');
+        setPricingComputationLabel('');
+      }
+      const mappedTotal = Number(mappedEntry.total || 0) || 0;
+      const shouldUseFlatTotal = mappedEntry.mode === 'flat_total';
+      if (mappedTotal > 0) {
+        setFormData((prev) => ({
+          ...prev,
+          unit_price: currentLightDurationUnits > 1 && !shouldUseFlatTotal
+            ? mappedTotal / currentLightDurationUnits
+            : mappedTotal,
+        }));
+      }
+    }
     clearSelectedPackage();
     setLightPackageDecisionMode('standard');
-  }, [clearSelectedPackage]);
+  }, [
+    clearSelectedPackage,
+    currentLightDurationUnits,
+    lightVehiclePriceMap,
+    selectedVehicle,
+    setFormData,
+    setPricingComputationLabel,
+    setPricingComputationMode,
+  ]);
 
   const clearLightDurationSelection = useCallback(() => {
     setSelectedQuickDuration(null);
@@ -10615,7 +10702,7 @@ const SimplifiedRentalWizard = ({
             selectedPackagePrice > 0
             && (!selectedPackageModelId || !vehicleModelId || selectedPackageModelId === vehicleModelId)
           ) {
-            return [String(vehicle.id), selectedPackagePrice];
+              return [String(vehicle.id), { total: selectedPackagePrice, mode: 'package' }];
           }
 
           if (formData.use_package_pricing && formData.rental_type && resolvedModelId) {
@@ -10633,18 +10720,23 @@ const SimplifiedRentalWizard = ({
                 matchingPackage.price ??
                 0
               ) || 0;
-              return [String(vehicle.id), packagePrice];
+              return [String(vehicle.id), { total: packagePrice, mode: 'package' }];
             }
           }
 
           const price = await getDirectPricing(vehicle.id, formData.rental_type, durationUnits);
+          const pricingMeta = await getPricingComputationMeta(vehicle.id, formData.rental_type, durationUnits);
           const numericPrice = Number(price) || 0;
           const totalPrice = (
             formData.rental_type === 'hourly' || formData.rental_type === 'daily'
-          ) && durationUnits > 1
+          ) && durationUnits > 1 && pricingMeta.mode !== 'flat_total'
             ? numericPrice * durationUnits
             : numericPrice;
-          return [String(vehicle.id), totalPrice];
+          return [String(vehicle.id), {
+            total: totalPrice,
+            mode: pricingMeta.mode,
+            label: pricingMeta.label,
+          }];
         })
       );
 
@@ -10980,7 +11072,16 @@ const SimplifiedRentalWizard = ({
                       const isSelected = String(formData.vehicle_id || '') === String(vehicle.id || '');
                       const isConfirmingSelection = isSelected && lightFlowTransition === 'selecting_vehicle';
                       const isAvailable = String(vehicle.status || '').toLowerCase() === 'available' || !vehicle.status;
-                      const mappedLightPrice = lightVehiclePriceMap[String(vehicle.id)];
+                      const mappedLightPriceEntry = lightVehiclePriceMap[String(vehicle.id)];
+                      const mappedLightPrice = typeof mappedLightPriceEntry === 'object'
+                        ? mappedLightPriceEntry.total
+                        : mappedLightPriceEntry;
+                      const mappedLightPricingMode = typeof mappedLightPriceEntry === 'object'
+                        ? mappedLightPriceEntry.mode
+                        : null;
+                      const mappedLightPricingLabel = typeof mappedLightPriceEntry === 'object'
+                        ? mappedLightPriceEntry.label
+                        : '';
                       return (
                         <button
                           key={vehicle.id}
@@ -11042,7 +11143,7 @@ const SimplifiedRentalWizard = ({
                               return;
                             }
                             document.activeElement?.blur?.();
-                            selectLightVehicle(vehicle, mappedLightPrice);
+                            selectLightVehicle(vehicle, mappedLightPrice, mappedLightPricingMode, mappedLightPricingLabel);
                           }}
                           onPointerUp={(event) => {
                             if (event.pointerType === 'mouse') return;
@@ -11072,7 +11173,7 @@ const SimplifiedRentalWizard = ({
                             };
                             event.preventDefault();
                             event.stopPropagation();
-                            selectLightVehicle(vehicle, mappedLightPrice);
+                            selectLightVehicle(vehicle, mappedLightPrice, mappedLightPricingMode, mappedLightPricingLabel);
                           }}
                           disabled={successfullySubmitted}
                           className={`min-w-[250px] snap-center touch-manipulation rounded-[22px] border p-4 text-left transition-all active:scale-[0.99] ${

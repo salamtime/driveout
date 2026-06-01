@@ -15,8 +15,10 @@ import {
   saveDepositPresetSettings,
 } from '../services/DepositPresetSettingsService';
 import {
+  canReadFirstPartyLegacyNullOrgRows,
+  getCurrentOrganizationId,
+  isTenantOwnedSharedTable,
   matchTenantOwnedPayload,
-  scopeTenantOwnedQuery,
   shouldScopeSharedTenantData,
   verifyTenantOwnedRows,
 } from '../services/OrganizationService';
@@ -50,13 +52,18 @@ const resolvePricingScopeTableName = (label: string) => (
 const applyPricingOrganizationScope = async (query: any, label: string) => {
   const tableName = resolvePricingScopeTableName(label);
 
-  if (!tableName) {
+  if (!tableName || !shouldScopeSharedTenantData() || !isTenantOwnedSharedTable(tableName)) {
     return { query };
   }
 
-  const scopedQuery = await scopeTenantOwnedQuery(query, tableName, {
-    message: `Workspace organization context is required to load ${label}.`,
-  });
+  const organizationId = await getCurrentOrganizationId();
+  if (!organizationId) {
+    throw new Error(`Workspace organization context is required to load ${label}.`);
+  }
+
+  const scopedQuery = canReadFirstPartyLegacyNullOrgRows(tableName)
+    ? query.or(`organization_id.is.null,organization_id.eq.${organizationId}`)
+    : query.eq('organization_id', organizationId);
 
   // Supabase query builders are thenable. Wrapping prevents accidental early execution
   // before callers add terminal modifiers such as .single().

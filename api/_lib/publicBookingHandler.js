@@ -364,6 +364,72 @@ const cleanValue = (value) => {
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeText = (value) => String(value || '').trim();
 
+const getBookingPackageDurationUnits = (packageSelection = {}) => {
+  const durationUnits = Number(
+    packageSelection?.packageDurationUnits ??
+      packageSelection?.durationUnits ??
+      packageSelection?.duration_units ??
+      1
+  );
+
+  return Number.isFinite(durationUnits) && durationUnits > 0 ? durationUnits : 1;
+};
+
+const getBookingPackageBillingMultiplier = (durationUnits, packageDurationUnits = 1) => {
+  const safeDurationUnits = Number(durationUnits || 0) || 0;
+  const safePackageDurationUnits = getBookingPackageDurationUnits({ durationUnits: packageDurationUnits });
+
+  if (safeDurationUnits <= 0) return 0;
+  return Math.max(safeDurationUnits / safePackageDurationUnits, 1);
+};
+
+const getBookingPackageRatePerUnit = (packageSelection = {}) => {
+  const rate = Number(
+    packageSelection?.ratePerUnit ??
+      packageSelection?.rate_per_unit ??
+      packageSelection?.fixedAmount ??
+      packageSelection?.fixed_amount ??
+      packageSelection?.amount ??
+      0
+  );
+
+  return Number.isFinite(rate) && rate > 0 ? rate : 0;
+};
+
+const resolveCertifiedBookingPackageTotals = ({ packageSelection = {}, durationUnits = 1, listing = {} } = {}) => {
+  const explicitTotal = Number(
+    packageSelection?.totalAmount ??
+      packageSelection?.total_amount ??
+      packageSelection?.total ??
+      0
+  );
+  const packageDurationUnits = getBookingPackageDurationUnits(packageSelection);
+  const billingMultiplier = getBookingPackageBillingMultiplier(durationUnits, packageDurationUnits);
+  const ratePerUnit = getBookingPackageRatePerUnit(packageSelection);
+  const calculatedTotal = ratePerUnit > 0 && billingMultiplier > 0
+    ? ratePerUnit * billingMultiplier
+    : 0;
+  const includedKmPerUnit = packageSelection?.kind === 'unlimited'
+    ? null
+    : Number(packageSelection?.includedKilometers ?? packageSelection?.included_kilometers ?? 0) || null;
+  const totalIncludedKm = includedKmPerUnit && billingMultiplier > 0
+    ? includedKmPerUnit * billingMultiplier
+    : null;
+
+  return {
+    ratePerUnit,
+    packageDurationUnits,
+    billingMultiplier,
+    totalAmount:
+      (Number.isFinite(explicitTotal) && explicitTotal > 0 ? explicitTotal : 0) ||
+      calculatedTotal ||
+      Number(listing?.priceFrom || 0) ||
+      0,
+    includedKmPerUnit,
+    totalIncludedKm,
+  };
+};
+
 const buildWebsiteReservationVehicleLabel = ({ rental = {}, listing = {}, assignedVehicle = {} } = {}) => {
   const vehicleModel =
     normalizeText(rental.selected_vehicle_model_snapshot) ||
@@ -1439,7 +1505,12 @@ const createCertifiedBooking = async (adminClient, payload, { user = null, tenan
     throw createHttpError(409, 'A reservation already exists for this customer during the selected time window. Please review the existing booking instead of creating another one.');
   }
 
-  const totalAmount = Number(packageSelection?.amount || 0) || Number(listing.priceFrom || 0);
+  const packageTotals = resolveCertifiedBookingPackageTotals({
+    packageSelection,
+    durationUnits: normalizedDurationUnits,
+    listing,
+  });
+  const totalAmount = packageTotals.totalAmount;
   const listingModelId = cleanValue(getListingModelId(listing));
   const listingBrandName = cleanValue(getListingBrandName(listing));
   const listingModelName = cleanValue(getListingModelName(listing));
@@ -1479,11 +1550,15 @@ const createCertifiedBooking = async (adminClient, payload, { user = null, tenan
     damage_deposit: Number(listing.depositAmount || 0),
     selected_package_id: cleanValue(packageSelection?.id),
     selected_package_name: cleanValue(packageSelection?.name),
-    selected_package_fixed_amount: Number(packageSelection?.amount || 0),
+    selected_package_fixed_amount: packageTotals.ratePerUnit || Number(packageSelection?.amount || 0),
+    package_rate_per_unit: packageTotals.ratePerUnit || Number(packageSelection?.amount || 0),
+    package_included_km_per_unit: cleanValue(packageTotals.includedKmPerUnit),
+    package_total_included_km: cleanValue(packageTotals.totalIncludedKm),
+    package_extra_rate: cleanValue(Number(packageSelection?.extraKmRate || 0) || null),
     selected_package_included_km:
       packageSelection?.kind === 'unlimited'
         ? null
-        : cleanValue(Number(packageSelection?.includedKilometers || 0) || null),
+        : cleanValue(packageTotals.includedKmPerUnit),
     selected_package_extra_rate: cleanValue(Number(packageSelection?.extraKmRate || 0) || null),
     use_package_pricing: true,
     notes: bookingNotes,

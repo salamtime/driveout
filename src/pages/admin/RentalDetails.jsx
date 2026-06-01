@@ -880,7 +880,17 @@ const getPackageDisplayTotal = (rental = {}, pkg = null) => {
 };
 
 const getBookedPackageSnapshotTotal = (rental = {}, pkg = null) => {
-  return getPackageContractBaseTotal(rental, pkg);
+  const storedSnapshotTotal = getPackageContractBaseTotal(rental, pkg);
+  const durationAdjustedPackageTotal = getPackageDisplayTotal(rental, pkg);
+
+  // Older package rows store the package price per package duration (for example
+  // 399 MAD per 1 hour). The booked rental total must scale with the rental
+  // duration so finishing a 2-hour rental cannot collapse back to the 1-hour rate.
+  return Math.max(
+    0,
+    Number(storedSnapshotTotal || 0) || 0,
+    Number(durationAdjustedPackageTotal || 0) || 0
+  );
 };
 
 const getPackageIncludedKilometersPerUnit = (pkg = null) => Number.parseFloat(
@@ -1365,10 +1375,34 @@ const formatRentalDurationLabel = (rental = {}, isFrench = false) => {
   return trLocal(`${duration} days`, `${duration} jours`);
 };
 
-const isFlatHourlyTierRental = (rental = {}, packageDetails = null) =>
-  !getRentalKilometerPackage(rental, packageDetails) &&
-  String(rental?.rental_type || '').toLowerCase() === 'hourly' &&
-  Number(getDisplayRentalDurationUnits(rental)) === 1.5;
+const isFlatHourlyTierRental = (rental = {}, packageDetails = null) => {
+  if (getRentalKilometerPackage(rental, packageDetails)) return false;
+  if (String(rental?.rental_type || '').toLowerCase() !== 'hourly') return false;
+
+  const duration = Number(getDisplayRentalDurationUnits(rental)) || 0;
+  if (duration <= 1) return false;
+
+  const unitPrice = Math.max(0, Number(rental?.unit_price || 0) || 0);
+  const storedTotal = Math.max(0, Number(rental?.total_amount || 0) || 0);
+  if (unitPrice <= 0) return false;
+
+  const priceMeta = parsePriceOverrideMeta(rental?.price_override_reason);
+  if (priceMeta?.pricingComputationMode === 'flat_total') return true;
+
+  const storedFlatRateSnapshot = Math.max(
+    0,
+    Number(rental?.package_rate_per_unit || rental?.selected_package_rate_per_unit || 0) || 0
+  );
+  if (storedFlatRateSnapshot > 0 && Math.abs(storedFlatRateSnapshot - unitPrice) < 0.01) {
+    return true;
+  }
+
+  if (storedTotal <= 0) return false;
+
+  // Fixed pricing tiers store the final tier price as both unit_price and total_amount.
+  // Rental Details is the billing source of truth, so do not multiply these by duration.
+  return Math.abs(storedTotal - unitPrice) < 0.01;
+};
 
 const getRentalDetailsSnapshotKey = (rentalId) => `rental_details_snapshot_${String(rentalId || '').trim()}`;
 
@@ -5694,7 +5728,29 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
             );
             setFuelPricePerLine(pricePerLine);
 
-            if (rentalData.start_fuel_level !== null && rentalData.end_fuel_level !== null) {
+            const fuelChargeIsEnabled = rentalData.fuel_charge_enabled !== false;
+            const flatTierTotalIsFinal = isFlatHourlyTierRental(rentalData, packageResult.value?.data || null);
+
+            if (!fuelChargeIsEnabled || flatTierTotalIsFinal) {
+              const storedCharge = parseFloat(rentalData.fuel_charge || 0) || 0;
+              setFuelCharge(0);
+              setRental(prev => prev ? ({ ...prev, fuel_charge: 0 }) : prev);
+
+              if (storedCharge > 0) {
+                try {
+                  await supabase
+                    .from('app_4c3a7a6153_rentals')
+                    .update({
+                      fuel_charge: 0,
+                      fuel_charge_enabled: false,
+                      updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', rentalData.id);
+                } catch (syncErr) {
+                  console.error('❌ Failed to clear disabled fuel charge:', syncErr);
+                }
+              }
+            } else if (rentalData.start_fuel_level !== null && rentalData.end_fuel_level !== null) {
               const recalculatedCharge = FuelPricingService.calculateFuelCharge(
                 rentalData.start_fuel_level,
                 rentalData.end_fuel_level,
@@ -18958,6 +19014,63 @@ useEffect(() => {
           : 'cursor-not-allowed bg-slate-200 text-slate-500',
       };
 
+  const renderMobileDocumentShareActions = ({ className = '' } = {}) => (
+    <div className={`grid grid-cols-3 gap-2 ${className}`}>
+      <Button
+        type="button"
+        onClick={() => setContractPreviewModal(true)}
+        disabled={!canSendContract}
+        variant="outline"
+        className="h-auto min-h-[48px] touch-manipulation rounded-2xl border-slate-200 bg-white px-3 py-3 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+        title={tr('Preview contract', 'Aperçu du contrat')}
+      >
+        <FileText className="mr-1.5 h-4 w-4" />
+        {tr('Contract', 'Contrat')}
+      </Button>
+      <Button
+        type="button"
+        onClick={async () => {
+          if (isMobileDevice()) {
+            await forceMobileRender();
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+          setReceiptPreviewModal(true);
+        }}
+        disabled={!canSendReceipt}
+        variant="outline"
+        className="h-auto min-h-[48px] touch-manipulation rounded-2xl border-slate-200 bg-white px-3 py-3 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
+        title={tr('Preview receipt', 'Aperçu du reçu')}
+      >
+        <Receipt className="mr-1.5 h-4 w-4" />
+        {tr('Receipt', 'Reçu')}
+      </Button>
+      <Button
+        type="button"
+        onClick={handleWhatsAppClick}
+        onTouchStart={ensurePDFsReady}
+        disabled={isSharing || !canSendBoth}
+        variant="outline"
+        className={`h-auto min-h-[48px] touch-manipulation rounded-2xl px-3 py-3 text-xs font-bold shadow-sm ${
+          isSharing || !canSendBoth
+            ? 'border-slate-200 bg-slate-100 text-slate-400'
+            : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+        }`}
+        title={
+          canSendBoth
+            ? tr('Send documents via WhatsApp', 'Envoyer les documents via WhatsApp')
+            : tr('Add a customer phone number to send WhatsApp', 'Ajoutez un numéro client pour envoyer WhatsApp')
+        }
+      >
+        {isSharing ? (
+          <Loader className="mr-1.5 h-4 w-4 animate-spin" />
+        ) : (
+          <FaWhatsapp size={15} className="mr-1.5" />
+        )}
+        WhatsApp
+      </Button>
+    </div>
+  );
+
   useEffect(() => {
     setLightRentalInfoOpenSections({
       people: false,
@@ -19632,6 +19745,8 @@ useEffect(() => {
           </div>
         )}
 
+        {renderMobileDocumentShareActions({ className: 'mt-4' })}
+
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="min-h-[140px] rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
             <div className="mb-3 flex items-center gap-2">
@@ -20270,6 +20385,8 @@ useEffect(() => {
               {finishWorkflowStepsModel.filter((step) => step.complete).length}/{finishWorkflowStepsModel.length}
             </div>
           </div>
+
+          {renderMobileDocumentShareActions({ className: 'mt-4' })}
 
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className={`rounded-[22px] border p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] ${finishWorkflowTheme.progressCard}`}>
@@ -22790,7 +22907,7 @@ useEffect(() => {
 
           if (!damageDepositReturnOpen) return null;
           if (rental.deposit_returned_at) return null;
-          if (damageDeposit <= 0) return null;
+          if (damageDeposit <= 0 && !hasHeldSecurityDocument) return null;
 
           return (
             <div ref={depositReturnSectionRef} className="mt-4 overflow-hidden rounded-2xl border border-blue-200 bg-blue-50 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">
@@ -28962,7 +29079,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     const additionalOwed = hasAutoDepositSeizure ? balanceDue : Math.max(0, rawBalanceDue - damageDeposit);
     
     if (rental.deposit_returned_at) return null;
-    if (damageDeposit <= 0) return null;
+    if (damageDeposit <= 0 && !hasHeldSecurityDocument) return null;
     
     return (
       <div ref={depositReturnSectionRef} className="mt-4 overflow-hidden rounded-2xl border border-blue-200 bg-blue-50 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">

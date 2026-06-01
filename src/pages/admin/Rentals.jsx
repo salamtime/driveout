@@ -780,7 +780,12 @@ const getRentalFinancialSnapshot = (rental) => {
     ? ((Number(rental?.unit_price) || Number(rental?.package_rate_per_unit) || 0) * quantity)
     : (Number(rental?.unit_price) || 0) * quantity;
   const storedTotal = parseFloat(rental?.total_amount) || 0;
-  const pendingRequestedTotal = Math.max(0, parseFloat(rental?.pending_total_request || 0) || 0);
+  const hasPendingPriceRequest =
+    String(rental?.approval_status || '').toLowerCase() === 'pending' &&
+    Math.max(0, parseFloat(rental?.pending_total_request || 0) || 0) > 0;
+  const pendingRequestedTotal = hasPendingPriceRequest
+    ? Math.max(0, parseFloat(rental?.pending_total_request || 0) || 0)
+    : 0;
   // Rental Details is the source of truth for the contract settlement snapshot.
   // The rentals list must mirror the saved total / paid / remaining view from
   // Rental Details instead of replaying its own payment-entry math.
@@ -829,6 +834,7 @@ const getRentalFinancialSnapshot = (rental) => {
   }
 
   return {
+    hasPendingPriceRequest,
     grossTotal,
     grandTotal,
     balanceDue,
@@ -4702,7 +4708,7 @@ const Rentals = () => {
   <div className="flex items-center gap-2">
     {(() => {
       const paymentSnapshot = getRentalFinancialSnapshot(rental);
-      return rental.pending_total_request ? (
+      return paymentSnapshot.hasPendingPriceRequest ? (
         <>
           <span className="text-yellow-600 font-semibold">{rental.pending_total_request} MAD</span>
           <span className="text-xs text-gray-400 line-through">{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
@@ -4830,7 +4836,7 @@ const Rentals = () => {
 )}
 
 {/* Regular Start Button for non-pending rentals */}
-{effectiveRentalStatus === 'scheduled' && !rental.pending_total_request && canStartFromList(rental) && (
+{effectiveRentalStatus === 'scheduled' && !getRentalFinancialSnapshot(rental).hasPendingPriceRequest && canStartFromList(rental) && (
   <button
     onClick={(e) => {
       e.stopPropagation();
@@ -4878,7 +4884,7 @@ const Rentals = () => {
     <span>{tr('No-show', 'Absence')}</span>
   </button>
 )}
-{effectiveRentalStatus === 'scheduled' && !rental.pending_total_request && !canStartFromList(rental) && (
+{effectiveRentalStatus === 'scheduled' && !getRentalFinancialSnapshot(rental).hasPendingPriceRequest && !canStartFromList(rental) && (
   <button
     onClick={(e) => handleOpenRentalFromAction(e, rental)}
     className="text-gray-400 cursor-not-allowed opacity-50"
@@ -5177,7 +5183,7 @@ const Rentals = () => {
                               {paymentLabel}
                             </span>
                             <div className={`${isCompactMobileCard ? 'text-[10px]' : 'text-xs'} font-medium text-slate-500 whitespace-nowrap`}>
-                              {rental.pending_total_request ? (
+                              {paymentSnapshot.hasPendingPriceRequest ? (
                                   <div className="flex items-center gap-1">
                                     <span className="text-yellow-600">{tr('Requested', 'Demandé')} {rental.pending_total_request} MAD</span>
                                     <span className="text-[8px] text-gray-400 line-through">{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>

@@ -194,8 +194,57 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const startDate = rental.rental_start_date || rental.started_at || rental.start_date;
   const endDate = rental.rental_end_date || rental.actual_end_date || rental.end_date;
   
-  // Check if rental has a package
-  const hasPackage = !hideContractPricing && isPackagePricingEnabled(rental) && !!(rental.package || rental.package_id);
+  const contractPackageSnapshot = React.useMemo(() => {
+    const linkedPackage = rental?.package || null;
+    const includedKm = Number(
+      linkedPackage?.included_kilometers ??
+      linkedPackage?.total_included_kilometers_snapshot ??
+      rental?.included_kilometers_applied ??
+      rental?.package_total_included_km ??
+      rental?.selected_package_total_included_km ??
+      rental?.selected_package_included_kilometers ??
+      0
+    ) || 0;
+    const extraRate = Number(
+      linkedPackage?.extra_km_rate ??
+      rental?.extra_km_rate_applied ??
+      rental?.package_extra_rate ??
+      rental?.selected_package_extra_rate ??
+      0
+    ) || 0;
+    const name = (
+      linkedPackage?.name ||
+      linkedPackage?.package_name ||
+      rental?.package_name ||
+      rental?.selected_package_name ||
+      ''
+    ).trim();
+
+    if (!linkedPackage && !rental?.package_id && !rental?.selected_package_id && !name && !includedKm) {
+      return null;
+    }
+
+    return {
+      ...linkedPackage,
+      id: linkedPackage?.id || rental?.package_id || rental?.selected_package_id || null,
+      name: name || (isFrench ? 'Forfait kilométrique' : 'Kilometer Package'),
+      included_kilometers: includedKm,
+      total_included_kilometers_snapshot: Number(
+        rental?.included_kilometers_applied ??
+        rental?.package_total_included_km ??
+        rental?.selected_package_total_included_km ??
+        linkedPackage?.total_included_kilometers_snapshot ??
+        0
+      ) || 0,
+      extra_km_rate: extraRate,
+      duration_units: linkedPackage?.duration_units || rental?.package_duration_units || null,
+      duration_type: linkedPackage?.duration_type || rental?.package_duration_type || null,
+      description: linkedPackage?.description || '',
+    };
+  }, [isFrench, rental]);
+
+  // Package details are operational contract information. Prices stay on the receipt.
+  const hasPackage = isPackagePricingEnabled(rental) && Boolean(contractPackageSnapshot);
   
   // Odometer values
   const startOdo = rental.start_odometer || "N/A";
@@ -221,24 +270,21 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const packageBreakdown = React.useMemo(() => {
     if (!hasPackage || !rental) return null;
     
-    const pkg = rental.package;
+    const pkg = contractPackageSnapshot;
     if (!pkg) return null;
     
     const isHourly = rental.rental_type === 'hourly';
     const isDaily = rental.rental_type === 'daily';
     
     const duration = getRentalDurationUnits(rental);
-    const ratePerUnit = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-    const packageTotal = getEffectiveRentalBaseTotal(rental, true, ratePerUnit);
     const includedKmPerUnit = pkg.included_kilometers ? parseFloat(pkg.included_kilometers) : null;
-    const totalIncludedKm = includedKmPerUnit ? includedKmPerUnit * duration : null;
+    const storedTotalIncludedKm = Number(pkg.total_included_kilometers_snapshot || 0) || 0;
+    const totalIncludedKm = storedTotalIncludedKm || (includedKmPerUnit ? includedKmPerUnit * duration : null);
     const extraRate = parseFloat(pkg.extra_km_rate) || 0;
     
     return {
       name: pkg.name || (isFrench ? 'Forfait kilométrique' : 'Kilometer Package'),
-      ratePerUnit,
       duration,
-      packageTotal,
       includedKmPerUnit,
       totalIncludedKm,
       extraRate,
@@ -246,7 +292,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
       isDaily,
       description: pkg.description
     };
-  }, [rental, hasPackage]);
+  }, [contractPackageSnapshot, rental, hasPackage, isFrench]);
 
   // Enhanced tier pricing breakdown calculation (only shown when no package)
   const tierPricingBreakdown = React.useMemo(() => {
@@ -446,15 +492,15 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
 
     const unit = breakdown.isHourly ? 'hour' : 'day';
     const unitPlural = breakdown.isHourly ? 'hours' : 'days';
-    const hasIncludedKm = breakdown.includedKmPerUnit && breakdown.totalIncludedKm;
+    const hasIncludedKm = Number(breakdown.totalIncludedKm || 0) > 0;
 
     return (
       <div style={{
         marginBottom: '24px',
         padding: '16px',
-        background: '#f3f0ff',
-        borderRadius: '8px',
-        border: '1px solid #d8b4fe'
+        background: '#f8fafc',
+        borderRadius: '12px',
+        border: '1px solid #cbd5e1'
       }}>
         <div style={{
           display: 'flex',
@@ -465,8 +511,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
           <div style={{
             width: '32px',
             height: '32px',
-            backgroundColor: '#8b5cf6',
-            borderRadius: '6px',
+            backgroundColor: '#0f766e',
+            borderRadius: '8px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center'
@@ -476,8 +522,10 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
             </svg>
           </div>
           <div>
-            <h4 style={{ fontSize: '15px', fontWeight: '600', margin: 0, color: '#4c1d95' }}>{tr('Selected Package', 'Package sélectionné')}</h4>
-            <p style={{ fontSize: '13px', margin: '2px 0 0 0', color: '#6d28d9' }}>{breakdown.name}</p>
+            <h4 style={{ fontSize: '15px', fontWeight: '700', margin: 0, color: '#0f172a' }}>{tr('Selected Package', 'Package sélectionné')}</h4>
+            <p style={{ fontSize: '12px', margin: '2px 0 0 0', color: '#475569' }}>
+              {tr('Operational package details only. Prices stay on the receipt.', 'Détails opérationnels du forfait uniquement. Les prix restent sur le reçu.')}
+            </p>
           </div>
         </div>
 
@@ -490,59 +538,31 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
             <>
               <div style={{
                 background: 'white',
-                padding: '10px',
-                borderRadius: '6px',
-                textAlign: 'center',
-                border: '1px solid #e9d5ff'
+                padding: '12px',
+                borderRadius: '10px',
+                border: '1px solid #e2e8f0'
               }}>
-                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>{tr('Included per', 'Inclus par')} {unit}</div>
-                <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#4c1d95' }}>{breakdown.includedKmPerUnit} km</div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{tr('Package', 'Forfait')}</div>
+                <div style={{ fontSize: '15px', fontWeight: '700', color: '#0f172a' }}>{breakdown.name}</div>
               </div>
               
               <div style={{
-                background: '#ede9fe',
-                padding: '10px',
-                borderRadius: '6px',
-                textAlign: 'center',
-                border: '1px solid #c4b5fd'
+                background: 'white',
+                padding: '12px',
+                borderRadius: '10px',
+                border: '1px solid #e2e8f0'
               }}>
-                <div style={{ fontSize: '11px', color: '#5b21b6', marginBottom: '2px' }}>{tr('Total Included', 'Total inclus')}</div>
-                <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4c1d95' }}>{breakdown.totalIncludedKm} km</div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{tr('Included kilometers', 'Kilomètres inclus')}</div>
+                <div style={{ fontSize: '15px', fontWeight: '700', color: '#0f172a' }}>{breakdown.totalIncludedKm} km</div>
                 <div style={{ fontSize: '10px', color: '#6d28d9', marginTop: '2px' }}>
-                  {breakdown.includedKmPerUnit} km × {breakdown.duration} {breakdown.duration > 1 ? unitPlural : unit}
+                  {breakdown.includedKmPerUnit
+                    ? `${breakdown.includedKmPerUnit} km × ${breakdown.duration} ${breakdown.duration > 1 ? unitPlural : unit}`
+                    : tr('Selected package allowance', 'Kilométrage du forfait sélectionné')}
                 </div>
               </div>
             </>
           )}
-          
-          {breakdown.extraRate > 0 && (
-            <div style={{
-              background: 'white',
-              padding: '10px',
-              borderRadius: '6px',
-              textAlign: 'center',
-              border: '1px solid #fed7aa'
-            }}>
-              <div style={{ fontSize: '11px', color: '#9a3412', marginBottom: '2px' }}>{tr('Extra KM Rate', 'Tarif KM extra')}</div>
-              <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#9a3412' }}>{formatCurrency(breakdown.extraRate)} MAD/km</div>
-            </div>
-          )}
         </div>
-
-        {hasIncludedKm && (
-          <div style={{
-            marginTop: '12px',
-            fontSize: '12px',
-            color: '#4c1d95',
-            textAlign: 'center',
-            padding: '8px',
-            background: '#faf5ff',
-            borderRadius: '6px',
-            border: '1px dashed #c4b5fd'
-          }}>
-            {isFrench ? `✓ Le package inclut ${breakdown.totalIncludedKm} km au total` : `✓ Package includes ${breakdown.totalIncludedKm} km total`}
-          </div>
-        )}
       </div>
     );
   };
@@ -625,6 +645,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     if (!hasPackage || !packageBreakdown) return null;
 
     const bookedPlanName = packageBreakdown.name;
+    const includedKm = Number(packageBreakdown.totalIncludedKm || 0) || 0;
     const kmUsed = Number(contractPricingFlow?.kmUsed || 0);
 
     return (
@@ -689,12 +710,23 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
 
           <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
             <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-              {tr('Distance used', 'Distance utilisée')}
+              {tr('Included kilometers', 'Kilomètres inclus')}
             </div>
             <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
-              {kmUsed} km
+              {includedKm > 0 ? `${includedKm} km` : tr('Package allowance', 'Kilométrage du forfait')}
             </div>
           </div>
+
+          {kmUsed > 0 && (
+            <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
+              <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                {tr('Distance used', 'Distance utilisée')}
+              </div>
+              <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
+                {kmUsed} km
+              </div>
+            </div>
+          )}
 
         </div>
       </div>
