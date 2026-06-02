@@ -2777,6 +2777,17 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
+          .pdf-avoid-break,
+          .receipt-payment-summary,
+          .receipt-document-penalty-settlement,
+          .receipt-auto-upgrade-summary {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+          }
+          .receipt-payment-summary {
+            break-before: page;
+            page-break-before: always;
+          }
         }
 
         /* Utility classes */
@@ -3569,7 +3580,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       </div>
 
       {/* Payment Summary */}
-      <div style={{
+      <div className="receipt-payment-summary pdf-avoid-break" data-pdf-avoid-break="true" style={{
         padding: '24px',
         background: 'linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%)',
         borderRadius: '12px',
@@ -3586,7 +3597,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         </h3>
 
         {receiptDistanceUpgrade && (
-          <div style={{
+          <div className="receipt-auto-upgrade-summary pdf-avoid-break" data-pdf-avoid-break="true" style={{
             marginBottom: '18px',
             padding: '16px',
             borderRadius: '14px',
@@ -3938,7 +3949,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             )}
 
             {hasDocumentLossPenalty && (
-              <div style={{
+              <div className="receipt-document-penalty-settlement pdf-avoid-break" data-pdf-avoid-break="true" style={{
                 marginBottom: '14px',
                 padding: '12px',
                 backgroundColor: '#fff7ed',

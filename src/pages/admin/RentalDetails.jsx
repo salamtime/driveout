@@ -568,6 +568,7 @@ const PDF_PAGE_WIDTH_MM = 210;
 const PDF_PAGE_HEIGHT_MM = 297;
 const PDF_MARGIN_MM = 10;
 const PDF_CAPTURE_SCALE = 3;
+const PDF_BREAK_PROTECTION_SELECTOR = '[data-pdf-avoid-break="true"], .pdf-avoid-break';
 
 const loadPdfTools = async () => {
   const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
@@ -595,15 +596,62 @@ const renderElementToCanvas = async (element) => {
   });
 };
 
-const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false } = {}) => {
+const getCanvasAvoidBreakRanges = (targetElement, canvas) => {
+  if (!targetElement?.querySelectorAll || !canvas?.height) return [];
+
+  const targetRect = targetElement.getBoundingClientRect();
+  const targetCssHeight = Math.max(
+    Number(targetElement.scrollHeight) || 0,
+    Number(targetRect.height) || 0,
+    1
+  );
+  const canvasPixelsPerCssPixel = canvas.height / targetCssHeight;
+  const targetTop = targetRect.top;
+
+  return Array.from(targetElement.querySelectorAll(PDF_BREAK_PROTECTION_SELECTOR))
+    .map((node) => {
+      const rect = node.getBoundingClientRect();
+      const top = Math.max(0, Math.floor((rect.top - targetTop) * canvasPixelsPerCssPixel));
+      const bottom = Math.min(canvas.height, Math.ceil((rect.bottom - targetTop) * canvasPixelsPerCssPixel));
+      return { top, bottom };
+    })
+    .filter((range) => Number.isFinite(range.top) && Number.isFinite(range.bottom) && range.bottom > range.top)
+    .sort((a, b) => a.top - b.top);
+};
+
+const resolvePdfSliceEnd = (offsetY, nominalEndY, canvasHeight, avoidBreakRanges, pageSliceHeightPx) => {
+  const safeNominalEndY = Math.min(nominalEndY, canvasHeight);
+  const breakPaddingPx = Math.max(18, Math.round(pageSliceHeightPx * 0.012));
+  const minimumSliceHeightPx = Math.max(180, Math.round(pageSliceHeightPx * 0.12));
+
+  for (const range of avoidBreakRanges) {
+    const protectedTop = Math.max(0, range.top - breakPaddingPx);
+    const protectedBottom = Math.min(canvasHeight, range.bottom + breakPaddingPx);
+    const boundaryCutsProtectedRange = safeNominalEndY > protectedTop && safeNominalEndY < protectedBottom;
+
+    if (!boundaryCutsProtectedRange) continue;
+
+    const candidateEndY = Math.max(offsetY + 1, protectedTop);
+    if (candidateEndY - offsetY >= minimumSliceHeightPx) {
+      return candidateEndY;
+    }
+  }
+
+  return safeNominalEndY;
+};
+
+const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false, targetElement = null } = {}) => {
   const printableWidthMm = PDF_PAGE_WIDTH_MM - PDF_MARGIN_MM * 2;
   const printableHeightMm = PDF_PAGE_HEIGHT_MM - PDF_MARGIN_MM * 2;
   const mmPerCanvasPixel = printableWidthMm / canvas.width;
   const pageSliceHeightPx = Math.max(1, Math.floor(printableHeightMm / mmPerCanvasPixel));
+  const avoidBreakRanges = getCanvasAvoidBreakRanges(targetElement, canvas);
   let renderedSlices = 0;
 
-  for (let offsetY = 0; offsetY < canvas.height; offsetY += pageSliceHeightPx) {
-    const sliceHeightPx = Math.min(pageSliceHeightPx, canvas.height - offsetY);
+  for (let offsetY = 0; offsetY < canvas.height;) {
+    const nominalEndY = offsetY + pageSliceHeightPx;
+    const sliceEndY = resolvePdfSliceEnd(offsetY, nominalEndY, canvas.height, avoidBreakRanges, pageSliceHeightPx);
+    const sliceHeightPx = Math.max(1, Math.min(sliceEndY - offsetY, canvas.height - offsetY));
     const sliceCanvas = document.createElement('canvas');
     sliceCanvas.width = canvas.width;
     sliceCanvas.height = sliceHeightPx;
@@ -639,6 +687,7 @@ const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false } = {}) => {
     );
 
     renderedSlices += 1;
+    offsetY += sliceHeightPx;
   }
 
   return renderedSlices;
@@ -658,7 +707,10 @@ const generatePdfBlobFromContainers = async (rootElement) => {
 
   for (const target of targets) {
     const canvas = await renderElementToCanvas(target);
-    renderedPages += appendCanvasToPdf(pdf, canvas, { addPageBefore: renderedPages > 0 });
+    renderedPages += appendCanvasToPdf(pdf, canvas, {
+      addPageBefore: renderedPages > 0,
+      targetElement: target,
+    });
   }
 
   return pdf.output('blob');
