@@ -7879,51 +7879,97 @@ Click the link above to review and approve the extension.`;
     }
   };
 
+  const getReceiptShareOverrides = () => {
+    if (!receiptRentalData) return {};
+
+    const linkedReport = vehicleReport || receiptRentalData?.vehicleReport || receiptRentalData?.vehicle_report || rental?.vehicleReport || rental?.vehicle_report || null;
+    const vehicleSnapshot = receiptRentalData?.vehicle
+      ? {
+          ...receiptRentalData.vehicle,
+          vehicle_model: {
+            ...(receiptRentalData.vehicle.vehicle_model || {}),
+            fuel_price: fuelPricePerLine || receiptRentalData.vehicle.vehicle_model?.fuel_price || 0,
+          },
+        }
+      : undefined;
+
+    const scalarOverrides = {
+      total_amount: receiptRentalData.total_amount,
+      deposit_amount: receiptRentalData.deposit_amount,
+      remaining_amount: receiptRentalData.remaining_amount,
+      payment_status: receiptRentalData.payment_status,
+      amount_due_resolution_meta: receiptRentalData.amount_due_resolution_meta,
+      amount_due_override_reason: receiptRentalData.amount_due_override_reason,
+      amount_due_override_previous_amount: receiptRentalData.amount_due_override_previous_amount,
+      damage_deposit: receiptRentalData.damage_deposit,
+      deposit_deduction_amount: receiptRentalData.deposit_deduction_amount,
+      deposit_deduction_reason: receiptRentalData.deposit_deduction_reason,
+      deposit_returned_at: receiptRentalData.deposit_returned_at,
+      unit_price: receiptRentalData.unit_price,
+      package_id: receiptRentalData.package_id,
+      package_name: receiptRentalData.package_name,
+      package_rate_per_unit: receiptRentalData.package_rate_per_unit,
+      package_total_included_km: receiptRentalData.package_total_included_km,
+      use_package_pricing: receiptRentalData.use_package_pricing,
+      package: receiptRentalData.package,
+      receipt_original_package: receiptRentalData.receipt_original_package,
+      package_upgrade_summary: receiptRentalData.package_upgrade_summary,
+      included_kilometers_applied: receiptRentalData.included_kilometers_applied,
+      extra_km_rate_applied: receiptRentalData.extra_km_rate_applied,
+      total_kilometers_driven: receiptRentalData.total_kilometers_driven,
+      total_distance: receiptRentalData.total_distance,
+      start_odometer: receiptRentalData.start_odometer,
+      end_odometer: receiptRentalData.end_odometer,
+      quantity_hours: receiptRentalData.quantity_hours,
+      quantity_days: receiptRentalData.quantity_days,
+      rental_end_date: receiptRentalData.rental_end_date,
+      actual_end_date: receiptRentalData.actual_end_date,
+      fuel_charge: receiptRentalData.fuel_charge,
+      fuel_charge_enabled: receiptRentalData.fuel_charge_enabled,
+      start_fuel_level: receiptRentalData.start_fuel_level,
+      end_fuel_level: receiptRentalData.end_fuel_level,
+      vehicle: vehicleSnapshot,
+      vehicleReport: linkedReport,
+      vehicle_report: linkedReport,
+      impound_charge_days: receiptRentalData.impound_charge_days,
+      impound_charge_hours: receiptRentalData.impound_charge_hours,
+      impound_rate: receiptRentalData.impound_rate,
+      impound_manual_charge: receiptRentalData.impound_manual_charge,
+      impound_discount: receiptRentalData.impound_discount,
+      impound_total: receiptRentalData.impound_total,
+      impound_live_charge_days: receiptRentalData.impound_live_charge_days,
+      impound_live_charge_hours: receiptRentalData.impound_live_charge_hours,
+      impound_live_rate: receiptRentalData.impound_live_rate,
+      impound_live_discount: receiptRentalData.impound_live_discount,
+      impound_live_total: receiptRentalData.impound_live_total,
+      impound_is_estimate: receiptRentalData.impound_is_estimate,
+      impound_estimated_release_at: receiptRentalData.impound_estimated_release_at,
+      impound_estimate_note: receiptRentalData.impound_estimate_note,
+      impound_extra_daily_charge_waived: receiptRentalData.impound_extra_daily_charge_waived,
+      impound_estimate_weekend_carry: receiptRentalData.impound_estimate_weekend_carry,
+      impound_estimate_pricing_label: receiptRentalData.impound_estimate_pricing_label,
+      impound_estimated_days_total: receiptRentalData.impound_estimated_days_total,
+      impound_estimated_hours_total: receiptRentalData.impound_estimated_hours_total,
+      impound_estimated_rate: receiptRentalData.impound_estimated_rate,
+      impound_estimated_discount: receiptRentalData.impound_estimated_discount,
+      impound_estimated_total: receiptRentalData.impound_estimated_total,
+      impound_estimated_extra_days: receiptRentalData.impound_estimated_extra_days,
+      impound_estimated_extra_amount: receiptRentalData.impound_estimated_extra_amount,
+    };
+
+    return Object.fromEntries(
+      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+  };
+
   // Public share URLs for interactive pages only.
   const buildSharedDocumentUrl = async (documentType, options = {}) => {
     const isLocalhost =
       typeof window !== 'undefined' &&
       ['localhost', '127.0.0.1'].includes(window.location.hostname);
     const pdfUrl = options?.pdfUrl || null;
-    const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
     const payloadOverrides = documentType === 'receipt'
-      ? {
-          deposit_amount: receiptRentalData?.deposit_amount,
-          fuel_charge: receiptRentalData?.fuel_charge,
-          payment_status: receiptRentalData?.payment_status,
-          start_fuel_level: receiptRentalData?.start_fuel_level,
-          end_fuel_level: receiptRentalData?.end_fuel_level,
-          vehicleReport: linkedReport,
-          vehicle_report: linkedReport,
-          ...(receiptRentalData?.impound_is_estimate
-            ? {
-                impound_charge_days: receiptRentalData?.impound_charge_days,
-                impound_charge_hours: receiptRentalData?.impound_charge_hours,
-                impound_rate: receiptRentalData?.impound_rate,
-                impound_manual_charge: receiptRentalData?.impound_manual_charge,
-                impound_discount: receiptRentalData?.impound_discount,
-                impound_total: receiptRentalData?.impound_total,
-                impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
-                impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
-                impound_live_rate: receiptRentalData?.impound_live_rate,
-                impound_live_discount: receiptRentalData?.impound_live_discount,
-                impound_live_total: receiptRentalData?.impound_live_total,
-                impound_is_estimate: receiptRentalData?.impound_is_estimate,
-                impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
-                impound_estimate_note: receiptRentalData?.impound_estimate_note,
-                impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
-                impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
-                impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
-                impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
-                impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
-                impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
-                impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
-                impound_estimated_total: receiptRentalData?.impound_estimated_total,
-                impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
-                impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
-              }
-            : {}),
-        }
+      ? getReceiptShareOverrides()
       : {
           customer_name: contractRentalData?.customer_name,
           customer_email: contractRentalData?.customer_email,
@@ -8031,44 +8077,7 @@ Click the link above to review and approve the extension.`;
   };
 
   const buildCompactReceiptSharePayload = (pdfUrl) => {
-    const scalarOverrides = {
-      deposit_amount: receiptRentalData?.deposit_amount,
-      fuel_charge: receiptRentalData?.fuel_charge,
-      payment_status: receiptRentalData?.payment_status,
-      start_fuel_level: receiptRentalData?.start_fuel_level,
-      end_fuel_level: receiptRentalData?.end_fuel_level,
-      ...(receiptRentalData?.impound_is_estimate
-        ? {
-            impound_charge_days: receiptRentalData?.impound_charge_days,
-            impound_charge_hours: receiptRentalData?.impound_charge_hours,
-            impound_rate: receiptRentalData?.impound_rate,
-            impound_manual_charge: receiptRentalData?.impound_manual_charge,
-            impound_discount: receiptRentalData?.impound_discount,
-            impound_total: receiptRentalData?.impound_total,
-            impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
-            impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
-            impound_live_rate: receiptRentalData?.impound_live_rate,
-            impound_live_discount: receiptRentalData?.impound_live_discount,
-            impound_live_total: receiptRentalData?.impound_live_total,
-            impound_is_estimate: receiptRentalData?.impound_is_estimate,
-            impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
-            impound_estimate_note: receiptRentalData?.impound_estimate_note,
-            impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
-            impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
-            impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
-            impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
-            impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
-            impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
-            impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
-            impound_estimated_total: receiptRentalData?.impound_estimated_total,
-            impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
-            impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
-          }
-        : {}),
-    };
-    const overrides = Object.fromEntries(
-      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
-    );
+    const overrides = getReceiptShareOverrides();
 
     return {
       language: documentLanguage,
