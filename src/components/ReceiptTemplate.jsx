@@ -31,6 +31,20 @@ const RECEIPT_BANKING_DETAILS = {
 };
 
 const DOCUMENT_LOSS_PENALTY_REASON_TOKEN = 'document loss penalty';
+const DOCUMENT_LOSS_PENALTY_REASON_HINTS = [
+  DOCUMENT_LOSS_PENALTY_REASON_TOKEN,
+  'vehicle document',
+  'document penalty',
+  'registration missing',
+  'insurance missing',
+  'lost document',
+  'missing document',
+  'pénalité document',
+  'perte documents',
+  'document véhicule',
+  'carte grise',
+  'assurance',
+];
 
 const parseMadAmountFromText = (value) => {
   const normalizedValue = String(value || '').replace(/\s/g, '').replace(/,/g, '');
@@ -42,9 +56,17 @@ const parseDocumentPenaltyReasonAmount = (reason, label) => {
   return parseMadAmountFromText(match?.[1]);
 };
 
+const hasDocumentPenaltyReason = (reason = '') => {
+  const normalizedReason = String(reason || '').toLowerCase();
+  return DOCUMENT_LOSS_PENALTY_REASON_HINTS.some((hint) => normalizedReason.includes(hint));
+};
+
 const getDocumentPenaltySnapshot = (rental = {}) => {
-  const reason = String(rental?.deposit_deduction_reason || '');
-  if (!reason.toLowerCase().includes(DOCUMENT_LOSS_PENALTY_REASON_TOKEN)) {
+  const reason = [
+    rental?.deposit_deduction_reason,
+    rental?.amount_due_override_reason,
+  ].filter(Boolean).join('\n');
+  if (!hasDocumentPenaltyReason(reason)) {
     return {
       penaltyAmount: 0,
       deductedFromSecurity: 0,
@@ -1107,7 +1129,44 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     savedDepositDeductionAmount + mileageOverageDepositDeductionAmount,
     receiptDamageDeposit || savedDepositDeductionAmount + mileageOverageDepositDeductionAmount
   );
-  const documentPenaltySnapshot = getDocumentPenaltySnapshot(rental);
+  const rawDocumentPenaltySnapshot = getDocumentPenaltySnapshot(rental);
+  const documentPenaltyReasonText = [
+    rental?.deposit_deduction_reason,
+    rental?.amount_due_override_reason,
+  ].filter(Boolean).join('\n');
+  const expectedTotalWithoutDocumentPenalty = Math.max(
+    0,
+    getReceiptBasePrice() +
+      effectiveOverageCharge +
+      approvedExtensionTotal +
+      effectiveFuelCharge +
+      maintenanceChargeAmount +
+      displayedImpoundTotal +
+      transportFeeAmount
+  );
+  const inferredDocumentPenaltyAmount = (
+    rawDocumentPenaltySnapshot.penaltyAmount <= 0 &&
+    hasDocumentPenaltyReason(documentPenaltyReasonText) &&
+    grossDisplayedTotalAmount > expectedTotalWithoutDocumentPenalty
+  )
+    ? Math.max(0, grossDisplayedTotalAmount - expectedTotalWithoutDocumentPenalty)
+    : 0;
+  const documentPenaltySnapshot = inferredDocumentPenaltyAmount > 0
+    ? {
+        penaltyAmount: inferredDocumentPenaltyAmount,
+        deductedFromSecurity: Math.min(
+          inferredDocumentPenaltyAmount,
+          Math.max(savedDepositDeductionAmount, receivedDamageDeposit, receiptDamageDeposit)
+        ),
+        remainingDue: Math.max(
+          0,
+          inferredDocumentPenaltyAmount - Math.min(
+            inferredDocumentPenaltyAmount,
+            Math.max(savedDepositDeductionAmount, receivedDamageDeposit, receiptDamageDeposit)
+          )
+        ),
+      }
+    : rawDocumentPenaltySnapshot;
   const hasDocumentLossPenalty = documentPenaltySnapshot.penaltyAmount > 0;
   const documentPenaltyAmount = hasDocumentLossPenalty
     ? documentPenaltySnapshot.penaltyAmount
@@ -1233,7 +1292,20 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const startFuel = rental.start_fuel_level !== null ? rental.start_fuel_level : null;
   const endFuel = rental.end_fuel_level !== null ? rental.end_fuel_level : null;
   const fuelDeficit = (startFuel !== null && endFuel !== null) ? startFuel - endFuel : 0;
-  const fuelPricePerLine = rental.vehicle?.vehicle_model?.fuel_price || 0;
+  const modelFuelPricePerLine = Number(
+    rental.vehicle?.vehicle_model?.fuel_price ??
+    rental.vehicle_model?.fuel_price ??
+    rental.fuel_price_per_line ??
+    rental.fuel_price ??
+    0
+  ) || 0;
+  const fuelPricePerLine = modelFuelPricePerLine > 0
+    ? modelFuelPricePerLine
+    : (
+      fuelDeficit > 0 && effectiveFuelCharge > 0
+        ? effectiveFuelCharge / fuelDeficit
+        : 0
+    );
 
   const safeFormatId = (id) => {
     if (!id) return 'N/A';
