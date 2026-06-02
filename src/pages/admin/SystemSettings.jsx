@@ -13,6 +13,7 @@ import PublicContentWorkspace from '../../components/admin/PublicContentWorkspac
 import MarketplaceControlWorkspace from '../../components/admin/MarketplaceControlWorkspace';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import RentalMediaRetentionService from '../../services/RentalMediaRetentionService';
+import { fetchSystemSettings, saveSystemSettings } from '../../services/systemSettingsApi';
 import i18n from '../../i18n';
 
 // Custom tabs implementation since ui/tabs component doesn't exist
@@ -70,6 +71,11 @@ const SystemSettings = () => {
   const [retentionLoading, setRetentionLoading] = useState(true);
   const [retentionSaving, setRetentionSaving] = useState(false);
   const [retentionCleanupRunning, setRetentionCleanupRunning] = useState(false);
+  const [securityPolicySettings, setSecurityPolicySettings] = useState({
+    lostVehicleDocumentPenaltyMad: 4000,
+  });
+  const [securityPolicyLoading, setSecurityPolicyLoading] = useState(true);
+  const [securityPolicySaving, setSecurityPolicySaving] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -95,7 +101,31 @@ const SystemSettings = () => {
       }
     };
 
+    const loadSecurityPolicySettings = async () => {
+      try {
+        const settings = await fetchSystemSettings();
+        if (mounted) {
+          setSecurityPolicySettings({
+            lostVehicleDocumentPenaltyMad: Math.max(0, Number(settings?.lostVehicleDocumentPenaltyMad) || 4000),
+          });
+        }
+      } catch (err) {
+        if (mounted) {
+          setError(
+            isFrench
+              ? `Impossible de charger les parametres de securite : ${err.message}`
+              : `Failed to load security policy settings: ${err.message}`
+          );
+        }
+      } finally {
+        if (mounted) {
+          setSecurityPolicyLoading(false);
+        }
+      }
+    };
+
     loadRetentionSettings();
+    loadSecurityPolicySettings();
     return () => {
       mounted = false;
     };
@@ -193,6 +223,39 @@ const SystemSettings = () => {
       );
     } finally {
       setRetentionCleanupRunning(false);
+    }
+  };
+
+  const handleSaveSecurityPolicySettings = async () => {
+    const penaltyAmount = Math.max(0, Number(securityPolicySettings.lostVehicleDocumentPenaltyMad) || 0);
+
+    try {
+      setSecurityPolicySaving(true);
+      setError(null);
+      setSuccess(null);
+
+      const saved = await saveSystemSettings({
+        lostVehicleDocumentPenaltyMad: penaltyAmount,
+      });
+
+      const savedPenalty = Math.max(0, Number(saved?.lostVehicleDocumentPenaltyMad ?? penaltyAmount) || 0);
+      setSecurityPolicySettings({
+        lostVehicleDocumentPenaltyMad: savedPenalty,
+      });
+      setSuccess({
+        message: isFrench ? 'Penalite de document enregistree.' : 'Vehicle document penalty saved.',
+        details: isFrench
+          ? `Penalite actuelle : ${savedPenalty.toLocaleString('fr-FR')} MAD.`
+          : `Current penalty: ${savedPenalty.toLocaleString('en-US')} MAD.`,
+      });
+    } catch (err) {
+      setError(
+        isFrench
+          ? `Impossible d'enregistrer la penalite de document : ${err.message}`
+          : `Failed to save vehicle document penalty: ${err.message}`
+      );
+    } finally {
+      setSecurityPolicySaving(false);
     }
   };
 
@@ -438,6 +501,60 @@ const SystemSettings = () => {
 
         {/* Security Settings Tab */}
         <TabsContent value="security" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileArchive className="h-5 w-5" />
+                {isFrench ? 'Penalite documents vehicule' : 'Vehicle Document Penalty'}
+              </CardTitle>
+              <CardDescription>
+                {isFrench
+                  ? 'Montant deduit quand la carte grise ou l assurance est marquee comme manquante au retour.'
+                  : 'Amount deducted when registration or insurance is marked missing at return.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="lostVehicleDocumentPenaltyMad">
+                    {isFrench ? 'Montant de la penalite (MAD)' : 'Penalty Amount (MAD)'}
+                  </Label>
+                  <Input
+                    id="lostVehicleDocumentPenaltyMad"
+                    type="number"
+                    min="0"
+                    step="50"
+                    value={securityPolicySettings.lostVehicleDocumentPenaltyMad}
+                    disabled={securityPolicyLoading || securityPolicySaving}
+                    onChange={(event) =>
+                      setSecurityPolicySettings((prev) => ({
+                        ...prev,
+                        lostVehicleDocumentPenaltyMad: Math.max(0, Number(event.target.value) || 0),
+                      }))
+                    }
+                    className="max-w-xs"
+                  />
+                </div>
+
+                <Button
+                  onClick={handleSaveSecurityPolicySettings}
+                  disabled={securityPolicyLoading || securityPolicySaving}
+                >
+                  {securityPolicySaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                  {isFrench ? 'Enregistrer' : 'Save Penalty'}
+                </Button>
+              </div>
+
+              <Alert>
+                <AlertDescription>
+                  {isFrench
+                    ? 'Ce montant sera utilise par l action "document manquant" dans les medias vehicule et par la deduction de caution.'
+                    : 'This amount will be used by the missing-document action in vehicle media and by the security deposit deduction flow.'}
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

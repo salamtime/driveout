@@ -1,5 +1,6 @@
 import { supabase } from '../utils/supabaseClient';
 import videoCaptureService from './videoCaptureService';
+import { createRentalCompletionSnapshot } from './RentalCompletionSnapshotService';
 
 /**
  * Service for handling rental closing operations with video validation
@@ -134,13 +135,23 @@ class RentalClosingService {
         throw new Error('Valid video is required to close rental');
       }
 
+      const completionPayload = {
+        rental_status: 'completed',
+        updated_at: new Date().toISOString()
+      };
+
+      await createRentalCompletionSnapshot({
+        supabase,
+        rentalId,
+        actorUserId: user.id,
+        actorName: user.email || user.user_metadata?.full_name || 'Staff',
+        completionPayload,
+      });
+
       // Update rental status
       const { data: updatedRental, error: updateError } = await supabase
         .from('app_4c3a7a6153_rentals')
-        .update({
-          rental_status: 'completed',
-          updated_at: new Date().toISOString()
-        })
+        .update(completionPayload)
         .eq('id', rentalId)
         .select()
         .single();
@@ -214,14 +225,34 @@ class RentalClosingService {
         overrideReason: reason
       });
 
+      const { data: currentRental, error: currentRentalError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .select('*')
+        .eq('id', rentalId)
+        .single();
+
+      if (currentRentalError) throw currentRentalError;
+
+      const completionPayload = {
+        rental_status: 'completed',
+        updated_at: new Date().toISOString(),
+        notes: `${currentRental?.notes || ''}\n\n[ADMIN OVERRIDE] Closed without video by ${user.email}. Reason: ${reason}`
+      };
+
+      await createRentalCompletionSnapshot({
+        supabase,
+        rental: currentRental,
+        rentalId,
+        actorUserId: user.id,
+        actorName: user.email || user.user_metadata?.full_name || 'Staff',
+        reason: 'before_admin_override_completion',
+        completionPayload,
+      });
+
       // Update rental with override flag
       const { data: updatedRental, error: updateError } = await supabase
         .from('app_4c3a7a6153_rentals')
-        .update({
-          rental_status: 'completed',
-          updated_at: new Date().toISOString(),
-          notes: `${updatedRental?.notes || ''}\n\n[ADMIN OVERRIDE] Closed without video by ${user.email}. Reason: ${reason}`
-        })
+        .update(completionPayload)
         .eq('id', rentalId)
         .select()
         .single();

@@ -30,6 +30,13 @@ const RECEIPT_BANKING_DETAILS = {
   rib: '007640000537500000122321',
 };
 
+const shouldPreferLivePackageConfig = (rental = {}) => {
+  if (rental?.__prefer_live_package_config === true) return true;
+  if (rental?.__prefer_live_package_config === false) return false;
+  const status = String(rental?.rental_status || rental?.status || '').toLowerCase();
+  return !['completed', 'cancelled', 'canceled', 'closed', 'archived'].includes(status);
+};
+
 const getRentalKilometerPackage = (rental) => {
   const embeddedIncludedKm = Number(
     rental?.included_kilometers_applied ??
@@ -55,7 +62,11 @@ const getRentalKilometerPackage = (rental) => {
         total_included_kilometers_snapshot: embeddedIncludedKm,
       }
     : null;
-  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package || fallbackPackage);
+  const pkg = buildRentalBookedPackageSnapshot(
+    rental,
+    rental?.package || fallbackPackage,
+    { preferLivePackageConfig: shouldPreferLivePackageConfig(rental) }
+  );
   if (!pkg) return null;
 
   const hasLinkedPackage = Boolean(
@@ -1181,8 +1192,9 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     0
   );
   const packageExtraKmRate = Number(
-    receiptDistanceUpgrade?.finalPackage?.extraKmRate ??
-    receiptDistanceUpgrade?.finalPackage?.extra_km_rate ??
+    receiptDistanceUpgrade?.originalPackageExtraKmRate ??
+    receiptDistanceUpgrade?.previousPackage?.extraKmRate ??
+    receiptDistanceUpgrade?.previousPackage?.extra_km_rate ??
     receiptSimplePricing?.selectedPackage?.extraKmRate ??
     receiptSimplePricing?.selectedPackage?.extra_km_rate ??
     kilometerPackage?.extra_km_rate ??
@@ -1268,19 +1280,42 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       : { bg: '#fee2e2', fg: '#b91c1c' };
 
   const PricingStoryDisplay = () => {
+    const hasAutoUpgradeStory = Boolean(receiptDistanceUpgrade);
+    const autoUpgradeOriginalLimit = Number(
+      receiptDistanceUpgrade?.originalPackageLimitKm ||
+      receiptDistanceUpgrade?.previousLimit ||
+      0
+    );
+    const autoUpgradeAppliedLimit = Number(
+      receiptDistanceUpgrade?.appliedPackageLimitKm ||
+      receiptDistanceUpgrade?.finalLimit ||
+      packageBreakdown?.totalIncludedKm ||
+      0
+    );
+    const autoUpgradeUsageKm = Number(receiptDistanceUpgrade?.totalDistanceKm || usageDistanceKm || 0);
+    const autoUpgradeExtraKmWithoutUpgrade = Math.max(0, autoUpgradeUsageKm - autoUpgradeOriginalLimit);
+    const autoUpgradeOverageWithoutUpgrade = autoUpgradeExtraKmWithoutUpgrade * packageExtraKmRate;
+    const autoUpgradeCostWithoutUpgrade = packageOriginalPrice + autoUpgradeOverageWithoutUpgrade;
+    const autoUpgradeSavings = Math.max(0, autoUpgradeCostWithoutUpgrade - packageAppliedPrice);
+    const autoUpgradeDifference = Math.max(0, packageAppliedPrice - autoUpgradeCostWithoutUpgrade);
     const packageDurationUnitLabel = packageBreakdown?.isDaily
       ? tr('day', 'jour')
       : tr('hour', 'heure');
     const packageDurationLabel = packageBreakdown
       ? `${packageBreakdown.duration} ${packageDurationUnitLabel}${packageBreakdown.duration > 1 ? 's' : ''}`
       : formatRentalDurationSummary(rental, tr);
-    const packageCoverageLabel = (
-      hasPackage &&
-      packageBreakdown?.includedKm > 0 &&
-      packageBreakdown?.totalIncludedKm > 0
-    )
-      ? `${formatReceiptKilometers(packageBreakdown.includedKm)} km/${packageDurationUnitLabel} × ${packageBreakdown.duration} ${packageDurationUnitLabel}${packageBreakdown.duration > 1 ? 's' : ''} = ${formatReceiptKilometers(packageBreakdown.totalIncludedKm)} km ${tr('included', 'inclus')}`
-      : null;
+    const packageCoverageLabel = hasAutoUpgradeStory
+      ? tr(
+          `${formatReceiptKilometers(autoUpgradeOriginalLimit)} km initial → ${formatReceiptKilometers(autoUpgradeAppliedLimit)} km applied`,
+          `${formatReceiptKilometers(autoUpgradeOriginalLimit)} km initial → ${formatReceiptKilometers(autoUpgradeAppliedLimit)} km appliqués`
+        )
+      : (
+        hasPackage &&
+        packageBreakdown?.includedKm > 0 &&
+        packageBreakdown?.totalIncludedKm > 0
+      )
+        ? `${formatReceiptKilometers(packageBreakdown.includedKm)} km/${packageDurationUnitLabel} × ${packageBreakdown.duration} ${packageDurationUnitLabel}${packageBreakdown.duration > 1 ? 's' : ''} = ${formatReceiptKilometers(packageBreakdown.totalIncludedKm)} km ${tr('included', 'inclus')}`
+        : null;
 
     const detailsRows = [
       {
@@ -1412,6 +1447,88 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               ))}
             </div>
 
+            {hasAutoUpgradeStory && (
+              <div style={{ marginBottom: '16px', padding: '16px', borderRadius: '14px', backgroundColor: '#ecfdf5', border: '1px solid #86efac' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', marginBottom: '10px' }}>
+                  <div>
+                    <div style={{ fontSize: '12px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.7px', color: '#047857', marginBottom: '6px' }}>
+                      {tr('Auto-upgrade applied', 'Surclassement automatique appliqué')}
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#064e3b', lineHeight: 1.6 }}>
+                      {tr(
+                        `The initial rental was upgraded by the system because ${formatReceiptKilometers(autoUpgradeUsageKm)} km passed the original ${formatReceiptKilometers(autoUpgradeOriginalLimit)} km limit.`,
+                        `La location initiale a été surclassée par le système car ${formatReceiptKilometers(autoUpgradeUsageKm)} km ont dépassé la limite initiale de ${formatReceiptKilometers(autoUpgradeOriginalLimit)} km.`
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ whiteSpace: 'nowrap', borderRadius: '999px', backgroundColor: '#d1fae5', color: '#047857', padding: '8px 12px', fontSize: '12px', fontWeight: 900 }}>
+                    {tr('Best package', 'Meilleur forfait')}
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px' }}>
+                  <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#64748b', marginBottom: '5px' }}>
+                      {tr('Initial rental', 'Location initiale')}
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a', lineHeight: 1.45 }}>
+                      {receiptDistanceUpgrade.originalPackageName || tr('Original package', 'Forfait initial')}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.55 }}>
+                      {formatReceiptKilometers(autoUpgradeOriginalLimit)} km • {formatCurrency(packageOriginalPrice)} MAD
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#64748b', marginBottom: '5px' }}>
+                      {tr('Without upgrade', 'Sans surclassement')}
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a', lineHeight: 1.45 }}>
+                      {formatCurrency(autoUpgradeCostWithoutUpgrade)} MAD
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.55 }}>
+                      {formatCurrency(packageOriginalPrice)} MAD + {formatReceiptKilometers(autoUpgradeExtraKmWithoutUpgrade)} km × {formatCurrency(packageExtraKmRate)} MAD
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#047857', marginBottom: '5px' }}>
+                      {tr('Auto-upgraded package', 'Forfait surclassé')}
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 900, color: '#047857', lineHeight: 1.45 }}>
+                      {receiptDistanceUpgrade.appliedPackageName || packageUsedLabel}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#047857', lineHeight: 1.55 }}>
+                      {formatReceiptKilometers(autoUpgradeAppliedLimit)} km • {formatCurrency(packageAppliedPrice)} MAD
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#047857', marginBottom: '5px' }}>
+                      {autoUpgradeSavings > 0
+                        ? tr('Customer savings', 'Économie client')
+                        : tr('Extra km covered', 'Km extra couverts')}
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 900, color: '#047857', lineHeight: 1.45 }}>
+                      {autoUpgradeSavings > 0
+                        ? `${formatCurrency(autoUpgradeSavings)} MAD`
+                        : `${formatReceiptKilometers(autoUpgradeExtraKmWithoutUpgrade)} km • ${formatCurrency(autoUpgradeOverageWithoutUpgrade)} MAD value`}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#047857', lineHeight: 1.55 }}>
+                      {autoUpgradeSavings > 0
+                        ? tr('Saved compared with paying extra kilometers.', 'Économisé par rapport au paiement des kilomètres extra.')
+                        : autoUpgradeDifference > 0
+                          ? tr(
+                              `Upgrade difference: +${formatCurrency(autoUpgradeDifference)} MAD for the ${formatReceiptKilometers(autoUpgradeAppliedLimit)} km package.`,
+                              `Différence du surclassement : +${formatCurrency(autoUpgradeDifference)} MAD pour le forfait ${formatReceiptKilometers(autoUpgradeAppliedLimit)} km.`
+                            )
+                          : tr('Best matching package applied for this distance.', 'Meilleur forfait correspondant appliqué pour cette distance.')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {hasMeaningfulManualPriceOverride && (
               <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe' }}>
                 <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#1d4ed8', marginBottom: '8px' }}>
@@ -1468,6 +1585,16 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     const finalPackageName = breakdown.name;
     const appliedPackagePrice = Number(upgradeSummary?.appliedPackagePrice || pricingSummary?.totalPrice || breakdown.packageTotal || 0);
     const originalPackagePrice = Number(upgradeSummary?.originalPackagePrice || 0);
+    const upgradeAmount = Number(upgradeSummary?.upgradeAmount || 0);
+    const upgradeCoveredKm = Number(upgradeSummary?.coveredKm || 0);
+    const originalLimit = Number(upgradeSummary?.originalPackageLimitKm || upgradeSummary?.previousLimit || 0);
+    const appliedLimit = Number(upgradeSummary?.appliedPackageLimitKm || upgradeSummary?.finalLimit || finalLimit || 0);
+    const extraKmRate = Number(upgradeSummary?.originalPackageExtraKmRate || overageSummary?.rate || breakdown.extraRate || 0);
+    const kmAboveOriginalLimit = Math.max(0, kmUsed - originalLimit);
+    const overageWithoutUpgrade = kmAboveOriginalLimit * extraKmRate;
+    const costWithoutUpgrade = originalPackagePrice + overageWithoutUpgrade;
+    const autoUpgradeSavings = Math.max(0, costWithoutUpgrade - appliedPackagePrice);
+    const upgradeDifference = Math.max(0, appliedPackagePrice - costWithoutUpgrade);
 
     return (
       <div style={{
@@ -1612,12 +1739,82 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 border: '1px solid rgba(255,255,255,0.18)'
               }}>
                 <div style={{ fontSize: '12px', color: '#ffffff', fontWeight: 700, marginBottom: '6px' }}>
-                  {tr('Automatic distance update', 'Mise à jour automatique de distance')}
+                  {tr('Auto-upgrade applied', 'Surclassement automatique appliqué')}
                 </div>
                 <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.9)', lineHeight: 1.5 }}>
                   {tr(
-                    `Original package: ${upgradeSummary.originalPackageName || 'Original package'} (${upgradeSummary.originalPackageLimitKm || upgradeSummary.previousLimit} km, ${formatCurrency(originalPackagePrice)} MAD). The trip reached ${upgradeSummary.totalDistanceKm || kmUsed} km, so billing moved to ${upgradeSummary.appliedPackageName || finalPackageName} (${upgradeSummary.appliedPackageLimitKm || upgradeSummary.finalLimit} km, ${formatCurrency(appliedPackagePrice)} MAD).`,
-                    `Forfait initial : ${upgradeSummary.originalPackageName || 'Forfait initial'} (${upgradeSummary.originalPackageLimitKm || upgradeSummary.previousLimit} km, ${formatCurrency(originalPackagePrice)} MAD). Le trajet a atteint ${upgradeSummary.totalDistanceKm || kmUsed} km, donc la facturation passe à ${upgradeSummary.appliedPackageName || finalPackageName} (${upgradeSummary.appliedPackageLimitKm || upgradeSummary.finalLimit} km, ${formatCurrency(appliedPackagePrice)} MAD).`
+                    `The initial rental was ${upgradeSummary.originalPackageName || 'Original package'} (${originalLimit} km, ${formatCurrency(originalPackagePrice)} MAD). The trip reached ${upgradeSummary.totalDistanceKm || kmUsed} km, so our system upgraded the rental to ${upgradeSummary.appliedPackageName || finalPackageName} (${appliedLimit} km, ${formatCurrency(appliedPackagePrice)} MAD).`,
+                    `La location initiale était ${upgradeSummary.originalPackageName || 'Forfait initial'} (${originalLimit} km, ${formatCurrency(originalPackagePrice)} MAD). Le trajet a atteint ${upgradeSummary.totalDistanceKm || kmUsed} km, donc notre système a surclassé la location vers ${upgradeSummary.appliedPackageName || finalPackageName} (${appliedLimit} km, ${formatCurrency(appliedPackagePrice)} MAD).`
+                  )}
+                </div>
+                <div style={{
+                  marginTop: '10px',
+                  paddingTop: '10px',
+                  borderTop: '1px solid rgba(255,255,255,0.18)',
+                  display: 'grid',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', color: 'rgba(255,255,255,0.92)' }}>
+                    <span>{tr(`Initial rental · ${originalLimit} km`, `Location initiale · ${originalLimit} km`)}</span>
+                    <strong style={{ color: '#fff' }}>{formatCurrency(originalPackagePrice)} MAD</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', color: 'rgba(255,255,255,0.92)' }}>
+                    <span>
+                      {tr(
+                        `Without upgrade · ${kmAboveOriginalLimit} extra km × ${formatCurrency(extraKmRate)} MAD`,
+                        `Sans surclassement · ${kmAboveOriginalLimit} km extra × ${formatCurrency(extraKmRate)} MAD`
+                      )}
+                    </span>
+                    <strong style={{ color: '#fff' }}>{formatCurrency(costWithoutUpgrade)} MAD</strong>
+                  </div>
+                  {upgradeAmount > 0 ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', color: '#DCFCE7' }}>
+                      <span>
+                        {tr(
+                          `Auto upgrade${upgradeCoveredKm > 0 ? ` · ${upgradeCoveredKm} km covered` : ''}`,
+                          `Surclassement auto${upgradeCoveredKm > 0 ? ` · ${upgradeCoveredKm} km couverts` : ''}`
+                        )}
+                      </span>
+                      <strong>+{formatCurrency(upgradeAmount)} MAD</strong>
+                    </div>
+                  ) : null}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', color: '#FFD700' }}>
+                    <span>{tr(`Final package · ${appliedLimit} km`, `Forfait final · ${appliedLimit} km`)}</span>
+                    <strong>{formatCurrency(appliedPackagePrice)} MAD</strong>
+                  </div>
+                  {autoUpgradeSavings > 0 ? (
+                    <div style={{
+                      marginTop: '4px',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(220,252,231,0.18)',
+                      border: '1px solid rgba(187,247,208,0.38)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      fontSize: '12px',
+                      color: '#DCFCE7'
+                    }}>
+                      <span>{tr('Customer savings from auto-upgrade', 'Économie client grâce au surclassement')}</span>
+                      <strong>{formatCurrency(autoUpgradeSavings)} MAD</strong>
+                    </div>
+                  ) : (
+                    <div style={{
+                      marginTop: '4px',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(255,255,255,0.1)',
+                      border: '1px solid rgba(255,255,255,0.16)',
+                      fontSize: '12px',
+                      color: 'rgba(255,255,255,0.88)'
+                    }}>
+                      {upgradeDifference > 0
+                        ? tr(
+                            `${kmAboveOriginalLimit} extra km are covered (${formatCurrency(overageWithoutUpgrade)} MAD value). Upgrade difference: +${formatCurrency(upgradeDifference)} MAD for the ${appliedLimit} km package.`,
+                            `${kmAboveOriginalLimit} km extra sont couverts (valeur ${formatCurrency(overageWithoutUpgrade)} MAD). Différence du surclassement : +${formatCurrency(upgradeDifference)} MAD pour le forfait ${appliedLimit} km.`
+                          )
+                        : tr('Auto-upgrade kept the best available package for this distance.', 'Le surclassement automatique a conservé le meilleur forfait disponible pour cette distance.')}
+                    </div>
                   )}
                 </div>
               </div>
@@ -3098,15 +3295,22 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               <td style={{ padding: '12px', textAlign: 'right' }}>
                 <div style={{ fontWeight: '600' }}>
                   {formatCurrency(
-                    (() => {
-                      const pkg = rental.package;
-                      const rate = pkg ? (parseFloat(pkg.fixed_amount) || rental.unit_price || 0) : (rental.unit_price || 0);
-                      return getEffectiveRentalBaseTotal(rental, hasPackage, rate);
-                    })()
+                    receiptDistanceUpgrade
+                      ? packageAppliedPrice
+                      : (() => {
+                          const pkg = rental.package;
+                          const rate = pkg ? (parseFloat(pkg.fixed_amount) || rental.unit_price || 0) : (rental.unit_price || 0);
+                          return getEffectiveRentalBaseTotal(rental, hasPackage, rate);
+                        })()
                   )}
                 </div>
                 <div style={{ fontSize: '11px', color: '#718096' }}>
-                  {isFlatHourlyTierRental(rental, hasPackage)
+                  {receiptDistanceUpgrade
+                    ? tr(
+                        `Applied package: ${receiptDistanceUpgrade.appliedPackageLimitKm || receiptDistanceUpgrade.finalLimit || packageBreakdown?.totalIncludedKm || 0} km`,
+                        `Forfait appliqué : ${receiptDistanceUpgrade.appliedPackageLimitKm || receiptDistanceUpgrade.finalLimit || packageBreakdown?.totalIncludedKm || 0} km`
+                      )
+                    : isFlatHourlyTierRental(rental, hasPackage)
                     ? tr('Fixed 1.5-hour tier total', 'Total fixe palier 1,5 heure')
                     : `${formatCurrency(rental.unit_price || 0)} MAD × ${getDisplayRentalDurationUnits(rental)} ${rental.rental_type === 'hourly' ? 'hour(s)' : 'day(s)'}`}
                 </div>

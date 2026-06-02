@@ -621,6 +621,7 @@ const SettingsPage = () => {
     rentalGracePeriodMinutes: 60,
     rentalSoftLockMinutes: 45,
     extraHourThresholdMinutes: 25,
+    lostVehicleDocumentPenaltyMad: 4000,
     whatsappEnabled: true,
     emailNotifications: true,
     smsNotifications: false,
@@ -1016,6 +1017,7 @@ const SettingsPage = () => {
         rentalGracePeriodMinutes: Number(mergedSettings.rentalGracePeriodMinutes ?? mergedSettings.rental_grace_period_minutes) || 120,
         rentalSoftLockMinutes: Number(mergedSettings.rentalSoftLockMinutes ?? mergedSettings.rental_soft_lock_minutes) || 90,
         extraHourThresholdMinutes: Number(mergedSettings.extraHourThresholdMinutes ?? mergedSettings.extra_hour_threshold_minutes) || 25,
+        lostVehicleDocumentPenaltyMad: Math.max(0, Number(mergedSettings.lostVehicleDocumentPenaltyMad ?? mergedSettings.lost_vehicle_document_penalty_mad) || 4000),
         whatsappEnabled: mergedSettings.whatsappEnabled !== false,
         emailNotifications: mergedSettings.emailNotifications !== false,
         smsNotifications: Boolean(mergedSettings.smsNotifications),
@@ -1570,14 +1572,17 @@ const SettingsPage = () => {
     const normalizedGraceMinutes = Math.max(0, Math.min(120, Number(notificationsForm.rentalGracePeriodMinutes) || 0));
     const normalizedSoftLockMinutes = Math.max(0, Math.min(normalizedGraceMinutes || 120, Number(notificationsForm.rentalSoftLockMinutes) || 0));
     const normalizedExtraHourMinutes = Math.max(0, Math.min(120, Number(notificationsForm.extraHourThresholdMinutes) || 0));
+    const normalizedDocumentPenalty = Math.max(0, Math.min(50000, Number(notificationsForm.lostVehicleDocumentPenaltyMad) || 0));
 
     await persistSettings('Rental rules', {
       rentalGracePeriodMinutes: normalizedGraceMinutes,
       rentalSoftLockMinutes: normalizedSoftLockMinutes,
       extraHourThresholdMinutes: normalizedExtraHourMinutes,
+      lostVehicleDocumentPenaltyMad: normalizedDocumentPenalty,
       rental_grace_period_minutes: normalizedGraceMinutes,
       rental_soft_lock_minutes: normalizedSoftLockMinutes,
       extra_hour_threshold_minutes: normalizedExtraHourMinutes,
+      lost_vehicle_document_penalty_mad: normalizedDocumentPenalty,
     });
   };
 
@@ -2434,6 +2439,27 @@ const SettingsPage = () => {
               {isFrench
                 ? "Après ce délai, l’heure suivante est facturée."
                 : 'After this time, the next hour is charged.'}
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              {isFrench ? 'Pénalité document perdu (MAD)' : 'Lost Vehicle Document Penalty (MAD)'}
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="50000"
+              step="50"
+              className={FIELD_CLASS}
+              value={notificationsForm.lostVehicleDocumentPenaltyMad}
+              disabled={!canEdit}
+              onChange={(e) => setNotificationsForm((current) => ({ ...current, lostVehicleDocumentPenaltyMad: e.target.value }))}
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              {isFrench
+                ? 'Appliquée quand les documents du véhicule sont marqués manquants au retour.'
+                : 'Applied when registration or insurance documents are marked missing at vehicle return.'}
             </p>
           </div>
         </div>

@@ -3,8 +3,9 @@ const toPositiveNumber = (value) => {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
 };
 
-export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage = null) => {
+export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage = null, options = {}) => {
   const basePackage = linkedPackage || rentalLike?.package || null;
+  const preferLivePackageConfig = Boolean(options?.preferLivePackageConfig);
   const snapshotDurationUnits =
     basePackage?.duration_units ??
     basePackage?.durationUnits ??
@@ -25,19 +26,41 @@ export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage 
     basePackage?.displayName ||
     '';
   const snapshotRatePerUnit =
-    toPositiveNumber(rentalLike?.package_rate_per_unit) ||
-    toPositiveNumber(rentalLike?.selected_package_rate_per_unit) ||
-    toPositiveNumber(rentalLike?.selected_package_fixed_amount) ||
-    toPositiveNumber(basePackage?.fixed_amount) ||
-    toPositiveNumber(basePackage?.fixedAmount) ||
-    toPositiveNumber(rentalLike?.unit_price);
+    preferLivePackageConfig
+      ? (
+          toPositiveNumber(basePackage?.fixed_amount) ||
+          toPositiveNumber(basePackage?.fixedAmount) ||
+          toPositiveNumber(rentalLike?.package_rate_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_rate_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_fixed_amount) ||
+          toPositiveNumber(rentalLike?.unit_price)
+        )
+      : (
+          toPositiveNumber(rentalLike?.package_rate_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_rate_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_fixed_amount) ||
+          toPositiveNumber(basePackage?.fixed_amount) ||
+          toPositiveNumber(basePackage?.fixedAmount) ||
+          toPositiveNumber(rentalLike?.unit_price)
+        );
   const snapshotIncludedKmPerUnit =
-    toPositiveNumber(rentalLike?.package_included_km_per_unit) ||
-    toPositiveNumber(rentalLike?.selected_package_included_km_per_unit) ||
-    toPositiveNumber(basePackage?.included_kilometers) ||
-    toPositiveNumber(basePackage?.includedKilometers) ||
-    toPositiveNumber(basePackage?.included_km) ||
-    toPositiveNumber(basePackage?.includedKm);
+    preferLivePackageConfig
+      ? (
+          toPositiveNumber(basePackage?.included_kilometers) ||
+          toPositiveNumber(basePackage?.includedKilometers) ||
+          toPositiveNumber(basePackage?.included_km) ||
+          toPositiveNumber(basePackage?.includedKm) ||
+          toPositiveNumber(rentalLike?.package_included_km_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_included_km_per_unit)
+        )
+      : (
+          toPositiveNumber(rentalLike?.package_included_km_per_unit) ||
+          toPositiveNumber(rentalLike?.selected_package_included_km_per_unit) ||
+          toPositiveNumber(basePackage?.included_kilometers) ||
+          toPositiveNumber(basePackage?.includedKilometers) ||
+          toPositiveNumber(basePackage?.included_km) ||
+          toPositiveNumber(basePackage?.includedKm)
+        );
   const storedBookedTotalIncludedKm =
     toPositiveNumber(rentalLike?.package_total_included_km) ||
     toPositiveNumber(rentalLike?.selected_package_total_included_km);
@@ -49,14 +72,21 @@ export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage 
       ? toPositiveNumber(rentalLike?.included_kilometers_applied)
       : 0;
   const snapshotTotalIncludedKm =
-    expectedBookedTotalIncludedKm ||
-    storedBookedTotalIncludedKm ||
-    appliedOnlyFallback;
+    expectedBookedTotalIncludedKm || storedBookedTotalIncludedKm || appliedOnlyFallback;
   const snapshotExtraKmRate =
-    toPositiveNumber(rentalLike?.package_extra_rate) ||
-    toPositiveNumber(basePackage?.extra_km_rate) ||
-    toPositiveNumber(basePackage?.extraKmRate) ||
-    toPositiveNumber(rentalLike?.extra_km_rate_applied);
+    preferLivePackageConfig
+      ? (
+          toPositiveNumber(basePackage?.extra_km_rate) ||
+          toPositiveNumber(basePackage?.extraKmRate) ||
+          toPositiveNumber(rentalLike?.package_extra_rate) ||
+          toPositiveNumber(rentalLike?.extra_km_rate_applied)
+        )
+      : (
+          toPositiveNumber(rentalLike?.package_extra_rate) ||
+          toPositiveNumber(basePackage?.extra_km_rate) ||
+          toPositiveNumber(basePackage?.extraKmRate) ||
+          toPositiveNumber(rentalLike?.extra_km_rate_applied)
+        );
 
   if (
     !snapshotId &&

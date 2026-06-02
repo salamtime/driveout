@@ -1711,7 +1711,12 @@ class FuelTransactionService {
 
     const deduped = new Map();
     for (const row of hydrated) {
-      const key = String(row.id);
+      const key = [
+        row.source || row.transaction_type || 'vehicle_refill',
+        row.refill_date || row.transaction_date || row.created_at || '',
+        row.vehicle_id || '',
+        row.id || '',
+      ].join('|');
       if (!deduped.has(key)) {
         deduped.set(key, row);
       }
@@ -3051,6 +3056,53 @@ class FuelTransactionService {
     ].join('|');
   }
 
+  buildTransactionFuzzyDedupKey(transaction = {}) {
+    const vehicleId = transaction.vehicle_id || 'tank';
+    const amount =
+      Number(transaction.amount) ||
+      Number(transaction.liters) ||
+      Number(transaction.liters_added) ||
+      Number(transaction.liters_taken) ||
+      0;
+    const cost =
+      Number(transaction.cost) ||
+      Number(transaction.total_cost) ||
+      0;
+
+    return [
+      transaction.transaction_type || 'unknown',
+      String(vehicleId),
+      roundTo(amount, 3),
+      roundTo(cost, 2),
+      transaction.odometer_reading || '',
+    ].join('|');
+  }
+
+  isDuplicateFuelOperationLog(mappedLog = {}, baseTransactions = []) {
+    if (!['tank_refill', 'vehicle_refill', 'withdrawal', 'tank_out'].includes(mappedLog.transaction_type)) {
+      return false;
+    }
+
+    const logFuzzyKey = this.buildTransactionFuzzyDedupKey(mappedLog);
+    const logTime = new Date(mappedLog.transaction_date || mappedLog.created_at || 0).getTime();
+
+    return (baseTransactions || []).some((baseTransaction) => {
+      if (this.buildTransactionFuzzyDedupKey(baseTransaction) !== logFuzzyKey) {
+        return false;
+      }
+
+      const baseTime = new Date(baseTransaction.transaction_date || baseTransaction.created_at || 0).getTime();
+      if (!Number.isFinite(logTime) || !Number.isFinite(baseTime)) {
+        return true;
+      }
+
+      // Direct-fill/tank audit logs are written immediately after the source row.
+      // Older rows can differ by a few seconds, so suppress them as duplicates
+      // when the business payload matches within a short operational window.
+      return Math.abs(logTime - baseTime) <= 10 * 60 * 1000;
+    });
+  }
+
   deriveRentalFuelLogAmount(log = {}, openingSnapshotLiters = null) {
     const linesBefore = log.fuel_lines_before ?? null;
     const linesAfter = log.fuel_lines_after ?? null;
@@ -3216,6 +3268,7 @@ class FuelTransactionService {
 
       const transactionMap = new Map();
       const baseTransactionKeys = new Set();
+      const baseTransactions = [];
 
       for (const refill of refills) {
         const mapped = this.mapTransactionRecord({
@@ -3224,6 +3277,7 @@ class FuelTransactionService {
         });
         transactionMap.set(mapped.id, mapped);
         baseTransactionKeys.add(this.buildTransactionDedupKey(mapped));
+        baseTransactions.push(mapped);
       }
 
       for (const withdrawal of withdrawals) {
@@ -3233,6 +3287,7 @@ class FuelTransactionService {
         });
         transactionMap.set(mapped.id, mapped);
         baseTransactionKeys.add(this.buildTransactionDedupKey(mapped));
+        baseTransactions.push(mapped);
       }
 
       for (const log of operationLogs) {
@@ -3243,7 +3298,10 @@ class FuelTransactionService {
           });
           const shouldSuppressAsDuplicate =
             ['tank_refill', 'vehicle_refill', 'withdrawal', 'tank_out'].includes(mapped.transaction_type) &&
-            baseTransactionKeys.has(this.buildTransactionDedupKey(mapped));
+            (
+              baseTransactionKeys.has(this.buildTransactionDedupKey(mapped)) ||
+              this.isDuplicateFuelOperationLog(mapped, baseTransactions)
+            );
 
           if (shouldSuppressAsDuplicate) {
             continue;
@@ -3304,7 +3362,10 @@ class FuelTransactionService {
         });
         const shouldSuppressAsDuplicate =
           ['tank_refill', 'vehicle_refill', 'withdrawal', 'tank_out'].includes(mapped.transaction_type) &&
-          baseTransactionKeys.has(this.buildTransactionDedupKey(mapped));
+          (
+            baseTransactionKeys.has(this.buildTransactionDedupKey(mapped)) ||
+            this.isDuplicateFuelOperationLog(mapped, baseTransactions)
+          );
 
         if (shouldSuppressAsDuplicate) {
           continue;

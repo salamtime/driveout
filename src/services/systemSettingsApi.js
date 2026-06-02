@@ -12,6 +12,7 @@ const OPTIONAL_SETTINGS_COLUMNS = new Set([
   'daily_late_return_full_day_threshold_hours',
   'rental_details_default_view',
   'tenant_deletion_retention_days',
+  'lost_vehicle_document_penalty_mad',
 ]);
 
 export const defaultSystemSettings = {
@@ -92,6 +93,7 @@ export const defaultSystemSettings = {
   messagingAllowCameraCapture: true,
   rentalDetailsDefaultView: 'standard',
   tenantDeletionRetentionDays: 90,
+  lostVehicleDocumentPenaltyMad: 4000,
   };
 
 const normalizeSettings = (value = {}) => {
@@ -117,6 +119,7 @@ const normalizeSettings = (value = {}) => {
   merged.dailyLateReturnHourlyPenaltyMad = Math.max(0, Math.min(5000, Number(merged.dailyLateReturnHourlyPenaltyMad ?? defaultSystemSettings.dailyLateReturnHourlyPenaltyMad) || defaultSystemSettings.dailyLateReturnHourlyPenaltyMad));
   merged.dailyLateReturnFullDayThresholdHours = Math.max(1, Math.min(24, Number(merged.dailyLateReturnFullDayThresholdHours ?? defaultSystemSettings.dailyLateReturnFullDayThresholdHours) || defaultSystemSettings.dailyLateReturnFullDayThresholdHours));
   merged.tenantDeletionRetentionDays = Math.max(1, Math.min(365, Number(merged.tenantDeletionRetentionDays ?? defaultSystemSettings.tenantDeletionRetentionDays) || defaultSystemSettings.tenantDeletionRetentionDays));
+  merged.lostVehicleDocumentPenaltyMad = Math.max(0, Math.min(50000, Number(merged.lostVehicleDocumentPenaltyMad ?? defaultSystemSettings.lostVehicleDocumentPenaltyMad) || defaultSystemSettings.lostVehicleDocumentPenaltyMad));
   merged.messagingPhotoSharingEnabled = Boolean(merged.messagingPhotoSharingEnabled);
   merged.messagingAllowCameraCapture = Boolean(merged.messagingAllowCameraCapture);
   merged.autoSendContractEmailAfterCreation = Boolean(merged.autoSendContractEmailAfterCreation);
@@ -206,6 +209,7 @@ const fromTableRow = (row = {}) => normalizeSettings({
   messagingAllowCameraCapture: row.messaging_allow_camera_capture,
   rentalDetailsDefaultView: row.rental_details_default_view,
   tenantDeletionRetentionDays: row.tenant_deletion_retention_days,
+  lostVehicleDocumentPenaltyMad: row.lost_vehicle_document_penalty_mad,
 });
 
 const toTableRow = (settings = {}) => {
@@ -289,6 +293,7 @@ const toTableRow = (settings = {}) => {
     messaging_allow_camera_capture: normalized.messagingAllowCameraCapture,
     rental_details_default_view: normalized.rentalDetailsDefaultView,
     tenant_deletion_retention_days: normalized.tenantDeletionRetentionDays,
+    lost_vehicle_document_penalty_mad: normalized.lostVehicleDocumentPenaltyMad,
   };
 };
 

@@ -214,6 +214,29 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
     return isVehicleMediaUpload(item);
   };
 
+  const getVehicleMediaSubtype = (item) => {
+    const probeText = [
+      item?.storage_path,
+      item?.original_filename,
+      item?.file_name,
+      item?.public_url,
+    ]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase())
+      .join(' ');
+
+    if (probeText.includes('registration')) {
+      return tr('Registration', 'Carte grise');
+    }
+    if (probeText.includes('insurance')) {
+      return tr('Insurance', 'Assurance');
+    }
+    if (isPostCompletionMedia(item)) {
+      return tr('Vehicle condition', 'État véhicule');
+    }
+    return '';
+  };
+
   // Load all media (images and videos) for the rental
   useEffect(() => {
     if (!rental?.id) {
@@ -584,6 +607,7 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
     const isHeicImage = item.isImage && isHeicMediaItem(item);
     const isGenerating = !item.isImage && thumbnailStates[item.id] === 'generating';
     const hasError = !item.isImage && thumbnailStates[item.id] === 'error';
+    const vehicleMediaSubtype = getVehicleMediaSubtype(item);
 
     return (
       <div
@@ -661,6 +685,12 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
           </div>
         )}
 
+        {vehicleMediaSubtype && (
+          <div className="absolute right-1 top-7 max-w-[calc(100%-0.5rem)] truncate rounded-full bg-violet-700/90 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
+            {vehicleMediaSubtype}
+          </div>
+        )}
+
         {/* Download button on hover */}
         <button
           type="button"
@@ -695,6 +725,7 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   const ListViewItem = ({ item }) => {
     const thumbnailSrc = item.isImage ? item.url : (item.thumbnailUrl || item.generatedThumbnail);
     const isHeicImage = item.isImage && isHeicMediaItem(item);
+    const vehicleMediaSubtype = getVehicleMediaSubtype(item);
 
     return (
       <div className="flex items-center gap-3 p-2 bg-white border rounded-lg hover:shadow-md transition-shadow">
@@ -732,6 +763,11 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
             <span className="text-xs text-gray-500">
               {item.isImage ? tr('Photo', 'Photo') : tr('Video', 'Vidéo')}
             </span>
+            {vehicleMediaSubtype && (
+              <Badge className="bg-violet-50 text-violet-700 text-[10px]">
+                {vehicleMediaSubtype}
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-gray-700 truncate">{item.original_filename}</p>
           <p className="text-xs text-gray-500">

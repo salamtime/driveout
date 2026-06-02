@@ -33,8 +33,6 @@ import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecy
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
   getRentalCollectedAmountInWindow,
-  parseAmountDueResolutionMeta,
-  resolveAmountDueBalanceState,
 } from '../../utils/rentalFinancials';
 import {
   readRentalsSchemaCapability,
@@ -791,23 +789,8 @@ const getRentalFinancialSnapshot = (rental) => {
   // Rental Details instead of replaying its own payment-entry math.
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
-  const rawDisplayedPaidAmount = Math.max(0, parseFloat(rental?.deposit_amount || 0) || 0);
-  const storedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-  const depositPaid = grossTotal > 0
-    ? Math.min(rawDisplayedPaidAmount, grossTotal)
-    : rawDisplayedPaidAmount;
-  const rawBalanceDue = Math.max(0, grossTotal - depositPaid);
-  const amountDueMeta = parseAmountDueResolutionMeta(rental);
-  const {
-    balanceDue,
-    companyDiscountAmount,
-  } = resolveAmountDueBalanceState({
-    amountDueMeta,
-    rawBalanceDue,
-    storedRemainingAmount,
-    depositPaid,
-  });
-  const finalGrandTotal = Math.max(0, grossTotal - companyDiscountAmount);
+  const balanceDue = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+  const finalGrandTotal = Math.max(0, grossTotal);
   const customerPaidAmount = Math.max(0, finalGrandTotal - balanceDue);
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,

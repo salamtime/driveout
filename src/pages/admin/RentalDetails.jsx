@@ -64,6 +64,11 @@ import { updateRentalRecordWithSchemaFallback } from '../../utils/rentalSchemaCa
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
+import {
+  createRentalCompletionSnapshot,
+  getLatestRentalCompletionSnapshot,
+  reinstateRentalFromCompletionSnapshot,
+} from '../../services/RentalCompletionSnapshotService';
 import appWarmupService from '../../services/AppWarmupService';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
 import { getCurrentOrganizationId, scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
@@ -81,6 +86,68 @@ import {
   readFirstAvailableStorageValue,
   removeStorageValues,
 } from '../../utils/rentalFlowStorage';
+
+const VEHICLE_MEDIA_CATEGORY_OPTIONS = [
+  {
+    value: 'vehicle_condition',
+    label: { en: 'Vehicle condition', fr: 'État du véhicule' },
+    description: {
+      en: 'Photos or videos of the vehicle body, controls, tires, and return condition.',
+      fr: 'Photos ou vidéos de la carrosserie, commandes, pneus et état de retour.',
+    },
+    storageSegment: 'condition',
+    filenamePrefix: 'vehicle_condition',
+  },
+  {
+    value: 'registration_document',
+    label: { en: 'Registration', fr: 'Carte grise' },
+    description: {
+      en: 'Capture the vehicle registration document handed with the rental.',
+      fr: 'Capturez la carte grise remise avec la location.',
+    },
+    storageSegment: 'registration',
+    filenamePrefix: 'vehicle_registration',
+  },
+  {
+    value: 'insurance_document',
+    label: { en: 'Insurance', fr: 'Assurance' },
+    description: {
+      en: 'Capture the insurance document handed with the rental.',
+      fr: "Capturez le document d'assurance remis avec la location.",
+    },
+    storageSegment: 'insurance',
+    filenamePrefix: 'vehicle_insurance',
+  },
+];
+
+const normalizeVehicleMediaCategory = (value) => (
+  VEHICLE_MEDIA_CATEGORY_OPTIONS.some((option) => option.value === value) ? value : 'vehicle_condition'
+);
+
+const getVehicleMediaCategoryMeta = (value) => (
+  VEHICLE_MEDIA_CATEGORY_OPTIONS.find((option) => option.value === normalizeVehicleMediaCategory(value)) ||
+  VEHICLE_MEDIA_CATEGORY_OPTIONS[0]
+);
+
+const MISSING_VEHICLE_DOCUMENT_OPTIONS = [
+  {
+    value: 'registration_document',
+    label: { en: 'Registration missing', fr: 'Carte grise manquante' },
+    shortLabel: { en: 'Registration', fr: 'Carte grise' },
+    reasonToken: 'vehicle registration document missing',
+  },
+  {
+    value: 'insurance_document',
+    label: { en: 'Insurance missing', fr: 'Assurance manquante' },
+    shortLabel: { en: 'Insurance', fr: 'Assurance' },
+    reasonToken: 'vehicle insurance document missing',
+  },
+];
+
+const getMissingVehicleDocumentMeta = (value) => (
+  MISSING_VEHICLE_DOCUMENT_OPTIONS.find((option) => option.value === value) ||
+  MISSING_VEHICLE_DOCUMENT_OPTIONS[0]
+);
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -764,10 +831,19 @@ const getRentalAttentionState = (rental, vehicleReport) => {
   };
 };
 
+const shouldPreferLivePackageConfig = (rental = {}) => {
+  const status = String(rental?.rental_status || rental?.status || '').toLowerCase();
+  return !['completed', 'cancelled', 'canceled', 'closed', 'archived'].includes(status);
+};
+
 const getRentalKilometerPackage = (rental, packageDetails) => {
   if (!isPackagePricingEnabled(rental)) return null;
 
-  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package || packageDetails);
+  const pkg = buildRentalBookedPackageSnapshot(
+    rental,
+    rental?.package || packageDetails,
+    { preferLivePackageConfig: shouldPreferLivePackageConfig(rental) }
+  );
   if (!pkg) return null;
 
   const hasLinkedPackage = Boolean(
@@ -882,6 +958,10 @@ const getPackageDisplayTotal = (rental = {}, pkg = null) => {
 const getBookedPackageSnapshotTotal = (rental = {}, pkg = null) => {
   const storedSnapshotTotal = getPackageContractBaseTotal(rental, pkg);
   const durationAdjustedPackageTotal = getPackageDisplayTotal(rental, pkg);
+
+  if (shouldPreferLivePackageConfig(rental)) {
+    return Math.max(0, Number(durationAdjustedPackageTotal || storedSnapshotTotal || 0) || 0);
+  }
 
   // Older package rows store the package price per package duration (for example
   // 399 MAD per 1 hour). The booked rental total must scale with the rental
@@ -1142,6 +1222,7 @@ const selectAppliedKilometerPackage = ({
       appliedLimit: 0,
       originalPrice: 0,
       appliedPrice: 0,
+      originalExtraRate: 0,
       appliedExtraRate: 0,
       upgraded: false,
       overageKm: 0,
@@ -1163,6 +1244,7 @@ const selectAppliedKilometerPackage = ({
       appliedLimit: Number.POSITIVE_INFINITY,
       originalPrice,
       appliedPrice: originalPrice,
+      originalExtraRate: 0,
       appliedExtraRate: 0,
       upgraded: false,
       overageKm: 0,
@@ -1219,6 +1301,7 @@ const selectAppliedKilometerPackage = ({
     const appliedPackage = originalPackage || null;
     const appliedLimit = Number.isFinite(originalLimit) ? originalLimit : 0;
     const appliedPrice = Number.isFinite(originalPrice) ? originalPrice : 0;
+    const originalExtraRate = Number.parseFloat(originalPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
     const appliedExtraRate = Number.parseFloat(appliedPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
     const overageKm = Number.isFinite(appliedLimit) ? Math.max(0, safeDistance - appliedLimit) : 0;
     const overageCharge = overageKm * appliedExtraRate;
@@ -1230,6 +1313,7 @@ const selectAppliedKilometerPackage = ({
       appliedLimit,
       originalPrice,
       appliedPrice,
+      originalExtraRate,
       appliedExtraRate,
       upgraded: false,
       overageKm,
@@ -1258,6 +1342,7 @@ const selectAppliedKilometerPackage = ({
   const appliedPrice = shouldKeepBookedPackage
     ? originalPrice
     : Math.max(Number(appliedOption?.totalPrice || 0) || 0, originalPrice);
+  const originalExtraRate = Number.parseFloat(originalPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
   const appliedExtraRate = Number.parseFloat(appliedPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
   const upgraded = Boolean(
     originalPackage?.id &&
@@ -1275,6 +1360,7 @@ const selectAppliedKilometerPackage = ({
     appliedLimit,
     originalPrice,
     appliedPrice,
+    originalExtraRate,
     appliedExtraRate,
     upgraded,
     overageKm,
@@ -2872,6 +2958,11 @@ export default function RentalDetails() {
   const [showPermanentDeleteRentalModal, setShowPermanentDeleteRentalModal] = useState(false);
   const [permanentDeleteConfirmation, setPermanentDeleteConfirmation] = useState('');
   const [isDeletingRentalContract, setIsDeletingRentalContract] = useState(false);
+  const [showReinstateRentalModal, setShowReinstateRentalModal] = useState(false);
+  const [latestCompletionSnapshot, setLatestCompletionSnapshot] = useState(null);
+  const [completionSnapshotLoading, setCompletionSnapshotLoading] = useState(false);
+  const [completionSnapshotError, setCompletionSnapshotError] = useState('');
+  const [isReinstatingRental, setIsReinstatingRental] = useState(false);
   const [showCustomerRiskDialog, setShowCustomerRiskDialog] = useState(false);
   const [customerRiskMode, setCustomerRiskMode] = useState('warning');
   const [customerRiskNote, setCustomerRiskNote] = useState('');
@@ -3166,11 +3257,15 @@ export default function RentalDetails() {
   const [elapsedTime, setElapsedTime] = useState('');
   const [actionLoading, setActionLoading] = useState({});
   const [rentalTimingSettings, setRentalTimingSettings] = useState(DEFAULT_RENTAL_TIMING_SETTINGS);
+  const [lostVehicleDocumentPenaltyMad, setLostVehicleDocumentPenaltyMad] = useState(4000);
   const [autoSendContractEmailAfterCreation, setAutoSendContractEmailAfterCreation] = useState(false);
   
   const [openingModalOpen, setOpeningModalOpen] = useState(false);
   const [closingModalOpen, setClosingModalOpen] = useState(false);
   const [vehicleMediaEditChoiceOpen, setVehicleMediaEditChoiceOpen] = useState(false);
+  const [vehicleMediaCategory, setVehicleMediaCategory] = useState('vehicle_condition');
+  const [documentPenaltyDialog, setDocumentPenaltyDialog] = useState({ open: false, documentType: null });
+  const [documentPenaltyApplying, setDocumentPenaltyApplying] = useState(false);
   
   const [capturedMedia, setCapturedMedia] = useState([]);
   const [captureFlash, setCaptureFlash] = useState(false);
@@ -4690,6 +4785,13 @@ useEffect(() => {
         ),
       });
       setDailyReturnPolicy(normalizeDailyReturnPolicy(data));
+      setLostVehicleDocumentPenaltyMad(
+        Math.max(0, Number(
+          data.lostVehicleDocumentPenaltyMad
+            ?? data.lost_vehicle_document_penalty_mad
+            ?? 4000
+        ) || 4000)
+      );
       setAutoSendContractEmailAfterCreation(Boolean(
         data.autoSendContractEmailAfterCreation
           ?? data.auto_send_contract_email_after_creation
@@ -4703,6 +4805,7 @@ useEffect(() => {
       if (!cancelled) {
         setRentalTimingSettings(DEFAULT_RENTAL_TIMING_SETTINGS);
         setDailyReturnPolicy(normalizeDailyReturnPolicy());
+        setLostVehicleDocumentPenaltyMad(4000);
         setAutoSendContractEmailAfterCreation(false);
         setWorkspaceRentalDetailsDefaultView('light');
       }
@@ -6660,6 +6763,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
           appliedLimit: 0,
           originalPrice: 0,
           appliedPrice: 0,
+          originalExtraRate: 0,
           appliedExtraRate: 0,
           upgraded: false,
           overageKm: 0,
@@ -6768,33 +6872,65 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
 
     if (!packageName) return null;
 
+    const useLivePackageConfig = shouldPreferLivePackageConfig(rental);
     const packageAmount = Math.max(
       0,
       Number(
-        rental?.selected_package_fixed_amount ??
-        rental?.package_rate_per_unit ??
-        rental?.unit_price ??
-        packageDetails?.fixed_amount ??
-        rental?.package?.fixed_amount ??
-        0
+        useLivePackageConfig
+          ? (
+              bookedKilometerPackage?.fixed_amount ??
+              packageDetails?.fixed_amount ??
+              rental?.package?.fixed_amount ??
+              rental?.selected_package_fixed_amount ??
+              rental?.package_rate_per_unit ??
+              rental?.unit_price
+            )
+          : (
+              rental?.selected_package_fixed_amount ??
+              rental?.package_rate_per_unit ??
+              rental?.unit_price ??
+              packageDetails?.fixed_amount ??
+              rental?.package?.fixed_amount
+            )
       ) || 0
     );
     const includedKm = Number(
-      rental?.selected_package_included_km ??
-      rental?.package_total_included_km ??
-      rental?.package_included_km_per_unit ??
-      bookedKilometerPackage?.included_kilometers ??
-      packageDetails?.included_kilometers ??
-      rental?.package?.included_kilometers ??
-      0
+      useLivePackageConfig
+        ? (
+            bookedKilometerPackage?.included_kilometers ??
+            packageDetails?.included_kilometers ??
+            rental?.package?.included_kilometers ??
+            rental?.selected_package_included_km ??
+            rental?.package_total_included_km ??
+            rental?.package_included_km_per_unit
+          )
+        : (
+            rental?.selected_package_included_km ??
+            rental?.package_total_included_km ??
+            rental?.package_included_km_per_unit ??
+            bookedKilometerPackage?.included_kilometers ??
+            packageDetails?.included_kilometers ??
+            rental?.package?.included_kilometers
+          ) ??
+          0
     );
     const extraRate = Number(
-      rental?.selected_package_extra_rate ??
-      rental?.package_extra_rate ??
-      bookedKilometerPackage?.extra_km_rate ??
-      packageDetails?.extra_km_rate ??
-      rental?.package?.extra_km_rate ??
-      0
+      useLivePackageConfig
+        ? (
+            bookedKilometerPackage?.extra_km_rate ??
+            packageDetails?.extra_km_rate ??
+            rental?.package?.extra_km_rate ??
+            rental?.selected_package_extra_rate ??
+            rental?.package_extra_rate
+          )
+        : (
+            rental?.selected_package_extra_rate ??
+            rental?.package_extra_rate ??
+            bookedKilometerPackage?.extra_km_rate ??
+            packageDetails?.extra_km_rate ??
+            rental?.package?.extra_km_rate
+          ) ??
+          0
     );
     const isUnlimitedPackage =
       !Number.isFinite(includedKm) ||
@@ -8836,8 +8972,44 @@ Click the link above to review and approve the extension.`;
     const pkg = hasBookedPackageForBilling
       ? (packageApplication.appliedPackage || bookedPackageForBilling)
       : null;
-    const packageAppliedPrice = pkg ? packageApplication.appliedPrice : 0;
-    const overageCharge = pkg ? packageApplication.overageCharge : 0;
+    const storedAppliedPackagePrice = pkg && autoPackageUpgradeEnabled
+      ? Math.max(0, Number(rental?.unit_price || 0) || 0)
+      : 0;
+    const packageAppliedPrice = pkg
+      ? Math.max(0, Number(packageApplication.appliedPrice || 0) || 0, storedAppliedPackagePrice)
+      : 0;
+    const originalPackageLimit = pkg
+      ? Math.max(0, Number(packageApplication.originalLimit || getConfiguredPackageTotalIncludedKilometers(rental, bookedPackageForBilling) || 0) || 0)
+      : 0;
+    const storedAppliedPackageLimit = pkg && autoPackageUpgradeEnabled
+      ? Math.max(0, Number(rental?.included_kilometers_applied || 0) || 0)
+      : 0;
+    const effectiveAppliedPackageLimit = pkg
+      ? Math.max(0, Number(packageApplication.appliedLimit || 0) || 0, storedAppliedPackageLimit)
+      : 0;
+    const effectivePackageOverageKm = pkg && Number.isFinite(effectiveAppliedPackageLimit)
+      ? Math.max(0, totalDrivenKm - effectiveAppliedPackageLimit)
+      : 0;
+    const originalPackageExtraKmRate = pkg ? Math.max(0, Number(packageApplication.originalExtraRate || rental?.extra_km_rate_applied || 0) || 0) : 0;
+    const packageExtraKmRate = pkg ? Math.max(0, Number(packageApplication.appliedExtraRate || rental?.extra_km_rate_applied || 0) || 0) : 0;
+    const overageCharge = pkg ? effectivePackageOverageKm * packageExtraKmRate : 0;
+    const originalPackagePrice = pkg ? Math.max(0, Number(packageApplication.originalPrice || 0) || 0) : 0;
+    const packageUpgradeCoveredKm = pkg && autoPackageUpgradeEnabled
+      ? Math.max(0, Math.min(totalDrivenKm, effectiveAppliedPackageLimit) - originalPackageLimit)
+      : 0;
+    const packageUpgradeAmount = pkg && autoPackageUpgradeEnabled
+      ? Math.max(0, packageAppliedPrice - originalPackagePrice)
+      : 0;
+    const packageWasUpgraded = Boolean(
+      pkg &&
+      autoPackageUpgradeEnabled &&
+      (
+        packageApplication.upgraded ||
+        packageUpgradeAmount > 0 ||
+        packageUpgradeCoveredKm > 0 ||
+        effectiveAppliedPackageLimit > originalPackageLimit
+      )
+    );
     const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const extensionFees = parseFloat(totalExtensionFees || 0);
     const lateFeeAmount = getLateFeeAmount(rental);
@@ -8988,12 +9160,18 @@ Click the link above to review and approve the extension.`;
     return {
       baseAmount: effectiveBaseAmount,
       originalBaseAmount: baseAmount,
+      originalPackagePrice,
+      originalPackageLimit,
+      originalPackageExtraKmRate,
       appliedPackagePrice: packageAppliedPrice,
+      appliedPackageLimit: effectiveAppliedPackageLimit,
       appliedPackageName: getKilometerPackageName(pkg, ''),
-      packageWasUpgraded: Boolean(packageApplication.upgraded),
+      packageWasUpgraded,
+      packageUpgradeAmount,
+      packageUpgradeCoveredKm,
       overageCharge: effectiveOverageCharge,
-      overageKm: pkg ? Math.max(0, Number(packageApplication.overageKm || 0) || 0) : 0,
-      overageRate: pkg ? Math.max(0, Number(packageApplication.appliedExtraRate || 0) || 0) : 0,
+      overageKm: pkg ? Math.max(0, Number(effectivePackageOverageKm || 0) || 0) : 0,
+      overageRate: packageExtraKmRate,
       overageDisplayCharge: pkg ? Math.max(0, Number(overageCharge || 0) || 0) : 0,
       overageIncludedInContract: Boolean(storedRentalChargeIncludesOverage || storedRentalChargeIncludesAncillaryCharges),
       extensionFees,
@@ -9251,26 +9429,100 @@ Click the link above to review and approve the extension.`;
     const receiptPackageApplication = kilometerPackageApplication || {};
     const receiptAppliedPackage = receiptPackageApplication.appliedPackage || rental?.package || null;
     const receiptOriginalPackage = receiptPackageApplication.originalPackage || rental?.package || null;
-    const receiptAppliedPackagePrice = Number(receiptPackageApplication.appliedPrice || 0) || 0;
+    const receiptTotalDistanceKm = Math.max(
+      0,
+      Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0
+    );
     const receiptOriginalPackagePrice = receiptOriginalPackage
-      ? getPackageDisplayTotal(rental, receiptOriginalPackage)
+      ? Math.max(
+          0,
+          Number(rentalBillingSummary.originalPackagePrice || 0) || 0,
+          Number(receiptPackageApplication.originalPrice || 0) || 0,
+          getBookedPackageSnapshotTotal(rental, receiptOriginalPackage),
+          getPackageDisplayTotal(rental, receiptOriginalPackage)
+        )
       : 0;
+    const receiptAppliedPackagePrice = receiptAppliedPackage
+      ? Math.max(
+          0,
+          Number(receiptPackageApplication.appliedPrice || 0) || 0,
+          Number(rentalBillingSummary.appliedPackagePrice || 0) || 0,
+          Number(rental?.unit_price || 0) || 0
+        )
+      : 0;
+    const receiptOriginalPackageLimit = receiptOriginalPackage
+      ? Math.max(
+          0,
+          Number(receiptPackageApplication.originalLimit || 0) || 0,
+          Number(rentalBillingSummary.originalPackageLimit || 0) || 0,
+          getConfiguredPackageTotalIncludedKilometers(rental, receiptOriginalPackage)
+        )
+      : 0;
+    const receiptAppliedPackageLimit = receiptAppliedPackage
+      ? Math.max(
+          0,
+          Number(receiptPackageApplication.appliedLimit || 0) || 0,
+          Number(rentalBillingSummary.appliedPackageLimit || 0) || 0,
+          Number(rental?.included_kilometers_applied || 0) || 0
+        )
+      : 0;
+    const receiptPackageUpgradeCoveredKm = Math.max(
+      0,
+      Math.min(receiptTotalDistanceKm, receiptAppliedPackageLimit) - receiptOriginalPackageLimit
+    );
+    const receiptPackageUpgradeAmount = Math.max(0, receiptAppliedPackagePrice - receiptOriginalPackagePrice);
+    const receiptPackageWasUpgraded = Boolean(
+      receiptAppliedPackage &&
+      receiptOriginalPackage &&
+      (
+        receiptPackageApplication.upgraded ||
+        rentalBillingSummary.packageWasUpgraded ||
+        (
+          isAutoPackageUpgradeEnabledForRental(rental) &&
+          (
+            receiptPackageUpgradeAmount > 0 ||
+            receiptPackageUpgradeCoveredKm > 0 ||
+            receiptAppliedPackageLimit > receiptOriginalPackageLimit
+          )
+        )
+      )
+    );
     const receiptAppliedPackageRate = receiptAppliedPackage
       ? getPackageRatePerUnit(rental, receiptAppliedPackage)
       : Number(rental?.unit_price || 0) || 0;
-    const receiptPackageUpgradeSummary = receiptPackageApplication.upgraded
+    const receiptPackageUpgradeSummary = receiptPackageWasUpgraded
       ? {
           upgraded: true,
           reason: 'distance_limit_exceeded',
           originalPackageName: getKilometerPackageName(receiptOriginalPackage, tr('Original package', 'Forfait initial')),
-          originalPackageLimitKm: Number(receiptPackageApplication.originalLimit || 0) || 0,
+          originalPackageLimitKm: receiptOriginalPackageLimit,
           originalPackagePrice: receiptOriginalPackagePrice,
+          originalPackageExtraKmRate: Math.max(
+            0,
+            Number(
+              receiptPackageApplication.originalExtraRate ??
+              rentalBillingSummary.originalPackageExtraKmRate ??
+              receiptOriginalPackage?.extra_km_rate ??
+              rental?.extra_km_rate_applied ??
+              0
+            ) || 0
+          ),
           appliedPackageName: getKilometerPackageName(receiptAppliedPackage, tr('Applied package', 'Forfait appliqué')),
-          appliedPackageLimitKm: Number.isFinite(receiptPackageApplication.appliedLimit)
-            ? Number(receiptPackageApplication.appliedLimit || 0)
-            : null,
+          appliedPackageLimitKm: receiptAppliedPackageLimit || null,
           appliedPackagePrice: receiptAppliedPackagePrice,
-          totalDistanceKm: Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0,
+          appliedPackageExtraKmRate: Math.max(
+            0,
+            Number(
+              receiptPackageApplication.appliedExtraRate ??
+              receiptAppliedPackage?.extra_km_rate ??
+              rental?.extra_km_rate_applied ??
+              0
+            ) || 0
+          ),
+          coveredKm: receiptPackageUpgradeCoveredKm,
+          upgradeAmount: receiptPackageUpgradeAmount,
+          totalDistanceKm: receiptTotalDistanceKm,
+          autoPackageUpgradeEnabled: isAutoPackageUpgradeEnabledForRental(rental),
         }
       : null;
     const inferredVoidedHours = parseFloat(inferredShortReturnVoidedExtension?.extension_hours || 0) || 0;
@@ -9304,13 +9556,11 @@ Click the link above to review and approve the extension.`;
       vehicle_report: linkedVehicleReport,
       amount_due_resolution_meta: receiptResolvedAmountDueMeta,
       total_amount: effectiveDocumentTotal,
-      unit_price: receiptAppliedPackageRate || rental?.unit_price,
+      unit_price: receiptAppliedPackagePrice || receiptAppliedPackageRate || rental?.unit_price,
       package: receiptAppliedPackage || rental?.package,
       receipt_original_package: receiptOriginalPackage,
       package_upgrade_summary: receiptPackageUpgradeSummary,
-      included_kilometers_applied: Number.isFinite(receiptPackageApplication.appliedLimit)
-        ? Number(receiptPackageApplication.appliedLimit || 0)
-        : rental?.included_kilometers_applied,
+      included_kilometers_applied: receiptAppliedPackageLimit || rental?.included_kilometers_applied,
       extra_km_rate_applied: receiptPackageApplication.appliedExtraRate || rental?.extra_km_rate_applied,
       payment_status: dynamicPaymentState.status === 'estimate'
         ? rental.payment_status
@@ -9362,7 +9612,7 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, receiptResolvedAmountDueMeta, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
+  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, receiptResolvedAmountDueMeta, rental, rentalBillingSummary.appliedPackageLimit, rentalBillingSummary.appliedPackagePrice, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, rentalBillingSummary.originalPackageLimit, rentalBillingSummary.originalPackagePrice, rentalBillingSummary.packageWasUpgraded, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
 
   const receiptPreviewMeta = useMemo(
     () => getReceiptPreviewMeta(receiptRentalData || rental || {}),
@@ -9415,6 +9665,7 @@ Click the link above to review and approve the extension.`;
 
     return {
       ...rental,
+      ...(receiptRentalData || {}),
       ...filteredOverrides,
       vehicleReport: linkedReport,
       vehicle_report: linkedReport,
@@ -11291,6 +11542,16 @@ const handleFuelChargeToggle = async (enabled) => {
         updateData.signature_url = returnSignatureUrl;
       }
 
+      await createRentalCompletionSnapshot({
+        supabase,
+        rental: effectiveCompletionRental,
+        rentalId: rental.id,
+        vehicleId: rental.vehicle_id,
+        actorUserId: actingUser?.id || null,
+        actorName,
+        completionPayload: updateData,
+      });
+
       const { data: completedRental, error } = await updateRentalWithSchemaFallback(updateData);
 
       if (error) {
@@ -13011,6 +13272,10 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
   const capturePhoto = (modalType = null) => {
     const modal = modalType || activeModal || 'opening';
+    const isVehicleCapture = activeModal === 'vehicle' && modal !== 'opening';
+    const vehicleCategoryMeta = isVehicleCapture
+      ? getVehicleMediaCategoryMeta(vehicleMediaCategory)
+      : null;
     const videoRef = modal === 'opening' ? openingVideoRef : closingVideoRef;
     const canvasElRef = modal === 'opening' ? openingCanvasRef : closingCanvasRef;
     
@@ -13034,7 +13299,9 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     
     canvas.toBlob((blob) => {
       if (blob) {
-        const fileName = `photo_${Date.now()}.jpg`;
+        const fileName = isVehicleCapture
+          ? `${vehicleCategoryMeta.filenamePrefix}_${Date.now()}.jpg`
+          : `photo_${Date.now()}.jpg`;
         const fileObj = {
           id: `photo_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           blob: blob,
@@ -13044,7 +13311,13 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           url: URL.createObjectURL(blob),
           thumbnail: URL.createObjectURL(blob),
           source: 'camera',
-          mediaType: 'image'
+          mediaType: 'image',
+          ...(isVehicleCapture
+            ? {
+                vehicleMediaCategory: vehicleCategoryMeta.value,
+                vehicleMediaLabel: vehicleCategoryMeta.label.en,
+              }
+            : {}),
         };
         setCapturedMedia(prev => [...prev, fileObj]);
         if (navigator.vibrate) navigator.vibrate(50);
@@ -13264,6 +13537,9 @@ useEffect(() => {
   const uploadFromGallery = async (targetPhase = null, targetMode = null) => {
     const resolvedPhase = targetPhase || activeModal || 'opening';
     const resolvedMode = targetMode || ((resolvedPhase === 'closing' || resolvedPhase === 'vehicle') ? closingMediaMode : openingMediaMode) || 'video';
+    const vehicleCategoryMeta = resolvedPhase === 'vehicle'
+      ? getVehicleMediaCategoryMeta(vehicleMediaCategory)
+      : null;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = resolvedMode === 'photo'
@@ -13306,7 +13582,9 @@ useEffect(() => {
             const timestamp = Date.now();
             const originalName = file.name || `photo_${timestamp}.jpg`;
             let imageBlob = file;
-            let imageName = originalName;
+            let imageName = vehicleCategoryMeta
+              ? `${vehicleCategoryMeta.filenamePrefix}_${originalName}`
+              : originalName;
             let imageMimeType = resolveRentalUploadMimeType(file, file);
             let converted = false;
             let previewUnavailable = false;
@@ -13328,7 +13606,9 @@ useEffect(() => {
                   buildConvertedRentalImageFileName(originalName),
                   { type: 'image/jpeg' }
                 );
-                imageName = imageBlob.name;
+                imageName = vehicleCategoryMeta
+                  ? `${vehicleCategoryMeta.filenamePrefix}_${imageBlob.name}`
+                  : imageBlob.name;
                 imageMimeType = 'image/jpeg';
                 converted = Boolean(processedImage.converted);
               } catch (conversionError) {
@@ -13339,7 +13619,9 @@ useEffect(() => {
                 imageBlob = file.type
                   ? file
                   : new File([file], originalName, { type: imageMimeType });
-                imageName = originalName;
+                imageName = vehicleCategoryMeta
+                  ? `${vehicleCategoryMeta.filenamePrefix}_${originalName}`
+                  : originalName;
                 previewUnavailable = true;
               }
             }
@@ -13359,6 +13641,12 @@ useEffect(() => {
               source: 'gallery',
               converted,
               previewUnavailable,
+              ...(vehicleCategoryMeta
+                ? {
+                    vehicleMediaCategory: vehicleCategoryMeta.value,
+                    vehicleMediaLabel: vehicleCategoryMeta.label.en,
+                  }
+                : {}),
             };
 
             setCapturedMedia(prev => [...prev, fileObj]);
@@ -13380,7 +13668,10 @@ useEffect(() => {
 
           // Create file object with converted blob
           const timestamp = Date.now();
-          const filename = file.name.replace(/\.(mov|MOV|m4v|M4V)$/i, '.mp4');
+          const filenameBase = file.name.replace(/\.(mov|MOV|m4v|M4V)$/i, '.mp4');
+          const filename = vehicleCategoryMeta
+            ? `${vehicleCategoryMeta.filenamePrefix}_${filenameBase}`
+            : filenameBase;
           const blobUrl = URL.createObjectURL(blob);
 
           // Try to get video duration
@@ -13412,7 +13703,13 @@ useEffect(() => {
             duration: galleryDuration,
             size: blob.size,
             source: 'gallery',
-            converted: converted
+            converted: converted,
+            ...(vehicleCategoryMeta
+              ? {
+                  vehicleMediaCategory: vehicleCategoryMeta.value,
+                  vehicleMediaLabel: vehicleCategoryMeta.label.en,
+                }
+              : {}),
           };
 
           setCapturedMedia(prev => [...prev, fileObj]);
@@ -13815,6 +14112,9 @@ useEffect(() => {
       
       for (let i = 0; i < capturedMedia.length; i++) {
         const file = capturedMedia[i];
+        const vehicleCategoryMeta = type === 'vehicle'
+          ? getVehicleMediaCategoryMeta(file.vehicleMediaCategory || vehicleMediaCategory)
+          : null;
         
         // Normalize file object - handle both File objects and our custom structure
         const fileBlob = file.blob || file;
@@ -13833,9 +14133,16 @@ useEffect(() => {
         // Generate unique filename with timestamp
         const timestamp = Date.now();
         const sanitizedName = fileNameForPath.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const fileName = `${type}_${rental.rental_id}_${timestamp}_${sanitizedName}`;
+        const fileNamePrefix = vehicleCategoryMeta?.filenamePrefix || type;
+        const sanitizedNameWithoutPrefix = vehicleCategoryMeta
+          ? sanitizedName.replace(new RegExp(`^${fileNamePrefix}_`, 'i'), '')
+          : sanitizedName;
+        const fileName = `${fileNamePrefix}_${rental.rental_id}_${timestamp}_${sanitizedNameWithoutPrefix}`;
         const mediaFolder = isImage ? 'images' : 'videos';
-        const filePath = `rentals/${rental.rental_id}/${type}/${mediaFolder}/${fileName}`;
+        const mediaPathSegment = vehicleCategoryMeta
+          ? `${type}/${vehicleCategoryMeta.storageSegment}`
+          : type;
+        const filePath = `rentals/${rental.rental_id}/${mediaPathSegment}/${mediaFolder}/${fileName}`;
 
         if (RENTAL_DEBUG) console.log(`📤 Upload path: ${filePath}`);
 
@@ -13909,7 +14216,9 @@ useEffect(() => {
           phase: phase,
           file_type: savedFileType,
           file_name: savedFileName,
-          original_filename: fileName_orig,
+          original_filename: vehicleCategoryMeta
+            ? `${vehicleCategoryMeta.filenamePrefix}_${fileName_orig}`
+            : fileName_orig,
           file_size: savedFileSize,
           storage_path: savedStoragePath,
           public_url: savedPublicUrl,
@@ -14419,17 +14728,28 @@ useEffect(() => {
       });
       const actualReturnEndTime = billingCloseTime;
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
+      const completionPayload = {
+        rental_status: 'completed',
+        status: 'completed',
+        completed_at: completedAt,
+        completed_by: actingUser?.id || null,
+        completed_by_name: actorName,
+        status_changed_by: actorName,
+        actual_end_date: actualReturnEndTime,
+      };
+      await createRentalCompletionSnapshot({
+        supabase,
+        rental: effectiveCompletionRental,
+        rentalId: rental.id,
+        vehicleId: rental.vehicle_id,
+        actorUserId: actingUser?.id || null,
+        actorName,
+        completionPayload,
+      });
+
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
-        .update({ 
-          rental_status: 'completed', 
-          status: 'completed',
-          completed_at: completedAt,
-          completed_by: actingUser?.id || null,
-          completed_by_name: actorName,
-          status_changed_by: actorName,
-          actual_end_date: actualReturnEndTime,
-        })
+        .update(completionPayload)
         .eq('id', rental.id);
 
       if (error) throw error;
@@ -14591,6 +14911,78 @@ useEffect(() => {
     setPermanentDeleteConfirmation('');
     setShowPermanentDeleteRentalModal(true);
   }, [currentUserRole]);
+
+  const handleReinstateCompletedRental = useCallback(async () => {
+    if (!rental?.id || !latestCompletionSnapshot?.id) {
+      toast.error(tr('No saved state is available for this rental.', 'Aucun état sauvegardé n’est disponible pour cette location.'));
+      return;
+    }
+
+    if (!['owner', 'admin'].includes(currentUserRole)) {
+      toast.error(tr('Only admins and owners can reinstate completed rentals.', 'Seuls les administrateurs et propriétaires peuvent réactiver les locations terminées.'));
+      return;
+    }
+
+    const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+    const actorName =
+      actingUser?.full_name ||
+      actingUser?.name ||
+      actingUser?.email ||
+      user?.email ||
+      'Staff';
+
+    setIsReinstatingRental(true);
+    try {
+      const result = await reinstateRentalFromCompletionSnapshot({
+        supabase,
+        rentalId: rental.id,
+        snapshotId: latestCompletionSnapshot.id,
+        actorUserId: actingUser?.id || null,
+        actorName,
+        note: `Reinstated from completed state by ${actorName}`,
+      });
+
+      appWarmupService.invalidateModule('rentals', { rewarm: false });
+      appWarmupService.invalidateModule('finance', { rewarm: false });
+      appWarmupService.invalidateModule('maintenance', { rewarm: false });
+
+      setShowReinstateRentalModal(false);
+      setLatestCompletionSnapshot(null);
+      await loadRentalData(true);
+
+      try {
+        await supabase.channel('rental-updates').send({
+          type: 'broadcast',
+          event: 'status_updated',
+          payload: {
+            rental_id: rental.id,
+            rental_status: result?.rental?.rental_status || latestCompletionSnapshot.rental_status_before || 'active',
+            status: result?.rental?.status || latestCompletionSnapshot.rental_status_before || 'active',
+            reinstated_at: result?.reinstatedAt || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      } catch (broadcastError) {
+        console.warn('⚠️ Rental reinstatement broadcast failed:', broadcastError);
+      }
+
+      toast.success(tr('Rental reinstated from saved state.', 'Location réactivée depuis l’état sauvegardé.'));
+    } catch (error) {
+      console.error('Failed to reinstate completed rental:', error);
+      toast.error(error?.message || tr('Failed to reinstate rental.', 'Échec de la réactivation de la location.'));
+    } finally {
+      setIsReinstatingRental(false);
+    }
+  }, [
+    currentUser,
+    currentUserRole,
+    latestCompletionSnapshot,
+    loadRentalData,
+    rental?.id,
+    resolvedCurrentUser,
+    user,
+    userProfile,
+  ]);
 
   const handlePermanentDeleteRental = useCallback(async () => {
     if (!rental?.id) return;
@@ -15508,9 +15900,11 @@ useEffect(() => {
     if (!rental?.id) return;
 
     const normalizedRentalStatus = String(rental?.rental_status || rental?.status || '').toLowerCase();
-    const shouldReconcilePersistedBalance =
-      normalizedRentalStatus === 'completed' ||
-      normalizedRentalStatus === 'cancelled';
+    const shouldReconcilePersistedBalance = [
+      'active',
+      'scheduled',
+      'completed',
+    ].includes(normalizedRentalStatus);
 
     if (!shouldReconcilePersistedBalance) {
       billingReconciliationSignatureRef.current = '';
@@ -17664,6 +18058,159 @@ useEffect(() => {
         ? tr('return pending', 'retour en attente')
         : null,
   ].filter(Boolean).join(' • ');
+
+  const vehicleDocumentPenaltyReasonText = String(rental?.deposit_deduction_reason || '');
+  const isMissingVehicleDocumentPenaltyApplied = useCallback((documentType) => {
+    const meta = getMissingVehicleDocumentMeta(documentType);
+    return vehicleDocumentPenaltyReasonText.toLowerCase().includes(meta.reasonToken);
+  }, [vehicleDocumentPenaltyReasonText]);
+
+  const openMissingVehicleDocumentPenaltyDialog = useCallback((documentType) => {
+    if (!rental?.id) return;
+
+    if (rental?.deposit_returned_at) {
+      toast.error(tr(
+        'Security return is already completed. Reopen it before applying a document penalty.',
+        'La restitution de garantie est déjà terminée. Rouvrez-la avant d’appliquer une pénalité document.'
+      ));
+      return;
+    }
+
+    if (isMissingVehicleDocumentPenaltyApplied(documentType)) {
+      toast.success(tr(
+        'This document penalty is already recorded.',
+        'Cette pénalité document est déjà enregistrée.'
+      ));
+      openDepositReturnReview();
+      return;
+    }
+
+    setDocumentPenaltyDialog({ open: true, documentType });
+  }, [isMissingVehicleDocumentPenaltyApplied, rental?.deposit_returned_at, rental?.id]);
+
+  const closeMissingVehicleDocumentPenaltyDialog = useCallback(() => {
+    if (documentPenaltyApplying) return;
+    setDocumentPenaltyDialog({ open: false, documentType: null });
+  }, [documentPenaltyApplying]);
+
+  const applyMissingVehicleDocumentPenalty = useCallback(async () => {
+    if (!rental?.id || !documentPenaltyDialog.documentType) return;
+
+    const meta = getMissingVehicleDocumentMeta(documentPenaltyDialog.documentType);
+    const documentLabel = tr(meta.shortLabel.en, meta.shortLabel.fr);
+    const penaltyAmount = Math.max(0, Number(lostVehicleDocumentPenaltyMad || 0));
+
+    if (penaltyAmount <= 0) {
+      toast.error(tr(
+        'Document penalty is not configured. Add an amount in settings first.',
+        'La pénalité document n’est pas configurée. Ajoutez un montant dans les paramètres.'
+      ));
+      return;
+    }
+
+    if (isMissingVehicleDocumentPenaltyApplied(meta.value)) {
+      toast.success(tr(
+        'This document penalty is already recorded.',
+        'Cette pénalité document est déjà enregistrée.'
+      ));
+      setDocumentPenaltyDialog({ open: false, documentType: null });
+      openDepositReturnReview();
+      return;
+    }
+
+    setDocumentPenaltyApplying(true);
+    try {
+      const existingDeductionAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0));
+      const securityHeldAmount = Math.max(
+        0,
+        Number(rental?.damage_deposit || 0),
+        Number(rental?.damage_deposit_received_amount || 0),
+        Number(rental?.deposit_return_amount || 0) + existingDeductionAmount,
+        Number(rental?.final_deposit_return_amount || 0) + existingDeductionAmount
+      );
+      const availableSecurityForNewDeduction = Math.max(0, securityHeldAmount - existingDeductionAmount);
+      const amountDeductedFromSecurity = Math.min(penaltyAmount, availableSecurityForNewDeduction);
+      const remainingPenaltyDue = Math.max(0, penaltyAmount - amountDeductedFromSecurity);
+      const nextDeductionAmount = Number((existingDeductionAmount + amountDeductedFromSecurity).toFixed(2));
+      const nextReturnAmount = Number(Math.max(0, securityHeldAmount - nextDeductionAmount).toFixed(2));
+      const actorName = (
+        currentUser?.full_name ||
+        currentUser?.fullName ||
+        currentUser?.name ||
+        currentUser?.email ||
+        userProfile?.full_name ||
+        userProfile?.fullName ||
+        userProfile?.email ||
+        'Staff'
+      );
+      const noteParts = [
+        `Vehicle ${String(documentLabel).toLowerCase()} document missing.`,
+        `Document loss penalty: ${formatCurrency(penaltyAmount)} MAD.`,
+        `Deducted from security deposit: ${formatCurrency(amountDeductedFromSecurity)} MAD.`,
+      ];
+
+      if (remainingPenaltyDue > 0) {
+        noteParts.push(`Remaining penalty due: ${formatCurrency(remainingPenaltyDue)} MAD.`);
+      }
+      noteParts.push(`Recorded by ${actorName}.`);
+
+      const nextReason = [
+        vehicleDocumentPenaltyReasonText.trim(),
+        noteParts.join(' '),
+      ].filter(Boolean).join('\n');
+
+      const updatePayload = {
+        deposit_deduction_amount: nextDeductionAmount,
+        deposit_deduction_reason: nextReason,
+        deposit_return_amount: nextReturnAmount,
+        final_deposit_return_amount: nextReturnAmount,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: updatedRental, error: updateError } = await updateRentalWithSchemaFallback(updatePayload);
+      if (updateError) throw updateError;
+
+      setRental((prev) => prev ? ({ ...prev, ...(updatedRental || updatePayload) }) : prev);
+      setDocumentPenaltyDialog({ open: false, documentType: null });
+      setDamageDepositReturnOpen(true);
+      await loadRentalData(true);
+      window.setTimeout(() => {
+        scrollToDepositReturnSection();
+      }, 120);
+
+      toast.success(tr(
+        `${documentLabel} penalty applied to security return.`,
+        `Pénalité ${documentLabel} appliquée à la restitution de garantie.`
+      ));
+    } catch (error) {
+      console.error('❌ Error applying missing vehicle document penalty:', error);
+      toast.error(`${tr('Failed to apply document penalty', 'Impossible d’appliquer la pénalité document')}: ${error.message}`);
+    } finally {
+      setDocumentPenaltyApplying(false);
+    }
+  }, [
+    currentUser?.email,
+    currentUser?.fullName,
+    currentUser?.full_name,
+    currentUser?.name,
+    documentPenaltyDialog.documentType,
+    isMissingVehicleDocumentPenaltyApplied,
+    loadRentalData,
+    lostVehicleDocumentPenaltyMad,
+    rental?.damage_deposit,
+    rental?.damage_deposit_received_amount,
+    rental?.deposit_deduction_amount,
+    rental?.deposit_return_amount,
+    rental?.final_deposit_return_amount,
+    rental?.id,
+    tr,
+    updateRentalWithSchemaFallback,
+    userProfile?.email,
+    userProfile?.fullName,
+    userProfile?.full_name,
+    vehicleDocumentPenaltyReasonText,
+  ]);
+
   const securityHoldStatus = (() => {
     if (hasHeldSecurityDocument) {
       return {
@@ -18163,6 +18710,54 @@ useEffect(() => {
     rental?.deposit_returned_at
   );
   const canPermanentlyDeleteRentalContract = ['owner', 'admin'].includes(currentUserRole);
+  const canReinstateCompletedRental = ['owner', 'admin'].includes(currentUserRole) && isCompleted;
+  const openReinstateRentalModal = () => {
+    if (!canReinstateCompletedRental) {
+      toast.error(tr('Only admins and owners can reinstate completed rentals.', 'Seuls les administrateurs et propriétaires peuvent réactiver les locations terminées.'));
+      return;
+    }
+    setShowReinstateRentalModal(true);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadLatestCompletionSnapshot = async () => {
+      if (!rental?.id || !isCompleted || !['owner', 'admin'].includes(currentUserRole)) {
+        setLatestCompletionSnapshot(null);
+        setCompletionSnapshotError('');
+        return;
+      }
+
+      setCompletionSnapshotLoading(true);
+      setCompletionSnapshotError('');
+      try {
+        const snapshot = await getLatestRentalCompletionSnapshot({
+          supabase,
+          rentalId: rental.id,
+        });
+
+        if (!isMounted) return;
+        setLatestCompletionSnapshot(snapshot);
+      } catch (error) {
+        if (!isMounted) return;
+        console.error('Unable to load rental completion snapshot:', error);
+        setLatestCompletionSnapshot(null);
+        setCompletionSnapshotError(error?.message || tr('Unable to load restore snapshot.', 'Impossible de charger le snapshot de restauration.'));
+      } finally {
+        if (isMounted) {
+          setCompletionSnapshotLoading(false);
+        }
+      }
+    };
+
+    loadLatestCompletionSnapshot();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserRole, isCompleted, rental?.id]);
+
   const canResendTelegramAlerts = ['admin', 'owner'].includes(currentUserRole);
   const availableTelegramResendActions = useMemo(() => {
     if (!rental?.id || !canResendTelegramAlerts) return [];
@@ -23405,60 +24000,138 @@ useEffect(() => {
     hasRentalManagementAccess ||
     ['employee', 'staff', 'support', 'guide', 'business_owner'].includes(currentUserRole);
   const showVehicleMediaEditorCard = canAddVehicleMedia && (isCompleted || Boolean(vehicleReport?.maintenance_id) || hasCompletedVehicleMedia);
+  const canRecordMissingVehicleDocumentPenalty = Boolean(
+    canAddVehicleMedia &&
+    !rental?.deposit_returned_at &&
+    showSecurityHoldSection
+  );
+  const selectedMissingVehicleDocumentMeta = getMissingVehicleDocumentMeta(documentPenaltyDialog.documentType);
+  const selectedMissingVehicleDocumentLabel = tr(
+    selectedMissingVehicleDocumentMeta.shortLabel.en,
+    selectedMissingVehicleDocumentMeta.shortLabel.fr
+  );
+  const selectedMissingVehicleDocumentPenalty = Math.max(0, Number(lostVehicleDocumentPenaltyMad || 0));
+  const selectedMissingVehicleDocumentExistingDeduction = Math.max(0, Number(rental?.deposit_deduction_amount || 0));
+  const selectedMissingVehicleDocumentSecurityHeld = Math.max(
+    0,
+    Number(rental?.damage_deposit || 0),
+    Number(rental?.damage_deposit_received_amount || 0),
+    Number(rental?.deposit_return_amount || 0) + selectedMissingVehicleDocumentExistingDeduction,
+    Number(rental?.final_deposit_return_amount || 0) + selectedMissingVehicleDocumentExistingDeduction
+  );
+  const selectedMissingVehicleDocumentAvailableSecurity = Math.max(
+    0,
+    selectedMissingVehicleDocumentSecurityHeld - selectedMissingVehicleDocumentExistingDeduction
+  );
+  const selectedMissingVehicleDocumentDeduction = Math.min(
+    selectedMissingVehicleDocumentPenalty,
+    selectedMissingVehicleDocumentAvailableSecurity
+  );
+  const selectedMissingVehicleDocumentRemainingDue = Math.max(
+    0,
+    selectedMissingVehicleDocumentPenalty - selectedMissingVehicleDocumentDeduction
+  );
 
   const renderVehicleMediaSectionBody = () => (
     <>
       {showVehicleMediaEditorCard && (
-        <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
-            <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-violet-700' : 'text-slate-500'}`}>
-              {isLightRentalDetailsMode && hasCompletedVehicleMedia
-                ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
-                : vehicleReport?.maintenance_id
-                  ? tr('Add or remove vehicle photos and videos while this rental is under maintenance. They will appear in the vehicle media area below.', 'Ajoutez ou supprimez des photos et vidéos du véhicule pendant que cette location est en maintenance. Elles apparaîtront dans la zone médias véhicule ci-dessous.')
-                  : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
-            </p>
-            {hasCompletedVehicleMedia ? (
-              <p className="mt-2 text-xs text-slate-500">
-                {canManageVehicleMedia
-                  ? tr('Use Edit Vehicle Media to add more files, or delete items directly in the gallery below.', 'Utilisez Modifier les médias véhicule pour ajouter des fichiers, ou supprimez des éléments directement dans la galerie ci-dessous.')
-                  : tr('Use Add More Media to upload more vehicle photos or videos.', 'Utilisez Ajouter plus de médias pour téléverser plus de photos ou vidéos véhicule.')}
-              </p>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {hasCompletedVehicleMedia ? (
-              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-violet-700">
-                <CheckCircle className="h-4 w-4" />
-                {tr('Done', 'Terminé')}
-                <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-violet-700 shadow-sm">
-                  {completedVehicleMediaCount}
-                </span>
+        <div className="mb-4 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
+                {hasCompletedVehicleMedia ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-violet-700">
+                    <CheckCircle className="h-3.5 w-3.5" />
+                    {completedVehicleMediaCount}
+                  </span>
+                ) : null}
               </div>
-            ) : null}
-            {canManageVehicleMedia && hasCompletedVehicleMedia ? (
+              <p className={`mt-1 hidden text-sm sm:block ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-violet-700' : 'text-slate-500'}`}>
+                {isLightRentalDetailsMode && hasCompletedVehicleMedia
+                  ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
+                  : vehicleReport?.maintenance_id
+                    ? tr('Add or remove vehicle photos and videos while this rental is under maintenance. They will appear in the vehicle media area below.', 'Ajoutez ou supprimez des photos et vidéos du véhicule pendant que cette location est en maintenance. Elles apparaîtront dans la zone médias véhicule ci-dessous.')
+                    : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
+              </p>
+              {hasCompletedVehicleMedia ? (
+                <p className="mt-1 text-xs text-slate-500 sm:mt-2">
+                  {canManageVehicleMedia
+                    ? tr('Add, edit, or delete media from the gallery below.', 'Ajoutez, modifiez ou supprimez les médias depuis la galerie ci-dessous.')
+                    : tr('Add more vehicle photos or videos.', 'Ajoutez plus de photos ou vidéos véhicule.')}
+                </p>
+              ) : null}
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+              {canManageVehicleMedia && hasCompletedVehicleMedia ? (
+                <Button
+                  type="button"
+                  onClick={handleOpenVehicleMediaEditChooser}
+                  variant="outline"
+                  className="rounded-xl border-violet-200 px-3 text-violet-700 hover:bg-violet-50"
+                >
+                  <Edit className="mr-2 h-4 w-4" />
+                  <span className="sm:hidden">{tr('Edit', 'Modifier')}</span>
+                  <span className="hidden sm:inline">{tr('Edit Vehicle Media', 'Modifier les médias véhicule')}</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
-                onClick={handleOpenVehicleMediaEditChooser}
-                variant="outline"
-                className="rounded-xl border-violet-200 text-violet-700 hover:bg-violet-50"
+                onClick={handleOpenVehicleMediaModal}
+                className={`${canManageVehicleMedia && hasCompletedVehicleMedia ? '' : 'col-span-2'} rounded-xl bg-violet-700 px-3 text-white hover:bg-violet-800 sm:col-auto`}
               >
-                <Edit className="mr-2 h-4 w-4" />
-                {tr('Edit Vehicle Media', 'Modifier les médias véhicule')}
+                <Camera className="mr-2 h-4 w-4" />
+                <span className="sm:hidden">{tr('Add media', 'Ajouter')}</span>
+                <span className="hidden sm:inline">
+                  {hasCompletedVehicleMedia
+                    ? tr('Add More Media', 'Ajouter plus de médias')
+                    : tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
+                </span>
               </Button>
-            ) : null}
-            <Button
-              type="button"
-              onClick={handleOpenVehicleMediaModal}
-              className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
-            >
-              <Camera className="mr-2 h-4 w-4" />
-              {hasCompletedVehicleMedia
-                ? tr('Add More Media', 'Ajouter plus de médias')
-                : tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
-            </Button>
+            </div>
           </div>
+
+          {canRecordMissingVehicleDocumentPenalty ? (
+            <details className="mt-3 rounded-2xl border border-amber-100 bg-amber-50/40 px-3 py-2 text-amber-950 [&_summary::-webkit-details-marker]:hidden">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{tr('Document issue', 'Problème document')}</p>
+                  <p className="mt-0.5 text-xs text-amber-800">
+                    {tr(
+                      `${formatCurrency(lostVehicleDocumentPenaltyMad)} MAD penalty`,
+                      `Pénalité ${formatCurrency(lostVehicleDocumentPenaltyMad)} MAD`
+                    )}
+                  </p>
+                </div>
+                <ChevronDown className="h-4 w-4 flex-shrink-0 text-amber-700" />
+              </summary>
+              <div className="mt-3 border-t border-amber-100 pt-3">
+                <p className="hidden text-xs text-amber-800 sm:block">
+                  {tr(
+                    'Use only if registration or insurance did not come back with the vehicle.',
+                    'À utiliser seulement si la carte grise ou l’assurance ne revient pas avec le véhicule.'
+                  )}
+                </p>
+                <div className="mt-2 grid gap-2 sm:flex sm:flex-wrap">
+                  {MISSING_VEHICLE_DOCUMENT_OPTIONS.map((option) => {
+                    const alreadyApplied = isMissingVehicleDocumentPenaltyApplied(option.value);
+                    return (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        variant="outline"
+                        onClick={() => openMissingVehicleDocumentPenaltyDialog(option.value)}
+                        className={`justify-start rounded-xl border-amber-200 bg-white px-3 text-sm text-amber-900 hover:bg-amber-100 ${alreadyApplied ? 'opacity-70' : ''}`}
+                      >
+                        {alreadyApplied ? <CheckCircle className="mr-2 h-4 w-4 text-emerald-600" /> : <AlertTriangle className="mr-2 h-4 w-4" />}
+                        {tr(option.label.en, option.label.fr)}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            </details>
+          ) : null}
         </div>
       )}
       <RentalVideos
@@ -23536,6 +24209,88 @@ useEffect(() => {
                 )}
               </div>
             </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={documentPenaltyDialog.open}
+        onOpenChange={(open) => {
+          if (!open) closeMissingVehicleDocumentPenaltyDialog();
+        }}
+      >
+        <DialogContent className="w-[min(92vw,34rem)] max-w-[34rem] overflow-hidden rounded-[28px] border border-amber-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.18)]">
+          <div className="border-b border-amber-100 bg-[linear-gradient(135deg,rgba(255,251,235,0.96),rgba(255,255,255,0.98))] px-6 py-5">
+            <DialogHeader className="space-y-2 text-left">
+              <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+                <AlertTriangle className="h-5 w-5 text-amber-600" />
+                {tr('Apply document penalty', 'Appliquer la pénalité document')}
+              </DialogTitle>
+              <DialogDescription className="text-sm text-slate-500">
+                {tr(
+                  `Confirm that the ${selectedMissingVehicleDocumentLabel.toLowerCase()} is missing before deducting from the security return.`,
+                  `Confirmez que ${selectedMissingVehicleDocumentLabel.toLowerCase()} est manquant avant de déduire de la restitution de garantie.`
+                )}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="space-y-4 px-6 py-5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {tr('Penalty', 'Pénalité')}
+                </p>
+                <p className="mt-2 text-2xl font-bold text-slate-950">
+                  {formatCurrency(selectedMissingVehicleDocumentPenalty)} MAD
+                </p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">
+                  {tr('Deposit deduction', 'Déduction caution')}
+                </p>
+                <p className="mt-2 text-2xl font-bold text-emerald-800">
+                  {formatCurrency(selectedMissingVehicleDocumentDeduction)} MAD
+                </p>
+              </div>
+            </div>
+
+            {selectedMissingVehicleDocumentRemainingDue > 0 ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                {tr(
+                  `${formatCurrency(selectedMissingVehicleDocumentRemainingDue)} MAD remains due because the held security is lower than the configured penalty.`,
+                  `${formatCurrency(selectedMissingVehicleDocumentRemainingDue)} MAD restent dus car la garantie retenue est inférieure à la pénalité configurée.`
+                )}
+              </div>
+            ) : null}
+
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              {tr(
+                'This does not close the security return. It prepares the deduction so staff can review and sign the final return.',
+                'Cela ne clôture pas la restitution de garantie. La déduction est préparée pour que l’équipe puisse vérifier et signer le retour final.'
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeMissingVehicleDocumentPenaltyDialog}
+                disabled={documentPenaltyApplying}
+                className="rounded-xl border-slate-200 text-slate-700"
+              >
+                {tr('Cancel', 'Annuler')}
+              </Button>
+              <Button
+                type="button"
+                onClick={applyMissingVehicleDocumentPenalty}
+                disabled={documentPenaltyApplying}
+                className="rounded-xl bg-amber-600 text-white hover:bg-amber-700"
+              >
+                {documentPenaltyApplying ? <Loader className="mr-2 h-4 w-4 animate-spin" /> : <Shield className="mr-2 h-4 w-4" />}
+                {tr('Apply penalty', 'Appliquer la pénalité')}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -27034,6 +27789,42 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </div>
       )}
 
+      {canReinstateCompletedRental && (
+        <div className="mb-6 rounded-[24px] border border-amber-100 bg-gradient-to-r from-white via-amber-50/60 to-slate-50 p-4 shadow-[0_18px_45px_rgba(15,23,42,0.05)] sm:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-amber-600">
+                {tr('Admin recovery', 'Récupération admin')}
+              </p>
+              <h3 className="mt-1 text-lg font-black text-slate-950">
+                {tr('Reinstate completed rental', 'Réactiver la location terminée')}
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                {completionSnapshotLoading
+                  ? tr('Checking saved pre-completion state...', 'Vérification de l’état sauvegardé avant clôture...')
+                  : latestCompletionSnapshot
+                    ? tr('A saved pre-completion state is available for admin recovery.', 'Un état sauvegardé avant clôture est disponible pour la récupération admin.')
+                    : tr('No saved pre-completion state is available yet for this rental.', 'Aucun état sauvegardé avant clôture n’est encore disponible pour cette location.')}
+              </p>
+              {completionSnapshotError && (
+                <p className="mt-2 text-xs font-semibold text-rose-600">{completionSnapshotError}</p>
+              )}
+            </div>
+            <Button
+              type="button"
+              onClick={openReinstateRentalModal}
+              disabled={completionSnapshotLoading}
+              className="rounded-2xl border border-amber-200 bg-white px-5 py-3 font-black text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Clock className="mr-2 h-4 w-4" />
+              {completionSnapshotLoading
+                ? tr('Checking...', 'Vérification...')
+                : tr('Review reinstate', 'Vérifier la réactivation')}
+            </Button>
+          </div>
+        </div>
+      )}
+
       {isLightRentalDetailsMode && (
         <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
           <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 pb-4">
@@ -28429,13 +29220,42 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         <div className="flex justify-between">
           <span className="text-gray-600">
             {getRentalKilometerPackage(rental, packageDetails)
-              ? tr('Booked package price:', 'Prix du forfait réservé :')
+              ? rentalBillingSummary.packageWasUpgraded
+                ? tr('Original booked package:', 'Forfait réservé initial :')
+                : tr('Booked package price:', 'Prix du forfait réservé :')
               : tr('Base Rental Rate:', 'Tarif de base location :')}
           </span>
           <span className="font-medium">
-            {formatCurrency(rentalBillingSummary.baseAmount)} MAD
+            {formatCurrency(
+              rentalBillingSummary.packageWasUpgraded
+                ? rentalBillingSummary.originalPackagePrice
+                : rentalBillingSummary.baseAmount
+            )} MAD
           </span>
         </div>
+
+        {rentalBillingSummary.packageWasUpgraded && (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm">
+            <div className="flex justify-between gap-3 text-emerald-800">
+              <span className="font-semibold">
+                {tr(
+                  `Auto package upgrade${rentalBillingSummary.packageUpgradeCoveredKm > 0 ? ` · ${rentalBillingSummary.packageUpgradeCoveredKm} km covered above original limit` : ''}:`,
+                  `Surclassement auto${rentalBillingSummary.packageUpgradeCoveredKm > 0 ? ` · ${rentalBillingSummary.packageUpgradeCoveredKm} km couverts au-dessus de la limite initiale` : ''} :`
+                )}
+              </span>
+              <span className="font-bold">+{formatCurrency(rentalBillingSummary.packageUpgradeAmount)} MAD</span>
+            </div>
+            <div className="mt-1 flex justify-between gap-3 text-xs text-emerald-700">
+              <span>
+                {tr(
+                  `${formatCurrency(rentalBillingSummary.originalPackagePrice)} MAD / ${rentalBillingSummary.originalPackageLimit || 0} km → ${formatCurrency(rentalBillingSummary.appliedPackagePrice)} MAD / ${rentalBillingSummary.appliedPackageLimit || 0} km`,
+                  `${formatCurrency(rentalBillingSummary.originalPackagePrice)} MAD / ${rentalBillingSummary.originalPackageLimit || 0} km → ${formatCurrency(rentalBillingSummary.appliedPackagePrice)} MAD / ${rentalBillingSummary.appliedPackageLimit || 0} km`
+                )}
+              </span>
+              <span className="font-semibold">{rentalBillingSummary.appliedPackageName}</span>
+            </div>
+          </div>
+        )}
 
         {/* Overage Charge - Only once */}
         {(() => {
@@ -29599,6 +30419,55 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
         </div>
 
+        {activeModal === 'vehicle' && (
+          <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-700">
+                <FileText className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  {tr('What are you adding?', 'Que voulez-vous ajouter ?')}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {tr(
+                    'Use the same media flow for vehicle photos, registration, and insurance.',
+                    'Utilisez le même flux média pour les photos véhicule, carte grise et assurance.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              {VEHICLE_MEDIA_CATEGORY_OPTIONS.map((option) => {
+                const isSelected = vehicleMediaCategory === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setVehicleMediaCategory(option.value)}
+                    className={`rounded-xl border px-3 py-3 text-left transition ${
+                      isSelected
+                        ? 'border-violet-300 bg-violet-50 text-violet-900 shadow-sm'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-violet-50/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-bold">
+                        {isFrench ? option.label.fr : option.label.en}
+                      </span>
+                      {isSelected ? <CheckCircle className="h-4 w-4 text-violet-700" /> : null}
+                    </div>
+                    <p className="mt-1 text-xs leading-4 text-slate-500">
+                      {isFrench ? option.description.fr : option.description.en}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* View Mode Toggle */}
         <div className="flex justify-end mb-2">
           <div className="bg-gray-100 rounded-lg p-1 inline-flex">
@@ -29673,6 +30542,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                             <div className="absolute bottom-1 left-1 bg-black/60 text-white text-xs px-1 py-0.5 rounded">
                               #{index + 1}
                             </div>
+                            {file.vehicleMediaCategory ? (
+                              <div className="absolute left-1 top-1 max-w-[calc(100%-2rem)] rounded bg-violet-700/90 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                {isFrench
+                                  ? getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.fr
+                                  : getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.en}
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -30387,6 +31263,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       {capturedMedia.map((file, index) => (
                         <div key={index} className="relative flex-shrink-0">
                           {renderCapturedPhotoPreview(file, index, 'w-16 h-16 rounded-lg object-cover border-2 border-blue-500')}
+                          {file.vehicleMediaCategory ? (
+                            <div className="mt-1 max-w-16 truncate text-[10px] font-semibold text-violet-700">
+                              {isFrench
+                                ? getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.fr
+                                : getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.en}
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -30473,6 +31356,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           </div>
                           
                           <div className={mediaViewMode === 'list' ? "p-2 flex-1 flex flex-col justify-center min-w-0" : "p-2"}>
+                            {file.vehicleMediaCategory ? (
+                              <p className="mb-1 inline-flex w-fit rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                                {isFrench
+                                  ? getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.fr
+                                  : getVehicleMediaCategoryMeta(file.vehicleMediaCategory).label.en}
+                              </p>
+                            ) : null}
                             <p className="text-xs text-gray-600 truncate">
                               {file.name || `${tr('Video', 'Vidéo')} ${idx + 1}`}
                             </p>
@@ -32402,8 +33292,114 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
             </>
           )}
-    </DialogContent>
-  </Dialog>
+	  </DialogContent>
+	</Dialog>
+
+      <Dialog
+        open={showReinstateRentalModal}
+        onOpenChange={(open) => {
+          setShowReinstateRentalModal(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg rounded-[28px] border border-amber-100 bg-white p-0 shadow-[0_24px_70px_rgba(146,64,14,0.16)]">
+          <DialogHeader className="border-b border-amber-100 bg-gradient-to-r from-amber-50 via-white to-slate-50 px-6 pb-5 pt-6 text-left">
+            <DialogTitle className="flex items-center gap-3 text-xl font-black text-slate-950">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-500 text-white shadow-[0_12px_24px_rgba(245,158,11,0.24)]">
+                <Clock className="h-5 w-5" />
+              </span>
+              {tr('Reinstate this rental?', 'Réactiver cette location ?')}
+            </DialogTitle>
+            <DialogDescription className="mt-3 text-sm leading-6 text-slate-600">
+              {tr(
+                'Admin recovery uses the saved state captured right before completion. This restores the rental and marks this saved snapshot as used.',
+                'La récupération admin utilise l’état sauvegardé juste avant la clôture. Cette action restaure la location et marque cette sauvegarde comme utilisée.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 px-6 py-5">
+            <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                {tr('Contract', 'Contrat')}
+              </p>
+              <p className="mt-2 text-lg font-black text-slate-950">
+                {rental?.rental_id || rental?.id || tr('Current rental', 'Location actuelle')}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-600">
+                {rental?.customer_name || tr('No customer name', 'Aucun nom client')}
+              </p>
+            </div>
+
+            {latestCompletionSnapshot ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-700">
+                    {tr('Saved at', 'Sauvegardé le')}
+                  </p>
+                  <p className="mt-2 text-sm font-bold text-slate-900">
+                    {formatRentalScheduleDateTime(latestCompletionSnapshot.created_at)}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-700">
+                    {tr('Previous status', 'Statut précédent')}
+                  </p>
+                  <p className="mt-2 text-sm font-bold capitalize text-slate-900">
+                    {latestCompletionSnapshot.rental_status_before || tr('Not recorded', 'Non enregistré')}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-100 bg-white p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+                    {tr('Previous total', 'Total précédent')}
+                  </p>
+                  <p className="mt-2 text-sm font-bold text-slate-900">
+                    {formatCurrency(Number(latestCompletionSnapshot.rental_snapshot?.total_amount || 0))} MAD
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-100 bg-white p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+                    {tr('Vehicle status', 'Statut véhicule')}
+                  </p>
+                  <p className="mt-2 text-sm font-bold capitalize text-slate-900">
+                    {latestCompletionSnapshot.vehicle_status_before || tr('Not recorded', 'Non enregistré')}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <Alert className="border-rose-200 bg-rose-50 text-rose-900">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription className="text-sm font-semibold leading-6">
+                  {completionSnapshotLoading
+                    ? tr('Loading saved state...', 'Chargement de l’état sauvegardé...')
+                    : tr('No pre-completion snapshot was found. This rental cannot be safely reinstated yet.', 'Aucun snapshot avant clôture n’a été trouvé. Cette location ne peut pas encore être réactivée en sécurité.')}
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-6 pb-6 pt-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowReinstateRentalModal(false)}
+              disabled={isReinstatingRental}
+              className="rounded-2xl border-slate-200 bg-white px-5 py-3 font-bold text-slate-700 hover:bg-slate-50"
+            >
+              {tr('Keep completed', 'Garder terminé')}
+            </Button>
+            <Button
+              type="button"
+              disabled={!latestCompletionSnapshot || isReinstatingRental}
+              onClick={handleReinstateCompletedRental}
+              className="rounded-2xl border border-amber-600 bg-amber-600 px-5 py-3 font-black text-white shadow-[0_14px_30px_rgba(245,158,11,0.24)] hover:bg-amber-700 disabled:cursor-not-allowed disabled:border-amber-200 disabled:bg-amber-200 disabled:shadow-none"
+            >
+              {isReinstatingRental
+                ? tr('Restoring...', 'Restauration...')
+                : tr('Restore saved state', 'Restaurer l’état sauvegardé')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={showPermanentDeleteRentalModal}
