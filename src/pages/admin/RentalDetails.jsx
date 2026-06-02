@@ -730,9 +730,45 @@ const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false, targetElement =
   return renderedSlices;
 };
 
-const generatePdfBlobFromContainers = async (rootElement) => {
+const generateSinglePagePdfBlob = async (rootElement) => {
   if (!rootElement) {
     throw new Error('PDF root not found');
+  }
+
+  const { jsPDF } = await loadPdfTools();
+  const pageContainers = Array.from(rootElement.querySelectorAll('.page-container'));
+  const target = pageContainers[0] || rootElement;
+  const canvas = await renderElementToCanvas(target);
+  const printableWidthMm = PDF_PAGE_WIDTH_MM - PDF_MARGIN_MM * 2;
+  const mmPerCanvasPixel = printableWidthMm / canvas.width;
+  const imageHeightMm = canvas.height * mmPerCanvasPixel;
+  const pageHeightMm = Math.max(PDF_PAGE_HEIGHT_MM, Math.ceil(imageHeightMm + PDF_MARGIN_MM * 2));
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: [PDF_PAGE_WIDTH_MM, pageHeightMm],
+    compress: true,
+  });
+
+  pdf.addImage(
+    canvas.toDataURL('image/jpeg', 1.0),
+    'JPEG',
+    PDF_MARGIN_MM,
+    PDF_MARGIN_MM,
+    printableWidthMm,
+    imageHeightMm
+  );
+
+  return pdf.output('blob');
+};
+
+const generatePdfBlobFromContainers = async (rootElement, { singlePage = false } = {}) => {
+  if (!rootElement) {
+    throw new Error('PDF root not found');
+  }
+
+  if (singlePage) {
+    return generateSinglePagePdfBlob(rootElement);
   }
 
   const { jsPDF } = await loadPdfTools();
@@ -5079,7 +5115,7 @@ const handlePrintReceipt = async ({ shareOnly = false, silentMissingTemplate = f
       }
       return null;
     }
-    const pdfBlobReceipt = await generatePdfBlobFromContainers(receiptRoot);
+    const pdfBlobReceipt = await generatePdfBlobFromContainers(receiptRoot, { singlePage: true });
 
     // Upload to Supabase — required for WhatsApp sharing
     const receiptFilePath = `receipts/receipt_${rental.rental_id}_${Date.now()}.pdf`;
