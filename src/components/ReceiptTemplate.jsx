@@ -1350,6 +1350,24 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     : pricingSummaryStatus === 'partial'
       ? { bg: '#fef3c7', fg: '#92400e' }
       : { bg: '#fee2e2', fg: '#b91c1c' };
+  const paymentSummaryUpgradeUsageKm = Number(receiptDistanceUpgrade?.totalDistanceKm || usageDistanceKm || 0);
+  const paymentSummaryUpgradeOriginalLimit = Number(
+    receiptDistanceUpgrade?.originalPackageLimitKm ||
+    receiptDistanceUpgrade?.previousLimit ||
+    packageOriginalLimitKm ||
+    0
+  );
+  const paymentSummaryUpgradeAppliedLimit = Number(
+    receiptDistanceUpgrade?.appliedPackageLimitKm ||
+    receiptDistanceUpgrade?.finalLimit ||
+    packageBreakdown?.totalIncludedKm ||
+    0
+  );
+  const paymentSummaryUpgradeExtraKm = Math.max(0, paymentSummaryUpgradeUsageKm - paymentSummaryUpgradeOriginalLimit);
+  const paymentSummaryUpgradeOverageAmount = paymentSummaryUpgradeExtraKm * packageExtraKmRate;
+  const paymentSummaryUpgradeWithoutAmount = packageOriginalPrice + paymentSummaryUpgradeOverageAmount;
+  const paymentSummaryUpgradeSavings = Math.max(0, paymentSummaryUpgradeWithoutAmount - packageAppliedPrice);
+  const paymentSummaryUpgradeAppliedLabel = receiptDistanceUpgrade?.appliedPackageName || packageUsedLabel;
 
   const PricingStoryDisplay = () => {
     const hasAutoUpgradeStory = Boolean(receiptDistanceUpgrade);
@@ -3307,10 +3325,8 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         )}
       </div>
 
-      <PricingStoryDisplay />
-
       {/* Charges Table */}
-      <div className="table-responsive" style={{ marginBottom: '24px' }}>
+      <div className="table-responsive" style={{ display: 'none', marginBottom: '24px' }}>
         <table style={{
           width: '100%',
           borderCollapse: 'collapse',
@@ -3485,6 +3501,94 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         }}>
           {impoundIsEstimate ? tr('Impound Estimate Summary', 'Résumé estimatif de fourrière') : tr('Payment Summary', 'Résumé du paiement')}
         </h3>
+
+        {receiptDistanceUpgrade && (
+          <div style={{
+            marginBottom: '18px',
+            padding: '16px',
+            borderRadius: '14px',
+            backgroundColor: '#ecfdf5',
+            border: '1px solid #86efac'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', marginBottom: '12px' }}>
+              <div>
+                <div style={{
+                  fontSize: '12px',
+                  fontWeight: 900,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.7px',
+                  color: '#047857',
+                  marginBottom: '6px'
+                }}>
+                  {tr('Auto-upgrade applied', 'Surclassement automatique appliqué')}
+                </div>
+                <div style={{ fontSize: '13px', color: '#064e3b', lineHeight: 1.6 }}>
+                  {tr(
+                    `Initial package: ${receiptDistanceUpgrade.originalPackageName || `${formatReceiptKilometers(paymentSummaryUpgradeOriginalLimit)} km`} at ${formatCurrency(packageOriginalPrice)} MAD. Distance used: ${formatReceiptKilometers(paymentSummaryUpgradeUsageKm)} km.`,
+                    `Forfait initial : ${receiptDistanceUpgrade.originalPackageName || `${formatReceiptKilometers(paymentSummaryUpgradeOriginalLimit)} km`} à ${formatCurrency(packageOriginalPrice)} MAD. Distance utilisée : ${formatReceiptKilometers(paymentSummaryUpgradeUsageKm)} km.`
+                  )}
+                </div>
+              </div>
+              <div style={{
+                whiteSpace: 'nowrap',
+                borderRadius: '999px',
+                backgroundColor: '#d1fae5',
+                color: '#047857',
+                padding: '8px 12px',
+                fontSize: '12px',
+                fontWeight: 900
+              }}>
+                {paymentSummaryUpgradeSavings > 0
+                  ? tr('Customer saved', 'Économie client')
+                  : tr('Best package', 'Meilleur forfait')}
+              </div>
+            </div>
+
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: '10px'
+            }}>
+              <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#64748b', marginBottom: '5px' }}>
+                  {tr('Without upgrade', 'Sans surclassement')}
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 900, color: '#0f172a', lineHeight: 1.45 }}>
+                  {formatCurrency(paymentSummaryUpgradeWithoutAmount)} MAD
+                </div>
+                <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.55 }}>
+                  {formatCurrency(packageOriginalPrice)} MAD + {formatReceiptKilometers(paymentSummaryUpgradeExtraKm)} km × {formatCurrency(packageExtraKmRate)} MAD
+                </div>
+              </div>
+
+              <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#047857', marginBottom: '5px' }}>
+                  {tr('Applied package', 'Forfait appliqué')}
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 900, color: '#047857', lineHeight: 1.45 }}>
+                  {formatCurrency(packageAppliedPrice)} MAD
+                </div>
+                <div style={{ fontSize: '12px', color: '#047857', lineHeight: 1.55 }}>
+                  {paymentSummaryUpgradeAppliedLabel} • {formatReceiptKilometers(paymentSummaryUpgradeAppliedLimit)} km
+                </div>
+              </div>
+
+              <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: '#ffffff', border: '1px solid #bbf7d0' }}>
+                <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#047857', marginBottom: '5px' }}>
+                  {tr('Savings', 'Économie')}
+                </div>
+                <div style={{ fontSize: '14px', fontWeight: 900, color: '#047857', lineHeight: 1.45 }}>
+                  {formatCurrency(paymentSummaryUpgradeSavings)} MAD
+                </div>
+                <div style={{ fontSize: '12px', color: '#047857', lineHeight: 1.55 }}>
+                  {paymentSummaryUpgradeSavings > 0
+                    ? tr('Saved compared with charging extra kilometers.', 'Économisé par rapport aux kilomètres extra.')
+                    : tr('Best matching package applied for this distance.', 'Meilleur forfait correspondant appliqué pour cette distance.')}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         
         <div className="payment-summary-grid">
           {/* Left Column - Charges */}
@@ -3785,6 +3889,23 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 <div style={{ marginTop: '8px', fontSize: '11px', color: '#7c2d12', lineHeight: 1.6 }}>
                   {formatCurrency(documentPenaltyAmount)} MAD - {formatCurrency(documentPenaltySecurityAppliedAmount)} MAD = {formatCurrency(documentPenaltyRemainingDue)} MAD
                 </div>
+                {documentPenaltyRemainingDue > 0 && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '10px',
+                    borderRadius: '9px',
+                    backgroundColor: '#ffedd5',
+                    color: '#7c2d12',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    lineHeight: 1.55
+                  }}>
+                    {tr(
+                      `The document loss penalty is ${formatCurrency(documentPenaltyAmount)} MAD. We deducted ${formatCurrency(documentPenaltySecurityAppliedAmount)} MAD from the held security deposit, so ${formatCurrency(documentPenaltyRemainingDue)} MAD has been added to the balance still due.`,
+                      `La pénalité de perte des documents est de ${formatCurrency(documentPenaltyAmount)} MAD. Nous avons déduit ${formatCurrency(documentPenaltySecurityAppliedAmount)} MAD de la caution retenue, donc ${formatCurrency(documentPenaltyRemainingDue)} MAD a été ajouté au solde restant dû.`
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -3818,7 +3939,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </span>
             </div>
             
-            {receiptDamageDeposit > 0 && (
+            {receiptDamageDeposit > 0 && !hasDocumentLossPenalty && (
               <div style={{
                 padding: '12px',
                 backgroundColor: '#ebf8ff',
