@@ -8051,6 +8051,24 @@ Click the link above to review and approve the extension.`;
     return `${getPublicAppOrigin()}/view/rental/${rental.id}?${params.toString()}`;
   };
 
+  const isRawSupabaseStorageUrl = (url = '') => {
+    try {
+      const parsed = new URL(String(url || ''));
+      return parsed.hostname.endsWith('.supabase.co') && parsed.pathname.includes('/storage/v1/object/');
+    } catch {
+      return false;
+    }
+  };
+
+  const getAppHostedDocumentFallbackUrl = async (documentType, pdfUrl) => {
+    const appViewUrl = await buildSharedDocumentUrl(documentType, { pdfUrl });
+    const shortUrl = await shortenUrl(appViewUrl, documentType);
+    if (shortUrl && !isRawSupabaseStorageUrl(shortUrl)) {
+      return shortUrl;
+    }
+    return appViewUrl;
+  };
+
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
@@ -8061,8 +8079,8 @@ Click the link above to review and approve the extension.`;
         payload: buildCompactContractSharePayload(pdfUrl),
       });
     } catch (shareError) {
-      console.warn('Contract document-share record unavailable; using short PDF link fallback:', shareError);
-      return await shortenUrl(pdfUrl, 'contract');
+      console.warn('Contract document-share record unavailable; using app-hosted fallback:', shareError);
+      return await getAppHostedDocumentFallbackUrl('contract', pdfUrl);
     }
   };
 
@@ -8158,8 +8176,8 @@ Click the link above to review and approve the extension.`;
         payload: buildCompactReceiptSharePayload(pdfUrl),
       });
     } catch (shareError) {
-      console.warn('Receipt document-share record unavailable; using short PDF link fallback:', shareError);
-      return await shortenUrl(pdfUrl, 'receipt');
+      console.warn('Receipt document-share record unavailable; using app-hosted fallback:', shareError);
+      return await getAppHostedDocumentFallbackUrl('receipt', pdfUrl);
     }
   };
 
@@ -8360,6 +8378,13 @@ Click the link above to review and approve the extension.`;
       }
       const selectedItems = await buildSelectedRentalShareItems(options);
 
+      if (selectedItems.some((item) => isRawSupabaseStorageUrl(item.url))) {
+        throw new Error(tr(
+          'The document share link could not be prepared safely. Please try again.',
+          'Le lien du document n’a pas pu être préparé correctement. Veuillez réessayer.'
+        ));
+      }
+
       const intro = tr(
         `Here are your rental items for ${rental.rental_id}:`,
         `Voici les éléments de votre location ${rental.rental_id} :`
@@ -8487,6 +8512,13 @@ Click the link above to review and approve the extension.`;
         toast.dismiss('email-prepare');
         toast.error(tr('No shareable items are selected yet.', "Aucun élément partageable n'est sélectionné."));
         return;
+      }
+
+      if (selectedItems.some((item) => isRawSupabaseStorageUrl(item.url))) {
+        throw new Error(tr(
+          'The document share link could not be prepared safely. Please try again.',
+          'Le lien du document n’a pas pu être préparé correctement. Veuillez réessayer.'
+        ));
       }
 
       let documentsHubUrl = null;

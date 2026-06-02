@@ -410,6 +410,15 @@ const normalizePublicDocumentSettings = (settings = {}) => ({
   stampUrl: settings?.stampUrl || settings?.stamp_url || null,
 });
 
+const normalizeShareErrorMessage = (value, fallback = 'Shared document not found') => {
+  if (!value) return fallback;
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    return value.message || value.error || value.code || fallback;
+  }
+  return String(value);
+};
+
 export default function PublicDocumentShare() {
   const { token } = useParams();
   const [share, setShare] = useState(null);
@@ -432,7 +441,7 @@ export default function PublicDocumentShare() {
 
         if (!response.ok || !body?.share) {
           if (!cancelled) {
-            setError(body?.error || 'Shared document not found');
+            setError(normalizeShareErrorMessage(body?.error));
           }
           return;
         }
@@ -511,7 +520,7 @@ export default function PublicDocumentShare() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err.message || 'Failed to load shared document');
+          setError(normalizeShareErrorMessage(err, 'Failed to load shared document'));
         }
       } finally {
         if (!cancelled) {
@@ -597,7 +606,7 @@ export default function PublicDocumentShare() {
         <div style={{ textAlign: 'center', padding: 24 }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
           <h1 style={{ fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 8 }}>{tr('Link Error', 'Erreur de lien')}</h1>
-          <p style={{ color: '#6b7280' }}>{error || tr('Shared document not found', 'Document partage introuvable')}</p>
+          <p style={{ color: '#6b7280' }}>{normalizeShareErrorMessage(error, tr('Shared document not found', 'Document partage introuvable'))}</p>
         </div>
       </div>
     );

@@ -25,10 +25,15 @@ const readStoredShare = async (adminClient, token) => {
     .download(getShareStoragePath(token));
 
   if (error || !data) {
+    const storageStatus = Number(error?.statusCode || error?.status || 0);
+    const isNotFound =
+      storageStatus === 404 ||
+      /not found|does not exist|object not found/i.test(String(error?.message || error || ''));
+
     return {
       share: null,
-      error: error?.message || 'Shared document not found',
-      status: error ? 500 : 404,
+      error: isNotFound ? 'Shared document not found' : (error?.message || 'Shared document could not be loaded'),
+      status: isNotFound || !data ? 404 : 500,
     };
   }
 
