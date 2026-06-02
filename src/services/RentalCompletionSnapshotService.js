@@ -160,15 +160,11 @@ export const safeCreateRentalCompletionSnapshot = async (snapshotOptions = {}) =
   try {
     return await createRentalCompletionSnapshot(snapshotOptions);
   } catch (error) {
-    if (isRentalCompletionSnapshotTableUnavailable(error)) {
-      console.warn(
-        'Rental completion snapshot storage is unavailable; continuing rental completion without a restore snapshot.',
-        error
-      );
-      return null;
-    }
-
-    throw error;
+    console.warn(
+      'Rental completion snapshot could not be saved; continuing rental completion without a restore snapshot.',
+      error
+    );
+    return null;
   }
 };
 
