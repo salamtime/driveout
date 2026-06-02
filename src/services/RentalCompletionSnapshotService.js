@@ -11,6 +11,19 @@ const sanitizeJsonObject = (value) => {
   return JSON.parse(JSON.stringify(value));
 };
 
+export const isRentalCompletionSnapshotTableUnavailable = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    code === 'PGRST205' ||
+    code === '42P01' ||
+    error?.status === 404 ||
+    message.includes(RENTAL_COMPLETION_SNAPSHOTS_TABLE.toLowerCase()) ||
+    message.includes('could not find the table') ||
+    message.includes('does not exist')
+  );
+};
+
 const resolveOrganizationId = (rental = {}) =>
   rental.organization_id ||
   rental.tenant_organization_id ||
@@ -130,6 +143,13 @@ export const createRentalCompletionSnapshot = async ({
     .single();
 
   if (error) {
+    if (isRentalCompletionSnapshotTableUnavailable(error)) {
+      console.warn(
+        'Rental completion snapshot table is unavailable; continuing without a pre-completion restore snapshot.',
+        error
+      );
+      return null;
+    }
     throw error;
   }
 
@@ -154,6 +174,9 @@ export const getLatestRentalCompletionSnapshot = async ({
     .maybeSingle();
 
   if (error) {
+    if (isRentalCompletionSnapshotTableUnavailable(error)) {
+      return null;
+    }
     throw error;
   }
 
