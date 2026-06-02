@@ -8054,11 +8054,16 @@ Click the link above to review and approve the extension.`;
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
-    return await createDocumentShareRecord({
-      shareType: 'contract',
-      documentType: 'contract',
-      payload: buildCompactContractSharePayload(pdfUrl),
-    });
+    try {
+      return await createDocumentShareRecord({
+        shareType: 'contract',
+        documentType: 'contract',
+        payload: buildCompactContractSharePayload(pdfUrl),
+      });
+    } catch (shareError) {
+      console.warn('Contract document-share record unavailable; using generated document URL:', shareError);
+      return pdfUrl;
+    }
   };
 
   const getCompactShareBrandSettings = () => {
@@ -8146,11 +8151,16 @@ Click the link above to review and approve the extension.`;
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
-    return await createDocumentShareRecord({
-      shareType: 'receipt',
-      documentType: 'receipt',
-      payload: buildCompactReceiptSharePayload(pdfUrl),
-    });
+    try {
+      return await createDocumentShareRecord({
+        shareType: 'receipt',
+        documentType: 'receipt',
+        payload: buildCompactReceiptSharePayload(pdfUrl),
+      });
+    } catch (shareError) {
+      console.warn('Receipt document-share record unavailable; using generated document URL:', shareError);
+      return pdfUrl;
+    }
   };
 
   const getOpeningMediaShareUrl = async () => {
@@ -8363,13 +8373,6 @@ Click the link above to review and approve the extension.`;
           console.warn('Documents hub share unavailable:', shareError);
           documentsHubUrl = null;
         }
-      }
-
-      if (selectedItems.length > 1 && !documentsHubUrl) {
-        throw new Error(tr(
-          'Could not create the compact public document link. Please try again.',
-          'Impossible de créer le lien public compact. Veuillez réessayer.'
-        ));
       }
 
       if (!documentsHubUrl && selectedItems.some((item) => isOversizedShareUrl(item.url))) {
