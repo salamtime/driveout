@@ -918,6 +918,17 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         return storedTotalAmount + overage;
       }
 
+      const subtotalWithOverageAndNonFuelCharges =
+        recalculatedContractSubtotal + overage + maintenanceCharge + impoundCharge + transportFee;
+      if (Math.abs(storedTotalAmount - subtotalWithOverageAndNonFuelCharges) < 0.01) {
+        return storedTotalAmount + fuel;
+      }
+
+      const subtotalWithOverageOnly = recalculatedContractSubtotal + overage;
+      if (Math.abs(storedTotalAmount - subtotalWithOverageOnly) < 0.01) {
+        return storedTotalAmount + fuel + maintenanceCharge + impoundCharge + transportFee;
+      }
+
       if (Math.abs(storedTotalAmount - recalculatedContractSubtotal) < 0.01) {
         return storedTotalAmount + overage + fuel + maintenanceCharge + impoundCharge + transportFee;
       }
