@@ -349,37 +349,6 @@ const normalizePowerCc = (vehicleRow, modelData) => {
   return { value: null, label: '' };
 };
 
-const inferPackageDurationUnits = (name, rentalType) => {
-  const normalizedName = safeText(name).toLowerCase();
-  if (
-    normalizedName.includes('half hour') ||
-    normalizedName.includes('half-hour') ||
-    normalizedName.includes('30 min') ||
-    normalizedName.includes('30-minute') ||
-    normalizedName.includes('30 minute') ||
-    normalizedName.includes('30 minutes')
-  ) {
-    return rentalType === 'hourly' ? 0.5 : 1;
-  }
-  if (normalizedName.includes('half day') || normalizedName.includes('half-day') || normalizedName.includes('demi-journ')) {
-    return rentalType === 'hourly' ? 4 : 1;
-  }
-
-  const match = normalizedName.match(/(\d+(?:\.\d+)?)\s*(hour|hours|hr|hrs|h|day|days|jour|jours|j)/);
-  if (!match) return 1;
-
-  const value = Number(match[1]);
-  if (!Number.isFinite(value) || value <= 0) return 1;
-
-  const unit = match[2];
-  const looksHourly = ['hour', 'hours', 'hr', 'hrs', 'h'].includes(unit);
-  const looksDaily = ['day', 'days', 'jour', 'jours', 'j'].includes(unit);
-
-  if (rentalType === 'hourly' && looksHourly) return value;
-  if (rentalType === 'daily' && looksDaily) return value;
-  return 1;
-};
-
 const normalizeDamageDepositPresets = (presets) => {
   if (!presets || typeof presets !== 'object' || Array.isArray(presets)) return {};
 
