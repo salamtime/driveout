@@ -45,7 +45,7 @@ const readStoredShare = async (adminClient, token) => {
 };
 
 const writeStoredShare = async (adminClient, token, share) => {
-  const serialized = Buffer.from(JSON.stringify(share, null, 2), 'utf8');
+  const serialized = new TextEncoder().encode(JSON.stringify(share, null, 2));
   return adminClient.storage
     .from(DOCUMENT_SHARES_BUCKET)
     .upload(getShareStoragePath(token), serialized, {
@@ -55,7 +55,7 @@ const writeStoredShare = async (adminClient, token, share) => {
 };
 
 const overwriteStoredShare = async (adminClient, token, share) => {
-  const serialized = Buffer.from(JSON.stringify(share, null, 2), 'utf8');
+  const serialized = new TextEncoder().encode(JSON.stringify(share, null, 2));
   return adminClient.storage
     .from(DOCUMENT_SHARES_BUCKET)
     .upload(getShareStoragePath(token), serialized, {

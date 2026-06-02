@@ -8061,8 +8061,8 @@ Click the link above to review and approve the extension.`;
         payload: buildCompactContractSharePayload(pdfUrl),
       });
     } catch (shareError) {
-      console.warn('Contract document-share record unavailable; using generated document URL:', shareError);
-      return pdfUrl;
+      console.warn('Contract document-share record unavailable; using short PDF link fallback:', shareError);
+      return await shortenUrl(pdfUrl, 'contract');
     }
   };
 
@@ -8158,8 +8158,8 @@ Click the link above to review and approve the extension.`;
         payload: buildCompactReceiptSharePayload(pdfUrl),
       });
     } catch (shareError) {
-      console.warn('Receipt document-share record unavailable; using generated document URL:', shareError);
-      return pdfUrl;
+      console.warn('Receipt document-share record unavailable; using short PDF link fallback:', shareError);
+      return await shortenUrl(pdfUrl, 'receipt');
     }
   };
 
