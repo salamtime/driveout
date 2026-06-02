@@ -569,6 +569,7 @@ const PDF_PAGE_HEIGHT_MM = 297;
 const PDF_MARGIN_MM = 10;
 const PDF_CAPTURE_SCALE = 3;
 const PDF_BREAK_PROTECTION_SELECTOR = '[data-pdf-avoid-break="true"], .pdf-avoid-break';
+const PDF_FORCED_BREAK_SELECTOR = '[data-pdf-page-break-before="true"], .pdf-page-break-before';
 
 const loadPdfTools = async () => {
   const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
@@ -619,10 +620,38 @@ const getCanvasAvoidBreakRanges = (targetElement, canvas) => {
     .sort((a, b) => a.top - b.top);
 };
 
-const resolvePdfSliceEnd = (offsetY, nominalEndY, canvasHeight, avoidBreakRanges, pageSliceHeightPx) => {
+const getCanvasForcedBreakPositions = (targetElement, canvas) => {
+  if (!targetElement?.querySelectorAll || !canvas?.height) return [];
+
+  const targetRect = targetElement.getBoundingClientRect();
+  const targetCssHeight = Math.max(
+    Number(targetElement.scrollHeight) || 0,
+    Number(targetRect.height) || 0,
+    1
+  );
+  const canvasPixelsPerCssPixel = canvas.height / targetCssHeight;
+  const targetTop = targetRect.top;
+
+  return Array.from(targetElement.querySelectorAll(PDF_FORCED_BREAK_SELECTOR))
+    .map((node) => Math.max(0, Math.floor((node.getBoundingClientRect().top - targetTop) * canvasPixelsPerCssPixel)))
+    .filter((position) => Number.isFinite(position) && position > 0 && position < canvas.height)
+    .sort((a, b) => a - b);
+};
+
+const resolvePdfSliceEnd = (offsetY, nominalEndY, canvasHeight, avoidBreakRanges, forcedBreakPositions, pageSliceHeightPx) => {
   const safeNominalEndY = Math.min(nominalEndY, canvasHeight);
   const breakPaddingPx = Math.max(18, Math.round(pageSliceHeightPx * 0.012));
   const minimumSliceHeightPx = Math.max(180, Math.round(pageSliceHeightPx * 0.12));
+
+  const forcedBreakBeforeBoundary = forcedBreakPositions.find(
+    (position) =>
+      position > offsetY + minimumSliceHeightPx &&
+      position < safeNominalEndY - breakPaddingPx
+  );
+
+  if (forcedBreakBeforeBoundary) {
+    return forcedBreakBeforeBoundary;
+  }
 
   for (const range of avoidBreakRanges) {
     const protectedTop = Math.max(0, range.top - breakPaddingPx);
@@ -646,11 +675,19 @@ const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false, targetElement =
   const mmPerCanvasPixel = printableWidthMm / canvas.width;
   const pageSliceHeightPx = Math.max(1, Math.floor(printableHeightMm / mmPerCanvasPixel));
   const avoidBreakRanges = getCanvasAvoidBreakRanges(targetElement, canvas);
+  const forcedBreakPositions = getCanvasForcedBreakPositions(targetElement, canvas);
   let renderedSlices = 0;
 
   for (let offsetY = 0; offsetY < canvas.height;) {
     const nominalEndY = offsetY + pageSliceHeightPx;
-    const sliceEndY = resolvePdfSliceEnd(offsetY, nominalEndY, canvas.height, avoidBreakRanges, pageSliceHeightPx);
+    const sliceEndY = resolvePdfSliceEnd(
+      offsetY,
+      nominalEndY,
+      canvas.height,
+      avoidBreakRanges,
+      forcedBreakPositions,
+      pageSliceHeightPx
+    );
     const sliceHeightPx = Math.max(1, Math.min(sliceEndY - offsetY, canvas.height - offsetY));
     const sliceCanvas = document.createElement('canvas');
     sliceCanvas.width = canvas.width;

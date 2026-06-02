@@ -2780,7 +2780,8 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           .pdf-avoid-break,
           .receipt-payment-summary,
           .receipt-document-penalty-settlement,
-          .receipt-auto-upgrade-summary {
+          .receipt-auto-upgrade-summary,
+          .receipt-payment-safe-row {
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }
@@ -3580,7 +3581,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       </div>
 
       {/* Payment Summary */}
-      <div className="receipt-payment-summary pdf-avoid-break" data-pdf-avoid-break="true" style={{
+      <div className="receipt-payment-summary pdf-page-break-before" data-pdf-page-break-before="true" style={{
         padding: '24px',
         background: 'linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%)',
         borderRadius: '12px',
@@ -3851,7 +3852,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             )}
 
             {hasDocumentLossPenalty && (
-              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px dashed #fed7aa' }}>
+              <div className="receipt-payment-safe-row pdf-avoid-break" data-pdf-avoid-break="true" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px dashed #fed7aa' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#9a3412' }}>
                   <span>{tr('Vehicle document loss penalty:', 'Pénalité perte documents véhicule :')}</span>
                   <span style={{ fontWeight: '600' }}>+{formatCurrency(documentPenaltyAmount)} MAD</span>
@@ -3865,7 +3866,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
             )}
 
-            <div style={{
+            <div className="receipt-payment-safe-row pdf-avoid-break" data-pdf-avoid-break="true" style={{
               display: 'flex',
               justifyContent: 'space-between',
               marginTop: '16px',
@@ -3934,7 +3935,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             )}
 
             {autoDepositSeizedAmount > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <div className="receipt-payment-safe-row pdf-avoid-break" data-pdf-avoid-break="true" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <span style={{ color: '#9a3412' }}>
                   {hasDocumentLossPenalty
                     ? tr('Security seized for document penalty:', 'Caution saisie pour pénalité documents :')
@@ -4010,7 +4011,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
             )}
             
-            <div style={{
+            <div className="receipt-payment-safe-row pdf-avoid-break" data-pdf-avoid-break="true" style={{
               display: 'flex',
               justifyContent: 'space-between',
               marginBottom: '16px',
