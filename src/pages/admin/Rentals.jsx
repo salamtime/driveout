@@ -276,6 +276,10 @@ const RENTALS_BASE_SELECT = `
   start_odometer,
   start_fuel_level,
   damage_deposit,
+  damage_deposit_received_amount,
+  deposit_deduction_reason,
+  deposit_return_amount,
+  final_deposit_return_amount,
   deposit_returned_at,
   linked_maintenance_id,
   linked_maintenance_status,
@@ -772,6 +776,43 @@ const getPackageRentalDurationUnits = (rental = {}) => {
   return null;
 };
 
+const DOCUMENT_LOSS_PENALTY_REASON_TOKEN = 'document loss penalty';
+
+const parseMadAmountFromText = (value) => {
+  const normalizedValue = String(value || '').replace(/\s/g, '').replace(/,/g, '');
+  return Math.max(0, Number(normalizedValue) || 0);
+};
+
+const parseDocumentPenaltyReasonAmount = (reason, label) => {
+  const match = String(reason || '').match(new RegExp(`${label}[^0-9]*(\\d[\\d\\s,.]*)\\s*MAD`, 'i'));
+  return parseMadAmountFromText(match?.[1]);
+};
+
+const getDocumentPenaltySnapshot = (rental) => {
+  const reason = String(rental?.deposit_deduction_reason || '');
+  if (!reason.toLowerCase().includes(DOCUMENT_LOSS_PENALTY_REASON_TOKEN)) {
+    return {
+      penaltyAmount: 0,
+      remainingDue: 0,
+    };
+  }
+
+  const penaltyAmount = parseDocumentPenaltyReasonAmount(reason, 'Document loss penalty');
+  const deductedFromSecurity = Math.max(
+    parseDocumentPenaltyReasonAmount(reason, 'Deducted from security deposit'),
+    Number(rental?.deposit_deduction_amount || 0) || 0
+  );
+  const explicitRemainingDue = parseDocumentPenaltyReasonAmount(reason, 'Remaining penalty due');
+  const remainingDue = explicitRemainingDue > 0
+    ? explicitRemainingDue
+    : Math.max(0, penaltyAmount - deductedFromSecurity);
+
+  return {
+    penaltyAmount,
+    remainingDue,
+  };
+};
+
 const getRentalFinancialSnapshot = (rental) => {
   const quantity = getPackageRentalDurationUnits(rental) || 1;
   const baseTotal = rental?.use_package_pricing
@@ -787,10 +828,15 @@ const getRentalFinancialSnapshot = (rental) => {
   // Rental Details is the source of truth for the contract settlement snapshot.
   // The rentals list must mirror the saved total / paid / remaining view from
   // Rental Details instead of replaying its own payment-entry math.
+  const documentPenaltySnapshot = getDocumentPenaltySnapshot(rental);
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
-  const balanceDue = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-  const finalGrandTotal = Math.max(0, grossTotal);
+  const balanceDue = Math.max(
+    0,
+    Number(rental?.remaining_amount || 0) || 0,
+    documentPenaltySnapshot.remainingDue
+  );
+  const finalGrandTotal = Math.max(0, grossTotal + documentPenaltySnapshot.penaltyAmount);
   const customerPaidAmount = Math.max(0, finalGrandTotal - balanceDue);
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,

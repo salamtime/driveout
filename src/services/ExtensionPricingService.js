@@ -1300,12 +1300,7 @@ export class ExtensionPricingService {
   static async getExtensionHistory(rentalId) {
     const { data, error } = await supabase
       .from('rental_extensions')
-      .select(`
-        *,
-        requester:requested_by(full_name, email),
-        approver:approved_by(full_name, email),
-        rejecter:rejected_by(full_name, email)
-      `)
+      .select('*')
       .eq('rental_id', rentalId)
       .order('requested_at', { ascending: false });
 

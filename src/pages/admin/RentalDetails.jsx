@@ -149,6 +149,49 @@ const getMissingVehicleDocumentMeta = (value) => (
   MISSING_VEHICLE_DOCUMENT_OPTIONS[0]
 );
 
+const VEHICLE_DOCUMENT_PENALTY_REASON_TOKEN = 'document loss penalty';
+
+const hasVehicleDocumentPenaltyReason = (reason = '') => {
+  const normalizedReason = String(reason || '').toLowerCase();
+  return (
+    normalizedReason.includes(VEHICLE_DOCUMENT_PENALTY_REASON_TOKEN) ||
+    MISSING_VEHICLE_DOCUMENT_OPTIONS.some((option) => normalizedReason.includes(option.reasonToken))
+  );
+};
+
+const getVehicleDocumentPenaltyState = (rentalLike = null, configuredPenalty = 0) => {
+  const penaltyAmount = Math.max(0, Number(configuredPenalty || 0) || 0);
+  const existingDeductionAmount = Math.max(0, Number(rentalLike?.deposit_deduction_amount || 0) || 0);
+  const securityHeldAmount = Math.max(
+    0,
+    Number(rentalLike?.damage_deposit || 0),
+    Number(rentalLike?.damage_deposit_received_amount || 0),
+    Number(rentalLike?.deposit_return_amount || 0) + existingDeductionAmount,
+    Number(rentalLike?.final_deposit_return_amount || 0) + existingDeductionAmount
+  );
+  const applied = hasVehicleDocumentPenaltyReason(rentalLike?.deposit_deduction_reason);
+  const deductedFromSecurity = applied ? Math.min(penaltyAmount, securityHeldAmount) : 0;
+  const remainingDue = applied ? Math.max(0, penaltyAmount - deductedFromSecurity) : 0;
+
+  return {
+    applied,
+    penaltyAmount: applied ? penaltyAmount : 0,
+    configuredPenalty: penaltyAmount,
+    securityHeldAmount,
+    deductedFromSecurity,
+    remainingDue,
+    returnAmount: Math.max(0, securityHeldAmount - deductedFromSecurity),
+  };
+};
+
+const removeVehicleDocumentPenaltyReason = (reason = '') => (
+  String(reason || '')
+    .split('\n')
+    .filter((line) => !hasVehicleDocumentPenaltyReason(line))
+    .join('\n')
+    .trim()
+);
+
 
 // Set to true to enable verbose logging in RentalDetails
 const RENTAL_DEBUG = false;
@@ -9080,6 +9123,7 @@ Click the link above to review and approve the extension.`;
     const maintenanceDiscountAmount = maintenanceChargeForm.enabled
       ? (parseFloat(maintenanceChargeForm.discount || 0) || 0)
       : 0;
+    const documentPenaltyState = getVehicleDocumentPenaltyState(rental, lostVehicleDocumentPenaltyMad);
     const hasStoredRentalChargeAmount = rentalChargeAmount > 0;
     const shouldTrustStoredRentalChargeForPricing =
       hasStoredRentalChargeAmount && hasManualContractPriceOverride;
@@ -9115,7 +9159,7 @@ Click the link above to review and approve the extension.`;
       (storedRentalChargeIncludesOverage || storedRentalChargeIncludesAncillaryCharges)
         ? 0
         : overageCharge;
-    const grandTotal =
+    const rentalGrandTotal =
       effectiveRentalChargeAmount +
       effectiveOverageCharge +
       lateFeeAmount +
@@ -9123,15 +9167,18 @@ Click the link above to review and approve the extension.`;
       impoundChargeAmount +
       maintenanceChargeAmount +
       transportFeeAmount;
+    const grandTotal = rentalGrandTotal + documentPenaltyState.penaltyAmount;
     const rawDisplayedPaidAmount = getCorrectedDisplayedPaidAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const depositPaid = grandTotal > 0
-      ? Math.min(rawDisplayedPaidAmount, grandTotal)
+      ? Math.min(rawDisplayedPaidAmount, rentalGrandTotal)
       : rawDisplayedPaidAmount;
-    const rawBalanceDue = Math.max(0, grandTotal - depositPaid);
-    const damageDepositHeld = Math.max(0, parseFloat(rental?.damage_deposit || 0));
-    const autoDepositSeizedAmount = 0;
-    const autoDepositReturnAmount = damageDepositHeld;
-    const hasAutoDepositSeizure = false;
+    const damageDepositHeld = documentPenaltyState.securityHeldAmount || Math.max(0, parseFloat(rental?.damage_deposit || 0));
+    const autoDepositSeizedAmount = documentPenaltyState.deductedFromSecurity;
+    const autoDepositReturnAmount = documentPenaltyState.applied
+      ? documentPenaltyState.returnAmount
+      : damageDepositHeld;
+    const hasAutoDepositSeizure = documentPenaltyState.deductedFromSecurity > 0;
+    const rawBalanceDue = Math.max(0, rentalGrandTotal - depositPaid) + documentPenaltyState.remainingDue;
     const storedRemainingAmount = Math.max(0, parseFloat(rental?.remaining_amount || 0) || 0);
     const {
       balanceDue,
@@ -9186,7 +9233,13 @@ Click the link above to review and approve the extension.`;
       maintenanceStayAmount,
       maintenanceDiscountAmount,
       maintenanceChargeAmount,
+      documentPenaltyAmount: documentPenaltyState.penaltyAmount,
+      documentPenaltyDeductedFromSecurity: documentPenaltyState.deductedFromSecurity,
+      documentPenaltyRemainingDue: documentPenaltyState.remainingDue,
+      documentPenaltyReturnAmount: documentPenaltyState.returnAmount,
+      hasVehicleDocumentPenalty: documentPenaltyState.applied,
       grossGrandTotal: grandTotal,
+      rentalGrandTotal,
       grandTotal,
       finalGrandTotal,
       depositPaid,
@@ -9200,7 +9253,7 @@ Click the link above to review and approve the extension.`;
       hasAutoDepositSeizure,
       balanceDue,
     };
-  }, [amountDueAuditMeta, autoPackageUpgradeEnabled, availableKmPackages, calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, getBaseRentalAmountExcludingExtensions, hasManualContractPriceOverride, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, inlineTransportFeeMeta?.amount, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
+  }, [amountDueAuditMeta, autoPackageUpgradeEnabled, availableKmPackages, calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, getBaseRentalAmountExcludingExtensions, hasManualContractPriceOverride, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, inlineTransportFeeMeta?.amount, lostVehicleDocumentPenaltyMad, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
 
   const lateReturnFeePreview = useMemo(
     () => getLateReturnFeePreview(rental),
@@ -18060,9 +18113,9 @@ useEffect(() => {
   ].filter(Boolean).join(' • ');
 
   const vehicleDocumentPenaltyReasonText = String(rental?.deposit_deduction_reason || '');
+  const vehicleDocumentPenaltyState = getVehicleDocumentPenaltyState(rental, lostVehicleDocumentPenaltyMad);
   const isMissingVehicleDocumentPenaltyApplied = useCallback((documentType) => {
-    const meta = getMissingVehicleDocumentMeta(documentType);
-    return vehicleDocumentPenaltyReasonText.toLowerCase().includes(meta.reasonToken);
+    return hasVehicleDocumentPenaltyReason(vehicleDocumentPenaltyReasonText);
   }, [vehicleDocumentPenaltyReasonText]);
 
   const openMissingVehicleDocumentPenaltyDialog = useCallback((documentType) => {
@@ -18078,8 +18131,8 @@ useEffect(() => {
 
     if (isMissingVehicleDocumentPenaltyApplied(documentType)) {
       toast.success(tr(
-        'This document penalty is already recorded.',
-        'Cette pénalité document est déjà enregistrée.'
+        'The document penalty is already recorded for this rental.',
+        'La pénalité document est déjà enregistrée pour cette location.'
       ));
       openDepositReturnReview();
       return;
@@ -18110,8 +18163,8 @@ useEffect(() => {
 
     if (isMissingVehicleDocumentPenaltyApplied(meta.value)) {
       toast.success(tr(
-        'This document penalty is already recorded.',
-        'Cette pénalité document est déjà enregistrée.'
+        'The document penalty is already recorded for this rental.',
+        'La pénalité document est déjà enregistrée pour cette location.'
       ));
       setDocumentPenaltyDialog({ open: false, documentType: null });
       openDepositReturnReview();
@@ -18120,19 +18173,13 @@ useEffect(() => {
 
     setDocumentPenaltyApplying(true);
     try {
-      const existingDeductionAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0));
-      const securityHeldAmount = Math.max(
-        0,
-        Number(rental?.damage_deposit || 0),
-        Number(rental?.damage_deposit_received_amount || 0),
-        Number(rental?.deposit_return_amount || 0) + existingDeductionAmount,
-        Number(rental?.final_deposit_return_amount || 0) + existingDeductionAmount
-      );
-      const availableSecurityForNewDeduction = Math.max(0, securityHeldAmount - existingDeductionAmount);
-      const amountDeductedFromSecurity = Math.min(penaltyAmount, availableSecurityForNewDeduction);
+      const securityHeldAmount = getVehicleDocumentPenaltyState(rental, penaltyAmount).securityHeldAmount;
+      const amountDeductedFromSecurity = Math.min(penaltyAmount, securityHeldAmount);
       const remainingPenaltyDue = Math.max(0, penaltyAmount - amountDeductedFromSecurity);
-      const nextDeductionAmount = Number((existingDeductionAmount + amountDeductedFromSecurity).toFixed(2));
+      const nextDeductionAmount = Number(amountDeductedFromSecurity.toFixed(2));
       const nextReturnAmount = Number(Math.max(0, securityHeldAmount - nextDeductionAmount).toFixed(2));
+      const existingRentalBalanceDue = Math.max(0, Number(rentalBillingSummary.balanceDue || 0) || 0);
+      const nextRemainingAmount = Number((existingRentalBalanceDue + remainingPenaltyDue).toFixed(2));
       const actorName = (
         currentUser?.full_name ||
         currentUser?.fullName ||
@@ -18164,6 +18211,8 @@ useEffect(() => {
         deposit_deduction_reason: nextReason,
         deposit_return_amount: nextReturnAmount,
         final_deposit_return_amount: nextReturnAmount,
+        remaining_amount: nextRemainingAmount,
+        payment_status: nextRemainingAmount > 0 ? 'partial' : 'paid',
         updated_at: new Date().toISOString(),
       };
 
@@ -18199,7 +18248,8 @@ useEffect(() => {
     lostVehicleDocumentPenaltyMad,
     rental?.damage_deposit,
     rental?.damage_deposit_received_amount,
-    rental?.deposit_deduction_amount,
+    rentalBillingSummary.balanceDue,
+    rental,
     rental?.deposit_return_amount,
     rental?.final_deposit_return_amount,
     rental?.id,
@@ -18209,6 +18259,74 @@ useEffect(() => {
     userProfile?.fullName,
     userProfile?.full_name,
     vehicleDocumentPenaltyReasonText,
+  ]);
+
+  const removeMissingVehicleDocumentPenalty = useCallback(async () => {
+    if (!rental?.id || !vehicleDocumentPenaltyState.applied) return;
+
+    if (rental?.deposit_returned_at) {
+      toast.error(tr(
+        'Security return is already completed. Reopen it before removing the document penalty.',
+        'La restitution de garantie est déjà terminée. Rouvrez-la avant de retirer la pénalité document.'
+      ));
+      return;
+    }
+
+    const confirmed = window.confirm(tr(
+      'Remove the document-missing penalty and restore the security return calculation?',
+      'Retirer la pénalité document manquant et restaurer le calcul de restitution de garantie ?'
+    ));
+    if (!confirmed) return;
+
+    setDocumentPenaltyApplying(true);
+    try {
+      const existingDeductionAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0) || 0);
+      const nextDeductionAmount = Math.max(0, existingDeductionAmount - vehicleDocumentPenaltyState.deductedFromSecurity);
+      const nextReturnAmount = Math.max(0, vehicleDocumentPenaltyState.securityHeldAmount - nextDeductionAmount);
+      const nextReason = removeVehicleDocumentPenaltyReason(rental?.deposit_deduction_reason);
+      const nextRemainingAmount = Math.max(
+        0,
+        Number(rentalBillingSummary.balanceDue || 0) - vehicleDocumentPenaltyState.remainingDue
+      );
+
+      const updatePayload = {
+        deposit_deduction_amount: nextDeductionAmount,
+        deposit_deduction_reason: nextReason || null,
+        deposit_return_amount: nextReturnAmount,
+        final_deposit_return_amount: nextReturnAmount,
+        remaining_amount: nextRemainingAmount,
+        payment_status: nextRemainingAmount > 0 ? 'partial' : 'paid',
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: updatedRental, error: updateError } = await updateRentalWithSchemaFallback(updatePayload);
+      if (updateError) throw updateError;
+
+      setRental((prev) => prev ? ({ ...prev, ...(updatedRental || updatePayload) }) : prev);
+      await loadRentalData(true);
+      toast.success(tr(
+        'Document penalty removed.',
+        'Pénalité document retirée.'
+      ));
+    } catch (error) {
+      console.error('❌ Error removing missing vehicle document penalty:', error);
+      toast.error(`${tr('Failed to remove document penalty', 'Impossible de retirer la pénalité document')}: ${error.message}`);
+    } finally {
+      setDocumentPenaltyApplying(false);
+    }
+  }, [
+    loadRentalData,
+    rental?.deposit_deduction_amount,
+    rental?.deposit_deduction_reason,
+    rental?.deposit_returned_at,
+    rental?.id,
+    rentalBillingSummary.balanceDue,
+    tr,
+    updateRentalWithSchemaFallback,
+    vehicleDocumentPenaltyState.applied,
+    vehicleDocumentPenaltyState.deductedFromSecurity,
+    vehicleDocumentPenaltyState.remainingDue,
+    vehicleDocumentPenaltyState.securityHeldAmount,
   ]);
 
   const securityHoldStatus = (() => {
@@ -23127,6 +23245,27 @@ useEffect(() => {
                     </div>
                   )}
 
+                  {rentalBillingSummary.documentPenaltyAmount > 0 && (
+                    <>
+                      <div className="flex justify-between text-amber-700">
+                        <span>{tr('Missing vehicle document penalty:', 'Pénalité document véhicule manquant :')}</span>
+                        <span className="font-medium">+{formatCurrency(rentalBillingSummary.documentPenaltyAmount)} MAD</span>
+                      </div>
+                      {rentalBillingSummary.documentPenaltyDeductedFromSecurity > 0 && (
+                        <div className="flex justify-between text-orange-700">
+                          <span>{tr('Covered by security deposit:', 'Couvert par la caution :')}</span>
+                          <span className="font-medium">-{formatCurrency(rentalBillingSummary.documentPenaltyDeductedFromSecurity)} MAD</span>
+                        </div>
+                      )}
+                      {rentalBillingSummary.documentPenaltyRemainingDue > 0 && (
+                        <div className="flex justify-between text-red-600">
+                          <span>{tr('Document penalty still due:', 'Pénalité document restant due :')}</span>
+                          <span className="font-medium">{formatCurrency(rentalBillingSummary.documentPenaltyRemainingDue)} MAD</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+
                   {rentalBillingSummary.impoundChargeAmount > 0 && (
                     <div className="flex justify-between text-amber-700">
                       <span>{isImpounded ? tr('Live additional rental time:', 'Temps supplémentaire en direct :') : tr('Additional rental time:', 'Temps supplémentaire :')}</span>
@@ -23149,7 +23288,11 @@ useEffect(() => {
                   )}
 
                   <div className="flex justify-between border-t-2 border-gray-300 pt-2 text-lg">
-                    <span className="font-semibold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
+                    <span className="font-semibold text-gray-900">
+                      {rentalBillingSummary.documentPenaltyAmount > 0
+                        ? tr('Final amount total:', 'Total final :')
+                        : tr('Final Rental Total:', 'Total final location :')}
+                    </span>
                     <span className="font-semibold text-gray-900">{formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD</span>
                   </div>
 
@@ -23346,6 +23489,11 @@ useEffect(() => {
                             <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-semibold text-orange-700">
                               🔒 {tr('Pending Return', 'Retour en attente')}
                             </span>
+                            {vehicleDocumentPenaltyState.applied ? (
+                              <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                                {tr('Document penalty applied', 'Pénalité document appliquée')}
+                              </span>
+                            ) : null}
                             {rentalBillingSummary.autoDepositSeizedAmount > 0 ? (
                               <span className="text-xs font-medium text-orange-700">
                                 {isImpounded
@@ -23354,16 +23502,39 @@ useEffect(() => {
                               </span>
                             ) : null}
                           </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className={PRIMARY_ACTION_BUTTON_CLASS}
-                            onClick={openDepositReturnReview}
-                          >
-                            <FileSignature className="mr-2 h-4 w-4" />
-                            {tr('Review Security Return', 'Vérifier la restitution')}
-                          </Button>
+                          <div className="flex flex-wrap gap-2">
+                            {vehicleDocumentPenaltyState.applied ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                                onClick={removeMissingVehicleDocumentPenalty}
+                                disabled={documentPenaltyApplying}
+                              >
+                                <XCircle className="mr-2 h-4 w-4" />
+                                {tr('Cancel penalty', 'Annuler pénalité')}
+                              </Button>
+                            ) : null}
+                            <Button
+                              type="button"
+                              size="sm"
+                              className={PRIMARY_ACTION_BUTTON_CLASS}
+                              onClick={openDepositReturnReview}
+                            >
+                              <FileSignature className="mr-2 h-4 w-4" />
+                              {tr('Review Security Return', 'Vérifier la restitution')}
+                            </Button>
+                          </div>
                         </div>
+                        {vehicleDocumentPenaltyState.applied ? (
+                          <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                            {tr(
+                              `${formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD penalty · ${formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD deducted from security · ${formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD still due.`,
+                              `${formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD de pénalité · ${formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD déduits de la caution · ${formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD encore dus.`
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     )}
 
@@ -29464,8 +29635,33 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
         ) : (
           <>
+            {rentalBillingSummary.documentPenaltyAmount > 0 && (
+              <>
+                <div className="flex justify-between text-amber-700 text-sm">
+                  <span>{tr('Missing vehicle document penalty:', 'Pénalité document véhicule manquant :')}</span>
+                  <span className="font-medium">+{formatCurrency(rentalBillingSummary.documentPenaltyAmount)} MAD</span>
+                </div>
+                {rentalBillingSummary.documentPenaltyDeductedFromSecurity > 0 && (
+                  <div className="flex justify-between text-orange-700 text-sm">
+                    <span>{tr('Covered by security deposit:', 'Couvert par la caution :')}</span>
+                    <span className="font-medium">-{formatCurrency(rentalBillingSummary.documentPenaltyDeductedFromSecurity)} MAD</span>
+                  </div>
+                )}
+                {rentalBillingSummary.documentPenaltyRemainingDue > 0 && (
+                  <div className="flex justify-between text-red-600 text-sm">
+                    <span>{tr('Document penalty still due:', 'Pénalité document restant due :')}</span>
+                    <span className="font-medium">{formatCurrency(rentalBillingSummary.documentPenaltyRemainingDue)} MAD</span>
+                  </div>
+                )}
+              </>
+            )}
+
             <div className="flex justify-between pt-2 border-t-2 border-gray-300 text-lg">
-              <span className="font-semibold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
+              <span className="font-semibold text-gray-900">
+                {rentalBillingSummary.documentPenaltyAmount > 0
+                  ? tr('Final amount total:', 'Total final :')
+                  : tr('Final Rental Total:', 'Total final location :')}
+              </span>
               <span className="font-semibold text-gray-900">
                 {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD
               </span>
@@ -29662,18 +29858,46 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
         {!rental.deposit_returned_at && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
           <div className="mt-4 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-sm text-slate-700 shadow-[0_12px_30px_rgba(59,130,246,0.05)]">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-semibold text-orange-700">
-                🔒 {tr('Pending Return', 'Retour en attente')}
-              </span>
-              {rentalBillingSummary.autoDepositSeizedAmount > 0 ? (
-                <span className="text-xs font-medium text-orange-700">
-                  {isImpounded
-                    ? `${tr('Applied to estimate:', 'Appliquée à l’estimation :')} ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`
-                    : `${tr('Security remaining to return:', 'Caution restante à restituer :')} ${formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD`}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-semibold text-orange-700">
+                  🔒 {tr('Pending Return', 'Retour en attente')}
                 </span>
+                {vehicleDocumentPenaltyState.applied ? (
+                  <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                    {tr('Document penalty applied', 'Pénalité document appliquée')}
+                  </span>
+                ) : null}
+                {rentalBillingSummary.autoDepositSeizedAmount > 0 ? (
+                  <span className="text-xs font-medium text-orange-700">
+                    {isImpounded
+                      ? `${tr('Applied to estimate:', 'Appliquée à l’estimation :')} ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`
+                      : `${tr('Security remaining to return:', 'Caution restante à restituer :')} ${formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD`}
+                  </span>
+                ) : null}
+              </div>
+              {vehicleDocumentPenaltyState.applied ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                  onClick={removeMissingVehicleDocumentPenalty}
+                  disabled={documentPenaltyApplying}
+                >
+                  <XCircle className="mr-2 h-4 w-4" />
+                  {tr('Cancel penalty', 'Annuler pénalité')}
+                </Button>
               ) : null}
             </div>
+            {vehicleDocumentPenaltyState.applied ? (
+              <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                {tr(
+                  `${formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD penalty · ${formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD deducted from security · ${formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD still due.`,
+                  `${formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD de pénalité · ${formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD déduits de la caution · ${formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD encore dus.`
+                )}
+              </div>
+            ) : null}
           </div>
         )}
 
