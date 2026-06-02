@@ -31,6 +31,9 @@ create index if not exists rental_completion_snapshots_vehicle_idx
 
 alter table public.app_4c3a7a6153_rental_completion_snapshots enable row level security;
 
+grant select, insert, update, delete on public.app_4c3a7a6153_rental_completion_snapshots to authenticated;
+grant all on public.app_4c3a7a6153_rental_completion_snapshots to service_role;
+
 drop policy if exists "rental completion snapshots select" on public.app_4c3a7a6153_rental_completion_snapshots;
 drop policy if exists "rental completion snapshots insert" on public.app_4c3a7a6153_rental_completion_snapshots;
 drop policy if exists "rental completion snapshots update" on public.app_4c3a7a6153_rental_completion_snapshots;

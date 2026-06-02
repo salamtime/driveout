@@ -140,13 +140,16 @@ class RentalClosingService {
         updated_at: new Date().toISOString()
       };
 
-      await safeCreateRentalCompletionSnapshot({
+      const completionSnapshot = await safeCreateRentalCompletionSnapshot({
         supabase,
         rentalId,
         actorUserId: user.id,
         actorName: user.email || user.user_metadata?.full_name || 'Staff',
         completionPayload,
       });
+      if (!completionSnapshot?.id) {
+        throw new Error('Could not save the pre-completion recovery snapshot. Completion was stopped so this rental can still be safely restored later.');
+      }
 
       // Update rental status
       const { data: updatedRental, error: updateError } = await supabase
@@ -239,7 +242,7 @@ class RentalClosingService {
         notes: `${currentRental?.notes || ''}\n\n[ADMIN OVERRIDE] Closed without video by ${user.email}. Reason: ${reason}`
       };
 
-      await safeCreateRentalCompletionSnapshot({
+      const completionSnapshot = await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: currentRental,
         rentalId,
@@ -248,6 +251,9 @@ class RentalClosingService {
         reason: 'before_admin_override_completion',
         completionPayload,
       });
+      if (!completionSnapshot?.id) {
+        throw new Error('Could not save the pre-completion recovery snapshot. Completion was stopped so this rental can still be safely restored later.');
+      }
 
       // Update rental with override flag
       const { data: updatedRental, error: updateError } = await supabase

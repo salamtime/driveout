@@ -97,13 +97,35 @@ const formatQuantity = (value) => {
   return Number.isInteger(amount) ? String(amount) : String(amount).replace(/\.0+$/, '');
 };
 
+const inferPackageDurationUnits = (pkg = {}) => {
+  const explicitUnits = Number(pkg?.duration_units);
+  const name = safeText(pkg?.name).toLowerCase();
+
+  const minuteMatch = name.match(/\b(30)\s*(?:min|mins|minute|minutes)\b/i);
+  if (minuteMatch) return 0.5;
+
+  const hourMatch = name.match(/\b(\d+(?:[.,]\d+)?)\s*(?:h|hr|hrs|hour|hours|heure|heures)\b/i);
+  if (hourMatch) {
+    const inferredHours = Number(String(hourMatch[1]).replace(',', '.'));
+    if (Number.isFinite(inferredHours) && inferredHours > 0) return inferredHours;
+  }
+
+  const dayMatch = name.match(/\b(\d+(?:[.,]\d+)?)\s*(?:day|days|jour|jours)\b/i);
+  if (dayMatch) {
+    const inferredDays = Number(String(dayMatch[1]).replace(',', '.'));
+    if (Number.isFinite(inferredDays) && inferredDays > 0) return inferredDays;
+  }
+
+  return Number.isFinite(explicitUnits) && explicitUnits > 0 ? explicitUnits : 1;
+};
+
 const formatPackageAllowanceLabel = (pkg, bucket) => {
   if (!pkg?.included_kilometers) {
     return safeText(pkg?.name, `${bucket === 'hourly' ? 'Hourly' : 'Daily'} package`);
   }
 
   const kilometers = formatQuantity(pkg.included_kilometers);
-  const durationUnits = formatMoney(pkg.duration_units || 1);
+  const durationUnits = inferPackageDurationUnits(pkg);
   const durationLabel = formatQuantity(durationUnits);
 
   if (bucket === 'daily') {
@@ -666,6 +688,7 @@ const fetchCertifiedFleet = async (adminClient) => {
     const current = packagesByModelId.get(key) || { hourly: [], daily: [] };
     const rateName = safeText(pkg?.rate_types?.name).toLowerCase();
     const bucket = rateName.includes('day') || Number(pkg?.rate_type_id) === 2 ? 'daily' : 'hourly';
+    const durationUnits = inferPackageDurationUnits(pkg);
 
     current[bucket].push({
       id: pkg.id,
@@ -677,7 +700,7 @@ const fetchCertifiedFleet = async (adminClient) => {
       fuelChargeEnabled: pkg.fuel_charge_enabled === true,
       fuel_charge_enabled: pkg.fuel_charge_enabled === true,
       kind: pkg.included_kilometers ? 'limited' : 'unlimited',
-      durationUnits: Number(pkg.duration_units),
+      durationUnits,
       showOnPrint: pkg.show_on_print === true,
     });
 

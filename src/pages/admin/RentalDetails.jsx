@@ -879,13 +879,17 @@ const shouldPreferLivePackageConfig = (rental = {}) => {
   return !['completed', 'cancelled', 'canceled', 'closed', 'archived'].includes(status);
 };
 
-const getRentalKilometerPackage = (rental, packageDetails) => {
+const getRentalKilometerPackage = (rental, packageDetails, options = {}) => {
   if (!isPackagePricingEnabled(rental)) return null;
+
+  const preferLivePackageConfig =
+    Boolean(options?.preferLivePackageConfig) ||
+    shouldPreferLivePackageConfig(rental);
 
   const pkg = buildRentalBookedPackageSnapshot(
     rental,
     rental?.package || packageDetails,
-    { preferLivePackageConfig: shouldPreferLivePackageConfig(rental) }
+    { preferLivePackageConfig }
   );
   if (!pkg) return null;
 
@@ -904,6 +908,9 @@ const getRentalKilometerPackage = (rental, packageDetails) => {
 
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
+
+const getRentalKilometerPackageForBilling = (rental, packageDetails) =>
+  getRentalKilometerPackage(rental, packageDetails, { preferLivePackageConfig: true });
 
 const getPackageRentalDurationUnits = (rental = {}) => {
   if (!rental?.use_package_pricing) return null;
@@ -6719,7 +6726,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       return Math.max(0, storedRentalCharge - extensionFees);
     }
 
-    const pkg = getRentalKilometerPackage(rental, packageDetails);
+    const pkg = getRentalKilometerPackageForBilling(rental, packageDetails);
     if (pkg && rental.use_package_pricing) {
       return getBookedPackageSnapshotTotal(rental, pkg) || getPackageDisplayTotal(rental, pkg);
     }
@@ -6739,7 +6746,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
   }, [getStoredRentalChargeAmount, hasManualContractPriceOverride, rental, totalExtensionFees, packageDetails]);
 
   const bookedKilometerPackage = useMemo(
-    () => getRentalKilometerPackage(rental, packageDetails),
+    () => getRentalKilometerPackageForBilling(rental, packageDetails),
     [packageDetails, rental]
   );
   const hasBookedKilometerPackage = useMemo(
@@ -8997,7 +9004,7 @@ Click the link above to review and approve the extension.`;
     const baseAmount = getBaseRentalAmountExcludingExtensions();
     const rentalChargeAmount = getStoredRentalChargeAmount() || (baseAmount + (parseFloat(totalExtensionFees || 0) || 0));
     const totalDrivenKm = Math.max(0, Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0);
-    const bookedPackageForBilling = getRentalKilometerPackage(rental, packageDetails);
+    const bookedPackageForBilling = getRentalKilometerPackageForBilling(rental, packageDetails);
     const hasBookedPackageForBilling = Boolean(bookedPackageForBilling && isPackagePricingEnabled(rental));
     const packageApplication = hasBookedPackageForBilling
       ? selectAppliedKilometerPackage({
@@ -11663,7 +11670,7 @@ const handleFuelChargeToggle = async (enabled) => {
         updateData.signature_url = returnSignatureUrl;
       }
 
-      await safeCreateRentalCompletionSnapshot({
+      const completionSnapshot = await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: effectiveCompletionRental,
         rentalId: rental.id,
@@ -11672,6 +11679,9 @@ const handleFuelChargeToggle = async (enabled) => {
         actorName,
         completionPayload: updateData,
       });
+      if (!completionSnapshot?.id) {
+        throw new Error('Could not save the pre-completion recovery snapshot. Completion was stopped so this rental can still be safely restored later.');
+      }
 
       const { data: completedRental, error } = await updateRentalWithSchemaFallback(updateData);
 
@@ -12040,7 +12050,7 @@ const loadFuelChargeSettings = async () => {
   const resolveKilometerPackageApplicationForDistance = useCallback(
     (totalDistance) => selectAppliedKilometerPackage({
       rental,
-      bookedPackage: getRentalKilometerPackage(rental, packageDetails),
+      bookedPackage: getRentalKilometerPackageForBilling(rental, packageDetails),
       packageDetails,
       availablePackages: availableKmPackages,
       gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
@@ -12202,7 +12212,7 @@ const loadFuelChargeSettings = async () => {
         packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
         usePackagePricing: isPackagePricingEnabled(rental),
         rentalType: rental?.rental_type,
-        originalPackage: getRentalKilometerPackage(rental, packageDetails),
+        originalPackage: getRentalKilometerPackageForBilling(rental, packageDetails),
         durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
       });
       const packageApplication = resolveKilometerPackageApplicationForDistance(totalDistance);
@@ -12448,7 +12458,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
       usePackagePricing: isPackagePricingEnabled(rental),
       rentalType: rental?.rental_type,
-      originalPackage: getRentalKilometerPackage(rental, packageDetails),
+      originalPackage: getRentalKilometerPackageForBilling(rental, packageDetails),
       durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
     });
       const packageApplication = resolveKilometerPackageApplicationForDistance(totalDistance);
@@ -14882,7 +14892,7 @@ useEffect(() => {
         status_changed_by: actorName,
         actual_end_date: actualReturnEndTime,
       };
-      await safeCreateRentalCompletionSnapshot({
+      const completionSnapshot = await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: effectiveCompletionRental,
         rentalId: rental.id,
@@ -14891,6 +14901,9 @@ useEffect(() => {
         actorName,
         completionPayload,
       });
+      if (!completionSnapshot?.id) {
+        throw new Error('Could not save the pre-completion recovery snapshot. Completion was stopped so this rental can still be safely restored later.');
+      }
 
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
@@ -23253,7 +23266,7 @@ useEffect(() => {
                 <div className="space-y-2 text-sm sm:text-base">
                   <div className="flex justify-between">
                     <span className="text-gray-600">
-                      {getRentalKilometerPackage(rental, packageDetails)
+                      {getRentalKilometerPackageForBilling(rental, packageDetails)
                         ? tr('Booked package price:', 'Prix du forfait réservé :')
                         : tr('Base Rental Rate:', 'Tarif de base location :')}
                     </span>
@@ -23731,7 +23744,7 @@ useEffect(() => {
           let extraKm = 0;
           let includedKm = 0;
           let rate = 0;
-          const pkg = getRentalKilometerPackage(rental, packageDetails);
+          const pkg = getRentalKilometerPackageForBilling(rental, packageDetails);
           if (pkg && pkg.included_kilometers && pkg.extra_km_rate && rental.total_kilometers_driven > 0) {
             const totalKm = rental.total_kilometers_driven || 0;
             includedKm = getPackageTotalIncludedKilometers(rental, pkg);
@@ -29231,7 +29244,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
           {/* Overage Calculation */}
           {(() => {
-  const pkg = getRentalKilometerPackage(rental, packageDetails);
+  const pkg = getRentalKilometerPackageForBilling(rental, packageDetails);
   if (!pkg) return null;
 
   const packageApplication = selectAppliedKilometerPackage({
@@ -29482,7 +29495,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         {/* Base rental/package price */}
         <div className="flex justify-between">
           <span className="text-gray-600">
-            {getRentalKilometerPackage(rental, packageDetails)
+            {getRentalKilometerPackageForBilling(rental, packageDetails)
               ? rentalBillingSummary.packageWasUpgraded
                 ? tr('Original booked package:', 'Forfait réservé initial :')
                 : tr('Booked package price:', 'Prix du forfait réservé :')
@@ -30181,7 +30194,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     let includedKm = 0;
     let rate = 0;
     
-    const pkg = getRentalKilometerPackage(rental, packageDetails);
+    const pkg = getRentalKilometerPackageForBilling(rental, packageDetails);
     if (pkg && pkg.included_kilometers && pkg.extra_km_rate && rental.total_kilometers_driven > 0) {
       const totalKm = rental.total_kilometers_driven || 0;
       includedKm = getPackageTotalIncludedKilometers(rental, pkg);
@@ -33687,7 +33700,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 <AlertDescription className="text-sm font-semibold leading-6">
                   {completionSnapshotLoading
                     ? tr('Loading saved state...', 'Chargement de l’état sauvegardé...')
-                    : tr('No pre-completion snapshot was found. This rental cannot be safely reinstated yet.', 'Aucun snapshot avant clôture n’a été trouvé. Cette location ne peut pas encore être réactivée en sécurité.')}
+                    : tr(
+                        'No pre-completion snapshot was found. This usually means the rental was completed before recovery snapshots were enabled, so automatic restore is not safe.',
+                        'Aucun snapshot avant clôture n’a été trouvé. Cela signifie généralement que la location a été clôturée avant l’activation des snapshots de récupération, donc la restauration automatique n’est pas sûre.'
+                      )}
                 </AlertDescription>
               </Alert>
             )}
