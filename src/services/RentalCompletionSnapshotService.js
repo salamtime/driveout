@@ -156,6 +156,22 @@ export const createRentalCompletionSnapshot = async ({
   return data;
 };
 
+export const safeCreateRentalCompletionSnapshot = async (snapshotOptions = {}) => {
+  try {
+    return await createRentalCompletionSnapshot(snapshotOptions);
+  } catch (error) {
+    if (isRentalCompletionSnapshotTableUnavailable(error)) {
+      console.warn(
+        'Rental completion snapshot storage is unavailable; continuing rental completion without a restore snapshot.',
+        error
+      );
+      return null;
+    }
+
+    throw error;
+  }
+};
+
 export const getLatestRentalCompletionSnapshot = async ({
   supabase = defaultSupabase,
   rentalId,
@@ -310,6 +326,7 @@ export const reinstateRentalFromCompletionSnapshot = async ({
 
 export default {
   createRentalCompletionSnapshot,
+  safeCreateRentalCompletionSnapshot,
   getLatestRentalCompletionSnapshot,
   reinstateRentalFromCompletionSnapshot,
 };

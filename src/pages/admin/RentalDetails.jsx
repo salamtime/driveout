@@ -65,7 +65,7 @@ import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
 import {
-  createRentalCompletionSnapshot,
+  safeCreateRentalCompletionSnapshot,
   getLatestRentalCompletionSnapshot,
   reinstateRentalFromCompletionSnapshot,
 } from '../../services/RentalCompletionSnapshotService';
@@ -11595,7 +11595,7 @@ const handleFuelChargeToggle = async (enabled) => {
         updateData.signature_url = returnSignatureUrl;
       }
 
-      await createRentalCompletionSnapshot({
+      await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: effectiveCompletionRental,
         rentalId: rental.id,
@@ -14790,7 +14790,7 @@ useEffect(() => {
         status_changed_by: actorName,
         actual_end_date: actualReturnEndTime,
       };
-      await createRentalCompletionSnapshot({
+      await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: effectiveCompletionRental,
         rentalId: rental.id,

@@ -1,6 +1,6 @@
 import { supabase } from '../utils/supabaseClient';
 import videoCaptureService from './videoCaptureService';
-import { createRentalCompletionSnapshot } from './RentalCompletionSnapshotService';
+import { safeCreateRentalCompletionSnapshot } from './RentalCompletionSnapshotService';
 
 /**
  * Service for handling rental closing operations with video validation
@@ -140,7 +140,7 @@ class RentalClosingService {
         updated_at: new Date().toISOString()
       };
 
-      await createRentalCompletionSnapshot({
+      await safeCreateRentalCompletionSnapshot({
         supabase,
         rentalId,
         actorUserId: user.id,
@@ -239,7 +239,7 @@ class RentalClosingService {
         notes: `${currentRental?.notes || ''}\n\n[ADMIN OVERRIDE] Closed without video by ${user.email}. Reason: ${reason}`
       };
 
-      await createRentalCompletionSnapshot({
+      await safeCreateRentalCompletionSnapshot({
         supabase,
         rental: currentRental,
         rentalId,
