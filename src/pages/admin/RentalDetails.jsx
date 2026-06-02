@@ -10469,7 +10469,11 @@ const resolveCanonicalFullPaymentAmount = (rentalLike = rental) => {
       const parts = [];
       parts.push(`Base Rental: ${formatCurrency(rentalBillingSummary.baseAmount)} MAD`);
       if (rentalBillingSummary.overageCharge > 0) {
-        parts.push(`Overage (${rental.extra_kilometers || 0}km × ${rental.extra_km_rate_applied || 20}MAD): +${formatCurrency(rentalBillingSummary.overageCharge)} MAD`);
+        const overageRateForAudit = Math.max(
+          0,
+          Number(rentalBillingSummary.overageRate || rental.extra_km_rate_applied || 0) || 0
+        );
+        parts.push(`Overage (${rentalBillingSummary.overageKm || rental.extra_kilometers || 0}km × ${formatCurrency(overageRateForAudit)}MAD): +${formatCurrency(rentalBillingSummary.overageCharge)} MAD`);
       }
       if (rentalBillingSummary.fuelChargeAmount > 0) {
         parts.push(`Fuel: +${formatCurrency(rentalBillingSummary.fuelChargeAmount)} MAD`);
@@ -11585,6 +11589,48 @@ const handleFuelChargeToggle = async (enabled) => {
 
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
       const actualReturnEndTime = billingCloseTime;
+      const startingOdometerValue = resolveDisplayedStartingOdometer(effectiveCompletionRental, startOdometer);
+      const completionDistance = Math.max(
+        0,
+        Number(effectiveEndingOdometer || 0) - Number(startingOdometerValue || 0)
+      );
+      const completionPackageApplication = hasBookedKilometerPackage
+        ? resolveKilometerPackageApplicationForDistance(completionDistance)
+        : null;
+      const completionAppliedPackage =
+        completionPackageApplication?.appliedPackage ||
+        bookedKilometerPackage ||
+        null;
+      const completionPackagePrice = completionAppliedPackage
+        ? Math.max(0, Number(completionPackageApplication?.appliedPrice || 0) || 0)
+        : 0;
+      const completionOverageCharge = completionAppliedPackage
+        ? Math.max(0, Number(completionPackageApplication?.overageCharge || 0) || 0)
+        : Math.max(0, Number(effectiveCompletionRental?.overage_charge || 0) || 0);
+      const completionAppliedLimit = completionAppliedPackage && Number.isFinite(completionPackageApplication?.appliedLimit)
+        ? Math.max(0, Number(completionPackageApplication.appliedLimit || 0) || 0)
+        : null;
+      const completionExtraKmRate = completionAppliedPackage
+        ? Math.max(0, Number(completionPackageApplication?.appliedExtraRate || 0) || 0)
+        : null;
+      const completionBookedLimit = bookedKilometerPackage
+        ? getConfiguredPackageTotalIncludedKilometers(effectiveCompletionRental, bookedKilometerPackage)
+        : null;
+      const completionPersistedBookedLimit = Number.isFinite(completionBookedLimit) && completionBookedLimit > 0
+        ? completionBookedLimit
+        : (effectiveCompletionRental?.package_total_included_km ?? null);
+      const completionExtensionFees = Math.max(0, Number(rentalBillingSummary.extensionFees || 0) || 0);
+      const completionRentalSubtotal = completionAppliedPackage
+        ? completionPackagePrice + completionOverageCharge + completionExtensionFees
+        : Math.max(0, Number(effectiveCompletionRental?.total_amount || rentalBillingSummary?.rentalGrandTotal || 0) || 0);
+      const completionRemainingAmount = Math.max(0, Number(rentalBillingSummary.balanceDue || 0) || 0);
+      const completionPaidAmount = Math.max(
+        0,
+        Number(rentalBillingSummary.customerPaidAmount || rentalBillingSummary.depositPaid || effectiveCompletionRental?.deposit_amount || 0) || 0
+      );
+      const completionPaymentStatus = completionRemainingAmount <= 0
+        ? 'paid'
+        : (completionPaidAmount > 0 ? 'partial' : 'unpaid');
       const updateData = {
         rental_status: 'completed', 
         status: 'completed',
@@ -11594,6 +11640,19 @@ const handleFuelChargeToggle = async (enabled) => {
         status_changed_by: actorName,
         actual_end_date: actualReturnEndTime,
         ending_odometer: effectiveEndingOdometer,
+        total_distance: completionDistance,
+        total_kilometers_driven: completionDistance,
+        total_amount: completionRentalSubtotal,
+        remaining_amount: completionRemainingAmount,
+        payment_status: completionPaymentStatus,
+        overage_charge: completionOverageCharge,
+        has_kilometer_overage: completionOverageCharge > 0,
+        included_kilometers_applied: completionAppliedLimit,
+        package_total_included_km: completionPersistedBookedLimit,
+        extra_km_rate_applied: completionExtraKmRate,
+        unit_price: completionAppliedPackage
+          ? Number(getPackageRatePerUnit(effectiveCompletionRental, completionAppliedPackage) || effectiveCompletionRental?.unit_price || 0)
+          : effectiveCompletionRental?.unit_price,
         end_fuel_level: effectiveEndFuelLevel,
         return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
         updated_at: new Date().toISOString()
@@ -11654,6 +11713,19 @@ const handleFuelChargeToggle = async (enabled) => {
           completed_at: completedAt,
           actual_end_date: actualReturnEndTime,
           ending_odometer: effectiveEndingOdometer,
+          total_distance: completionDistance,
+          total_kilometers_driven: completionDistance,
+          total_amount: completionRentalSubtotal,
+          remaining_amount: completionRemainingAmount,
+          payment_status: completionPaymentStatus,
+          overage_charge: completionOverageCharge,
+          has_kilometer_overage: completionOverageCharge > 0,
+          included_kilometers_applied: completionAppliedLimit,
+          package_total_included_km: completionPersistedBookedLimit,
+          extra_km_rate_applied: completionExtraKmRate,
+          unit_price: completionAppliedPackage
+            ? Number(getPackageRatePerUnit(effectiveCompletionRental, completionAppliedPackage) || effectiveCompletionRental?.unit_price || 0)
+            : effectiveCompletionRental?.unit_price,
           end_fuel_level: effectiveEndFuelLevel,
           vehicle: prev?.vehicle
             ? {
@@ -11721,10 +11793,21 @@ const handleFuelChargeToggle = async (enabled) => {
             rental_end_date: actualReturnEndTime,
             late_fee_amount: overtimeAdjustment.lateFeeAmount,
             late_fee: overtimeAdjustment.lateFeeAmount,
-            remaining_amount: overtimeAdjustment.remainingAmount,
-            payment_status: overtimeAdjustment.paymentStatus,
           } : {}),
           ending_odometer: effectiveEndingOdometer,
+          total_distance: completionDistance,
+          total_kilometers_driven: completionDistance,
+          total_amount: completionRentalSubtotal,
+          remaining_amount: completionRemainingAmount,
+          payment_status: completionPaymentStatus,
+          overage_charge: completionOverageCharge,
+          has_kilometer_overage: completionOverageCharge > 0,
+          included_kilometers_applied: completionAppliedLimit,
+          package_total_included_km: completionPersistedBookedLimit,
+          extra_km_rate_applied: completionExtraKmRate,
+          unit_price: completionAppliedPackage
+            ? Number(getPackageRatePerUnit(effectiveCompletionRental, completionAppliedPackage) || effectiveCompletionRental?.unit_price || 0)
+            : effectiveCompletionRental?.unit_price,
           end_fuel_level: effectiveEndFuelLevel,
           signature_url: returnSignatureUrl || rental?.signature_url || null,
           return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
@@ -23659,7 +23742,7 @@ useEffect(() => {
             overageCharge = rental.overage_charge;
             extraKm = rental.extra_kilometers || 0;
             includedKm = rental.included_kilometers_applied || 80;
-            rate = rental.extra_km_rate_applied || 2.0;
+            rate = rentalBillingSummary.overageRate || rental.extra_km_rate_applied || 0;
           }
 
           const grandTotal = rentalBillingSummary.grandTotal;
@@ -30109,7 +30192,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       overageCharge = rental.overage_charge;
       extraKm = rental.extra_kilometers || 0;
       includedKm = rental.included_kilometers_applied || 80;
-      rate = rental.extra_km_rate_applied || 2.00;
+      rate = rentalBillingSummary.overageRate || rental.extra_km_rate_applied || 0;
     }
     
     const grandTotal = rentalBillingSummary.grandTotal;
