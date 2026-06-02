@@ -30,6 +30,48 @@ const RECEIPT_BANKING_DETAILS = {
   rib: '007640000537500000122321',
 };
 
+const DOCUMENT_LOSS_PENALTY_REASON_TOKEN = 'document loss penalty';
+
+const parseMadAmountFromText = (value) => {
+  const normalizedValue = String(value || '').replace(/\s/g, '').replace(/,/g, '');
+  return Math.max(0, Number(normalizedValue) || 0);
+};
+
+const parseDocumentPenaltyReasonAmount = (reason, label) => {
+  const match = String(reason || '').match(new RegExp(`${label}[^0-9]*(\\d[\\d\\s,.]*)\\s*MAD`, 'i'));
+  return parseMadAmountFromText(match?.[1]);
+};
+
+const getDocumentPenaltySnapshot = (rental = {}) => {
+  const reason = String(rental?.deposit_deduction_reason || '');
+  if (!reason.toLowerCase().includes(DOCUMENT_LOSS_PENALTY_REASON_TOKEN)) {
+    return {
+      penaltyAmount: 0,
+      deductedFromSecurity: 0,
+      remainingDue: 0,
+    };
+  }
+
+  const deductedFromSecurity = Math.max(
+    parseDocumentPenaltyReasonAmount(reason, 'Deducted from security deposit'),
+    Number(rental?.deposit_deduction_amount || 0) || 0
+  );
+  const explicitRemainingDue = parseDocumentPenaltyReasonAmount(reason, 'Remaining penalty due');
+  const parsedPenaltyAmount = parseDocumentPenaltyReasonAmount(reason, 'Document loss penalty');
+  const penaltyAmount = parsedPenaltyAmount > 0
+    ? parsedPenaltyAmount
+    : deductedFromSecurity + explicitRemainingDue;
+  const remainingDue = explicitRemainingDue > 0
+    ? explicitRemainingDue
+    : Math.max(0, penaltyAmount - deductedFromSecurity);
+
+  return {
+    penaltyAmount,
+    deductedFromSecurity,
+    remainingDue,
+  };
+};
+
 const shouldPreferLivePackageConfig = (rental = {}) => {
   if (rental?.__prefer_live_package_config === true) return true;
   if (rental?.__prefer_live_package_config === false) return false;
@@ -1054,6 +1096,27 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     savedDepositDeductionAmount + mileageOverageDepositDeductionAmount,
     receiptDamageDeposit || savedDepositDeductionAmount + mileageOverageDepositDeductionAmount
   );
+  const documentPenaltySnapshot = getDocumentPenaltySnapshot(rental);
+  const hasDocumentLossPenalty = documentPenaltySnapshot.penaltyAmount > 0;
+  const documentPenaltyAmount = hasDocumentLossPenalty
+    ? documentPenaltySnapshot.penaltyAmount
+    : 0;
+  const documentPenaltySecurityAppliedAmount = hasDocumentLossPenalty
+    ? Math.min(
+        documentPenaltySnapshot.deductedFromSecurity,
+        Math.max(
+          receivedDamageDeposit,
+          receiptDamageDeposit,
+          documentPenaltySnapshot.deductedFromSecurity
+        )
+      )
+    : 0;
+  const documentPenaltyRemainingDue = hasDocumentLossPenalty
+    ? Math.max(
+        documentPenaltySnapshot.remainingDue,
+        documentPenaltyAmount - documentPenaltySecurityAppliedAmount
+      )
+    : 0;
   const explicitAmountDueDiscountAmount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
   const inferredAmountDueDiscountAmount =
     amountDueResolutionMeta &&
@@ -1090,6 +1153,9 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   );
   const rawBalanceDue = Math.max(0, displayedTotalAmount - correctedPaidAmount - mileageOveragePaidSeparatelyAmount);
   const remainingBalanceAfterDepositSeizure = Math.max(0, rawBalanceDue - autoDepositSeizedAmount);
+  const remainingUsageBalanceAfterDeposit = hasDocumentLossPenalty
+    ? Math.max(0, remainingBalanceAfterDepositSeizure - documentPenaltyRemainingDue)
+    : remainingBalanceAfterDepositSeizure;
   const remainingRefundableSecurityDeposit = Math.max(0, receivedDamageDeposit - autoDepositSeizedAmount);
   const heldSecurityDepositAmount = receivedDamageDeposit > 0 ? receivedDamageDeposit : receiptDamageDeposit;
   const shouldPreviewSecurityDepositReview =
@@ -1190,6 +1256,12 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     receiptSimplePricing?.totalPrice ||
     packageBreakdown?.packageTotal ||
     0
+  );
+  const displayedBaseRentalAmount = Math.max(
+    0,
+    receiptDistanceUpgrade && packageAppliedPrice > 0
+      ? packageAppliedPrice
+      : getReceiptBasePrice()
   );
   const packageExtraKmRate = Number(
     receiptDistanceUpgrade?.originalPackageExtraKmRate ??
@@ -1322,18 +1394,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         label: getRentalKilometerPackage(rental)
           ? tr('Package price', 'Prix du forfait')
           : tr('Base rental rate', 'Tarif de base location'),
-        value: `${formatCurrency(
-          Math.max(
-            0,
-            displayedTotalAmount -
-              effectiveOverageCharge -
-              amountDueDiscountAmount -
-              effectiveFuelCharge -
-              transportFeeAmount -
-              maintenanceChargeAmount -
-              displayedImpoundTotal
-          )
-        )} MAD`,
+        value: `${formatCurrency(displayedBaseRentalAmount)} MAD`,
       },
       ...((overageDetails.extraKm > 0 || effectiveOverageCharge > 0)
         ? [{
@@ -1376,6 +1437,22 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               : `+${formatCurrency(transportFeeAmount)} MAD`,
           }]
         : []),
+      ...(hasDocumentLossPenalty
+        ? [{
+            label: tr('Vehicle document loss penalty', 'Pénalité perte documents véhicule'),
+            value: `+${formatCurrency(documentPenaltyAmount)} MAD`,
+          },
+          {
+            label: tr('Security applied to document penalty', 'Caution appliquée à la pénalité documents'),
+            value: `-${formatCurrency(documentPenaltySecurityAppliedAmount)} MAD`,
+          },
+          ...(documentPenaltyRemainingDue > 0
+            ? [{
+                label: tr('Document penalty still due', 'Solde pénalité documents restant'),
+                value: `${formatCurrency(documentPenaltyRemainingDue)} MAD`,
+              }]
+            : [])]
+        : []),
       {
         label: tr('Total paid', 'Total payé'),
         value: `${formatCurrency(displayedCustomerPaidAmount)} MAD`,
@@ -1405,29 +1482,24 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         marginTop: '24px',
         marginBottom: '24px'
       }}>
-        <details open style={{
+        <div style={{
           borderRadius: '14px',
           border: '1px solid #e2e8f0',
           backgroundColor: '#ffffff',
           overflow: 'hidden'
         }}>
-          <summary style={{
-            listStyle: 'none',
-            cursor: 'pointer',
+          <div style={{
             padding: '16px 18px',
-            fontSize: '14px',
-            fontWeight: 700,
-            color: '#1d4ed8',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
+            borderBottom: '1px solid #e2e8f0'
           }}>
-            <span>{tr('View full breakdown', 'Voir le détail complet')}</span>
-            <span style={{ color: '#64748b', fontWeight: 700 }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: '#1d4ed8', marginBottom: '4px' }}>
               {tr('Formulas and audit trail', 'Formules et piste d’audit')}
-            </span>
-          </summary>
-          <div style={{ padding: '0 18px 18px 18px', borderTop: '1px solid #e2e8f0' }}>
+            </div>
+            <div style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.5 }}>
+              {tr('Full printable breakdown for customer review.', 'Détail complet imprimable pour vérification client.')}
+            </div>
+          </div>
+          <div style={{ padding: '0 18px 18px 18px' }}>
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
@@ -1568,7 +1640,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               )}
             </div>
           </div>
-        </details>
+        </div>
       </div>
     );
   };
@@ -3295,13 +3367,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               <td style={{ padding: '12px', textAlign: 'right' }}>
                 <div style={{ fontWeight: '600' }}>
                   {formatCurrency(
-                    receiptDistanceUpgrade
-                      ? packageAppliedPrice
-                      : (() => {
-                          const pkg = rental.package;
-                          const rate = pkg ? (parseFloat(pkg.fixed_amount) || rental.unit_price || 0) : (rental.unit_price || 0);
-                          return getEffectiveRentalBaseTotal(rental, hasPackage, rate);
-                        })()
+                    displayedBaseRentalAmount
                   )}
                 </div>
                 <div style={{ fontSize: '11px', color: '#718096' }}>
@@ -3380,6 +3446,25 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </td>
               </tr>
             )}
+
+            {hasDocumentLossPenalty && (
+              <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
+                <td style={{ padding: '12px' }}>
+                  <div style={{ fontWeight: '600', color: '#9a3412' }}>
+                    {tr('Vehicle Document Loss Penalty', 'Pénalité perte documents véhicule')}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#718096' }}>
+                    {tr(
+                      'Applies when registration or insurance documents are lost, stolen, or damaged.',
+                      'S’applique en cas de perte, vol ou détérioration de la carte grise ou de l’assurance.'
+                    )}
+                  </div>
+                </td>
+                <td style={{ padding: '12px', textAlign: 'right', color: '#9a3412', fontWeight: '600' }}>
+                  +{formatCurrency(documentPenaltyAmount)}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -3406,13 +3491,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
               <span style={{ color: '#4a5568' }}>{tr('Base Rental', 'Location de base')} ({formatRentalDurationSummary(rental, tr)}):</span>
-              <span style={{ fontWeight: '600' }}>{formatCurrency(
-                (() => {
-                  const pkg = rental.package;
-                  const rate = pkg ? (parseFloat(pkg.fixed_amount) || rental.unit_price || 0) : (rental.unit_price || 0);
-                  return getEffectiveRentalBaseTotal(rental, hasPackage, rate);
-                })()
-              )} MAD</span>
+              <span style={{ fontWeight: '600' }}>{formatCurrency(displayedBaseRentalAmount)} MAD</span>
             </div>
             
             {hasOverage && (
@@ -3573,6 +3652,21 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
             )}
 
+            {hasDocumentLossPenalty && (
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px dashed #fed7aa' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#9a3412' }}>
+                  <span>{tr('Vehicle document loss penalty:', 'Pénalité perte documents véhicule :')}</span>
+                  <span style={{ fontWeight: '600' }}>+{formatCurrency(documentPenaltyAmount)} MAD</span>
+                </div>
+                <div style={{ fontSize: '11px', color: '#7c2d12', lineHeight: 1.6 }}>
+                  {tr(
+                    'Registration or insurance document missing. The configured document penalty is applied once per rental.',
+                    'Carte grise ou assurance manquante. La pénalité configurée pour documents est appliquée une seule fois par location.'
+                  )}
+                </div>
+              </div>
+            )}
+
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
@@ -3643,8 +3737,61 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
 
             {autoDepositSeizedAmount > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#9a3412' }}>{impoundIsEstimate ? tr('Applied From Security Deposit:', 'Prélevé sur la caution :') : tr('Security Deposit Seized:', 'Caution saisie :')}</span>
-                <span style={{ color: '#c05621', fontWeight: '600' }}>-{formatCurrency(autoDepositSeizedAmount)} MAD</span>
+                <span style={{ color: '#9a3412' }}>
+                  {hasDocumentLossPenalty
+                    ? tr('Security seized for document penalty:', 'Caution saisie pour pénalité documents :')
+                    : impoundIsEstimate
+                      ? tr('Applied From Security Deposit:', 'Prélevé sur la caution :')
+                      : tr('Security Deposit Seized:', 'Caution saisie :')}
+                </span>
+                <span style={{ color: '#c05621', fontWeight: '600' }}>
+                  -{formatCurrency(hasDocumentLossPenalty ? documentPenaltySecurityAppliedAmount : autoDepositSeizedAmount)} MAD
+                </span>
+              </div>
+            )}
+
+            {hasDocumentLossPenalty && (
+              <div style={{
+                marginBottom: '14px',
+                padding: '12px',
+                backgroundColor: '#fff7ed',
+                borderRadius: '10px',
+                border: '1px solid #fed7aa'
+              }}>
+                <div style={{
+                  marginBottom: '8px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  letterSpacing: '0.6px',
+                  textTransform: 'uppercase',
+                  color: '#9a3412'
+                }}>
+                  {tr('Document Penalty Settlement', 'Règlement pénalité documents')}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '12px' }}>
+                  <span style={{ color: '#7c2d12' }}>{tr('Document loss penalty:', 'Pénalité perte documents :')}</span>
+                  <span style={{ fontWeight: '700', color: '#9a3412' }}>{formatCurrency(documentPenaltyAmount)} MAD</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '12px' }}>
+                  <span style={{ color: '#7c2d12' }}>{tr('Security deposit seized:', 'Caution saisie :')}</span>
+                  <span style={{ fontWeight: '700', color: '#c05621' }}>-{formatCurrency(documentPenaltySecurityAppliedAmount)} MAD</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '8px', borderTop: '1px solid #fed7aa', fontSize: '13px' }}>
+                  <span style={{ fontWeight: '700', color: '#7c2d12' }}>{tr('Document penalty still due:', 'Solde pénalité documents restant :')}</span>
+                  <span style={{ fontWeight: '800', color: documentPenaltyRemainingDue > 0 ? '#c53030' : '#15803d' }}>
+                    {formatCurrency(documentPenaltyRemainingDue)} MAD
+                  </span>
+                </div>
+                <div style={{ marginTop: '8px', fontSize: '11px', color: '#7c2d12', lineHeight: 1.6 }}>
+                  {formatCurrency(documentPenaltyAmount)} MAD - {formatCurrency(documentPenaltySecurityAppliedAmount)} MAD = {formatCurrency(documentPenaltyRemainingDue)} MAD
+                </div>
+              </div>
+            )}
+
+            {hasDocumentLossPenalty && remainingUsageBalanceAfterDeposit > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '12px' }}>
+                <span style={{ color: '#4a5568' }}>{tr('Rental/fuel/km balance still due:', 'Solde location/carburant/km restant :')}</span>
+                <span style={{ fontWeight: '700', color: '#c53030' }}>{formatCurrency(remainingUsageBalanceAfterDeposit)} MAD</span>
               </div>
             )}
             
@@ -3694,9 +3841,29 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 )}
                 {autoDepositSeizedAmount > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '12px', color: '#c05621' }}>
-                    <span>{impoundIsEstimate ? tr('Applied From Security Deposit:', 'Prélevé sur la caution :') : tr('Security Deposit Seized:', 'Caution saisie :')}</span>
-                    <span style={{ fontWeight: '700' }}>-{formatCurrency(autoDepositSeizedAmount)} MAD</span>
+                    <span>
+                      {hasDocumentLossPenalty
+                        ? tr('Security seized for document penalty:', 'Caution saisie pour pénalité documents :')
+                        : impoundIsEstimate
+                          ? tr('Applied From Security Deposit:', 'Prélevé sur la caution :')
+                          : tr('Security Deposit Seized:', 'Caution saisie :')}
+                    </span>
+                    <span style={{ fontWeight: '700' }}>
+                      -{formatCurrency(hasDocumentLossPenalty ? documentPenaltySecurityAppliedAmount : autoDepositSeizedAmount)} MAD
+                    </span>
                   </div>
+                )}
+                {hasDocumentLossPenalty && (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '12px', color: '#9a3412' }}>
+                      <span>{tr('Document loss penalty:', 'Pénalité perte documents :')}</span>
+                      <span style={{ fontWeight: '700' }}>{formatCurrency(documentPenaltyAmount)} MAD</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '12px', color: documentPenaltyRemainingDue > 0 ? '#c53030' : '#2f855a' }}>
+                      <span>{tr('Document penalty still due:', 'Solde pénalité documents restant :')}</span>
+                      <span style={{ fontWeight: '700' }}>{formatCurrency(documentPenaltyRemainingDue)} MAD</span>
+                    </div>
+                  </>
                 )}
                 {autoDepositSeizedAmount > 0 && remainingRefundableSecurityDeposit > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '12px', color: '#2f855a' }}>
@@ -3704,7 +3871,15 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                     <span style={{ fontWeight: '700' }}>{formatCurrency(remainingRefundableSecurityDeposit)} MAD</span>
                   </div>
                 )}
-                {receivedDamageDeposit > 0 && (
+                {receivedDamageDeposit > 0 && hasDocumentLossPenalty && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#7c2d12', lineHeight: 1.6 }}>
+                    {tr(
+                      'The held security deposit has been applied to the vehicle document-loss penalty. Any remaining penalty balance stays due.',
+                      'La caution retenue a été appliquée à la pénalité de perte des documents du véhicule. Tout solde restant de cette pénalité reste dû.'
+                    )}
+                  </div>
+                )}
+                {receivedDamageDeposit > 0 && !hasDocumentLossPenalty && (
                   <div style={{ marginTop: '8px', fontSize: '12px', color: '#2c5282' }}>
                     {tr(
                       'The damage deposit will be returned to the customer upon return of the vehicle, subject to vehicle condition and any applicable charges.',
