@@ -53,6 +53,22 @@ const isUnlimitedPackage = (pkg = {}) => {
 };
 
 export const getSimplePackageDurationUnits = (pkg = {}) => {
+  const rawLabel = getPackageName(pkg);
+  if (rawLabel) {
+    if (rawLabel.includes('30 min')) return 0.5;
+    if (rawLabel.includes('1.5 hour') || rawLabel.includes('1,5 hour')) return 1.5;
+
+    const hourMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hour|hours)\b/);
+    if (hourMatch) {
+      return Number(String(hourMatch[1]).replace(',', '.')) || 1;
+    }
+
+    const dayMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*day/);
+    if (dayMatch) {
+      return Number(String(dayMatch[1]).replace(',', '.')) || 1;
+    }
+  }
+
   const durationUnits = Number(
     pkg.duration_units ??
     pkg.durationUnits ??
@@ -62,21 +78,6 @@ export const getSimplePackageDurationUnits = (pkg = {}) => {
 
   if (Number.isFinite(durationUnits) && durationUnits > 0) {
     return durationUnits;
-  }
-
-  const rawLabel = getPackageName(pkg);
-  if (!rawLabel) return 1;
-  if (rawLabel.includes('30 min')) return 0.5;
-  if (rawLabel.includes('1.5 hour') || rawLabel.includes('1,5 hour')) return 1.5;
-
-  const hourMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hour|hours)\b/);
-  if (hourMatch) {
-    return Number(String(hourMatch[1]).replace(',', '.')) || 1;
-  }
-
-  const dayMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*day/);
-  if (dayMatch) {
-    return Number(String(dayMatch[1]).replace(',', '.')) || 1;
   }
 
   return 1;

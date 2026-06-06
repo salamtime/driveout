@@ -7,6 +7,16 @@ import {
 } from './OrganizationService';
 
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
+const isMissingOrganizationColumnError = (error) => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    code === '42703' ||
+    message.includes('organization_id does not exist') ||
+    message.includes("column 'organization_id'") ||
+    message.includes('column app_4c3a7a6153_vehicle_reports.organization_id')
+  );
+};
 
 class MaintenanceService {
   constructor() {
@@ -25,6 +35,27 @@ class MaintenanceService {
       message.includes('no active session') ||
       message.includes('workspace organization context is unavailable')
     );
+  }
+
+  async updateVehicleReportRows({ maintenanceId, customerChargeable, updates, organizationId }) {
+    let attempt = await applyOrganizationScope(
+      supabase
+        .from(VEHICLE_REPORTS_TABLE)
+        .update(updates)
+        .eq('maintenance_id', maintenanceId)
+        .eq('customer_chargeable', customerChargeable),
+      organizationId
+    );
+
+    if (!attempt.error || !isMissingOrganizationColumnError(attempt.error)) {
+      return attempt;
+    }
+
+    return supabase
+      .from(VEHICLE_REPORTS_TABLE)
+      .update(updates)
+      .eq('maintenance_id', maintenanceId)
+      .eq('customer_chargeable', customerChargeable);
   }
 
   calculateInventoryPartsCost(partsUsed = []) {
@@ -310,32 +341,30 @@ class MaintenanceService {
         }
       }
 
-      await applyOrganizationScope(
-        supabase
-          .from(VEHICLE_REPORTS_TABLE)
-          .update({
-            maintenance_cost_total: totalCost,
-            customer_charge_amount: totalCost,
-            status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('maintenance_id', maintenance.id)
-          .eq('customer_chargeable', true),
-        organizationId
-      );
+      const customerChargeableReportResult = await this.updateVehicleReportRows({
+        maintenanceId: maintenance.id,
+        customerChargeable: true,
+        updates: {
+          maintenance_cost_total: totalCost,
+          customer_charge_amount: totalCost,
+          status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+          updated_at: new Date().toISOString(),
+        },
+        organizationId,
+      });
+      if (customerChargeableReportResult.error) throw customerChargeableReportResult.error;
 
-      await applyOrganizationScope(
-        supabase
-          .from(VEHICLE_REPORTS_TABLE)
-          .update({
-            maintenance_cost_total: totalCost,
-            status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('maintenance_id', maintenance.id)
-          .eq('customer_chargeable', false),
-        organizationId
-      );
+      const internalReportResult = await this.updateVehicleReportRows({
+        maintenanceId: maintenance.id,
+        customerChargeable: false,
+        updates: {
+          maintenance_cost_total: totalCost,
+          status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+          updated_at: new Date().toISOString(),
+        },
+        organizationId,
+      });
+      if (internalReportResult.error) throw internalReportResult.error;
 
       return {
         maintenance: updatedMaintenance,
@@ -452,32 +481,30 @@ class MaintenanceService {
         }
       }
 
-      await applyOrganizationScope(
-        supabase
-          .from(VEHICLE_REPORTS_TABLE)
-          .update({
-            maintenance_cost_total: totalCost,
-            customer_charge_amount: totalCost,
-            status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('maintenance_id', recordId)
-          .eq('customer_chargeable', true),
-        organizationId
-      );
+      const customerChargeableReportResult = await this.updateVehicleReportRows({
+        maintenanceId: recordId,
+        customerChargeable: true,
+        updates: {
+          maintenance_cost_total: totalCost,
+          customer_charge_amount: totalCost,
+          status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+          updated_at: new Date().toISOString(),
+        },
+        organizationId,
+      });
+      if (customerChargeableReportResult.error) throw customerChargeableReportResult.error;
 
-      await applyOrganizationScope(
-        supabase
-          .from(VEHICLE_REPORTS_TABLE)
-          .update({
-            maintenance_cost_total: totalCost,
-            status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('maintenance_id', recordId)
-          .eq('customer_chargeable', false),
-        organizationId
-      );
+      const internalReportResult = await this.updateVehicleReportRows({
+        maintenanceId: recordId,
+        customerChargeable: false,
+        updates: {
+          maintenance_cost_total: totalCost,
+          status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+          updated_at: new Date().toISOString(),
+        },
+        organizationId,
+      });
+      if (internalReportResult.error) throw internalReportResult.error;
 
       return {
         maintenance: updatedMaintenance,

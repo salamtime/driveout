@@ -2464,7 +2464,6 @@ class FinanceApiServiceV2 {
     const collectedWindow = this.getRentalCollectedWindowRange(filters);
     const rentalCollected = context.rentals
       .filter((rental) => this.rentalMatchesFilters(rental, filters, true))
-      .filter((rental) => this.doesRentalIntersectCollectedWindow(rental, collectedWindow.start, collectedWindow.end))
       .reduce((sum, rental) => {
         const windowCollected = getRentalCollectedAmountInWindow(
           rental.raw || {},
@@ -5248,7 +5247,6 @@ class FinanceApiServiceV2 {
       const windowEnd = this.toValidDate(collectedWindow.end);
       return context.rentals
         .filter((rental) => this.rentalMatchesFilters(rental, filters, true))
-        .filter((rental) => this.doesRentalIntersectCollectedWindow(rental, collectedWindow.start, collectedWindow.end))
         .map((rental) => {
           const raw = rental.raw || {};
           const entries = getRentalCollectedEntries(raw).filter((entry: any) => {

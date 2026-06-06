@@ -28,6 +28,7 @@ import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleS
 import VehicleDispositionService from '../services/VehicleDispositionService';
 import useAdminModalFocus from '../hooks/useAdminModalFocus';
 import useFuelRealtimeSync from '../hooks/useFuelRealtimeSync';
+import { applyOrganizationScope, requireCurrentOrganizationId } from '../services/OrganizationService';
 import {
   isVehicleLifecycleArchived,
   isVehiclePlaceholderRecord,
@@ -608,11 +609,17 @@ const VehicleManagement: React.FC = () => {
             .select('vehicle_id, rental_status, is_impounded, impounded_at, released_from_impound_at, updated_at, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
             .in('vehicle_id', vehicleIds)
             .order('updated_at', { ascending: false }),
-          supabase
-            .from('app_687f658e98_maintenance')
-            .select('vehicle_id, status')
-            .in('vehicle_id', vehicleIds)
-            .in('status', ['scheduled', 'in_progress', 'pending']),
+          (async () => {
+            const organizationId = await requireCurrentOrganizationId();
+            return applyOrganizationScope(
+              supabase
+                .from('app_687f658e98_maintenance')
+                .select('vehicle_id, status')
+                .in('vehicle_id', vehicleIds)
+                .in('status', ['scheduled', 'in_progress', 'pending']),
+              organizationId
+            );
+          })(),
         ]);
 
         if (rentalOverlayError) {
@@ -850,6 +857,24 @@ const VehicleManagement: React.FC = () => {
 
   const updateVehicleStatus = async (vehicleId: number, status: string) => {
     try {
+      if (status === 'available') {
+        const organizationId = await requireCurrentOrganizationId();
+        const maintenanceUpdate = await applyOrganizationScope(
+          supabase
+            .from('app_687f658e98_maintenance')
+            .update({
+              status: 'completed',
+              completed_date: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('vehicle_id', vehicleId)
+            .in('status', ['scheduled', 'pending', 'in_progress']),
+          organizationId
+        );
+        const { error: maintenanceError } = await maintenanceUpdate;
+        if (maintenanceError) throw maintenanceError;
+      }
+
       const { error } = await supabase
         .from(TBL.VEHICLES)
         .update({ status, updated_at: new Date().toISOString() })
@@ -867,6 +892,7 @@ const VehicleManagement: React.FC = () => {
           updated_at: new Date().toISOString(),
         },
       }));
+      await fetchData();
     } catch (error) {
       console.error('Error updating vehicle status:', error);
     }

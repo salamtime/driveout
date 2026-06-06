@@ -1886,7 +1886,7 @@ const buildPriceOverrideMeta = ({
 
 const isAutoPackageUpgradeEnabledForRental = (rentalLike = {}) => {
   const overrideMeta = parsePriceOverrideMeta(rentalLike?.price_override_reason);
-  return overrideMeta?.autoPackageUpgradeEnabled !== false;
+  return overrideMeta?.autoPackageUpgradeEnabled === true;
 };
 
 const resolveDisplayedStartingOdometer = (rental, fallbackValue = null) => {
@@ -1984,13 +1984,25 @@ const insertSharedActivityLogAttempt = async (candidate) => {
 };
 
 const insertSharedActivityLog = async (payload) => {
+  const resolvedAction = payload.action || payload.event_type || payload.title || 'activity';
+  const resolvedTitle = payload.title || resolvedAction;
+  const resolvedUserName = payload.created_by || payload.user_name || null;
+  const resolvedUserEmail =
+    payload.user_email ||
+    payload.email ||
+    (typeof resolvedUserName === 'string' && resolvedUserName.includes('@') ? resolvedUserName : null) ||
+    'unknown@local.invalid';
+
   const modernPayload = {
     actor_id: payload.user_id || payload.actor_id || null,
     actor_type: payload.actor_type || 'user',
-    event_type: payload.action || payload.event_type || payload.title || 'activity',
+    event_type: resolvedAction,
+    action: resolvedAction,
+    title: resolvedTitle,
     entity_id: payload.entity_id || null,
     entity_type: payload.entity_type || null,
-    user_name: payload.created_by || payload.user_name || null,
+    user_name: resolvedUserName,
+    user_email: resolvedUserEmail,
     payload: payload.description
       ? { description: payload.description, reason: payload.reason || null }
       : (payload.payload || null),
@@ -2008,15 +2020,16 @@ const insertSharedActivityLog = async (payload) => {
   }
 
   const legacyPayload = {
-    action: payload.action || payload.event_type || payload.title || 'activity',
-    title: payload.title || payload.action || payload.event_type || 'activity',
+    action: resolvedAction,
+    title: resolvedTitle,
     entity_id: payload.entity_id || null,
     entity_type: payload.entity_type || null,
     description: payload.description || null,
     reason: payload.reason || null,
     details: payload.details || payload.metadata || null,
     payload: payload.payload || null,
-    user_name: payload.user_name || payload.created_by || null,
+    user_name: resolvedUserName,
+    user_email: resolvedUserEmail,
   };
 
   const primaryAttempt = await insertSharedActivityLogAttempt(legacyPayload);
@@ -4087,6 +4100,14 @@ const openReplacementResumeWorkflow = useCallback(() => {
     }[replacementReason] || tr('Vehicle replacement', 'Remplacement de véhicule');
     const shouldMoveOldVehicleToMaintenance = replacementReason === 'breakdown';
     const oldVehicleNextStatus = shouldMoveOldVehicleToMaintenance ? 'maintenance' : 'available';
+    const replacementStartedAt = new Date().toISOString();
+    const replacementResumeContext = isReplacingActiveRental
+      ? {
+          replacementStartedAt,
+          previousVehicleId: currentVehicleId || null,
+          replacementVehicleId: replacementVehicle.id,
+        }
+      : null;
 
     try {
       setIsReplacingVehicle(true);
@@ -4096,9 +4117,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
         vehicle_model_id: replacementVehicle.vehicle_model_id || rental?.vehicle_model_id || null,
         rental_status: isReplacingActiveRental ? 'active' : rental?.rental_status || 'scheduled',
         status: isReplacingActiveRental ? 'active' : rental?.status || rental?.rental_status || 'scheduled',
-        replacement_pause_started_at: null,
-        replacement_pause_reason: null,
-        replacement_resume_context: null,
+        replacement_pause_started_at: isReplacingActiveRental ? replacementStartedAt : null,
+        replacement_pause_reason: isReplacingActiveRental ? replacementReasonLabel : null,
+        replacement_resume_context: replacementResumeContext,
         replacement_previous_vehicle_id: isAssigningVehicle ? null : currentVehicleId,
         selected_vehicle_name_snapshot: replacementVehicle.name || rental?.selected_vehicle_name_snapshot || null,
         selected_vehicle_model_snapshot:
@@ -4114,6 +4135,13 @@ const openReplacementResumeWorkflow = useCallback(() => {
           rental?.vehicle_model_snapshot ||
           null,
         vehicle_plate_number: replacementVehicle.plate_number || null,
+        ...(isReplacingActiveRental ? {
+          start_odometer: null,
+          start_engine_hours: null,
+          start_fuel_level: null,
+          opening_video_url: null,
+          opening_video_thumbnail: null,
+        } : {}),
         updated_at: new Date().toISOString(),
       };
 
@@ -4144,7 +4172,6 @@ const openReplacementResumeWorkflow = useCallback(() => {
       }
 
       if (!isAssigningVehicle) try {
-        const replacementStartedAt = new Date().toISOString();
         const { data: existingHistory, error: existingHistoryError } = await supabase
           .from('rental_vehicle_history')
           .select('id, sequence_index, ended_at')
@@ -4312,10 +4339,15 @@ const openReplacementResumeWorkflow = useCallback(() => {
         vehicle_model_snapshot: rentalUpdatePayload.vehicle_model_snapshot,
         vehicle_plate_number: rentalUpdatePayload.vehicle_plate_number,
         vehicle: replacementVehicle,
-        replacement_pause_started_at: null,
-        replacement_pause_reason: null,
-        replacement_resume_context: null,
+        replacement_pause_started_at: rentalUpdatePayload.replacement_pause_started_at,
+        replacement_pause_reason: rentalUpdatePayload.replacement_pause_reason,
+        replacement_resume_context: rentalUpdatePayload.replacement_resume_context,
         replacement_previous_vehicle_id: currentVehicleId,
+        start_odometer: isReplacingActiveRental ? null : (updatedRental?.start_odometer ?? rental?.start_odometer ?? null),
+        start_engine_hours: isReplacingActiveRental ? null : (updatedRental?.start_engine_hours ?? rental?.start_engine_hours ?? null),
+        start_fuel_level: isReplacingActiveRental ? null : (updatedRental?.start_fuel_level ?? rental?.start_fuel_level ?? null),
+        opening_video_url: isReplacingActiveRental ? null : (updatedRental?.opening_video_url ?? rental?.opening_video_url ?? null),
+        opening_video_thumbnail: isReplacingActiveRental ? null : (updatedRental?.opening_video_thumbnail ?? rental?.opening_video_thumbnail ?? null),
       };
 
       setRental((prev) => prev ? ({
@@ -4334,7 +4366,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
       }
 
       setShowReplaceVehicleDialog(false);
-      setReplacementPauseStartedAt(null);
+      setReplacementPauseStartedAt(rentalUpdatePayload.replacement_pause_started_at);
       setSelectedReplacementVehicleId('');
       setReplacementVehicles([]);
       await loadRentalData(true);
@@ -4431,7 +4463,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [isSendingWhatsApp, setIsSendingWhatsApp] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [isGeneratingContract, setIsGeneratingContract] = useState(false);
-  const [documentLanguage, setDocumentLanguage] = useState('fr');
+  const [documentLanguage, setDocumentLanguage] = useState('en');
   const isMobileDevice = () => {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   };
@@ -10521,7 +10553,7 @@ const resolveCanonicalFullPaymentAmount = (rentalLike = rental) => {
             updated_at: new Date().toISOString() 
         })
         .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
+        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price')
         .single();
       if (error) throw error;
       setRental(data);
@@ -10837,7 +10869,7 @@ const resolveCanonicalFullPaymentAmount = (rentalLike = rental) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
+        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price')
         .single();
 
       if (error) throw error;
@@ -14839,7 +14871,7 @@ useEffect(() => {
           replacement_previous_vehicle_id: null,
         })
         .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
+        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price')
         .single();
 
       if (rentalError) throw rentalError;
@@ -16126,7 +16158,7 @@ useEffect(() => {
       supabase,
       rentalId: rental.id,
       payload,
-      selectClause: '*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float',
+      selectClause: '*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price',
     });
   };
 
@@ -16637,7 +16669,7 @@ useEffect(() => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
+        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price')
         .single();
 
       if (error) throw error;
@@ -18357,7 +18389,11 @@ useEffect(() => {
       setSecurityHoldOpen(true);
     }
   }, [isEditingSecurityHold]);
-  const hasPendingSecurityReturn = !rental?.deposit_returned_at && (
+  const vehicleDocumentPenaltyReasonText = String(rental?.deposit_deduction_reason || '');
+  const vehicleDocumentPenaltyState = getVehicleDocumentPenaltyState(rental, lostVehicleDocumentPenaltyMad);
+  const isSecuritySeizedByDocumentPenalty =
+    vehicleDocumentPenaltyState.applied && vehicleDocumentPenaltyState.deductedFromSecurity > 0;
+  const hasPendingSecurityReturn = !rental?.deposit_returned_at && !isSecuritySeizedByDocumentPenalty && (
     hasHeldSecurityDocument ||
     hasMonetaryDamageDeposit ||
     receivedSecurityAmount > 0
@@ -18372,13 +18408,13 @@ useEffect(() => {
     hasHeldSecurityDocument ? tr('document held', 'document retenu') : null,
     rental?.deposit_returned_at
       ? tr('return completed', 'retour effectué')
+      : isSecuritySeizedByDocumentPenalty
+        ? tr('security seized', 'caution saisie')
       : hasPendingSecurityReturn
         ? tr('return pending', 'retour en attente')
         : null,
   ].filter(Boolean).join(' • ');
 
-  const vehicleDocumentPenaltyReasonText = String(rental?.deposit_deduction_reason || '');
-  const vehicleDocumentPenaltyState = getVehicleDocumentPenaltyState(rental, lostVehicleDocumentPenaltyMad);
   const isMissingVehicleDocumentPenaltyApplied = useCallback((documentType) => {
     return hasVehicleDocumentPenaltyReason(vehicleDocumentPenaltyReasonText);
   }, [vehicleDocumentPenaltyReasonText]);
@@ -18386,20 +18422,19 @@ useEffect(() => {
   const openMissingVehicleDocumentPenaltyDialog = useCallback((documentType) => {
     if (!rental?.id) return;
 
-    if (rental?.deposit_returned_at) {
-      toast.error(tr(
-        'Security return is already completed. Reopen it before applying a document penalty.',
-        'La restitution de garantie est déjà terminée. Rouvrez-la avant d’appliquer une pénalité document.'
-      ));
-      return;
-    }
-
     if (isMissingVehicleDocumentPenaltyApplied(documentType)) {
       toast.success(tr(
         'The document penalty is already recorded for this rental.',
         'La pénalité document est déjà enregistrée pour cette location.'
       ));
-      openDepositReturnReview();
+      return;
+    }
+
+    if (rental?.deposit_returned_at) {
+      toast.error(tr(
+        'Security return is already completed. Reopen it before applying a document penalty.',
+        'La restitution de garantie est déjà terminée. Rouvrez-la avant d’appliquer une pénalité document.'
+      ));
       return;
     }
 
@@ -18432,7 +18467,6 @@ useEffect(() => {
         'La pénalité document est déjà enregistrée pour cette location.'
       ));
       setDocumentPenaltyDialog({ open: false, documentType: null });
-      openDepositReturnReview();
       return;
     }
 
@@ -18464,21 +18498,24 @@ useEffect(() => {
       if (remainingPenaltyDue > 0) {
         noteParts.push(`Remaining penalty due: ${formatCurrency(remainingPenaltyDue)} MAD.`);
       }
+      noteParts.push('Security return closed automatically as document penalty seizure.');
       noteParts.push(`Recorded by ${actorName}.`);
 
       const nextReason = [
         vehicleDocumentPenaltyReasonText.trim(),
         noteParts.join(' '),
       ].filter(Boolean).join('\n');
+      const seizureTimestamp = new Date().toISOString();
 
       const updatePayload = {
         deposit_deduction_amount: nextDeductionAmount,
         deposit_deduction_reason: nextReason,
+        deposit_returned_at: seizureTimestamp,
         deposit_return_amount: nextReturnAmount,
         final_deposit_return_amount: nextReturnAmount,
         remaining_amount: nextRemainingAmount,
         payment_status: nextRemainingAmount > 0 ? 'partial' : 'paid',
-        updated_at: new Date().toISOString(),
+        updated_at: seizureTimestamp,
       };
 
       const { data: updatedRental, error: updateError } = await updateRentalWithSchemaFallback(updatePayload);
@@ -18486,15 +18523,11 @@ useEffect(() => {
 
       setRental((prev) => prev ? ({ ...prev, ...(updatedRental || updatePayload) }) : prev);
       setDocumentPenaltyDialog({ open: false, documentType: null });
-      setDamageDepositReturnOpen(true);
       await loadRentalData(true);
-      window.setTimeout(() => {
-        scrollToDepositReturnSection();
-      }, 120);
 
       toast.success(tr(
-        `${documentLabel} penalty applied to security return.`,
-        `Pénalité ${documentLabel} appliquée à la restitution de garantie.`
+        `${documentLabel} penalty applied and security seized.`,
+        `Pénalité ${documentLabel} appliquée et caution saisie.`
       ));
     } catch (error) {
       console.error('❌ Error applying missing vehicle document penalty:', error);
@@ -18529,14 +18562,6 @@ useEffect(() => {
   const removeMissingVehicleDocumentPenalty = useCallback(async () => {
     if (!rental?.id || !vehicleDocumentPenaltyState.applied) return;
 
-    if (rental?.deposit_returned_at) {
-      toast.error(tr(
-        'Security return is already completed. Reopen it before removing the document penalty.',
-        'La restitution de garantie est déjà terminée. Rouvrez-la avant de retirer la pénalité document.'
-      ));
-      return;
-    }
-
     const confirmed = window.confirm(tr(
       'Remove the document-missing penalty and restore the security return calculation?',
       'Retirer la pénalité document manquant et restaurer le calcul de restitution de garantie ?'
@@ -18557,6 +18582,8 @@ useEffect(() => {
       const updatePayload = {
         deposit_deduction_amount: nextDeductionAmount,
         deposit_deduction_reason: nextReason || null,
+        deposit_returned_at: null,
+        deposit_return_signature_url: null,
         deposit_return_amount: nextReturnAmount,
         final_deposit_return_amount: nextReturnAmount,
         remaining_amount: nextRemainingAmount,
@@ -18647,10 +18674,22 @@ useEffect(() => {
     setIsSigning(true);
   };
 
+  const openSignatureAfterSecurityReminder = () => {
+    setShowSecurityHoldReminderModal(false);
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        setIsSigning(true);
+      });
+      return;
+    }
+    setTimeout(() => {
+      setIsSigning(true);
+    }, 0);
+  };
+
   const handleSecurityHoldReminderAction = async (method = null) => {
     if (!method) {
-      setShowSecurityHoldReminderModal(false);
-      setIsSigning(true);
+      openSignatureAfterSecurityReminder();
       return;
     }
 
@@ -18659,9 +18698,8 @@ useEffect(() => {
       Number(securityHoldAmountInput || requiredSecurityAmount || 0)
     );
 
-    await handleSaveSecurityHold(amountToSave, method);
-    setShowSecurityHoldReminderModal(false);
-    setIsSigning(true);
+    openSignatureAfterSecurityReminder();
+    void handleSaveSecurityHold(amountToSave, method);
   };
 
   const openWebsiteReservationSecurityEditor = () => {
@@ -18809,7 +18847,24 @@ useEffect(() => {
     showReleaseImpoundModal,
     waiveImpoundExtraDailyCharge,
   ]);
-  const hasOpeningVideo = openingMedia.length > 0;
+  const replacementResumeContext = rental?.replacement_resume_context && typeof rental.replacement_resume_context === 'object'
+    ? rental.replacement_resume_context
+    : null;
+  const replacementResumeStartedAt = String(
+    replacementResumeContext?.replacementStartedAt ||
+    effectiveReplacementPauseStartedAt ||
+    ''
+  ).trim();
+  const replacementResumeStartedAtMs = replacementResumeStartedAt
+    ? new Date(replacementResumeStartedAt).getTime()
+    : NaN;
+  const openingMediaForCurrentVehicle = Number.isFinite(replacementResumeStartedAtMs)
+    ? openingMedia.filter((media) => {
+        const createdAtMs = media?.created_at ? new Date(media.created_at).getTime() : NaN;
+        return Number.isFinite(createdAtMs) && createdAtMs >= replacementResumeStartedAtMs;
+      })
+    : openingMedia;
+  const hasOpeningVideo = openingMediaForCurrentVehicle.length > 0;
   const hasOpeningDraftMedia = capturedMedia.length > 0 || showMediaReview;
   const hasOdometerReading = Boolean(rental?.start_odometer);
   const displayedStartingEngineHours = rental?.start_engine_hours ?? (
@@ -23747,7 +23802,7 @@ useEffect(() => {
 
                 {(hasMonetaryDamageDeposit || hasHeldSecurityDocument || rental.deposit_returned_at) && (
                   <div className="space-y-4 border-t border-violet-100 pt-4">
-                    {!rental.deposit_returned_at && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
+                    {!rental.deposit_returned_at && !isSecuritySeizedByDocumentPenalty && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
                       <div className="rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-sm text-slate-700 shadow-[0_12px_30px_rgba(59,130,246,0.05)]">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                           <div className="flex flex-wrap items-center gap-2">
@@ -23824,19 +23879,58 @@ useEffect(() => {
                       </div>
                     )}
 
-                    {rental.deposit_returned_at && (
-                      <div className="rounded-2xl border border-green-200 bg-green-50/80 p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)]">
+                    {(rental.deposit_returned_at || isSecuritySeizedByDocumentPenalty) && (
+                      <div className={`rounded-2xl p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)] ${isSecuritySeizedByDocumentPenalty ? 'border border-orange-200 bg-orange-50/85' : 'border border-green-200 bg-green-50/80'}`}>
                         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <h4 className="flex items-center gap-2 font-semibold text-green-900">
+                          <h4 className={`flex items-center gap-2 font-semibold ${isSecuritySeizedByDocumentPenalty ? 'text-orange-900' : 'text-green-900'}`}>
                             <DollarSign className="h-4 w-4" />
-                            {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
+                            {isSecuritySeizedByDocumentPenalty
+                              ? tr('Security Seized', 'Caution saisie')
+                              : isDocumentDeposit
+                                ? tr('Document Returned', 'Document rendu')
+                                : tr('Deposit Returned', 'Caution rendue')}
                           </h4>
-                          <Button type="button" size="sm" variant="outline" className="text-xs" onClick={handleEditDepositReturn}>
-                            {tr('Edit Deposit Return', 'Modifier le retour de caution')}
-                          </Button>
+                          {isSecuritySeizedByDocumentPenalty ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="border-rose-200 text-xs text-rose-700 hover:bg-rose-50"
+                              onClick={removeMissingVehicleDocumentPenalty}
+                              disabled={documentPenaltyApplying}
+                            >
+                              <XCircle className="mr-2 h-4 w-4" />
+                              {tr('Cancel penalty', 'Annuler pénalité')}
+                            </Button>
+                          ) : (
+                            <Button type="button" size="sm" variant="outline" className="text-xs" onClick={handleEditDepositReturn}>
+                              {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+                            </Button>
+                          )}
                         </div>
                         <div className="space-y-2">
-                          {isDocumentDeposit ? (
+                          {isSecuritySeizedByDocumentPenalty ? (
+                            <>
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">{tr('Security held:', 'Caution retenue :')}</span>
+                                <span className="font-medium">{formatCurrency(vehicleDocumentPenaltyState.securityHeldAmount)} MAD</span>
+                              </div>
+                              <div className="flex justify-between text-red-700">
+                                <span>{tr('Document loss penalty:', 'Pénalité perte documents :')}</span>
+                                <span className="font-medium">+{formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD</span>
+                              </div>
+                              <div className="flex justify-between text-orange-700">
+                                <span>{tr('Security seized:', 'Caution saisie :')}</span>
+                                <span className="font-medium">-{formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD</span>
+                              </div>
+                              <div className="flex justify-between border-t pt-2 font-bold">
+                                <span>{tr('Document penalty still due:', 'Solde pénalité documents :')}</span>
+                                <span className={vehicleDocumentPenaltyState.remainingDue > 0 ? 'text-red-600' : 'text-green-600'}>
+                                  {formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD
+                                </span>
+                              </div>
+                            </>
+                          ) : isDocumentDeposit ? (
                             <>
                               <div className="flex justify-between">
                                 <span className="text-gray-600">{tr('Returned document:', 'Document rendu :')}</span>
@@ -23875,7 +23969,10 @@ useEffect(() => {
                             </div>
                           )}
 
-                          <div className="pt-1 text-xs text-gray-500">{tr('Returned on:', 'Rendu le :')} {new Date(rental.deposit_returned_at).toLocaleString()}</div>
+                          <div className="pt-1 text-xs text-gray-500">
+                            {isSecuritySeizedByDocumentPenalty ? tr('Seized on:', 'Saisie le :') : tr('Returned on:', 'Rendu le :')}{' '}
+                            {new Date(rental.deposit_returned_at || rental.updated_at || Date.now()).toLocaleString()}
+                          </div>
 
                           {rental.deposit_return_signature_url && (
                             <div className="mt-2">
@@ -23937,7 +24034,7 @@ useEffect(() => {
           const additionalOwed = hasAutoDepositSeizure ? balanceDue : Math.max(0, rawBalanceDue - damageDeposit);
 
           if (!damageDepositReturnOpen) return null;
-          if (rental.deposit_returned_at) return null;
+          if (rental.deposit_returned_at || isSecuritySeizedByDocumentPenalty) return null;
           if (damageDeposit <= 0 && !hasHeldSecurityDocument) return null;
 
           return (
@@ -24439,6 +24536,7 @@ useEffect(() => {
   const canRecordMissingVehicleDocumentPenalty = Boolean(
     canAddVehicleMedia &&
     !rental?.deposit_returned_at &&
+    !isSecuritySeizedByDocumentPenalty &&
     showSecurityHoldSection
   );
   const selectedMissingVehicleDocumentMeta = getMissingVehicleDocumentMeta(documentPenaltyDialog.documentType);
@@ -24702,8 +24800,8 @@ useEffect(() => {
 
             <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
               {tr(
-                'This does not close the security return. It prepares the deduction so staff can review and sign the final return.',
-                'Cela ne clôture pas la restitution de garantie. La déduction est préparée pour que l’équipe puisse vérifier et signer le retour final.'
+                'This will close the security return as seized and add any remaining document penalty to the balance due.',
+                'Cela clôturera la restitution de garantie comme saisie et ajoutera tout solde de pénalité document au montant dû.'
               )}
             </div>
 
@@ -27911,7 +28009,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           );
                           return null;
                         })()}
-                        {rental.damage_deposit > 0 && !rental.deposit_returned_at && (
+                        {rental.damage_deposit > 0 && !rental.deposit_returned_at && !isSecuritySeizedByDocumentPenalty && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 flex items-center gap-2">
                             <span className="text-lg flex-shrink-0">🔒</span>
                             <p className="text-xs text-orange-800">
@@ -30121,7 +30219,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
         )}
 
-        {!rental.deposit_returned_at && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
+        {!rental.deposit_returned_at && !isSecuritySeizedByDocumentPenalty && (hasMonetaryDamageDeposit || hasHeldSecurityDocument) && (
           <div className="mt-4 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-sm text-slate-700 shadow-[0_12px_30px_rgba(59,130,246,0.05)]">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-2">
@@ -30190,26 +30288,65 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         )}
 
         {/* Show deposit return summary if already returned */}
-        {rental.deposit_returned_at && (
-          <div className="mt-4 rounded-2xl border border-green-200 bg-green-50/80 p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)]">
+        {(rental.deposit_returned_at || isSecuritySeizedByDocumentPenalty) && (
+          <div className={`mt-4 rounded-2xl p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)] ${isSecuritySeizedByDocumentPenalty ? 'border border-orange-200 bg-orange-50/85' : 'border border-green-200 bg-green-50/80'}`}>
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <h4 className="font-semibold text-green-900 flex items-center gap-2">
+              <h4 className={`flex items-center gap-2 font-semibold ${isSecuritySeizedByDocumentPenalty ? 'text-orange-900' : 'text-green-900'}`}>
                 <DollarSign className="w-4 h-4" />
-                {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
+                {isSecuritySeizedByDocumentPenalty
+                  ? tr('Security Seized', 'Caution saisie')
+                  : isDocumentDeposit
+                    ? tr('Document Returned', 'Document rendu')
+                    : tr('Deposit Returned', 'Caution rendue')}
               </h4>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="text-xs"
-                onClick={handleEditDepositReturn}
-              >
-                {tr('Edit Deposit Return', 'Modifier le retour de caution')}
-              </Button>
+              {isSecuritySeizedByDocumentPenalty ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="border-rose-200 text-xs text-rose-700 hover:bg-rose-50"
+                  onClick={removeMissingVehicleDocumentPenalty}
+                  disabled={documentPenaltyApplying}
+                >
+                  <XCircle className="mr-2 h-4 w-4" />
+                  {tr('Cancel penalty', 'Annuler pénalité')}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="text-xs"
+                  onClick={handleEditDepositReturn}
+                >
+                  {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+                </Button>
+              )}
             </div>
             
             <div className="space-y-2">
-              {isDocumentDeposit ? (
+              {isSecuritySeizedByDocumentPenalty ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">{tr('Security held:', 'Caution retenue :')}</span>
+                    <span className="font-medium">{formatCurrency(vehicleDocumentPenaltyState.securityHeldAmount)} MAD</span>
+                  </div>
+                  <div className="flex justify-between text-red-700">
+                    <span>{tr('Document loss penalty:', 'Pénalité perte documents :')}</span>
+                    <span className="font-medium">+{formatCurrency(vehicleDocumentPenaltyState.configuredPenalty)} MAD</span>
+                  </div>
+                  <div className="flex justify-between text-orange-700">
+                    <span>{tr('Security seized:', 'Caution saisie :')}</span>
+                    <span className="font-medium">-{formatCurrency(vehicleDocumentPenaltyState.deductedFromSecurity)} MAD</span>
+                  </div>
+                  <div className="flex justify-between border-t pt-2 font-bold">
+                    <span>{tr('Document penalty still due:', 'Solde pénalité documents :')}</span>
+                    <span className={vehicleDocumentPenaltyState.remainingDue > 0 ? 'text-red-600' : 'text-green-600'}>
+                      {formatCurrency(vehicleDocumentPenaltyState.remainingDue)} MAD
+                    </span>
+                  </div>
+                </>
+              ) : isDocumentDeposit ? (
                 <>
                   <div className="flex justify-between">
                     <span className="text-gray-600">{tr('Returned document:', 'Document rendu :')}</span>
@@ -30251,7 +30388,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               )}
               
               <div className="text-xs text-gray-500 pt-1">
-                {tr('Returned on:', 'Rendu le :')} {new Date(rental.deposit_returned_at).toLocaleString()}
+                {isSecuritySeizedByDocumentPenalty ? tr('Seized on:', 'Saisie le :') : tr('Returned on:', 'Rendu le :')}{' '}
+                {new Date(rental.deposit_returned_at || rental.updated_at || Date.now()).toLocaleString()}
               </div>
               
               {rental.deposit_return_signature_url && (
@@ -30387,7 +30525,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       : damageDeposit;
     const additionalOwed = hasAutoDepositSeizure ? balanceDue : Math.max(0, rawBalanceDue - damageDeposit);
     
-    if (rental.deposit_returned_at) return null;
+    if (rental.deposit_returned_at || isSecuritySeizedByDocumentPenalty) return null;
     if (damageDeposit <= 0 && !hasHeldSecurityDocument) return null;
     
     return (

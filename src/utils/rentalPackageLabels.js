@@ -23,12 +23,24 @@ const getIncludedKilometers = (pkg) => {
 };
 
 const getPackageDurationUnits = (pkg, fallbackDurationUnits = 1) => {
-  const explicitUnits = normalizeNumber(pkg?.durationUnits ?? pkg?.duration_units);
-  if (explicitUnits > 0) return explicitUnits;
-
   const rawName = String(pkg?.name || '').toLowerCase();
   if (/half[\s-]?hour/.test(rawName) || /30[\s-]?(min|minute|minutes)/.test(rawName)) return 0.5;
   if (/half[\s-]?day/.test(rawName) || /demi[\s-]?journ/.test(rawName)) return 4;
+
+  const hourMatch = rawName.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hr|hrs|hour|hours|heure|heures)\b/i);
+  if (hourMatch) {
+    const inferredHours = normalizeNumber(String(hourMatch[1]).replace(',', '.'));
+    if (inferredHours > 0) return inferredHours;
+  }
+
+  const dayMatch = rawName.match(/(\d+(?:[.,]\d+)?)\s*(?:day|days|jour|jours)\b/i);
+  if (dayMatch) {
+    const inferredDays = normalizeNumber(String(dayMatch[1]).replace(',', '.'));
+    if (inferredDays > 0) return inferredDays;
+  }
+
+  const explicitUnits = normalizeNumber(pkg?.durationUnits ?? pkg?.duration_units);
+  if (explicitUnits > 0) return explicitUnits;
 
   const units = normalizeNumber(fallbackDurationUnits);
   return units > 0 ? units : 1;

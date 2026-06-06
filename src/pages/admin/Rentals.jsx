@@ -33,6 +33,7 @@ import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecy
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
   getRentalCollectedAmountInWindow,
+  getRentalCustomerPaidAmount as getRentalCustomerPaidAmountShared,
 } from '../../utils/rentalFinancials';
 import {
   readRentalsSchemaCapability,
@@ -793,6 +794,7 @@ const getDocumentPenaltySnapshot = (rental) => {
   if (!reason.toLowerCase().includes(DOCUMENT_LOSS_PENALTY_REASON_TOKEN)) {
     return {
       penaltyAmount: 0,
+      deductedFromSecurity: 0,
       remainingDue: 0,
     };
   }
@@ -809,9 +811,13 @@ const getDocumentPenaltySnapshot = (rental) => {
 
   return {
     penaltyAmount,
+    deductedFromSecurity,
     remainingDue,
   };
 };
+
+const hasDocumentPenaltySecuritySeizure = (rental) =>
+  getDocumentPenaltySnapshot(rental).deductedFromSecurity > 0;
 
 const getRentalFinancialSnapshot = (rental) => {
   const quantity = getPackageRentalDurationUnits(rental) || 1;
@@ -837,13 +843,19 @@ const getRentalFinancialSnapshot = (rental) => {
     documentPenaltySnapshot.remainingDue
   );
   const finalGrandTotal = Math.max(0, grossTotal + documentPenaltySnapshot.penaltyAmount);
-  const customerPaidAmount = Math.max(0, finalGrandTotal - balanceDue);
+  const customerPaidAmount = Math.max(0, Number(getRentalCustomerPaidAmountShared(rental) || 0) || 0);
+  const inferredPaidAmount = Math.max(0, finalGrandTotal - balanceDue);
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,
     balanceDue
   );
   const grandTotal = finalGrandTotal;
-  const amountPaid = customerPaidAmount;
+  const amountPaid = customerPaidAmount > 0 ? customerPaidAmount : inferredPaidAmount;
+  const securityAppliedAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0) || 0);
+  const collectedAmount = Math.max(
+    amountPaid + securityAppliedAmount,
+    Number(getRentalCollectedAmountShared(rental) || 0) || 0
+  );
 
   let status = 'UNPAID';
   let className = 'rounded-full bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-100';
@@ -868,6 +880,8 @@ const getRentalFinancialSnapshot = (rental) => {
     grandTotal,
     balanceDue,
     amountPaid,
+    securityAppliedAmount,
+    collectedAmount,
     status,
     className,
   };
@@ -3801,7 +3815,27 @@ const Rentals = () => {
     ),
     [customDateRange, dateFocusAnchorDate, dateFocusFilter, workspaceTab]
   );
-  const footerSummaryCollected = footerSummaryRentals.reduce((sum, rental) => {
+  const collectedSummaryRentals = useMemo(() => {
+    if (!collectedSummaryWindow?.start || !collectedSummaryWindow?.end) {
+      return footerSummaryRentals;
+    }
+
+    const source = rentalUniverse.length > 0 ? rentalUniverse : rentals;
+    return source.filter((rental) => {
+      if (!doesRentalMatchFilters(rental, statusFilter, paymentStatusFilter, 'all')) {
+        return false;
+      }
+
+      const collectedAmount = getRentalCollectedAmountInWindow(
+        rental,
+        collectedSummaryWindow.start,
+        collectedSummaryWindow.end
+      );
+      return Number.isFinite(collectedAmount) && collectedAmount > 0;
+    });
+  }, [collectedSummaryWindow, doesRentalMatchFilters, footerSummaryRentals, paymentStatusFilter, rentalUniverse, rentals, statusFilter]);
+
+  const footerSummaryCollected = collectedSummaryRentals.reduce((sum, rental) => {
     const collectedAmount = getRentalCollectedAmountInWindow(
       rental,
       collectedSummaryWindow?.start || null,
@@ -4716,7 +4750,7 @@ const Rentals = () => {
                                   {rentalAttention.text}
                                 </span>
                               )}
-                              {rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at && (
+                              {rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at && !hasDocumentPenaltySecuritySeizure(rental) && (
                                 <span className="inline-flex items-center gap-1 text-xs bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
                                   🔒 Deposit Pending
                                 </span>
@@ -5025,7 +5059,7 @@ const Rentals = () => {
                     Boolean(rental?.is_impounded && effectiveRentalStatus !== 'impounded') ||
                     Boolean(isNoShowCancellation(rental)) ||
                     Boolean(rentalAttention) ||
-                    Boolean(rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at);
+                    Boolean(rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at && !hasDocumentPenaltySecuritySeizure(rental));
                   const stackCompactHeader =
                     isCompactMobileCard &&
                     (
@@ -5110,7 +5144,7 @@ const Rentals = () => {
                                 {rentalAttention.text}
                               </span>
                             )}
-                            {rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at && (
+                            {rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at && !hasDocumentPenaltySecuritySeizure(rental) && (
                               <span className="inline-flex items-center gap-1 text-xs bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-medium">
                                 🔒 {tr('Deposit Pending', 'Caution en attente')}
                               </span>
@@ -5183,11 +5217,16 @@ const Rentals = () => {
                           <div className={`grid gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 grid-cols-2 p-2' : 'mt-2 grid-cols-3 p-2.5'}`}>
                             <div className={isCompactMobileCard ? 'min-w-0' : ''}>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                                {tr('Paid', 'Payé')}
+                                {paymentSnapshot.securityAppliedAmount > 0 ? tr('Collected', 'Collecté') : tr('Paid', 'Payé')}
                               </div>
                               <div className={`${isCompactMobileCard ? 'text-[12px]' : 'text-sm'} font-bold text-emerald-700`}>
-                                {paymentSnapshot.amountPaid.toFixed(0)} MAD
+                                {(paymentSnapshot.securityAppliedAmount > 0 ? paymentSnapshot.collectedAmount : paymentSnapshot.amountPaid).toFixed(0)} MAD
                               </div>
+                              {paymentSnapshot.securityAppliedAmount > 0 && (
+                                <div className="mt-0.5 text-[9px] font-medium leading-tight text-slate-500">
+                                  {paymentSnapshot.amountPaid.toFixed(0)} + {paymentSnapshot.securityAppliedAmount.toFixed(0)} {tr('security', 'caution')}
+                                </div>
+                              )}
                             </div>
                             <div className={`min-w-0 ${isCompactMobileCard ? 'text-right' : 'text-right'}`}>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">

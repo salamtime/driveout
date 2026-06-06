@@ -68,8 +68,8 @@ const RENTAL_SECOND_DRIVERS_TABLE = 'app_4c3a7a6153_rental_second_drivers';
 const RENTAL_KM_PACKAGES_TABLE = 'app_4c3a7a6153_rental_km_packages';
 const PRICING_TIERS_TABLE = 'pricing_tiers';
 
-const scopeRentalFormTenantQuery = async (query, tableName, message = null) =>
-  scopeTenantOwnedQuery(query, tableName, { message });
+const scopeRentalFormTenantQuery = async (query, tableName, message = null, options = {}) =>
+  scopeTenantOwnedQuery(query, tableName, { message, ...options });
 const scopeRentalFormTenantSingle = async (query, tableName, message = null) => {
   const { data, error } = await scopeRentalFormTenantQuery(query.limit(1), tableName, message);
   return {
@@ -304,18 +304,37 @@ const isPackagePricingEnabledForRentalDraft = (data = {}) => {
   return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 };
 
-const getPackageDurationUnits = (pkg = {}) => {
-  const durationUnits = Number(
-    pkg.duration_units ??
-    pkg.durationUnits ??
-    pkg.package_duration_units ??
-    pkg.packageDurationUnits
+const getPackageFixedAmount = (pkg = {}) => {
+  const amount = Number(
+    pkg.fixed_amount ??
+    pkg.fixedAmount ??
+    pkg.package_rate ??
+    pkg.packageRate ??
+    pkg.package_rate_per_unit ??
+    pkg.packageRatePerUnit ??
+    pkg.price_amount ??
+    pkg.priceAmount ??
+    pkg.package_price ??
+    pkg.packagePrice ??
+    pkg.rate ??
+    pkg.price ??
+    pkg.amount ??
+    0
   );
 
-  if (Number.isFinite(durationUnits) && durationUnits > 0) {
-    return durationUnits;
-  }
+  return Number.isFinite(amount) ? amount : 0;
+};
 
+const getVehicleOrganizationId = (vehicle = {}) =>
+  String(
+    vehicle?.organization_id ??
+    vehicle?.organizationId ??
+    vehicle?.tenant_organization_id ??
+    vehicle?.tenantOrganizationId ??
+    ''
+  ).trim() || null;
+
+const getPackageDurationUnits = (pkg = {}) => {
   const rawLabel = String(
     pkg.name ??
     pkg.package_name ??
@@ -324,21 +343,67 @@ const getPackageDurationUnits = (pkg = {}) => {
     ''
   ).toLowerCase();
 
-  if (!rawLabel) return null;
-  if (rawLabel.includes('30 min')) return 0.5;
-  if (rawLabel.includes('1.5 hour') || rawLabel.includes('1,5 hour')) return 1.5;
-  if (rawLabel.includes('4 hour')) return 4;
-  if (rawLabel.includes('1 hour') || rawLabel.includes('per hour')) return 1;
-  if (rawLabel.includes('1 day') || rawLabel.includes('per day')) return 1;
+  if (rawLabel) {
+    if (rawLabel.includes('30 min')) return 0.5;
+    if (rawLabel.includes('1.5 hour') || rawLabel.includes('1,5 hour')) return 1.5;
+    if (rawLabel.includes('4 hour')) return 4;
+    if (rawLabel.includes('1 hour') || rawLabel.includes('per hour')) return 1;
+    if (rawLabel.includes('1 day') || rawLabel.includes('per day')) return 1;
 
-  const hourMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*hour/);
-  if (hourMatch) {
-    return Number(String(hourMatch[1]).replace(',', '.')) || null;
+    const hourMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hour|hours)\b/);
+    if (hourMatch) {
+      return Number(String(hourMatch[1]).replace(',', '.')) || null;
+    }
+
+    const dayMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*day/);
+    if (dayMatch) {
+      return Number(String(dayMatch[1]).replace(',', '.')) || null;
+    }
   }
 
-  const dayMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*day/);
-  if (dayMatch) {
-    return Number(String(dayMatch[1]).replace(',', '.')) || null;
+  const durationUnits = Number(
+    pkg.duration_units ??
+    pkg.durationUnits ??
+    pkg.package_duration_units ??
+    pkg.packageDurationUnits ??
+    pkg.selected_package_duration_units ??
+    pkg.selectedPackageDurationUnits ??
+    pkg.duration_value ??
+    pkg.durationValue ??
+    pkg.duration_hours ??
+    pkg.durationHours ??
+    pkg.package_duration ??
+    pkg.packageDuration ??
+    pkg.hours ??
+    pkg.quantity_hours ??
+    pkg.quantityHours ??
+    pkg.duration
+  );
+
+  if (Number.isFinite(durationUnits) && durationUnits > 0) {
+    return durationUnits;
+  }
+
+  const minHours = Number(pkg.min_hours ?? pkg.minHours);
+  const maxHours = Number(pkg.max_hours ?? pkg.maxHours);
+  if (
+    Number.isFinite(minHours) &&
+    Number.isFinite(maxHours) &&
+    minHours > 0 &&
+    isSameDurationUnits(minHours, maxHours)
+  ) {
+    return minHours;
+  }
+
+  const minDays = Number(pkg.min_days ?? pkg.minDays);
+  const maxDays = Number(pkg.max_days ?? pkg.maxDays);
+  if (
+    Number.isFinite(minDays) &&
+    Number.isFinite(maxDays) &&
+    minDays > 0 &&
+    isSameDurationUnits(minDays, maxDays)
+  ) {
+    return minDays;
   }
 
   return null;
@@ -354,8 +419,8 @@ const findMatchingDurationPackage = (packages = [], rentalType, durationUnits) =
 
   if (matchingPackages.length > 0) {
     return [...matchingPackages].sort((a, b) => {
-      const aPrice = Number(a.fixed_amount ?? a.package_rate ?? a.rate ?? a.price ?? 0) || 0;
-      const bPrice = Number(b.fixed_amount ?? b.package_rate ?? b.rate ?? b.price ?? 0) || 0;
+      const aPrice = getPackageFixedAmount(a);
+      const bPrice = getPackageFixedAmount(b);
       return aPrice - bPrice;
     })[0];
   }
@@ -411,10 +476,16 @@ const getDurationScopedPackages = (packages = [], rentalType, durationUnits) => 
       if (isSameDurationUnits(requestedDurationUnits, 0.5)) {
         return isSameDurationUnits(packageDurationUnits, 0.5);
       }
+      if (isSameDurationUnits(requestedDurationUnits, 1)) {
+        return isSameDurationUnits(packageDurationUnits, 1);
+      }
+      if (isSameDurationUnits(requestedDurationUnits, 2)) {
+        return isSameDurationUnits(packageDurationUnits, 1);
+      }
       if (isSameDurationUnits(requestedDurationUnits, 4)) {
         return isSameDurationUnits(packageDurationUnits, 4);
       }
-      return isSameDurationUnits(packageDurationUnits, 1);
+      return false;
     }
 
     return isSameDurationUnits(packageDurationUnits, 1);
@@ -1501,7 +1572,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       Number(data.selected_package_rate_per_unit) ||
       Number(data.package_rate_per_unit) ||
       Number(linkedPackage?.rate_per_unit) ||
-      Number(linkedPackage?.fixed_amount) ||
+      getPackageFixedAmount(linkedPackage) ||
       0;
     const resolvedIncludedKmPerUnit =
       Number(data.selected_package_included_km_per_unit) ||
@@ -2629,7 +2700,7 @@ const calculateFinancials = () => {
 
         if (matchedPackage) {
           const packageDurationUnits = getPackageDurationUnits(matchedPackage) || 1;
-          const packageRatePerUnit = Number(matchedPackage.fixed_amount) || 0;
+          const packageRatePerUnit = getPackageFixedAmount(matchedPackage);
           const activeDurationUnits = Math.max(
             Number(
               newFormData.rental_type === 'hourly'
@@ -3889,13 +3960,7 @@ const calculateFinancials = () => {
         ? resolveStandardPricingFallbackPackage(submissionReadyFormData)
         : null;
       if (standardPricingFallbackPackage && Number(submissionData.total_amount || 0) <= 0) {
-        const fallbackPackageAmount = Number(
-          standardPricingFallbackPackage.fixed_amount
-          ?? standardPricingFallbackPackage.package_rate
-          ?? standardPricingFallbackPackage.rate
-          ?? standardPricingFallbackPackage.price
-          ?? 0
-        ) || 0;
+        const fallbackPackageAmount = getPackageFixedAmount(standardPricingFallbackPackage);
         const fallbackPackageDurationUnits = getPackageDurationUnits(standardPricingFallbackPackage) || 1;
         const fallbackRentalDurationUnits = Number(
           submissionData.rental_type === 'hourly'
@@ -4708,10 +4773,10 @@ useEffect(() => {
 
   // ==================== RETURN VALUES ====================
   // Fetch KM packages when vehicle changes
-  const fetchKMPackages = async (vehicleModelId, rentalType = null) => {
+  const fetchKMPackages = async (vehicleModelId, rentalType = null, organizationId = null) => {
     if (!vehicleModelId) return [];
     try {
-      console.log(`📦 Fetching packages for model ID: ${vehicleModelId}, rental type: ${rentalType}`);
+      console.log(`📦 Fetching packages for model ID: ${vehicleModelId}, rental type: ${rentalType}, organization: ${organizationId || 'current'}`);
       
       let query = supabase
         .from(RENTAL_KM_PACKAGES_TABLE)
@@ -4729,7 +4794,8 @@ useEffect(() => {
       const scopedQuery = await scopeRentalFormTenantQuery(
         query.order('fixed_amount', { ascending: true }),
         RENTAL_KM_PACKAGES_TABLE,
-        'Workspace organization context is required to load vehicle packages.'
+        'Workspace organization context is required to load vehicle packages.',
+        organizationId ? { organizationId } : {}
       );
       const { data, error } = await scopedQuery;
       
@@ -4761,7 +4827,11 @@ useEffect(() => {
           console.log(`🔍 Vehicle selected: ${vehicle?.id}, model ID: ${vehicleModelId}`);
           
           // Fetch packages for this specific model
-          const packages = await fetchKMPackages(vehicleModelId, formData.rental_type);
+          const packages = await fetchKMPackages(
+            vehicleModelId,
+            formData.rental_type,
+            getVehicleOrganizationId(vehicle)
+          );
           // Reload fuel pricing for new vehicle model
           await loadFuelChargeSettings(vehicleModelId, formData.rental_type, formData.use_package_pricing);
           
@@ -4817,7 +4887,7 @@ useEffect(() => {
 
   const calculatePackagePrice = (pkg, dur) => {
     if (!pkg || !dur) return null;
-    const fixedAmount = parseFloat(pkg.fixed_amount) || 0;
+    const fixedAmount = getPackageFixedAmount(pkg);
     const perUnitRate = fixedAmount / dur;
     return {
       total: fixedAmount,
@@ -7037,7 +7107,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           const selectedPkg = availablePackages.find(p => p.id === selectedPackageId);
           if (selectedPkg) {
             // Rental KM packages are priced per selected rental unit (hour/day).
-            fixedPackageAmount = parseFloat(selectedPkg.fixed_amount) || 0;
+            fixedPackageAmount = getPackageFixedAmount(selectedPkg);
             packageIncludedKm = selectedPkg.included_kilometers;
             packageExtraRate = parseFloat(selectedPkg.extra_km_rate) || 0;
             packageName = selectedPkg.name;
@@ -7426,6 +7496,7 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
         }
 
         if (rentalType === 'hourly' && normalizedDuration === 0.5) {
+          const organizationId = getVehicleOrganizationId(vehicle);
           const packageQuery = await scopeRentalFormTenantQuery(
             supabase
               .from(RENTAL_KM_PACKAGES_TABLE)
@@ -7435,7 +7506,8 @@ const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
               .or('rate_type_id.eq.1,rate_type_id.is.null')
               .order('fixed_amount', { ascending: true }),
             RENTAL_KM_PACKAGES_TABLE,
-            'Workspace organization context is required to load rental packages.'
+            'Workspace organization context is required to load rental packages.',
+            organizationId ? { organizationId } : {}
           );
           const { data: packageRows, error: packageError } = await packageQuery;
 
@@ -8064,7 +8136,7 @@ const KMPackagesTab = ({
   const calculateTotalCost = (pkg, kms) => {
     if (!pkg) return 0;
     
-    const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
+    const ratePerUnit = getPackageFixedAmount(pkg);
     const packageDurationUnits = getPackageDurationUnits(pkg) || 1;
     const baseRentalCost = ratePerUnit * getPackageBillingMultiplier(duration, packageDurationUnits);
     
@@ -8108,7 +8180,7 @@ const KMPackagesTab = ({
       return;
     }
 
-    const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
+    const ratePerUnit = getPackageFixedAmount(pkg);
     const packageDurationUnits = getPackageDurationUnits(pkg);
 
     if (!packageDurationUnits) {
@@ -8275,7 +8347,7 @@ const KMPackagesTab = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {packages.map((pkg) => {
           const isSelected = selectedPackageId === pkg.id || selectedPackage?.id === pkg.id;
-          const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
+          const ratePerUnit = getPackageFixedAmount(pkg);
           const packageDurationUnits = getPackageDurationUnits(pkg) || 1;
           const totalIncludedKm = calculatePackageTotalIncludedKm(
             pkg.included_kilometers,
@@ -8418,7 +8490,7 @@ const KMPackagesTab = ({
                 </span>
                 <span className="rounded-full bg-purple-50 px-3 py-1 text-xs font-semibold text-purple-700">
                   {((
-                    (parseFloat(expandedPackage.fixed_amount) || 0)
+                    getPackageFixedAmount(expandedPackage)
                     * getPackageBillingMultiplier(duration, getPackageDurationUnits(expandedPackage) || 1)
                   ) || 0).toFixed(2)} MAD
                 </span>
@@ -8468,7 +8540,7 @@ const KMPackagesTab = ({
           {showCalculator && (
             <div className="p-5 bg-white">
               {(() => {
-                const ratePerUnit = parseFloat(selectedPackage.fixed_amount) || 0;
+                const ratePerUnit = getPackageFixedAmount(selectedPackage);
                 const packageDurationUnits = getPackageDurationUnits(selectedPackage) || 1;
                 const baseRentalCost = ratePerUnit * getPackageBillingMultiplier(duration, packageDurationUnits);
                 const includedKmsPerUnit = selectedPackage.included_kilometers;
@@ -9282,7 +9354,10 @@ const SimplifiedRentalWizard = ({
         package_fuel_charge_enabled: formData.selected_package_fuel_charge_enabled,
         package_description: formData.selected_package_description,
         package_duration_units: getPackageDurationUnits({
-          duration_units: formData.rental_type === 'hourly' ? 1 : 1,
+          name: formData.selected_package_name,
+          package_name: formData.selected_package_name,
+          duration_units: formData.selected_package_duration_units ?? formData.package_duration_units,
+          durationUnits: formData.selected_package_duration_units ?? formData.package_duration_units,
           fixed_amount: formData.selected_package_rate_per_unit || formData.selected_package_fixed_amount,
         }),
         use_package_pricing: true,
@@ -9294,20 +9369,8 @@ const SimplifiedRentalWizard = ({
     : (selectedStandardPackage || formSelectedPackageSource);
   const selectedStandardPackageTotal = (() => {
     if (!activeStandardPackageSource) return getFixedPackageAmount(formData);
-    const packageRate = Number(
-      activeStandardPackageSource.fixed_amount
-      ?? activeStandardPackageSource.package_rate
-      ?? activeStandardPackageSource.package_rate_per_unit
-      ?? activeStandardPackageSource.rate
-      ?? activeStandardPackageSource.price
-      ?? 0
-    ) || 0;
-    const packageDurationUnits = Number(
-      activeStandardPackageSource.package_duration_units
-      ?? activeStandardPackageSource.duration_units
-      ?? getPackageDurationUnits(activeStandardPackageSource)
-      ?? 1
-    ) || 1;
+    const packageRate = getPackageFixedAmount(activeStandardPackageSource);
+    const packageDurationUnits = getPackageDurationUnits(activeStandardPackageSource) || 1;
     if (packageRate <= 0) return getFixedPackageAmount(formData);
     if (currentDurationUnits <= 0) return packageRate;
     return packageRate * Math.max(currentDurationUnits / packageDurationUnits, 1);
@@ -9408,7 +9471,8 @@ const SimplifiedRentalWizard = ({
         : `${formData.rental_type === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')}`
       : tr('Rental setup', 'Configuration');
     const shouldRequireExplicitPackageDecision =
-      formData.rental_type === 'hourly' && durationUnits === 0.5;
+      pricingMode === 'package' ||
+      (formData.rental_type === 'hourly' && durationUnits === 0.5);
     const nextPackageSummaryLabel = shouldRequireExplicitPackageDecision
       ? tr('Choose package', 'Choisir le forfait')
       : tr('Standard pricing', 'Tarification standard');
@@ -9513,7 +9577,7 @@ const SimplifiedRentalWizard = ({
   );
   const getLightPackagePreviewTotal = (pkg) => {
     if (!pkg) return 0;
-    const packageRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+    const packageRate = getPackageFixedAmount(pkg);
     const packageDurationUnits = getPackageDurationUnits(pkg) || 1;
     if (packageRate <= 0) return 0;
     if (currentLightDurationUnits <= 0) return packageRate;
@@ -9522,26 +9586,7 @@ const SimplifiedRentalWizard = ({
   const filteredPackageOptions = formData.rental_type
     ? getDurationScopedPackages(availablePackages, formData.rental_type, currentLightDurationUnits)
     : availablePackages;
-  const standardFallbackPackage = filteredPackageOptions.find((pkg) => {
-    const pkgName = String(pkg?.name || pkg?.package_name || '').toLowerCase();
-    const includedKm = Number(pkg?.included_kilometers ?? pkg?.included_km ?? pkg?.km_limit ?? 0) || 0;
-    const extraRate = Number(pkg?.extra_km_rate ?? pkg?.extra_rate ?? 0) || 0;
-    return (
-      pkgName.includes('unlimited')
-      || pkgName.includes('free')
-      || (includedKm <= 0 && extraRate <= 0)
-    );
-  }) || null;
-  const standardFallbackLabel = (() => {
-    if (!standardFallbackPackage) return tr('Standard', 'Standard');
-    const includedKm = Number(
-      standardFallbackPackage?.included_kilometers
-      ?? standardFallbackPackage?.included_km
-      ?? standardFallbackPackage?.km_limit
-      ?? 0
-    ) || 0;
-    return includedKm > 0 ? `${includedKm} KM` : tr('Unlimited km', 'KM illimités');
-  })();
+  const standardFallbackLabel = tr('Standard', 'Standard');
   const hasDurationSelection = Boolean(Number(
     formData.rental_type === 'hourly'
       ? (formData.quantity_hours ?? formData.quantity_days)
@@ -9581,19 +9626,13 @@ const SimplifiedRentalWizard = ({
       return sameDuration && packageModelId === String(vehicleModelId);
     });
 
-    return Number(
-      matchingPackage?.fixed_amount
-      ?? matchingPackage?.package_rate
-      ?? matchingPackage?.rate
-      ?? matchingPackage?.price
-      ?? 0
-    ) || 0;
+    return getPackageFixedAmount(matchingPackage);
   };
   const getStandardRentalPreviewTotal = (vehicle = null) => {
     const mappedEntry = vehicle ? lightVehiclePriceMap[String(vehicle?.id)] : null;
     const mappedPrice = Number(
       mappedEntry && typeof mappedEntry === 'object'
-        ? mappedEntry.total
+        ? (mappedEntry.mode === 'package' ? 0 : mappedEntry.total)
         : mappedEntry
     ) || 0;
     if (mappedPrice > 0) return mappedPrice;
@@ -9926,7 +9965,7 @@ const SimplifiedRentalWizard = ({
       return;
     }
 
-    const packageRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+    const packageRate = getPackageFixedAmount(pkg);
     const includedKmPerUnit = Number(
       pkg.included_kilometers ?? pkg.included_km ?? pkg.km_limit ?? pkg.kmIncluded ?? 0
     ) || 0;
@@ -9970,7 +10009,6 @@ const SimplifiedRentalWizard = ({
         selected_package_description: pkg.description || '',
         use_package_pricing: true,
         package_overrides_tier: true,
-        unit_price: packageRate,
       };
       syncEndDateTimeFromStart(nextFormData, nextDurationUnits);
       return nextFormData;
@@ -9993,7 +10031,9 @@ const SimplifiedRentalWizard = ({
         setPricingComputationMode('per_unit');
         setPricingComputationLabel('');
       }
-      const mappedTotal = Number(mappedEntry.total || 0) || 0;
+      const mappedTotal = mappedEntry.mode === 'package'
+        ? 0
+        : (Number(mappedEntry.total || 0) || 0);
       const shouldUseFlatTotal = mappedEntry.mode === 'flat_total';
       if (mappedTotal > 0) {
         setFormData((prev) => ({
@@ -10707,20 +10747,25 @@ const SimplifiedRentalWizard = ({
 
           if (formData.use_package_pricing && formData.rental_type && resolvedModelId) {
             const modelId = String(resolvedModelId);
-            if (!packageCache.has(modelId)) {
-              packageCache.set(modelId, fetchKMPackages(resolvedModelId, formData.rental_type));
+            const organizationId = getVehicleOrganizationId(vehicle);
+            const packageCacheKey = `${modelId}:${organizationId || 'current'}`;
+            if (!packageCache.has(packageCacheKey)) {
+              packageCache.set(
+                packageCacheKey,
+                fetchKMPackages(resolvedModelId, formData.rental_type, organizationId)
+              );
             }
-            const modelPackages = await packageCache.get(modelId);
+            const modelPackages = await packageCache.get(packageCacheKey);
             const matchingPackage = findMatchingDurationPackage(modelPackages || [], formData.rental_type, durationUnits);
             if (matchingPackage) {
-              const packagePrice = Number(
-                matchingPackage.fixed_amount ??
-                matchingPackage.package_rate ??
-                matchingPackage.rate ??
-                matchingPackage.price ??
-                0
-              ) || 0;
-              return [String(vehicle.id), { total: packagePrice, mode: 'package' }];
+              const packagePrice = getPackageFixedAmount(matchingPackage);
+              const packageDurationUnits = getPackageDurationUnits(matchingPackage) || 1;
+              const packageTotal = packagePrice * getPackageBillingMultiplier(durationUnits, packageDurationUnits);
+              return [String(vehicle.id), {
+                total: packageTotal,
+                mode: 'package',
+                packageId: matchingPackage.id,
+              }];
             }
           }
 
@@ -10765,13 +10810,30 @@ const SimplifiedRentalWizard = ({
 
   useEffect(() => {
     if (!isLightVariant || currentStep !== 2) return;
-    if (formData.rental_type !== 'hourly' || currentLightDurationUnits !== 0.5) return;
+    if (!formData.rental_type || currentLightDurationUnits <= 0) return;
     if (!formData.vehicle_id || availablePackages.length === 0) return;
+    if (lightPackageDecisionMode === 'standard' && !formData.use_package_pricing) return;
 
-    const matchingPackage = findMatchingDurationPackage(availablePackages, 'hourly', 0.5);
-    if (!matchingPackage) return;
+    const durationScopedPackages = getDurationScopedPackages(
+      availablePackages,
+      formData.rental_type,
+      currentLightDurationUnits
+    );
+    if (durationScopedPackages.length === 0) return;
 
     const selectedPackageId = String(formData.selected_package_id || '');
+    const selectedPackageIsDurationCompatible = Boolean(selectedPackageId) && durationScopedPackages.some(
+      (pkg) => String(pkg.id || '') === selectedPackageId
+    );
+    if (formData.use_package_pricing && selectedPackageIsDurationCompatible) return;
+
+    const matchingPackage = findMatchingDurationPackage(
+      availablePackages,
+      formData.rental_type,
+      currentLightDurationUnits
+    );
+    if (!matchingPackage) return;
+
     if (selectedPackageId === String(matchingPackage.id || '')) return;
 
     applyLightPackageSelection(matchingPackage);
@@ -10782,8 +10844,10 @@ const SimplifiedRentalWizard = ({
     currentStep,
     formData.rental_type,
     formData.selected_package_id,
+    formData.use_package_pricing,
     formData.vehicle_id,
     isLightVariant,
+    lightPackageDecisionMode,
   ]);
 
   const renderLightStepTwo = () => (
@@ -11330,7 +11394,7 @@ const SimplifiedRentalWizard = ({
                           tr
                         );
                         const pkgIncludedKm = Number(pkg.included_kilometers ?? pkg.included_km ?? pkg.km_limit ?? 0) || 0;
-                        const pkgRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+                        const pkgRate = getPackageFixedAmount(pkg);
                         const pkgPreviewTotal = currentLightDurationUnits > 0
                           ? getLightPackagePreviewTotal(pkg)
                           : pkgRate;

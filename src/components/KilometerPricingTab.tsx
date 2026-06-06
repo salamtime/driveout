@@ -63,6 +63,7 @@ interface PackageFormData {
   fixed_amount: number | null;
   fuel_charge_enabled: boolean;
   rate_type_id: number;
+  duration_units?: number | null;
   is_active: boolean;
   show_on_print: boolean;
 }
@@ -105,6 +106,51 @@ const detectHalfHourPackage = (
     combinedText.includes('30 minutes') ||
     durationUnits === 0.5
   );
+};
+
+const inferPackageDurationUnits = (
+  pkg?: { name?: string; description?: string; duration_units?: number | null; durationUnits?: number | null } | null,
+  fallback = 1
+) => {
+  const combinedText = `${pkg?.name || ''} ${pkg?.description || ''}`.toLowerCase();
+
+  if (
+    combinedText.includes('half hour') ||
+    combinedText.includes('half-hour') ||
+    combinedText.includes('demi heure') ||
+    combinedText.includes('demi-heure') ||
+    combinedText.includes('30 min') ||
+    combinedText.includes('30-minute') ||
+    combinedText.includes('30 minute') ||
+    combinedText.includes('30 minutes')
+  ) {
+    return 0.5;
+  }
+
+  if (
+    combinedText.includes('half day') ||
+    combinedText.includes('half-day') ||
+    combinedText.includes('halfday') ||
+    combinedText.includes('demi journée') ||
+    combinedText.includes('demi-journée')
+  ) {
+    return 4;
+  }
+
+  const hourMatch = combinedText.match(/(\d+(?:[.,]\d+)?)\s*(?:h|hr|hrs|hour|hours|heure|heures)\b/i);
+  if (hourMatch) {
+    const hours = Number(String(hourMatch[1]).replace(',', '.'));
+    if (Number.isFinite(hours) && hours > 0) return hours;
+  }
+
+  const dayMatch = combinedText.match(/(\d+(?:[.,]\d+)?)\s*(?:day|days|jour|jours)\b/i);
+  if (dayMatch) {
+    const days = Number(String(dayMatch[1]).replace(',', '.'));
+    if (Number.isFinite(days) && days > 0) return days;
+  }
+
+  const explicitUnits = Number(pkg?.durationUnits ?? pkg?.duration_units ?? fallback);
+  return Number.isFinite(explicitUnits) && explicitUnits > 0 ? explicitUnits : fallback;
 };
 
 const getRateTypeIcon = (rateTypeName: string) => {
@@ -238,6 +284,7 @@ const KilometerPricingTab: React.FC = () => {
     fixed_amount: null,
     fuel_charge_enabled: false,
     rate_type_id: 1,
+    duration_units: 1,
     is_active: true,
     show_on_print: false
   });
@@ -407,6 +454,7 @@ const KilometerPricingTab: React.FC = () => {
       fixed_amount: null,
       fuel_charge_enabled: false,
       rate_type_id: 1,
+      duration_units: 1,
       is_active: true,
       show_on_print: false
     });
@@ -436,6 +484,7 @@ const KilometerPricingTab: React.FC = () => {
       fixed_amount: pkg.fixed_amount,
       fuel_charge_enabled: Boolean(pkg.fuel_charge_enabled),
       rate_type_id: pkg.rate_type_id,
+      duration_units: inferPackageDurationUnits(pkg),
       is_active: pkg.is_active,
       show_on_print: pkg.show_on_print === true || pkg.showOnPrint === true
     });
@@ -763,7 +812,7 @@ const KilometerPricingTab: React.FC = () => {
         ? 0.5
         : packageTypeSelection === HALF_DAY_SELECTION
           ? 4
-          : Number(formData.duration_units || 1) || 1;
+          : inferPackageDurationUnits(formData);
 
     const packagePayload = {
       ...formData,
@@ -793,6 +842,7 @@ const KilometerPricingTab: React.FC = () => {
       fixed_amount: packagePayload.fixed_amount,
       included_kilometers: packagePayload.included_kilometers,
       extra_km_rate: packagePayload.extra_km_rate,
+      duration_units: packagePayload.duration_units,
       is_active: packagePayload.is_active,
       show_on_print: packagePayload.show_on_print,
       package_type_selection: packageTypeSelection
