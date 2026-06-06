@@ -64,6 +64,15 @@ const createSupabaseClient = ({ url, anonKey, storageKey, applicationName = 'ren
     },
   });
 
+const isSameClientConfig = (left = {}, right = {}) => (
+  String(left?.mode || '') === String(right?.mode || '') &&
+  String(left?.url || '') === String(right?.url || '') &&
+  String(left?.anonKey || '') === String(right?.anonKey || '') &&
+  String(left?.projectRef || '') === String(right?.projectRef || '') &&
+  String(left?.storageKey || '') === String(right?.storageKey || '') &&
+  String(left?.appUrl || '') === String(right?.appUrl || '')
+);
+
 const shutdownSupabaseClient = (client) => {
   if (!client) return;
 
@@ -119,9 +128,7 @@ export const configureSupabaseClient = ({
     throw new Error('Tenant Supabase configuration is incomplete.');
   }
 
-  shutdownSupabaseClient(activeClient);
-
-  activeConfig = {
+  const nextConfig = {
     mode,
     url: normalizedUrl,
     anonKey: normalizedAnonKey,
@@ -129,6 +136,14 @@ export const configureSupabaseClient = ({
     appUrl,
     storageKey: buildStorageKey({ projectRef: normalizedProjectRef }),
   };
+
+  if (activeClient && isSameClientConfig(activeConfig, nextConfig)) {
+    return activeClient;
+  }
+
+  shutdownSupabaseClient(activeClient);
+
+  activeConfig = nextConfig;
   activeClient = createSupabaseClient({
     url: activeConfig.url,
     anonKey: activeConfig.anonKey,
@@ -140,7 +155,7 @@ export const configureSupabaseClient = ({
 };
 
 export const configureMasterSupabaseClient = () => {
-  if (activeClient && activeConfig.mode === 'master') return activeClient;
+  if (activeClient && isSameClientConfig(activeConfig, masterConfig)) return activeClient;
   shutdownSupabaseClient(activeClient);
   activeConfig = masterConfig;
   activeClient = createSupabaseClient({
@@ -152,6 +167,19 @@ export const configureMasterSupabaseClient = () => {
 };
 
 export const getSupabaseClientConfig = () => ({ ...activeConfig, anonKey: activeConfig.anonKey ? '[redacted]' : '' });
+
+export const clearActiveSupabaseSessionStorage = () => {
+  if (typeof window === 'undefined') return;
+
+  const storageKey = String(activeConfig?.storageKey || '').trim();
+  if (!storageKey) return;
+
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch (error) {
+    console.warn('Unable to clear persisted Supabase session:', error);
+  }
+};
 
 export const getActiveSupabaseClient = () => {
   if (!activeClient) {

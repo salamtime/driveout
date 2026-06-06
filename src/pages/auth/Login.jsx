@@ -42,6 +42,22 @@ const buildMarketplaceLoginRedirect = ({ email = '', redirect = '/customer/dashb
   });
 };
 
+const buildNonAdminWorkspaceRedirect = ({ redirect = '/customer/dashboard' } = {}) => {
+  const safeRedirect = getSafeRedirectPath(redirect) || '/customer/dashboard';
+  const host = getHostContext();
+
+  if (host?.isLocal) {
+    return buildLocalTenantUrl({
+      pathname: safeRedirect,
+    });
+  }
+
+  return buildHostUrl({
+    kind: safeRedirect.startsWith('/account') || safeRedirect.startsWith('/customer') ? 'app' : 'public',
+    pathname: safeRedirect,
+  });
+};
+
 const GoogleMark = () => (
   <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24">
     <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.25-.95 2.3-2.03 3.02l3.28 2.54c1.91-1.76 3.01-4.35 3.01-7.42 0-.72-.06-1.42-.18-2.08H12z" />
@@ -190,6 +206,15 @@ const Login = () => {
         verification_status: user?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
         certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
       });
+      const isInternalWorkspaceRole = ['owner', 'admin', 'employee', 'guide'].includes(normalizedRole);
+
+      if (isAdminHost && !isInternalWorkspaceRole) {
+        const nonAdminRedirect = buildNonAdminWorkspaceRedirect({
+          redirect: redirectQuery || getRedirectPathForRole(normalizedRole || 'customer', accountType),
+        });
+        window.location.href = nonAdminRedirect;
+        return;
+      }
 
       if (isSharedTenantWorkspace && !isLocalSaharaXWorkspace && normalizedRole === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
         const marketplaceRedirect = buildMarketplaceLoginRedirect({

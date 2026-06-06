@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '../lib/supabase';
+import { clearActiveSupabaseSessionStorage, supabase } from '../lib/supabase';
 import { TABLE_NAMES } from '../config/tableNames';
 import { getUserPermissions } from '../services/UserService';
 import { shouldSyncCustomerAccount, syncCustomerAccountForAuthUser } from '../services/CustomerAccountSyncService';
@@ -27,10 +27,35 @@ if (typeof globalThis !== 'undefined' && !globalThis[GLOBAL_AUTH_CONTEXT_KEY]) {
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
 const PLATFORM_PERMISSION_MODULES = new Set(['Workspaces', 'Platform Admins']);
 const AUTH_PROFILE_BOOTSTRAP_TIMEOUT_MS = 6000;
+const AUTH_PERMISSION_BOOTSTRAP_TIMEOUT_MS = 3500;
 const AUTH_TENANT_SESSION_BOOTSTRAP_TIMEOUT_MS = 3500;
 const AUTH_TENANT_SESSION_DEFER_MS = 450;
 const AUTH_PENDING_INTENT_TIMEOUT_MS = 2500;
 const AUTH_BOOTSTRAP_TIMEOUT_CODE = 'AUTH_BOOTSTRAP_TIMEOUT';
+
+const isAbortLikeError = (error) => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const name = String(error?.name || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+
+  return (
+    code === 'ABORT_ERR' ||
+    name === 'aborterror' ||
+    message.includes('signal is aborted') ||
+    message.includes('aborted without reason')
+  );
+};
+
+const isRetryableFetchLikeError = (error) => {
+  const name = String(error?.name || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+
+  return (
+    name === 'authretryablefetcherror' ||
+    message === 'failed to fetch' ||
+    message.includes('failed to fetch')
+  );
+};
 
 const createBootstrapTimeoutError = (label, timeoutMs) => {
   const error = new Error(`${label} timed out after ${timeoutMs}ms`);
@@ -321,6 +346,17 @@ export const AuthProvider = ({ children }) => {
   const syncedCustomerAccountsRef = useRef(new Set());
   const tenantSessionLoadSequenceRef = useRef(0);
 
+  const resetAuthState = useCallback(() => {
+    tenantSessionLoadSequenceRef.current += 1;
+    setUserProfile(null);
+    setSession(null);
+    setTenantSession(null);
+    setPlatformAccess(null);
+    setLoading(false);
+    setInitialized(true);
+    isLoadingProfile.current = false;
+  }, []);
+
   const waitForActiveProfileLoad = useCallback(() => new Promise((resolve) => {
     const startedAt = Date.now();
     const wait = () => {
@@ -515,13 +551,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     if (!authUser) {
-      tenantSessionLoadSequenceRef.current += 1;
-      setUserProfile(null);
-      setSession(null);
-      setTenantSession(null);
-      setPlatformAccess(null);
-      setLoading(false);
-      setInitialized(true);
+      resetAuthState();
       return;
     }
 
@@ -536,7 +566,14 @@ export const AuthProvider = ({ children }) => {
         .then((response) => ({ data: response?.profile || null, error: null }))
         .catch((error) => ({ data: null, error }));
 
-      const rpcPermissionsPromise = getUserPermissions(authUser.id);
+      const rpcPermissionsPromise = withBootstrapTimeout(
+        () => getUserPermissions(authUser.id),
+        'Permission bootstrap',
+        AUTH_PERMISSION_BOOTSTRAP_TIMEOUT_MS
+      ).catch((error) => {
+        console.warn('Unable to load user permissions during bootstrap:', error);
+        return {};
+      });
       const [
         { data: appUserRecord, error: appUserError },
         rpcPermissionsMap,
@@ -850,7 +887,7 @@ export const AuthProvider = ({ children }) => {
       setInitialized(true);
       isLoadingProfile.current = false;
     }
-  }, [hydrateTenantSession, waitForActiveProfileLoad]);
+  }, [hydrateTenantSession, resetAuthState, waitForActiveProfileLoad]);
 
   const recordAuthActivity = useCallback(async (authUser, currentSession, actionType = 'user_login') => {
     if (!authUser?.id || !currentSession?.access_token) {
@@ -983,10 +1020,16 @@ export const AuthProvider = ({ children }) => {
 
         authListener = listener;
       } catch (error) {
-        console.error('Auth initialization error:', error);
+        if (isAbortLikeError(error)) {
+          console.warn('Auth initialization aborted during client reconfiguration.');
+        } else if (isRetryableFetchLikeError(error)) {
+          console.warn('Auth initialization failed while recovering a persisted session. Clearing local auth cache.', error);
+          clearActiveSupabaseSessionStorage();
+        } else {
+          console.error('Auth initialization error:', error);
+        }
         if (mounted) {
-          setLoading(false);
-          setInitialized(true);
+          resetAuthState();
         }
       }
     };
@@ -999,7 +1042,7 @@ export const AuthProvider = ({ children }) => {
         authListener.subscription.unsubscribe();
       }
     };
-  }, [applyPendingAccountIntent, loadUserProfile, recordAuthActivity]);
+  }, [applyPendingAccountIntent, loadUserProfile, recordAuthActivity, resetAuthState]);
 
   useEffect(() => {
     if (!userProfile?.id || !session?.user) return;

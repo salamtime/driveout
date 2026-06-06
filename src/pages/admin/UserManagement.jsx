@@ -29,6 +29,8 @@ import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells'
 const buildPermissionState = (defaultValue = false) =>
   ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => ({ ...acc, [permissionKey]: defaultValue }), {});
 
+const INTERNAL_WORKSPACE_ROLES = new Set(['owner', 'admin', 'employee', 'guide']);
+
 const buildPermissionsForRole = (role) => buildDefaultPermissionsForRole(role);
 
 const buildMergedPermissionsForUser = (user) => {
@@ -555,30 +557,33 @@ const UserManagement = () => {
       const usersData = await getUsers();
       console.log(`Merged admin users fetched: ${usersData.length}`);
 
-      const transformedUsers = (usersData || []).map((user) => {
-        const normalizedPreferences = user.preferences && typeof user.preferences === 'object' && !Array.isArray(user.preferences)
-          ? user.preferences
-          : {};
-        const telegramSettings = getTelegramAlertSettingsFromPreferences(normalizedPreferences);
+      const transformedUsers = (usersData || [])
+        .map((user) => {
+          const normalizedPreferences = user.preferences && typeof user.preferences === 'object' && !Array.isArray(user.preferences)
+            ? user.preferences
+            : {};
+          const telegramSettings = getTelegramAlertSettingsFromPreferences(normalizedPreferences);
+          const normalizedRole = String(user.role || user.user_metadata?.role || 'employee').trim().toLowerCase();
 
-        return {
-          ...user,
-          id: user.id,
-          email: user.email || '',
-          name: user.name || user.full_name || user.user_metadata?.full_name || user.user_metadata?.name || 'No Name',
-          role: user.role || user.user_metadata?.role || 'employee',
-          phone_number: user.phone_number || '',
-          whatsapp_notifications: Boolean(user.whatsapp_notifications),
-          telegram_alerts_allowed: telegramSettings.allowed,
-          telegram_allowed_event_types: telegramSettings.allowed_event_types,
-          preferences: normalizedPreferences,
-          permissions: user.permissions && typeof user.permissions === 'object' && !Array.isArray(user.permissions) ? normalizeCatalogPermissionMap(user.permissions) : {},
-          salary_amount: user.salary_amount ?? null,
-          staff_id_documents: normalizeStaffIdDocuments(user.staff_id_documents || user.user_metadata?.staff_id_documents),
-          created_at: user.created_at || null,
-          updated_at: user.updated_at || null,
-        };
-      });
+          return {
+            ...user,
+            id: user.id,
+            email: user.email || '',
+            name: user.name || user.full_name || user.user_metadata?.full_name || user.user_metadata?.name || 'No Name',
+            role: normalizedRole,
+            phone_number: user.phone_number || '',
+            whatsapp_notifications: Boolean(user.whatsapp_notifications),
+            telegram_alerts_allowed: telegramSettings.allowed,
+            telegram_allowed_event_types: telegramSettings.allowed_event_types,
+            preferences: normalizedPreferences,
+            permissions: user.permissions && typeof user.permissions === 'object' && !Array.isArray(user.permissions) ? normalizeCatalogPermissionMap(user.permissions) : {},
+            salary_amount: user.salary_amount ?? null,
+            staff_id_documents: normalizeStaffIdDocuments(user.staff_id_documents || user.user_metadata?.staff_id_documents),
+            created_at: user.created_at || null,
+            updated_at: user.updated_at || null,
+          };
+        })
+        .filter((user) => INTERNAL_WORKSPACE_ROLES.has(String(user.role || '').trim().toLowerCase()));
 
       setUsers(transformedUsers);
     } catch (error) {

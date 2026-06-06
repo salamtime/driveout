@@ -480,7 +480,6 @@ const PrivateWorkspaceHostRoute = ({ children }) => {
   if (
     host.kind === 'tenant'
     || host.kind === 'app'
-    || host.kind === 'admin'
     || host.kind === 'local'
     || allowPreviewHost
   ) {
