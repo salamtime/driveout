@@ -130,6 +130,33 @@ const buildCustomerLookupCandidate = (source = {}) => {
   };
 };
 
+const extractMinimumIdentitySnapshot = (payload = {}) => {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const fullName = String(
+    source.fullName ||
+    source.full_name ||
+    source.customer_name ||
+    source.name ||
+    source.raw_name ||
+    [source.first_name, source.middle_name, source.last_name].filter(Boolean).join(' ') ||
+    [source.given_name, source.family_name].filter(Boolean).join(' ') ||
+    ''
+  ).trim();
+  const documentNumber = String(
+    source.document_number ||
+    source.documentNumber ||
+    source.idNumber ||
+    source.id_number ||
+    source.licence_number ||
+    source.license_number ||
+    source.customer_id_number ||
+    source.customer_licence_number ||
+    ''
+  ).trim();
+
+  return { fullName, documentNumber };
+};
+
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
  * 
@@ -151,11 +178,21 @@ class EnhancedUnifiedCustomerService {
 
   normalizeOcrIdentityPayload(payload = {}) {
     const source = payload && typeof payload === 'object' ? payload : {};
+    const derivedFullName =
+      [
+        source.first_name || source.firstName || source.given_name || source.givenName || '',
+        source.middle_name || source.middleName || '',
+        source.last_name || source.lastName || source.family_name || source.familyName || '',
+      ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join(' ');
     const fullName =
       source.fullName ||
       source.full_name ||
       source.customer_name ||
       source.name ||
+      derivedFullName ||
       source.raw_name ||
       '';
     const dateOfBirth =
@@ -180,11 +217,13 @@ class EnhancedUnifiedCustomerService {
       licenceNumber:
         source.licence_number ||
         source.license_number ||
+        source.documentNumber ||
         source.document_number ||
         source.idNumber ||
         source.id_number,
       idNumber:
         source.idNumber ||
+        source.documentNumber ||
         source.id_number ||
         source.document_number ||
         source.licence_number ||
@@ -193,6 +232,7 @@ class EnhancedUnifiedCustomerService {
     const canonicalDocumentNumber =
       normalizedIdentity.licenceNumber ||
       normalizedIdentity.idNumber ||
+      source.documentNumber ||
       source.document_number ||
       source.idNumber ||
       source.id_number ||
@@ -224,11 +264,34 @@ class EnhancedUnifiedCustomerService {
   }
 
   hasMinimumOcrIdentity(payload = {}) {
-    const normalized = this.normalizeOcrIdentityPayload(payload);
-    return Boolean(
-      String(normalized.fullName || '').trim() &&
-      String(normalized.document_number || normalized.idNumber || '').trim()
-    );
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const normalized = this.normalizeOcrIdentityPayload(source);
+    const fullName = String(
+      normalized.fullName ||
+      normalized.full_name ||
+      source.fullName ||
+      source.full_name ||
+      source.customer_name ||
+      source.name ||
+      source.raw_name ||
+      [source.first_name, source.middle_name, source.last_name].filter(Boolean).join(' ') ||
+      [source.given_name, source.family_name].filter(Boolean).join(' ')
+    ).trim();
+    const documentNumber = String(
+      normalized.document_number ||
+      normalized.idNumber ||
+      normalized.id_number ||
+      normalized.licence_number ||
+      source.documentNumber ||
+      source.document_number ||
+      source.idNumber ||
+      source.id_number ||
+      source.licence_number ||
+      source.license_number ||
+      ''
+    ).trim();
+
+    return Boolean(fullName && documentNumber);
   }
 
   buildDirectOcrPrompt(mode = 'fast') {
@@ -340,10 +403,17 @@ class EnhancedUnifiedCustomerService {
             }
           ],
           generationConfig: {
-            maxOutputTokens: isFastMode ? 512 : 2048,
+            maxOutputTokens: isFastMode ? 2048 : 2048,
             temperature: 0,
-            responseMimeType: 'application/json',
-          }
+            topK: 1,
+            topP: 1,
+          },
+          safetySettings: [
+            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+          ],
         })
       });
       const proxyCompletedAt = nowMs();
@@ -457,9 +527,8 @@ class EnhancedUnifiedCustomerService {
     return optimized?.file || file;
   }
 
-  async uploadPreparedOcrSourceImage(file, scanId, folder) {
+  async uploadPreparedOcrSourceImage(file, scanId, folder, organizationId = null) {
     const cleanName = String(file?.name || 'document.webp').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const organizationId = await getCurrentOrganizationId();
     const filePath = buildTenantScopedStoragePath({
       organizationId,
       pathPrefix: folder,
@@ -505,6 +574,7 @@ class EnhancedUnifiedCustomerService {
 
     const prompt = this.buildDirectOcrPrompt(ocrMode);
     const pipelineStartedAt = nowMs();
+    const organizationIdPromise = getCurrentOrganizationId().catch(() => null);
     const preparedFile = await this.prepareOcrFile(file);
     const preparedAt = nowMs();
     let uploadMs = 0;
@@ -513,7 +583,8 @@ class EnhancedUnifiedCustomerService {
     const [uploadResult, ocrResult] = await Promise.all([
       (async () => {
         const uploadStartedAt = nowMs();
-        const result = await this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder);
+        const organizationId = await organizationIdPromise;
+        const result = await this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder, organizationId);
         uploadMs = roundMs(nowMs() - uploadStartedAt);
         return result;
       })(),
@@ -533,9 +604,17 @@ class EnhancedUnifiedCustomerService {
     const publicUrl = uploadResult.url;
     let { ocrData, ocrUnavailable, ocrErrorMessage } = ocrResult;
     let normalizedOcrData = this.normalizeOcrIdentityPayload(ocrData);
+    const rawFastIdentity = extractMinimumIdentitySnapshot(ocrData);
+    const normalizedFastIdentity = extractMinimumIdentitySnapshot(normalizedOcrData);
+    const fastIdentityReady =
+      Boolean(rawFastIdentity.fullName && rawFastIdentity.documentNumber) ||
+      Boolean(normalizedFastIdentity.fullName && normalizedFastIdentity.documentNumber);
 
-    if (!ocrUnavailable && ocrMode === 'fast' && !this.hasMinimumOcrIdentity(normalizedOcrData)) {
-      console.warn('⚠️ [OCR PIPELINE] Fast OCR returned no usable identity. Falling back to full OCR.');
+    if (!ocrUnavailable && ocrMode === 'fast' && !fastIdentityReady) {
+      console.warn('⚠️ [OCR PIPELINE] Fast OCR returned no usable identity. Falling back to full OCR.', {
+        rawFastIdentity,
+        normalizedFastIdentity,
+      });
       try {
         const fallbackStartedAt = nowMs();
         const fallbackResult = await geminiVisionOCR.processIdDocument(preparedFile);
@@ -770,7 +849,7 @@ class EnhancedUnifiedCustomerService {
           }) ||
           pickMostCompleteCustomerProfile(duplicateCandidates);
 
-        if (duplicateCustomer && duplicateCustomer.id !== customerData.id) {
+        if (duplicateCustomer && (duplicateCustomer.id !== customerData.id || !existingCustomer)) {
           console.log('✅ DUPLICATE CHECK: Customer already exists. Updating existing profile:', duplicateCustomer.id);
 
           // Merge with existing customer, preserving saved contact details unless the
@@ -822,7 +901,7 @@ class EnhancedUnifiedCustomerService {
 
       const { data: upsertedCustomerData, error: upsertError } = await supabase
         .from('app_4c3a7a6153_customers')
-        .upsert(customerToUpsert)
+        .upsert(customerToUpsert, { onConflict: 'id' })
         .select();
 
       if (upsertError) {

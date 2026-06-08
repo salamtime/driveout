@@ -579,6 +579,13 @@ const EnhancedUnifiedIDScanModal = ({
                   customerSaveMs,
                   customerId: resolvedSavedCustomer?.id || targetCustomerId,
                 });
+                console.log('⏱️ [ID OCR MODAL] end-to-end timing', {
+                  uploadMs: result.timings?.uploadMs || 0,
+                  ocrMs: (result.timings?.ocrMs || 0) + (result.timings?.fallbackMs || 0),
+                  customerSaveMs,
+                  totalModalMs: roundMs(nowMs() - processStartedAt),
+                  customerId: resolvedSavedCustomer?.id || targetCustomerId,
+                });
 
                 if (resolvedSavedCustomer && onCustomerSaved) {
                   onCustomerSaved(
@@ -593,6 +600,15 @@ const EnhancedUnifiedIDScanModal = ({
                 console.warn('Database save warning:', dbError);
               }
             })();
+          } else {
+            console.log('⏱️ [ID OCR MODAL] end-to-end timing', {
+              uploadMs: result.timings?.uploadMs || 0,
+              ocrMs: (result.timings?.ocrMs || 0) + (result.timings?.fallbackMs || 0),
+              customerSaveMs: 0,
+              totalModalMs: roundMs(nowMs() - processStartedAt),
+              customerId: targetCustomerId,
+              skippedCustomerSave: true,
+            });
           }
           
           // Auto-close only when OCR really produced usable extracted data
