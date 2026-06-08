@@ -17632,10 +17632,7 @@ useEffect(() => {
         updated_at: new Date().toISOString(),
       };
 
-      let { error: updateError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update(rentalAmountDueUpdate)
-        .eq('id', rental.id);
+      let { data: updatedRental, error: updateError } = await updateRentalWithSchemaFallback(rentalAmountDueUpdate);
 
       if (updateError && isMissingRentalAmountDueAuditColumnError(updateError)) {
         const fallbackUpdate = {
@@ -17645,58 +17642,51 @@ useEffect(() => {
           updated_at: rentalAmountDueUpdate.updated_at,
         };
 
-        const fallbackResult = await supabase
-          .from('app_4c3a7a6153_rentals')
-          .update(fallbackUpdate)
-          .eq('id', rental.id);
-
+        const fallbackResult = await updateRentalWithSchemaFallback(fallbackUpdate);
+        updatedRental = fallbackResult.data;
         updateError = fallbackResult.error;
       }
 
       if (updateError) throw updateError;
 
-      const { data: updatedRental, error: fetchError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-          ),
-          package:app_4c3a7a6153_rental_km_packages!package_id(*)
-        `)
-        .eq('id', rental.id)
-        .single();
+      const resolvedUpdatedRental = updatedRental || {
+        ...rental,
+        ...rentalAmountDueUpdate,
+      };
 
-      if (fetchError) throw fetchError;
-
-      await recordRentalAmountDueEditActivity({
-        rental,
-        currentUser: actingUser,
-        overrideMeta,
-      });
+      try {
+        await recordRentalAmountDueEditActivity({
+          rental,
+          currentUser: actingUser,
+          overrideMeta,
+        });
+      } catch (activityError) {
+        if (!isAbortLikeError(activityError)) {
+          console.warn('⚠️ Failed to record amount-due activity (non-blocking):', activityError);
+        }
+      }
 
       if (paymentReceivedNow > 0) {
         void dispatchRentalLifecycleTelegramEvent({
           eventType: 'payment_received',
           actor: 'admin',
           rental: {
-            id: updatedRental.id,
-            reference: updatedRental.rental_id || rental.rental_id || '',
-            vehicle: buildRentalTelegramVehicleLabel(updatedRental),
-            customer: updatedRental.customer_name || rental.customer_name,
-            start: updatedRental.rental_start_date || rental.rental_start_date,
-            end: updatedRental.rental_end_date || rental.rental_end_date,
-            total: updatedRental.total_amount || rental.total_amount || 0,
-            amountPaid: updatedRental.deposit_amount || 0,
-            remaining: updatedRental.remaining_amount || 0,
+            id: resolvedUpdatedRental.id,
+            reference: resolvedUpdatedRental.rental_id || rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(resolvedUpdatedRental),
+            customer: resolvedUpdatedRental.customer_name || rental.customer_name,
+            start: resolvedUpdatedRental.rental_start_date || rental.rental_start_date,
+            end: resolvedUpdatedRental.rental_end_date || rental.rental_end_date,
+            total: resolvedUpdatedRental.total_amount || rental.total_amount || 0,
+            amountPaid: resolvedUpdatedRental.deposit_amount || 0,
+            remaining: resolvedUpdatedRental.remaining_amount || 0,
             paymentReceivedNow,
             companyDiscount,
           },
         });
       }
 
-      setRental(updatedRental);
+      setRental(resolvedUpdatedRental);
       invalidateReceiptArtifacts();
       setAmountDueAuditMeta({
         note: overrideMeta.note,

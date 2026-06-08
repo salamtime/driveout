@@ -4361,7 +4361,7 @@ const Rentals = () => {
 
           <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-violet-100/80 bg-white px-3 py-2 shadow-[0_10px_24px_rgba(76,29,149,0.06)]">
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-              {tr('Available', 'Disponibles')}: {vehicleAvailabilitySummary.available}
+              {tr('Vehicles Available', 'Véhicules disponibles')}: {vehicleAvailabilitySummary.available}
             </span>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
               {tr('Active', 'Actives')}: {statusTabCounts.active}
