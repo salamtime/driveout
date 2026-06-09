@@ -9,6 +9,7 @@ import { clearPermissionCache } from '../utils/permissionHelpers';
 import {
   normalizePermissionMap as normalizeCatalogPermissionMap,
   buildBusinessOwnerPermissionMap,
+  buildDefaultPermissionsForRole,
   resolvePermissionKey,
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
@@ -653,12 +654,28 @@ export const AuthProvider = ({ children }) => {
         ...(authUser.app_metadata || {}),
         ...(authUser.user_metadata || {}),
       });
+      const resolvedRoleForPermissions =
+        tenantHostRoleOverride ||
+        (businessOwnerLikeAccount ? 'business_owner' : appRecordRole) ||
+        normalizedMetadataRole ||
+        normalizedLocalStorageRole ||
+        (privilegedOwnerOverride ? 'owner' : null) ||
+        'customer';
+      const normalizedResolvedRoleForPermissions = String(resolvedRoleForPermissions || '').trim().toLowerCase();
       const userPermissionsMap = businessOwnerLikeAccount
         ? {
             ...mergedPermissionMap,
             ...buildBusinessOwnerPermissionMap(),
           }
-        : mergedPermissionMap;
+        : ['owner', 'admin'].includes(normalizedResolvedRoleForPermissions)
+          ? {
+              ...mergedPermissionMap,
+              ...buildDefaultPermissionsForRole(normalizedResolvedRoleForPermissions),
+            }
+          : {
+              ...buildDefaultPermissionsForRole(normalizedResolvedRoleForPermissions),
+              ...mergedPermissionMap,
+            };
       
       // Convert permissions map to array format for backward compatibility
       const userPermissions = Object.entries(userPermissionsMap).map(([module_name, is_allowed]) => ({

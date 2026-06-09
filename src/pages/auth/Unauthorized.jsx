@@ -12,8 +12,8 @@ import i18n from '../../i18n';
 const Unauthorized = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
-  const { user, signOut } = useAuth();
-  const userRole = user ? user.role : 'customer';
+  const { user, userProfile, signOut } = useAuth();
+  const userRole = String(userProfile?.role || user?.role || user?.user_metadata?.role || 'customer').toLowerCase();
 
   const handleSignOut = async () => {
     try {
@@ -93,7 +93,7 @@ const Unauthorized = () => {
                   </div>
                   <div>
                     <p className="text-sm font-medium text-gray-900">
-                      {user.email}
+                      {userProfile?.email || user.email}
                     </p>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-${roleInfo.color}-100 text-${roleInfo.color}-800`}>
                       {roleInfo.name}
