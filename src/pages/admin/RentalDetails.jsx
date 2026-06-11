@@ -17117,6 +17117,10 @@ useEffect(() => {
       total_kilometers_driven: resolveRentalTelegramDistance(rental),
       start_odometer: rental?.start_odometer ?? null,
       ending_odometer: rental?.ending_odometer ?? null,
+      organization_id: rental?.organization_id || '',
+      tenant_id: rental?.tenant_id || '',
+      business_account_id: rental?.business_account_id || '',
+      tenant_slug: rental?.tenant_slug || '',
       manualResend: true,
       manualResendNonce: `${normalizedEventType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     };

@@ -917,6 +917,10 @@ const resolveTenantByPayload = async (adminClient, payload = {}) => {
   const tenantId = safeText(payload?.tenant_id);
   const businessAccountId = safeText(payload?.business_account_id);
   const tenantSlug = safeText(payload?.tenant_slug).toLowerCase();
+  const organizationId = safeText(
+    payload?.organization_id ||
+    payload?.organizationId
+  );
 
   if (tenantId) {
     const { data, error } = await adminClient
@@ -951,6 +955,44 @@ const resolveTenantByPayload = async (adminClient, payload = {}) => {
 
     if (error) throw error;
     if (data) return data;
+  }
+
+  if (organizationId) {
+    let { data, error } = await adminClient
+      .from(PLATFORM_TENANTS_TABLE)
+      .select('id, business_account_id, tenant_name, tenant_slug, tenant_status, tenant_app_url, metadata')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error && String(error?.code || '').trim() === '42703') {
+      ({ data, error } = await adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .select('id, business_account_id, tenant_name, tenant_slug, tenant_status, tenant_app_url, metadata'));
+
+      if (error) throw error;
+
+      const matchedTenant = (Array.isArray(data) ? data : []).find((tenant) => {
+        const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+        const sharedRuntime = metadata?.shared_runtime && typeof metadata.shared_runtime === 'object'
+          ? metadata.shared_runtime
+          : {};
+        return [
+          tenant?.organization_id,
+          metadata?.organization_id,
+          metadata?.shared_organization_id,
+          sharedRuntime?.organization_id,
+        ].some((value) => safeText(value) === organizationId);
+      });
+
+      if (matchedTenant) {
+        return matchedTenant;
+      }
+    } else {
+      if (error) throw error;
+      if (data) return data;
+    }
   }
 
   return null;

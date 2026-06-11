@@ -322,6 +322,10 @@ class OptimizedRentalService {
             ? telegramRentalPayload.customer_id_scan_history
             : [],
           documentCount: countRentalDocuments(telegramRentalPayload),
+          organization_id: rental.organization_id || rentalData.organization_id || '',
+          tenant_id: rental.tenant_id || rentalData.tenant_id || '',
+          business_account_id: rental.business_account_id || rentalData.business_account_id || '',
+          tenant_slug: rental.tenant_slug || rentalData.tenant_slug || '',
           ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {

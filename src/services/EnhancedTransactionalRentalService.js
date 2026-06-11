@@ -573,6 +573,10 @@ class EnhancedTransactionalRentalService {
           customer_id_image: telegramRentalPayload.customer_id_image,
           customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
           documentCount: countRentalDocuments(telegramRentalPayload),
+          organization_id: newRental.organization_id || finalSanitizedData.organization_id || '',
+          tenant_id: newRental.tenant_id || finalSanitizedData.tenant_id || '',
+          business_account_id: newRental.business_account_id || finalSanitizedData.business_account_id || '',
+          tenant_slug: newRental.tenant_slug || finalSanitizedData.tenant_slug || '',
           ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {
