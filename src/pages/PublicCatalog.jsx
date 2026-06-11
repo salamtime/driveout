@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, CarFront, Check, ChevronLeft, ChevronRight, CirclePlus, Info, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PublicCatalogService from '../services/PublicCatalogService';
+import PublicReviewService from '../services/PublicReviewService';
 import DynamicPricingService from '../services/DynamicPricingService';
 import PublicBookingService from '../services/PublicBookingService';
 import { useAuth } from '../contexts/AuthContext';
@@ -325,6 +326,7 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
       areasCount: 0,
     },
   });
+  const [ownerReviewSummaries, setOwnerReviewSummaries] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showCertifiedInfo, setShowCertifiedInfo] = useState(false);
@@ -436,6 +438,8 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
       source: isMarketplacePage ? 'marketplace' : 'certified_fleet',
       brand: searchParams.get('brand') || 'all',
       city: searchParams.get('city') || 'all',
+      owner: searchParams.get('owner') || '',
+      ownerName: searchParams.get('ownerName') || '',
       priceRange: searchParams.get('priceRange') || 'all',
       search: searchParams.get('search') || '',
     }),
@@ -511,6 +515,9 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
         if (filters.city !== 'all' && String(listing.location?.city || '').toLowerCase() !== String(filters.city).toLowerCase()) {
           return false;
         }
+        if (filters.owner && String(listing.ownerId || listing.owner_id || '').trim() !== String(filters.owner).trim()) {
+          return false;
+        }
         if (filters.brand !== 'all') {
           const listingType = String(listing.brand || listing.category || '').toLowerCase();
           if (listingType !== String(filters.brand).toLowerCase()) {
@@ -524,7 +531,18 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
         if (filters.priceRange === '2000-plus') return listingPrice > 2000;
         return true;
       });
-  }, [catalog.listings, filters.brand, filters.city, filters.priceRange]);
+  }, [catalog.listings, filters.brand, filters.city, filters.owner, filters.priceRange]);
+
+  const ownerListingCounts = useMemo(() => {
+    return catalog.listings
+      .filter((listing) => listing.inventorySource === 'marketplace')
+      .reduce((acc, listing) => {
+        const ownerId = String(listing.ownerId || listing.owner_id || '').trim();
+        if (!ownerId) return acc;
+        acc[ownerId] = (acc[ownerId] || 0) + 1;
+        return acc;
+      }, {});
+  }, [catalog.listings]);
 
   const visibleListings = useMemo(() => {
     if (filters.flow !== 'instant') {
@@ -549,6 +567,55 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
 
     return groupModelListings(previewSeed);
   }, [catalog.featuredListings, catalog.listings, marketplaceListings, safeCertifiedCityFilter, filters.flow]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadOwnerReviewSummaries = async () => {
+      if (filters.flow === 'instant') {
+        setOwnerReviewSummaries({});
+        return;
+      }
+
+      const ownerIds = [...new Set(
+        visibleListings
+          .map((listing) => String(listing?.ownerId || listing?.owner_id || '').trim())
+          .filter(Boolean)
+      )];
+
+      if (!ownerIds.length) {
+        setOwnerReviewSummaries({});
+        return;
+      }
+
+      try {
+        const results = await Promise.all(
+          ownerIds.map(async (ownerUserId) => {
+            const summary = await PublicReviewService.getOwnerReviewSummary({ ownerUserId, limit: 3 });
+            return [ownerUserId, summary];
+          })
+        );
+
+        if (cancelled) return;
+
+        setOwnerReviewSummaries(
+          results.reduce((acc, [ownerUserId, summary]) => {
+            acc[ownerUserId] = summary;
+            return acc;
+          }, {})
+        );
+      } catch {
+        if (!cancelled) {
+          setOwnerReviewSummaries({});
+        }
+      }
+    };
+
+    void loadOwnerReviewSummaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [filters.flow, visibleListings]);
 
   const certifiedCitySections = useMemo(() => {
     if (filters.flow !== 'instant') return [];
@@ -771,7 +838,9 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
     `${visibleListings.length} vehicle${visibleListings.length === 1 ? '' : 's'} available`,
     `${visibleListings.length} véhicule${visibleListings.length === 1 ? '' : 's'} disponible${visibleListings.length === 1 ? '' : 's'}`
   );
-  const marketplaceHeading = `${marketplaceVehicleTypeLabel} ${tr('in', 'à')} ${marketplaceCityLabel}`;
+  const marketplaceHeading = filters.ownerName
+    ? tr(`More from ${filters.ownerName}`, `Plus de ${filters.ownerName}`)
+    : `${marketplaceVehicleTypeLabel} ${tr('in', 'à')} ${marketplaceCityLabel}`;
 
   const handleSelectPackage = (listing, pkg) => {
     setSelectedChoice({
@@ -1288,6 +1357,8 @@ const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/
                       listing={listing}
                       embeddedInAccount={embeddedInAccount}
                       accountBasePath={accountBasePath}
+                      ownerListingCount={ownerListingCounts[String(listing.ownerId || listing.owner_id || '').trim()] || 0}
+                      ownerReviewSummary={ownerReviewSummaries[String(listing.ownerId || listing.owner_id || '').trim()] || null}
                       existingRequest={
                         existingMarketplaceRequests[String(listing?.sourceId || listing?.id)] ||
                         existingMarketplaceRequests[String(listing?.id || '')] ||

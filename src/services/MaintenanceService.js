@@ -556,7 +556,7 @@ class MaintenanceService {
           .from(this.table)
           .select('id')
           .eq('vehicle_id', vehicleId)
-          .in('status', ['scheduled', 'in_progress'])
+          .in('status', ['scheduled', 'in_progress', 'pending'])
           .eq('organization_id', organizationId);
 
         if (openRecordsError) throw openRecordsError;

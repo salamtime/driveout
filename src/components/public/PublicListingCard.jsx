@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, Star } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { isTerminalMarketplaceRequestStatus } from '../../utils/marketplaceRequestState';
 
@@ -11,17 +11,29 @@ const resolveListingOwnerId = (listing) =>
   String(listing?.ownerId || listing?.owner_id || listing?.ownerUserId || listing?.owner_user_id || '')
     .trim();
 
+const resolveListingOwnerName = (listing) =>
+  String(
+    listing?.ownerDisplayName ||
+    listing?.owner_display_name ||
+    listing?.ownerName ||
+    listing?.owner_name ||
+    ''
+  ).trim();
+
 const PublicListingCard = ({
   listing,
   embeddedInAccount = false,
   accountBasePath = '/account/marketplace',
   existingRequest = null,
+  ownerListingCount = 0,
+  ownerReviewSummary = null,
 }) => {
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
   const effectiveUserId = String(userProfile?.id || user?.id || '').trim();
   const isMarketplace = listing.inventorySource === 'marketplace';
   const listingOwnerId = resolveListingOwnerId(listing);
+  const listingOwnerName = resolveListingOwnerName(listing);
   const isOwnerViewingOwnListing = Boolean(
     isMarketplace &&
     effectiveUserId &&
@@ -30,6 +42,10 @@ const PublicListingCard = ({
   );
   const activeExistingRequest = isTerminalMarketplaceRequestStatus(existingRequest) ? null : existingRequest;
   const showRequestedState = Boolean(isMarketplace && !isOwnerViewingOwnListing && activeExistingRequest);
+  const canBrowseOwnerListings = Boolean(isMarketplace && listingOwnerId && ownerListingCount > 1);
+  const ownerAverageRating = Number(ownerReviewSummary?.averageRating || 0);
+  const ownerReviewCount = Number(ownerReviewSummary?.totalReviews || 0);
+  const showOwnerReviewSummary = Boolean(isMarketplace && ownerReviewCount > 0 && ownerAverageRating > 0);
   const ownerPrimaryPrice = listing.dailyPrice || listing.halfDayPrice || 0;
   const ownerPrimaryLabel = listing.dailyPrice
     ? '/ day'
@@ -69,6 +85,19 @@ const PublicListingCard = ({
             <h3 className="text-[1.75rem] font-black leading-none tracking-tight text-slate-950 sm:text-[2rem]">
               {listingTitle}
             </h3>
+            {isMarketplace && listingOwnerName ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-slate-500 sm:text-base">
+                  by {listingOwnerName}
+                </p>
+                {showOwnerReviewSummary ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800">
+                    <Star className="h-3.5 w-3.5 fill-current" />
+                    {ownerAverageRating.toFixed(1)} · {ownerReviewCount}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             {isMarketplace ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {showVerifiedBadge ? (
@@ -160,6 +189,23 @@ const PublicListingCard = ({
           }`}>
             {isMarketplace ? (isOwnerViewingOwnListing ? 'Open owner workspace' : showRequestedState ? 'Requested' : 'Request') : 'Book Now'}
           </span>
+          {canBrowseOwnerListings ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                const next = new URLSearchParams();
+                next.set('owner', listingOwnerId);
+                if (listingOwnerName) next.set('ownerName', listingOwnerName);
+                navigate(`/marketplace?${next.toString()}`);
+              }}
+              className="mt-3 inline-flex w-full items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+            >
+              {listingOwnerName
+                ? `Other listings from ${listingOwnerName}`
+                : `Other listings from this owner`}
+            </button>
+          ) : null}
         </div>
       </div>
 

@@ -42,6 +42,7 @@ import {
   Home,
   Sparkles,
   Store,
+  Star,
   CircleHelp,
   Building2,
   MessageSquare,
@@ -312,6 +313,14 @@ const AdminLayout = () => {
       icon: Store,
       accent: 'from-fuchsia-500 to-violet-600',
       path: '/admin/marketplace',
+      moduleName: 'Marketplace Review'
+    },
+    {
+      id: 'reviews',
+      name: isFrench ? 'Avis' : 'Reviews',
+      icon: Star,
+      accent: 'from-amber-500 to-orange-600',
+      path: '/admin/reviews',
       moduleName: 'Marketplace Review'
     },
     {

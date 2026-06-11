@@ -4,8 +4,10 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
+import RentalReviewService from '../../services/RentalReviewService';
 import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
 import AccountWorkspaceSectionHeader from '../../components/account/AccountWorkspaceSectionHeader';
+import RentalReviewComposer from '../../components/account/RentalReviewComposer';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { normalizeMarketplaceRequestLifecycleStatus } from '../../utils/marketplaceRequestState';
 import { resolveManagedAccountType } from '../../utils/accountType';
@@ -278,6 +280,9 @@ const AccountReviews = () => {
   const [snapshot, setSnapshot] = useState(null);
   const [rentals, setRentals] = useState([]);
   const [marketplaceRequests, setMarketplaceRequests] = useState([]);
+  const [pendingReviewTasks, setPendingReviewTasks] = useState([]);
+  const [submittedReviews, setSubmittedReviews] = useState([]);
+  const [receivedReviews, setReceivedReviews] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -291,16 +296,21 @@ const AccountReviews = () => {
       try {
         setLoading(true);
         setError('');
-        const [accountSnapshot, rentalHistory, customerRequests] = await Promise.all([
+        const [accountSnapshot, rentalHistory, customerRequests, pendingReviewsResponse, reviewHistoryResponse] = await Promise.all([
           CustomerExperienceService.getCustomerAccountSnapshot(user),
           CustomerExperienceService.getCustomerRentalHistory(user),
           CustomerExperienceService.getCustomerMarketplaceRequests(user),
+          RentalReviewService.getPendingReviews(),
+          RentalReviewService.getReviewHistory(),
         ]);
 
         if (cancelled) return;
         setSnapshot(accountSnapshot);
         setRentals(Array.isArray(rentalHistory) ? rentalHistory : []);
         setMarketplaceRequests(Array.isArray(customerRequests) ? customerRequests : []);
+        setPendingReviewTasks(Array.isArray(pendingReviewsResponse?.tasks) ? pendingReviewsResponse.tasks : []);
+        setSubmittedReviews(Array.isArray(reviewHistoryResponse?.submitted) ? reviewHistoryResponse.submitted : []);
+        setReceivedReviews(Array.isArray(reviewHistoryResponse?.received) ? reviewHistoryResponse.received : []);
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError?.message || tr('Unable to load your reviews center right now.', 'Impossible de charger votre centre des avis pour le moment.'));
@@ -340,8 +350,38 @@ const AccountReviews = () => {
     () =>
       rentals
         .filter((rental) => ['completed', 'closed'].includes(String(rental?.status || '').toLowerCase()))
-        .slice(0, 8),
+        .slice(0, 12),
     [rentals]
+  );
+
+  const completedRentalLookup = useMemo(
+    () =>
+      completedTripRentals.reduce((acc, rental) => {
+        acc[String(rental?.id || '').trim()] = rental;
+        return acc;
+      }, {}),
+    [completedTripRentals]
+  );
+
+  const pendingReviewCards = useMemo(
+    () =>
+      pendingReviewTasks.map((task) => {
+        const linkedRental = completedRentalLookup[String(task?.rentalId || '').trim()] || null;
+        return {
+          ...task,
+          linkedRental,
+          title:
+            linkedRental?.modelName ||
+            linkedRental?.vehicleLabel ||
+            task?.rentalLabel ||
+            tr('Completed rental', 'Location terminée'),
+          subtitle:
+            task?.revieweeRole === 'owner'
+              ? tr('Share your experience with this owner.', 'Partagez votre expérience avec ce propriétaire.')
+              : tr('Leave an internal note for this customer.', 'Laissez une note interne pour ce client.'),
+        };
+      }),
+    [completedRentalLookup, pendingReviewTasks, tr]
   );
 
   const rentalReviewReady = useMemo(
@@ -376,11 +416,41 @@ const AccountReviews = () => {
         })),
     [marketplaceRequests, isFrench]
   );
+  const submittedReviewItems = useMemo(
+    () =>
+      submittedReviews.slice(0, 8).map((review) => ({
+        id: `submitted-${review.id}`,
+        kindLabel: tr('Sent', 'Envoyé'),
+        statusLabel: String(review?.review_status || 'published'),
+        title: tr('Your review', 'Votre avis'),
+        subtitle: review?.comment || tr('No written comment', 'Pas de commentaire écrit'),
+        at: review?.published_at || review?.created_at || null,
+      })),
+    [submittedReviews, tr]
+  );
+  const receivedReviewItems = useMemo(
+    () =>
+      receivedReviews
+        .filter((review) => String(review?.visibility || '') === 'public' || String(review?.reviewee_role || '') === 'customer')
+        .slice(0, 8)
+        .map((review) => ({
+          id: `received-${review.id}`,
+          kindLabel: tr('Received', 'Reçu'),
+          statusLabel: `${Number(review?.rating || 0).toFixed(1)}★`,
+          title:
+            String(review?.reviewee_role || '') === 'owner'
+              ? tr('Public owner review', 'Avis public propriétaire')
+              : tr('Internal customer review', 'Avis interne client'),
+          subtitle: review?.comment || tr('No written comment', 'Pas de commentaire écrit'),
+          at: review?.published_at || review?.created_at || null,
+        })),
+    [receivedReviews, tr]
+  );
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading,
   });
-  const totalActivity = rentalReviewReady.length + marketplaceReviewReady.length;
+  const totalActivity = rentalReviewReady.length + marketplaceReviewReady.length + submittedReviewItems.length + receivedReviewItems.length;
   const reputationEntries = useMemo(
     () => [
       {
@@ -417,6 +487,11 @@ const AccountReviews = () => {
         value: totalActivity,
       },
       {
+        key: 'pending',
+        label: tr('Pending', 'En attente'),
+        value: pendingReviewCards.length,
+      },
+      {
         key: 'trust',
         label: tr('Trust', 'Confiance'),
         value: loyalty.tier || 'Standard',
@@ -427,12 +502,21 @@ const AccountReviews = () => {
         value: rentalReviewReady.length,
       },
     ],
-    [loyalty.tier, rentalReviewReady.length, totalActivity, tr]
+    [loyalty.tier, pendingReviewCards.length, rentalReviewReady.length, totalActivity, tr]
   );
 
   const heroTitle = selectedPanel === 'vehicle' && selectedVehicleTitle
     ? tr('Vehicle reputation', 'Reputation du vehicule')
     : tr('Reputation', 'Reputation');
+  const heroDescription = pendingReviewCards.length
+    ? tr(
+        `${pendingReviewCards.length} completed rental review${pendingReviewCards.length > 1 ? 's are' : ' is'} waiting on you right now.`,
+        `${pendingReviewCards.length} avis de location terminée ${pendingReviewCards.length > 1 ? 'vous attendent' : 'vous attend'} en ce moment.`
+      )
+    : tr(
+        'Your public ratings, internal trust notes, and completed trip review history live here.',
+        'Vos notes publiques, vos notes internes de confiance et votre historique d’avis de trajets terminés se trouvent ici.'
+      );
   if (loading && !suppressBlockingLoader) {
     return (
       <div className="space-y-6">
@@ -466,6 +550,7 @@ const AccountReviews = () => {
       <AccountWorkspaceHero
         eyebrow={tr('Account', 'Compte')}
         title={heroTitle}
+        description={heroDescription}
         className="border-amber-100 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.14),_transparent_35%),linear-gradient(135deg,_#ffffff_0%,_#fff8ec_100%)]"
       />
 
@@ -485,12 +570,70 @@ const AccountReviews = () => {
         currentPath={currentPath}
       />
 
+      <section className="space-y-4">
+        <AccountWorkspaceSectionHeader
+          title={tr('Pending reviews', 'Avis en attente')}
+          subtitle={tr(
+            'Completed rentals waiting for your rating.',
+            'Locations terminées en attente de votre note.'
+          )}
+        />
+
+        {pendingReviewCards.length ? (
+          <div className="space-y-4">
+            {pendingReviewCards.map((task) => (
+              <RentalReviewComposer
+                key={`${task.rentalId}-${task.revieweeUserId}-${task.reviewerRole}`}
+                task={task}
+                tr={tr}
+                defaultExpanded={pendingReviewCards.length === 1}
+                onSubmitted={(_, submittedTask) => {
+                  setPendingReviewTasks((current) =>
+                    current.filter((row) => !(
+                      String(row?.rentalId || '') === String(submittedTask?.rentalId || '') &&
+                      String(row?.revieweeUserId || '') === String(submittedTask?.revieweeUserId || '') &&
+                      String(row?.reviewerRole || '') === String(submittedTask?.reviewerRole || '')
+                    ))
+                  );
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-[1.75rem] border border-dashed border-slate-200 bg-white/75 p-6">
+            <p className="text-sm font-bold text-slate-900">
+              {tr('No reviews are waiting right now.', 'Aucun avis n’attend votre action pour le moment.')}
+            </p>
+          </div>
+        )}
+      </section>
+
       <CompletedTripActivitySection
         rentals={completedTripRentals}
         tr={tr}
         isFrench={isFrench}
         currentPath={currentPath}
       />
+
+      {submittedReviewItems.length ? (
+        <ReviewSection
+          title={tr('Reviews you sent', 'Avis envoyés')}
+          items={submittedReviewItems}
+          emptyTitle=""
+          tr={tr}
+          isFrench={isFrench}
+        />
+      ) : null}
+
+      {receivedReviewItems.length ? (
+        <ReviewSection
+          title={tr('Reviews received', 'Avis reçus')}
+          items={receivedReviewItems}
+          emptyTitle=""
+          tr={tr}
+          isFrench={isFrench}
+        />
+      ) : null}
 
       {marketplaceReviewReady.length ? (
         <ReviewSection

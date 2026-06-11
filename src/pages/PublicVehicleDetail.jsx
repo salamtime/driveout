@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, Eye, Info, MapPin, Share2, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Eye, Info, MapPin, Share2, ShieldCheck, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import i18n from '../i18n';
 import PublicCatalogService from '../services/PublicCatalogService';
+import PublicReviewService from '../services/PublicReviewService';
 import DynamicPricingService from '../services/DynamicPricingService';
 import { shortenUrl } from '../services/UrlShortenerService';
 import { fetchSystemSettings } from '../services/systemSettingsApi';
@@ -358,6 +359,7 @@ const PublicVehicleDetail = () => {
   });
   const [hasInteractedWithDuration, setHasInteractedWithDuration] = useState(false);
   const [showVehicleDetails, setShowVehicleDetails] = useState(false);
+  const [ownerReviewSummary, setOwnerReviewSummary] = useState(null);
   const [showMorePackages, setShowMorePackages] = useState(false);
   const [expandedPackageId, setExpandedPackageId] = useState(null);
   const [focusedPackageId, setFocusedPackageId] = useState(null);
@@ -667,6 +669,22 @@ const PublicVehicleDetail = () => {
   const showDurationSelector = true;
   const displayBrand = currentListing?.brand || 'Segway';
   const displayModel = currentListing?.model || currentListing?.title || 'AT6';
+  const ownerDisplayName = String(
+    currentListing?.ownerDisplayName ||
+    currentListing?.owner_display_name ||
+    currentListing?.ownerName ||
+    currentListing?.owner_name ||
+    ''
+  ).trim();
+  const ownerUserId = String(
+    currentListing?.ownerId ||
+    currentListing?.owner_id ||
+    currentListing?.ownerUserId ||
+    currentListing?.owner_user_id ||
+    ''
+  ).trim();
+  const ownerAverageRating = Number(ownerReviewSummary?.averageRating || 0);
+  const ownerReviewCount = Number(ownerReviewSummary?.totalReviews || 0);
   const riderSummary = currentListing?.riderCapacity === 1
     ? tr('1 rider', '1 rider')
     : tr(`${currentListing?.riderCapacity || 0} riders`, `${currentListing?.riderCapacity || 0} riders`);
@@ -838,6 +856,36 @@ const PublicVehicleDetail = () => {
     }
     navigate(`/rent/${currentListing.id}/book?${next.toString()}`);
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadOwnerReviewSummary = async () => {
+      if (!ownerUserId) {
+        setOwnerReviewSummary(null);
+        return;
+      }
+
+      try {
+        const summary = await PublicReviewService.getOwnerReviewSummary({
+          ownerUserId,
+          limit: 3,
+        });
+        if (!cancelled) {
+          setOwnerReviewSummary(summary);
+        }
+      } catch {
+        if (!cancelled) {
+          setOwnerReviewSummary(null);
+        }
+      }
+    };
+
+    void loadOwnerReviewSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [ownerUserId]);
 
   const handleShareListing = async () => {
     if (!currentListing || isSharing || typeof window === 'undefined') return;
@@ -1149,6 +1197,19 @@ const PublicVehicleDetail = () => {
                 <p className="text-[2rem] font-black leading-none tracking-tight text-slate-950 sm:text-[2.4rem]">
                   {displayModel}
                 </p>
+                {ownerDisplayName ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-500 sm:text-base">
+                      {tr('Listed by', 'Publié par')} {ownerDisplayName}
+                    </p>
+                    {ownerReviewCount > 0 && ownerAverageRating > 0 ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800">
+                        <Star className="h-3.5 w-3.5 fill-current" />
+                        {ownerAverageRating.toFixed(1)} · {ownerReviewCount} {ownerReviewCount === 1 ? tr('review', 'avis') : tr('reviews', 'avis')}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-[18px] bg-white shadow-sm sm:h-16 sm:w-16">
                 <img
@@ -1290,6 +1351,54 @@ const PublicVehicleDetail = () => {
                       </div>
                     </div>
                   </div>
+
+                  {ownerReviewCount > 0 && ownerAverageRating > 0 ? (
+                    <div className="rounded-[24px] border border-amber-100 bg-[linear-gradient(180deg,#fffdf7_0%,#ffffff_100%)] p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-600">
+                            {tr('Owner rating', 'Note du propriétaire')}
+                          </p>
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-sm font-black text-amber-800">
+                              <Star className="h-4 w-4 fill-current" />
+                              {ownerAverageRating.toFixed(1)}
+                            </span>
+                            <span className="text-sm font-semibold text-slate-600">
+                              {ownerReviewCount} {ownerReviewCount === 1 ? tr('review', 'avis') : tr('reviews', 'avis')}
+                            </span>
+                          </div>
+                        </div>
+                        {ownerDisplayName ? (
+                          <Link
+                            to={`/marketplace?owner=${encodeURIComponent(ownerUserId)}${ownerDisplayName ? `&ownerName=${encodeURIComponent(ownerDisplayName)}` : ''}`}
+                            className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white px-3 py-2 text-sm font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-50"
+                          >
+                            {tr('See owner listings', 'Voir les annonces du propriétaire')}
+                          </Link>
+                        ) : null}
+                      </div>
+                      {Array.isArray(ownerReviewSummary?.recentReviews) && ownerReviewSummary.recentReviews.length > 0 ? (
+                        <div className="mt-4 space-y-3">
+                          {ownerReviewSummary.recentReviews.slice(0, 2).map((review) => (
+                            <div key={review.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                              <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                                <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
+                                {Number(review?.rating || 0).toFixed(1)}
+                              </div>
+                              {review?.comment ? (
+                                <p className="mt-2 text-sm text-slate-600">{review.comment}</p>
+                              ) : (
+                                <p className="mt-2 text-sm text-slate-400">
+                                  {tr('No written comment for this review.', 'Aucun commentaire écrit pour cet avis.')}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>

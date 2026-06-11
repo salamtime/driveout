@@ -4,9 +4,11 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
 import CustomerExperienceService from '../../services/CustomerExperienceService';
+import RentalReviewService from '../../services/RentalReviewService';
 import RentalThreadTimelineService from '../../services/RentalThreadTimelineService';
 import MessageService from '../../services/MessageService';
 import AccountRentalDetailDrawer from '../../components/account/AccountRentalDetailDrawer';
+import RentalReviewComposer from '../../components/account/RentalReviewComposer';
 import MessageWidget from '../../components/messages/MessageWidget';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -59,6 +61,7 @@ const AccountRentalDetailsPage = () => {
   const [resolvedThreadKey, setResolvedThreadKey] = useState('');
   const [canonicalThreadStatus, setCanonicalThreadStatus] = useState('idle');
   const [threadResolutionError, setThreadResolutionError] = useState('');
+  const [pendingReviewTask, setPendingReviewTask] = useState(null);
   const currentUserLabel = String(
     user?.user_metadata?.full_name ||
     user?.user_metadata?.username ||
@@ -120,9 +123,15 @@ const AccountRentalDetailsPage = () => {
         setResolvedThreadKey('');
         setThreadResolutionError('');
         setCanonicalThreadStatus('idle');
+        setPendingReviewTask(null);
         const detail = await CustomerExperienceService.getCustomerRentalDetail(user, rentalId);
+        const pendingReviewsResponse = await RentalReviewService.getPendingReviews().catch(() => ({ tasks: [] }));
         if (cancelled) return;
         setRental(detail);
+        const matchingPendingTask = Array.isArray(pendingReviewsResponse?.tasks)
+          ? pendingReviewsResponse.tasks.find((task) => String(task?.rentalId || '') === String(detail?.id || rentalId))
+          : null;
+        setPendingReviewTask(matchingPendingTask || null);
         setLoading(false);
 
         const nextMessagingContext = resolveRentalMessagingContext(detail, rentalId);
@@ -256,6 +265,15 @@ const AccountRentalDetailsPage = () => {
         <section className="rounded-[1.35rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {threadResolutionError}
         </section>
+      ) : null}
+
+      {pendingReviewTask ? (
+        <RentalReviewComposer
+          task={pendingReviewTask}
+          tr={tr}
+          defaultExpanded
+          onSubmitted={() => setPendingReviewTask(null)}
+        />
       ) : null}
 
       <AccountRentalDetailDrawer

@@ -73,6 +73,8 @@ import appWarmupService from '../../services/AppWarmupService';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
 import { getCurrentOrganizationId, scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../../services/OrganizationService';
 import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
+import RentalReviewService from '../../services/RentalReviewService';
+import RentalReviewComposer from '../../components/account/RentalReviewComposer';
 import {
   rentalFlowActionDockClass,
   rentalFlowMobileFooterDisabledClass,
@@ -3156,6 +3158,7 @@ export default function RentalDetails() {
   const [customerRiskNote, setCustomerRiskNote] = useState('');
   const [isSavingCustomerRisk, setIsSavingCustomerRisk] = useState(false);
   const [showCopyConfirmation, setShowCopyConfirmation] = useState(false);
+  const [pendingReviewTask, setPendingReviewTask] = useState(null);
   const moreActionsRef = useRef(null);
   const copyConfirmationTimeoutRef = useRef(null);
   const effectiveReplacementPauseStartedAt = rental?.replacement_pause_started_at || replacementPauseStartedAt || null;
@@ -20148,6 +20151,39 @@ useEffect(() => {
     }
   }, [isEditingStartEngineHours]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPendingReviewTask = async () => {
+      const rentalStatus = String(rental?.rental_status || rental?.status || '').trim().toLowerCase();
+      const eligibleStatuses = new Set(['completed', 'closed', 'finished']);
+
+      if (!rental?.id || !resolvedCurrentUser?.id || !eligibleStatuses.has(rentalStatus)) {
+        setPendingReviewTask(null);
+        return;
+      }
+
+      try {
+        const response = await RentalReviewService.getPendingReviews();
+        if (cancelled) return;
+        const matchingTask = Array.isArray(response?.tasks)
+          ? response.tasks.find((task) => String(task?.rentalId || '') === String(rental.id))
+          : null;
+        setPendingReviewTask(matchingTask || null);
+      } catch {
+        if (!cancelled) {
+          setPendingReviewTask(null);
+        }
+      }
+    };
+
+    void loadPendingReviewTask();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rental?.id, rental?.rental_status, rental?.status, resolvedCurrentUser?.id]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -22859,8 +22895,13 @@ useEffect(() => {
         )}
       </div>
 
+    </>
+  );
+
+  const renderSelectedPricingPackageBlock = (className = '') => (
+    <>
       {simplePricingSummary && hasBookedKilometerPackage && (
-        <div className="grid gap-4">
+        <div className={`${className} grid gap-4`}>
           <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
             <div className="mb-3 flex items-center gap-2">
               <Package className="h-5 w-5 text-violet-600" />
@@ -22983,7 +23024,7 @@ useEffect(() => {
       )}
 
       {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
-        <div className="grid gap-4">
+        <div className={`${className} grid gap-4`}>
           <div className="rounded-xl border border-sky-200 bg-violet-50 p-4">
             <div className="mb-3 flex items-center gap-2">
               <Calculator className="h-5 w-5 text-violet-600" />
@@ -23011,6 +23052,14 @@ useEffect(() => {
                   "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
                 )}
               </p>
+              {String(rental?.rental_type || '').toLowerCase() === 'hourly' ? (
+                <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                  {tr(
+                    `Late extension rule: after ${lateExtensionSuggestion.thresholdMinutes} minutes past the expected return time, staff should add the next base-price hour. The late extension button suggests the billable hours automatically.`,
+                    `Règle de prolongation retard : après ${lateExtensionSuggestion.thresholdMinutes} minutes au-delà de l’heure de retour prévue, l’équipe doit ajouter l’heure suivante au tarif de base. Le bouton de retard suggère automatiquement les heures facturables.`
+                  )}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>
@@ -23433,6 +23482,8 @@ useEffect(() => {
             </div>
           </div>
         )}
+
+        {renderSelectedPricingPackageBlock('mb-4')}
 
         {isLightRentalDetailsMode && isEditingAmountDue ? (
           renderAmountDueEditorBlock(amountDueEditorRef)
@@ -25454,6 +25505,15 @@ useEffect(() => {
                 </div>
               </div>
             </div>
+            {pendingReviewTask ? (
+              <RentalReviewComposer
+                task={pendingReviewTask}
+                tr={tr}
+                compact
+                defaultExpanded
+                onSubmitted={() => setPendingReviewTask(null)}
+              />
+            ) : null}
             {shouldShowLateArrivalBanner && canHandleLateArrival && (
               <Button
                 type="button"
@@ -28906,178 +28966,6 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             )}
           </div>
-
-            {simplePricingSummary && hasBookedKilometerPackage && (
-              <div className="mt-4 grid gap-4">
-                <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Package className="h-5 w-5 text-violet-600" />
-                    <h4 className="font-semibold text-violet-900">{tr('Selected package', 'Forfait sélectionné')}</h4>
-                  </div>
-                  <div className="space-y-3 text-sm">
-                    <div className="rounded-2xl border border-violet-100 bg-white p-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-                        {tr('Package path', 'Parcours forfait')}
-                      </p>
-                      <div className="mt-3 grid gap-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-slate-600">{tr('Original rental', 'Location initiale')}</span>
-                          <span className="text-right font-bold text-slate-900">
-                            {originalKilometerPackageName || tr('No package linked', 'Aucun forfait lié')}
-                            {bookedPackageLimitKm > 0 ? ` · ${bookedPackageLimitKm} km` : ''}
-                            {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
-                          </span>
-                        </div>
-                        {canToggleAutoPackageUpgrade ? (
-                          <button
-                            type="button"
-                            onClick={() => handleToggleAutoPackageUpgrade(!autoPackageUpgradeEnabled)}
-                            disabled={isSavingAutoPackageUpgradePreference}
-                            className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left transition hover:border-violet-300 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold text-slate-900">{tr('Auto package upgrade', 'Surclassement auto du forfait')}</p>
-                              <p className="text-xs text-slate-500">
-                                {autoPackageUpgradeEnabled
-                                  ? tr('Automatic best-package matching is active for this rental.', 'Le meilleur forfait automatique est actif pour cette location.')
-                                  : tr('Billing is locked to the original booked package and overage rules apply.', 'La facturation reste sur le forfait réservé d’origine et les règles de dépassement s’appliquent.')}
-                              </p>
-                            </div>
-                            <div className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${autoPackageUpgradeEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-                              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${autoPackageUpgradeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                            </div>
-                          </button>
-                        ) : null}
-                        {kilometerPackageApplication.upgraded ? (
-                          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">
-                                {tr('Auto upgrade applied', 'Surclassement auto appliqué')}
-                              </span>
-                              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                                {tr('Live package', 'Forfait actif')}
-                              </span>
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-                              <span className="font-semibold text-slate-700">
-                                {originalKilometerPackageName || tr('Original package', 'Forfait initial')}
-                                {bookedPackageLimitKm > 0 ? ` · ${bookedPackageLimitKm} km` : ''}
-                                {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
-                              </span>
-                              <span className="text-emerald-700">→</span>
-                              <span className="font-extrabold text-emerald-800">
-                                {appliedKilometerPackageName}
-                                {Number.isFinite(kilometerPackageApplication.appliedLimit)
-                                  ? ` · ${kilometerPackageApplication.appliedLimit} km`
-                                  : ` · ${tr('Unlimited', 'Illimité')}`}
-                                {appliedKilometerPackagePrice > 0 ? ` · ${formatCurrency(appliedKilometerPackagePrice)} MAD` : ''}
-                              </span>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-600">{tr('KM used', 'KM utilisés')}</span>
-                      <span className="font-semibold text-slate-900">{Number(simplePricingSummary.kmUsed || 0).toFixed(2)} km</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-600">{tr('Applied limit', 'Limite appliquée')}</span>
-                      <span className="font-semibold text-slate-900">
-                        {Number.isFinite(kilometerPackageApplication.appliedLimit) && kilometerPackageApplication.appliedLimit > 0
-                          ? `${kilometerPackageApplication.appliedLimit} km`
-                          : kilometerPackageApplication.appliedPackage
-                            ? tr('Unlimited', 'Illimité')
-                            : '—'}
-                      </span>
-                    </div>
-                    {kilometerPackageApplication.upgraded ? (
-                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs font-medium text-emerald-800">
-                        {tr(
-                          `Upgraded because ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km passed the original ${bookedPackageLimitKm} km limit. Billing now follows ${appliedKilometerPackageName} at ${formatCurrency(appliedKilometerPackagePrice)} MAD.`,
-                          `Surclassé car ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km dépasse la limite initiale de ${bookedPackageLimitKm} km. La facturation suit maintenant ${appliedKilometerPackageName} à ${formatCurrency(appliedKilometerPackagePrice)} MAD.`
-                        )}
-                      </div>
-                    ) : !autoPackageUpgradeEnabled && kilometerPackageApplication.overageKm > 0 ? (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-medium text-amber-800">
-                        {tr(
-                          `Auto upgrade is disabled. This rental stays on ${originalKilometerPackageName}, so ${kilometerPackageApplication.overageKm} km will be billed as overage at ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`,
-                          `Le surclassement auto est désactivé. Cette location reste sur ${originalKilometerPackageName}, donc ${kilometerPackageApplication.overageKm} km seront facturés en dépassement à ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`
-                        )}
-                      </div>
-                    ) : autoMatchedPackageDiffers ? (
-                      <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
-                        {tr('Package upgrade is available from distance used.', 'Un surclassement forfait est disponible selon la distance utilisée.')}
-                      </p>
-                    ) : simplePricingSummary.packageOverflowKm > 0 ? (
-                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
-                        {tr(
-                          `Highest package reached. ${simplePricingSummary.packageOverflowKm} km sits above the current package limit and can be handled later as an overage rule.`,
-                          `Le plus grand forfait a été atteint. ${simplePricingSummary.packageOverflowKm} km dépassent la limite actuelle et pourront être traités plus tard comme règle de dépassement.`
-                        )}
-                      </p>
-                    ) : (
-                      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-violet-700">
-                        {tr('Best package selected automatically from the distance used.', 'Le meilleur forfait a été sélectionné automatiquement selon la distance utilisée.')}
-                      </p>
-                    )}
-                    {String(rental?.rental_type || '').toLowerCase() === 'hourly' && (
-                      <p className="rounded-lg border border-sky-200 bg-violet-50 px-3 py-2 text-xs font-medium text-violet-700">
-                        {tr(
-                          `Late return rule: if a 1-hour rental goes more than ${simplePricingSummary.gracePeriodMinutes} minutes late, a second hour is charged automatically.`,
-                          `Règle de retard : si une location de 1 heure dépasse la période de grâce de ${simplePricingSummary.gracePeriodMinutes} minutes, une deuxième heure est facturée automatiquement.`
-                        )}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-            {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
-              <div className="mt-4 grid gap-4">
-                <div className="rounded-xl border border-sky-200 bg-violet-50 p-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Calculator className="h-5 w-5 text-violet-600" />
-                    <h4 className="font-semibold text-sky-900">{tr('Base price selected', 'Tarif de base sélectionné')}</h4>
-                  </div>
-                  <div className="rounded-2xl border border-violet-100 bg-white p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-                      {tr('Standard rental', 'Location standard')}
-                    </p>
-                    <div className="mt-3 flex items-center justify-between gap-3">
-                      <span className="text-slate-600">
-                        {tierPricingBreakdown.isDaily
-                          ? tr('Base daily price', 'Tarif journalier de base')
-                          : tr('Base hourly price', 'Tarif horaire de base')}
-                      </span>
-                      <span className="text-right font-extrabold text-slate-900">
-                        {tierPricingBreakdown.isDaily
-                          ? `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('days', 'jours') : tr('day', 'jour')}`
-                          : tierPricingBreakdown.duration === 0.5
-                            ? tr('30 min', '30 min')
-                            : tierPricingBreakdown.duration === 1.5
-                              ? tr('1.5 hours', '1,5 heures')
-                              : `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('hours', 'heures') : tr('hour', 'heure')}`} · {formatCurrency(tierPricingBreakdown.standardHourlyRate)} MAD
-                      </span>
-                    </div>
-                    <p className="mt-2 text-xs font-medium text-violet-700">
-                      {tr(
-                        'This rental follows the standard model price with no kilometer package attached.',
-                        "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
-                      )}
-                    </p>
-                    {String(rental?.rental_type || '').toLowerCase() === 'hourly' ? (
-                      <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
-                        {tr(
-                          `Late extension rule: after ${lateExtensionSuggestion.thresholdMinutes} minutes past the expected return time, staff should add the next base-price hour. The late extension button suggests the billable hours automatically.`,
-                          `Règle de prolongation retard : après ${lateExtensionSuggestion.thresholdMinutes} minutes au-delà de l’heure de retour prévue, l’équipe doit ajouter l’heure suivante au tarif de base. Le bouton de retard suggère automatiquement les heures facturables.`
-                        )}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            )}
           <Separator className="bg-slate-100" />
           <div>
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Rental Period', 'Période de location')}</h3>

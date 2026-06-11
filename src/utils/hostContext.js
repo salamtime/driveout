@@ -7,9 +7,7 @@ export const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 export const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
 const LOCAL_ADMIN_PORT = '5175';
-const LOCAL_TENANT_PORT_MAP = {
-  '5173': 'saharax',
-};
+const LOCAL_TENANT_PORT_MAP = {};
 const LOCAL_TENANT_SLUG_PORT_MAP = Object.entries(LOCAL_TENANT_PORT_MAP).reduce((accumulator, [port, slug]) => {
   if (slug) {
     accumulator[String(slug).trim().toLowerCase()] = String(port).trim();
@@ -82,13 +80,20 @@ export const getHostContext = (hostname = getCurrentHostname()) => {
       return { hostname: normalizedHostname, kind: 'admin', tenantSlug: null, isLocal: true };
     }
 
+    const currentPathname = typeof window !== 'undefined'
+      ? String(window.location.pathname || '/')
+      : '/';
     const normalizedLocalTenantSlug = String(localTenantSlug || localTenantSlugFromPort || '').trim().toLowerCase();
     if (normalizedLocalTenantSlug && typeof window !== 'undefined') {
       window.sessionStorage.setItem(LOCAL_TENANT_SESSION_KEY, normalizedLocalTenantSlug);
     }
 
     const storedSlug = String(storedLocalTenantSlug || '').trim().toLowerCase();
-    const effectiveLocalTenantSlug = normalizedLocalTenantSlug || (localTenantSlugFromPort ? storedSlug : '');
+    const shouldPreferMarketplaceShell =
+      !normalizedLocalTenantSlug &&
+      !localTenantSlugFromPort &&
+      isFirstPartyStorefrontPath(currentPathname);
+    const effectiveLocalTenantSlug = normalizedLocalTenantSlug || (!shouldPreferMarketplaceShell ? storedSlug : '');
     if (effectiveLocalTenantSlug) {
       return { hostname: normalizedHostname, kind: 'tenant', tenantSlug: effectiveLocalTenantSlug, isLocal: true };
     }

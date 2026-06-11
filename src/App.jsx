@@ -529,6 +529,7 @@ const AccountMessages = lazy(() => import('./pages/account/AccountMessages'));
 const AccountBoost = lazy(() => import('./pages/account/AccountBoost'));
 const AccountRewards = lazy(() => import('./pages/account/AccountRewards'));
 const AccountReviews = lazy(() => import('./pages/account/AccountReviews'));
+const ReviewsAdminPage = lazy(() => import('./pages/admin/Reviews'));
 const AccountRevenue = lazy(() => import('./pages/account/AccountRevenue'));
 const AccountVerification = lazy(() => import('./pages/account/AccountVerification'));
 const AccountSettings = lazy(() => import('./pages/account/AccountSettings'));
@@ -954,6 +955,7 @@ function App() {
                   <Route path="workspaces/:workspaceId" element={<ErrorBoundary name="Workspace-Detail"><ProtectedRoute requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace" element={<ErrorBoundary name="Marketplace-Control"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceControlWorkspace /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace/:listingId" element={<ErrorBoundary name="Marketplace-Listing-Detail"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceListingDetail /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="reviews" element={<ErrorBoundary name="Admin-Reviews"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><ReviewsAdminPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="settings/*" element={<ErrorBoundary name="Settings-Page"><ProtectedRoute requiredPermissions={['System Settings']}><SettingsPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="website/*" element={<ErrorBoundary name="Website-Editor-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['System Settings']} requiredFeature="website_editor"><WebsiteEditorPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="export/*" element={<ErrorBoundary name="Export-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Project Export']}><ExportPage /></ProtectedRoute></ErrorBoundary>} />

@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from 'react-router-dom';
 import NotificationItem from './NotificationItem';
+import RentalReviewService from '../../services/RentalReviewService';
 import {
   fetchNotifications,
   markAllNotificationsAsRead,
@@ -12,7 +14,16 @@ import {
 const NotificationsMenu = () => {
   const { t } = useTranslation();
   const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [isOpen, setIsOpen] = useState(false);
+  const [reviewSummary, setReviewSummary] = useState({
+    pendingCount: 0,
+    submittedCount: 0,
+    receivedCount: 0,
+    flaggedCount: 0,
+    canModerate: false,
+  });
   const menuRef = useRef(null);
   const { items: notifications = [], unreadCount = 0, loading = false } = useSelector(state => state.notifications || {});
   const { isAuthenticated } = useSelector(state => state.auth);
@@ -22,6 +33,25 @@ const NotificationsMenu = () => {
     if (isAuthenticated) {
       dispatch(fetchNotifications());
       dispatch(subscribeToNotifications());
+      RentalReviewService.getReviewSummary()
+        .then((summary) => {
+          setReviewSummary({
+            pendingCount: Number(summary?.pendingCount || 0),
+            submittedCount: Number(summary?.submittedCount || 0),
+            receivedCount: Number(summary?.receivedCount || 0),
+            flaggedCount: Number(summary?.flaggedCount || 0),
+            canModerate: Boolean(summary?.canModerate),
+          });
+        })
+        .catch(() => {
+          setReviewSummary({
+            pendingCount: 0,
+            submittedCount: 0,
+            receivedCount: 0,
+            flaggedCount: 0,
+            canModerate: false,
+          });
+        });
     }
     
     return () => {
@@ -53,6 +83,15 @@ const NotificationsMenu = () => {
     dispatch(markAllNotificationsAsRead());
   };
 
+  const reminderCount = reviewSummary.pendingCount + reviewSummary.flaggedCount;
+  const totalBadgeCount = unreadCount + reminderCount;
+  const reviewDestination = location.pathname.startsWith('/admin') ? '/admin/reviews' : '/account/reviews';
+
+  const handleOpenReviewDestination = () => {
+    setIsOpen(false);
+    navigate(reviewDestination);
+  };
+
   if (!isAuthenticated) return null;
 
   return (
@@ -79,9 +118,9 @@ const NotificationsMenu = () => {
         </svg>
         
         {/* Badge for unread count */}
-        {unreadCount > 0 && (
+        {totalBadgeCount > 0 && (
           <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/2 -translate-y-1/2 bg-red-600 rounded-full">
-            {unreadCount > 9 ? '9+' : unreadCount}
+            {totalBadgeCount > 9 ? '9+' : totalBadgeCount}
           </span>
         )}
       </button>
@@ -103,6 +142,35 @@ const NotificationsMenu = () => {
             </div>
 
             <div className="max-h-80 overflow-y-auto">
+              {reviewSummary.pendingCount > 0 || reviewSummary.flaggedCount > 0 ? (
+                <div className="border-b bg-amber-50/80 px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-700">
+                        {t('Review reminders')}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {reviewSummary.pendingCount > 0
+                          ? `${reviewSummary.pendingCount} post-rental review${reviewSummary.pendingCount > 1 ? 's' : ''} waiting on you`
+                          : `${reviewSummary.flaggedCount} flagged review${reviewSummary.flaggedCount > 1 ? 's' : ''} needs moderation`}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        {reviewSummary.pendingCount > 0
+                          ? 'Open the reviews workspace to rate finished rentals.'
+                          : 'Open reviews to moderate flagged marketplace feedback.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOpenReviewDestination}
+                      className="rounded-full bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700"
+                    >
+                      {t('Open')}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               {loading ? (
                 <div className="flex justify-center items-center py-6">
                   <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>

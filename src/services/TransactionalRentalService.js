@@ -301,7 +301,7 @@ class TransactionalRentalService {
         .from('app_687f658e98_maintenance')
         .select('id')
         .eq('vehicle_id', vehicleId)
-        .in('status', ['scheduled', 'in_progress'])
+        .in('status', ['scheduled', 'in_progress', 'pending'])
         .limit(1),
       organizationId
     );
@@ -655,6 +655,33 @@ class TransactionalRentalService {
 
     console.log('❌ FIXED: Invalid datetime, returning null:', datetimeValue);
     return null;
+  }
+
+  static buildAvailabilityWindow(dateValue, timeValue = null, boundary = 'start') {
+    const normalizedDateValue = String(dateValue || '').trim();
+    if (!normalizedDateValue) return null;
+
+    const parsedDate = new Date(normalizedDateValue);
+    if (Number.isNaN(parsedDate.getTime())) return null;
+
+    const normalizedTimeValue = String(timeValue || '').trim();
+    const timeMatch = normalizedTimeValue.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+
+    if (timeMatch) {
+      const hours = Number(timeMatch[1]);
+      const minutes = Number(timeMatch[2]);
+      const seconds = Number(timeMatch[3] || 0);
+      parsedDate.setHours(hours, minutes, seconds, 0);
+      return parsedDate;
+    }
+
+    if (boundary === 'end') {
+      parsedDate.setHours(23, 59, 59, 999);
+    } else {
+      parsedDate.setHours(0, 0, 0, 0);
+    }
+
+    return parsedDate;
   }
 
   /**
@@ -1200,8 +1227,8 @@ class TransactionalRentalService {
           dbRentalData.vehicle_id,
           dbRentalData.rental_start_date,
           dbRentalData.rental_end_date,
-          null, // startTime
-          null, // endTime
+          dbRentalData.rental_start_time || null,
+          dbRentalData.rental_end_time || null,
           sanitizedExcludeRentalId // CRITICAL FIX: null for new rentals
         );
         
@@ -1369,10 +1396,10 @@ class TransactionalRentalService {
           customer_id_image: telegramRentalPayload.customer_id_image,
           customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
           documentCount: countRentalDocuments(telegramRentalPayload),
-          organization_id: newRental.organization_id || finalSanitizedData.organization_id || '',
-          tenant_id: newRental.tenant_id || finalSanitizedData.tenant_id || '',
-          business_account_id: newRental.business_account_id || finalSanitizedData.business_account_id || '',
-          tenant_slug: newRental.tenant_slug || finalSanitizedData.tenant_slug || '',
+          organization_id: rental.organization_id || finalSanitizedData.organization_id || '',
+          tenant_id: rental.tenant_id || finalSanitizedData.tenant_id || '',
+          business_account_id: rental.business_account_id || finalSanitizedData.business_account_id || '',
+          tenant_slug: rental.tenant_slug || finalSanitizedData.tenant_slug || '',
           ...telegramPricingSnapshot,
         },
       }).catch((telegramDispatchError) => {
@@ -1486,8 +1513,8 @@ class TransactionalRentalService {
           dbRentalData.vehicle_id,
           dbRentalData.rental_start_date,
           dbRentalData.rental_end_date,
-          null, // startTime
-          null, // endTime
+          dbRentalData.rental_start_time || null,
+          dbRentalData.rental_end_time || null,
           sanitizedExcludeRentalId // CRITICAL FIX: Properly sanitized UUID or null
         );
         
@@ -1674,7 +1701,7 @@ class TransactionalRentalService {
       // STEP 3: Build the query to find conflicting rentals
       let query = supabase
         .from('app_4c3a7a6153_rentals')
-        .select('id, rental_start_date, rental_end_date, rental_status')
+        .select('id, rental_start_date, rental_end_date, rental_start_time, rental_end_time, rental_status')
         .eq('vehicle_id', vehicleId)
         .in('rental_status', ['scheduled', 'active', 'confirmed']);
       
@@ -1700,24 +1727,41 @@ class TransactionalRentalService {
       }
       
       console.log('📊 QUERY RESULT: Found existing rentals:', existingRentals?.length || 0);
+
+      const requestedStartAt = this.buildAvailabilityWindow(startDate, startTime, 'start');
+      const requestedEndAt = this.buildAvailabilityWindow(endDate, endTime, 'end');
+      if (!requestedStartAt || !requestedEndAt) {
+        throw new Error('Availability check failed: invalid requested rental timing');
+      }
       
       // STEP 4: AVAILABILITY LOGIC FIX - Check for date conflicts with strict overlap detection
       const conflicts = existingRentals?.filter(rental => {
         if (this.isExpiredScheduledConflict(rental)) {
           return false;
         }
-        const existingStart = new Date(rental.rental_start_date);
-        const existingEnd = new Date(rental.rental_end_date);
-        const newStart = new Date(startDate);
-        const newEnd = new Date(endDate);
+        const existingStart = this.buildAvailabilityWindow(rental.rental_start_date, rental.rental_start_time, 'start');
+        const existingEnd = this.buildAvailabilityWindow(rental.rental_end_date, rental.rental_end_time, 'end');
+        if (!existingStart || !existingEnd) {
+          return false;
+        }
         
         // STRICT OVERLAP CHECK: newStart < existingEnd AND newEnd > existingStart
-        const hasOverlap = newStart < existingEnd && newEnd > existingStart;
+        const hasOverlap = requestedStartAt < existingEnd && requestedEndAt > existingStart;
         
         if (hasOverlap) {
           console.log('⚠️ CONFLICT DETECTED:', {
-            existing: { start: rental.rental_start_date, end: rental.rental_end_date },
-            requested: { start: startDate, end: endDate },
+            existing: {
+              start: rental.rental_start_date,
+              end: rental.rental_end_date,
+              startTime: rental.rental_start_time || null,
+              endTime: rental.rental_end_time || null,
+            },
+            requested: {
+              start: startDate,
+              end: endDate,
+              startTime: startTime || null,
+              endTime: endTime || null,
+            },
             overlap: 'YES'
           });
         }
@@ -1888,7 +1932,7 @@ class TransactionalRentalService {
       const fetchRentalQuery = applyOrganizationScope(
         supabase
           .from('app_4c3a7a6153_rentals')
-          .select('id, vehicle_id, rental_status, organization_id')
+          .select('id, vehicle_id, rental_status, organization_id, linked_maintenance_id')
           .eq('id', id),
         organizationId
       );
@@ -1903,7 +1947,7 @@ class TransactionalRentalService {
       if (!rental && organizationId) {
         const { data: legacyRental, error: legacyFetchError } = await supabase
           .from('app_4c3a7a6153_rentals')
-          .select('id, vehicle_id, rental_status, organization_id')
+          .select('id, vehicle_id, rental_status, organization_id, linked_maintenance_id')
           .eq('id', id)
           .maybeSingle();
 
@@ -1976,7 +2020,12 @@ class TransactionalRentalService {
       }
 
       const reportRows = Array.isArray(linkedReports) ? linkedReports : [];
-      const maintenanceIds = [...new Set(reportRows.map((row) => row?.maintenance_id).filter(Boolean))];
+      const maintenanceIds = [
+        ...new Set([
+          ...reportRows.map((row) => row?.maintenance_id),
+          rental?.linked_maintenance_id,
+        ].filter(Boolean)),
+      ];
 
       for (const maintenanceId of maintenanceIds) {
         console.log('🧰 DELETE RENTAL FIX: Deleting linked maintenance record:', maintenanceId);

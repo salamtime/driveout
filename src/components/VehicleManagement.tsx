@@ -625,8 +625,18 @@ const VehicleManagement: React.FC = () => {
         if (rentalOverlayError) {
           console.error('Vehicle rental status overlay fetch failed:', rentalOverlayError);
         } else {
+          const latestRentalOverlayByVehicle = new Map<string, any>();
+          (rentalOverlayData || []).forEach((record: any) => {
+            const vehicleKey = String(record?.vehicle_id || '');
+            if (!vehicleKey || latestRentalOverlayByVehicle.has(vehicleKey)) {
+              return;
+            }
+            latestRentalOverlayByVehicle.set(vehicleKey, record);
+          });
+          const latestRentalOverlayRows = Array.from(latestRentalOverlayByVehicle.values());
+
           initialImpoundedVehicleIds = new Set(
-            (rentalOverlayData || [])
+            latestRentalOverlayRows
               .filter((record: any) =>
                 Boolean(record?.vehicle_id) &&
                 (
@@ -639,7 +649,7 @@ const VehicleManagement: React.FC = () => {
           );
 
           activeRentalVehicleIds = new Set(
-            (rentalOverlayData || [])
+            latestRentalOverlayRows
               .filter((record: any) => {
                 if (!record?.vehicle_id) return false;
                 const status = String(record?.rental_status || '').toLowerCase();
@@ -649,7 +659,7 @@ const VehicleManagement: React.FC = () => {
           );
 
           blockingScheduledVehicleIds = new Set(
-            (rentalOverlayData || [])
+            latestRentalOverlayRows
               .filter((record: any) =>
                 Boolean(record?.vehicle_id) &&
                 WebsiteBookingLifecycleService.shouldRentalBlockInventory(record, new Date())
@@ -854,6 +864,52 @@ const VehicleManagement: React.FC = () => {
   }, {
     enabled: vehicles.length > 0,
   });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const handleVehicleStatusUpdated = (event: Event) => {
+      const detail = (event as CustomEvent)?.detail || {};
+      const vehicleId = String(detail?.id || '');
+      const nextStatus = String(detail?.status || '').trim().toLowerCase();
+
+      if (!vehicleId || !nextStatus) {
+        return;
+      }
+
+      setVehicles((currentVehicles) =>
+        currentVehicles.map((vehicle) =>
+          String(vehicle.id) === vehicleId
+            ? {
+                ...vehicle,
+                ...detail,
+                status: nextStatus,
+              }
+            : vehicle
+        )
+      );
+
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+      }
+      refreshTimeout = setTimeout(() => {
+        void fetchData();
+      }, 150);
+    };
+
+    window.addEventListener('driveout:vehicle-status-updated', handleVehicleStatusUpdated);
+
+    return () => {
+      window.removeEventListener('driveout:vehicle-status-updated', handleVehicleStatusUpdated);
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+      }
+    };
+  }, []);
 
   const updateVehicleStatus = async (vehicleId: number, status: string) => {
     try {
