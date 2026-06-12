@@ -181,6 +181,23 @@ const FinanceDashboardV2 = () => {
   const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
   const latestDashboardRequestRef = useRef(0);
   const hasResetFinanceForReadyStateRef = useRef(false);
+  const expenseTabScrollRestoreRef = useRef(null);
+
+  const restoreExpenseTabScroll = () => {
+    if (typeof window !== 'undefined') {
+      const targetScrollY = Number(expenseTabScrollRestoreRef.current);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (Number.isFinite(targetScrollY)) {
+            window.scrollTo({ top: targetScrollY, behavior: 'auto' });
+          }
+          expenseTabScrollRestoreRef.current = null;
+        });
+      });
+    } else {
+      expenseTabScrollRestoreRef.current = null;
+    }
+  };
 
   const endDateObject = fromDateInputValue(filters.endDate);
   const weekStart = startOfWeek(endDateObject);
@@ -894,6 +911,10 @@ const FinanceDashboardV2 = () => {
               openComposerRequest={receiveFundsComposerRequest}
               openExpenseComposerRequest={expenseComposerRequest}
               openEditComposerRequest={editComposerRequest}
+              onExpenseEditSaved={() => {
+                setActiveTab('expenses');
+                restoreExpenseTabScroll();
+              }}
               onFinanceRefresh={() => {
                 appWarmupService.invalidateModule('finance', { rewarm: false });
                 setLastRefresh(new Date());
@@ -909,12 +930,31 @@ const FinanceDashboardV2 = () => {
               filters={filters}
               refreshTrigger={lastRefresh.getTime()}
               onAddExpense={() => {
-                setActiveTab('receive-funds');
+                expenseTabScrollRestoreRef.current =
+                  typeof window !== 'undefined' ? window.scrollY : null;
                 setExpenseComposerRequest(Date.now());
               }}
               onEditExpense={(entry) => {
-                setActiveTab('receive-funds');
+                expenseTabScrollRestoreRef.current =
+                  typeof window !== 'undefined' ? window.scrollY : null;
                 setEditComposerRequest({ requestId: Date.now(), entry });
+              }}
+            />
+            <ReceiveFundsTabV2
+              drawerOnly
+              filters={filters}
+              refreshTrigger={lastRefresh.getTime()}
+              openExpenseComposerRequest={expenseComposerRequest}
+              openEditComposerRequest={editComposerRequest}
+              onExpenseEditSaved={() => {
+                setEditComposerRequest(null);
+                setLastRefresh(new Date());
+                restoreExpenseTabScroll();
+              }}
+              onFinanceRefresh={() => {
+                appWarmupService.invalidateModule('finance', { rewarm: false });
+                setLastRefresh(new Date());
+                void loadDashboardData();
               }}
             />
           </div>

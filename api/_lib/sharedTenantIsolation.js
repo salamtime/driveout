@@ -12,8 +12,12 @@ import {
 import {
   buildTenantHostnameCandidates,
   getTenantSlugFromHostname,
+  isLocalHostname,
   normalizeHostname,
 } from './tenantHostResolution.js';
+
+const FIRST_PARTY_TENANT_HOSTS = new Set(['saharax.driveout.io']);
+const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 
 const normalizeUrlHostname = (value = '') => {
   try {
@@ -36,8 +40,36 @@ const getTenantMetadata = (tenant = {}) => (
   tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
 );
 
+const getFirstPartyTenantConfig = ({ hostname, tenantSlug }) => {
+  const normalizedHostname = normalizeHostname(hostname);
+  const normalizedSlug = String(tenantSlug || '').trim().toLowerCase();
+
+  const isFirstPartyHost =
+    FIRST_PARTY_TENANT_HOSTS.has(normalizedHostname) ||
+    isLocalHostname(normalizedHostname);
+
+  if (!isFirstPartyHost || !FIRST_PARTY_TENANT_SLUGS.has(normalizedSlug)) {
+    return null;
+  }
+
+  return {
+    id: 'first-party-saharax',
+    tenant_name: 'SaharaX',
+    tenant_slug: 'saharax',
+    tenant_status: 'active',
+    tenancy_mode: 'shared',
+    tenant_app_url: `https://${normalizedHostname}`,
+    first_party: true,
+    metadata: {},
+  };
+};
+
 const findTenantByHostname = async ({ adminClient, hostname }) => {
   const tenantSlug = getTenantSlugFromHostname(hostname);
+  const firstPartyTenant = getFirstPartyTenantConfig({ hostname, tenantSlug });
+  if (firstPartyTenant) {
+    return firstPartyTenant;
+  }
   if (!tenantSlug) return null;
 
   const { data: bySlug, error: slugError } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
@@ -73,6 +105,28 @@ const findTenantByHostname = async ({ adminClient, hostname }) => {
 
 const resolveTenantOrganizationContext = async ({ adminClient, tenant }) => {
   const tenancyMode = resolveTenantTenancyMode(tenant);
+  const normalizedTenantSlug = String(tenant?.tenant_slug || '').trim().toLowerCase();
+
+  if (tenant?.first_party && normalizedTenantSlug) {
+    const { data: organization, error: organizationBySlugError } = await adminClient
+      .from(ORGANIZATIONS_TABLE)
+      .select('id, slug')
+      .eq('slug', normalizedTenantSlug)
+      .eq('is_platform_organization', false)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (organizationBySlugError) throw organizationBySlugError;
+
+    if (organization?.id || organization?.slug) {
+      return {
+        organizationId: String(organization?.id || '').trim() || null,
+        organizationSlug: String(organization?.slug || '').trim() || null,
+      };
+    }
+  }
+
   if (tenancyMode !== 'shared') {
     return {
       organizationId: null,

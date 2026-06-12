@@ -36,6 +36,7 @@ import i18n from '../../i18n';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+const PAYROLL_LABEL = 'Payroll';
 
 const formatMoney = (value) =>
   `${new Intl.NumberFormat(isFrenchLocale() ? 'fr-FR' : 'en-US', {
@@ -177,6 +178,8 @@ const ReceiveFundsTabV2 = ({
   openExpenseComposerRequest = 0,
   openEditComposerRequest = null,
   onFinanceRefresh = null,
+  onExpenseEditSaved = null,
+  drawerOnly = false,
 }) => {
   const { userProfile } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -217,6 +220,7 @@ const ReceiveFundsTabV2 = ({
   const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
   const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
   const [newExpenseLabel, setNewExpenseLabel] = useState('');
+  const [staffDirectoryOptions, setStaffDirectoryOptions] = useState([]);
   const [expenseSaveFeedback, setExpenseSaveFeedback] = useState(null);
   const receiptCaptureRef = useRef(null);
   const receiptImportInputRef = useRef(null);
@@ -314,7 +318,7 @@ const ReceiveFundsTabV2 = ({
     setReceiptFile(null);
     setShowDateInput(false);
     setShowReceiptCapture(false);
-    setSelectedExpenseLabels(nextMode === 'expense' && Array.isArray(entry.labels) ? entry.labels : []);
+    setSelectedExpenseLabels(nextMode === 'expense' && Array.isArray(entry.labels) ? uniqueLabels(entry.labels) : []);
     setNewExpenseLabel('');
     setExpenseSaveFeedback(null);
     setShowComposer(true);
@@ -426,8 +430,14 @@ const ReceiveFundsTabV2 = ({
         const users = await getStaffDirectory();
         if (!isActive) return;
         const nextAdmins = normalizeAdminRecipients(users);
+        const nextStaffOptions = uniqueLabels(
+          users
+            .map((user) => buildStaffDisplayName(user, 'Team'))
+            .filter(Boolean)
+        );
         setStaffDisplayMap(buildStaffDisplayMap(users));
         setAdminRecipients(nextAdmins);
+        setStaffDirectoryOptions(nextStaffOptions);
         setForm((current) => {
           if (current.receivedByAdminUserId || nextAdmins.length === 0) {
             return current;
@@ -443,6 +453,7 @@ const ReceiveFundsTabV2 = ({
         if (isActive) {
           setStaffDisplayMap({});
           setAdminRecipients([]);
+          setStaffDirectoryOptions([]);
         }
       } finally {
         if (isActive) {
@@ -560,6 +571,9 @@ const ReceiveFundsTabV2 = ({
 
         resetComposerForm(isExpenseMode ? 'expense' : 'funds');
         setShowComposer(false);
+        if (isExpenseMode && typeof onExpenseEditSaved === 'function') {
+          onExpenseEditSaved(editingEntry);
+        }
         void loadDashboard().catch((refreshError) => {
           console.error('Receive funds refresh failed after update:', refreshError);
         });
@@ -647,9 +661,25 @@ const ReceiveFundsTabV2 = ({
   };
 
   const handleToggleExpenseLabel = (label) => {
-    setSelectedExpenseLabels((current) =>
-      current.some((item) => item.toLowerCase() === String(label).toLowerCase()) ? [] : [label]
-    );
+    setSelectedExpenseLabels((current) => {
+      const normalizedLabel = String(label || '').trim();
+      const isSameLabel = current.some((item) => item.toLowerCase() === normalizedLabel.toLowerCase());
+      if (isSameLabel) return [];
+      const payrollRecipientLabel = current.find(
+        (item) => item.toLowerCase() !== PAYROLL_LABEL.toLowerCase()
+      );
+      if (normalizedLabel.toLowerCase() === PAYROLL_LABEL.toLowerCase()) {
+        return payrollRecipientLabel ? [PAYROLL_LABEL, payrollRecipientLabel] : [PAYROLL_LABEL];
+      }
+      return [normalizedLabel];
+    });
+    setExpenseSaveFeedback(null);
+  };
+
+  const handleSelectPayrollStaff = (label) => {
+    const normalized = uniqueLabels([label])[0];
+    if (!normalized) return;
+    setSelectedExpenseLabels([PAYROLL_LABEL, normalized]);
     setExpenseSaveFeedback(null);
   };
 
@@ -685,6 +715,14 @@ const ReceiveFundsTabV2 = ({
   const expenseNotePreview = useMemo(
     () => buildExpenseNote(form.note, selectedExpenseLabels),
     [form.note, selectedExpenseLabels]
+  );
+  const isPayrollSelected = useMemo(
+    () => selectedExpenseLabels.some((label) => label.toLowerCase() === PAYROLL_LABEL.toLowerCase()),
+    [selectedExpenseLabels]
+  );
+  const selectedPayrollStaffLabel = useMemo(
+    () => selectedExpenseLabels.find((label) => label.toLowerCase() !== PAYROLL_LABEL.toLowerCase()) || '',
+    [selectedExpenseLabels]
   );
   const expenseSaveNoticeStyle = expenseSaveFeedback?.status
     ? EXPENSE_SAVE_NOTICE_STYLES[expenseSaveFeedback.status] || EXPENSE_SAVE_NOTICE_STYLES.success
@@ -789,7 +827,7 @@ const ReceiveFundsTabV2 = ({
     );
   };
 
-  if (!dashboard.tableReady && !loading) {
+  if (!dashboard.tableReady && !loading && !drawerOnly) {
     return (
       <div className="space-y-6">
         <div className="rounded-[28px] border border-amber-200 bg-[#fffaf1] p-6 shadow-[0_18px_42px_rgba(245,158,11,0.10)]">
@@ -805,6 +843,8 @@ const ReceiveFundsTabV2 = ({
 
   return (
     <div className="space-y-5">
+      {!drawerOnly ? (
+        <>
       <section className="rounded-[28px] border border-white/80 bg-white px-5 py-5 shadow-[0_22px_60px_rgba(15,23,42,0.08)] sm:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -1100,6 +1140,8 @@ const ReceiveFundsTabV2 = ({
           {tr('Record Funds', 'Enregistrer des fonds')}
         </button>
       ) : null}
+        </>
+      ) : null}
 
       {showComposer ? (
         <div className="fixed inset-0 z-50">
@@ -1343,6 +1385,46 @@ const ReceiveFundsTabV2 = ({
                         );
                       })}
                     </div>
+
+                    {isPayrollSelected ? (
+                      <div className="mt-4 rounded-[20px] border border-violet-200 bg-violet-50/60 px-4 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">
+                            {tr('Payroll for', 'Paie pour')}
+                          </label>
+                          {selectedPayrollStaffLabel ? (
+                            <span className="text-xs font-semibold text-violet-600">
+                              {selectedPayrollStaffLabel}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {staffDirectoryOptions.map((label) => {
+                            const isSelected = selectedPayrollStaffLabel.toLowerCase() === label.toLowerCase();
+                            return (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() => handleSelectPayrollStaff(label)}
+                                className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${
+                                  isSelected
+                                    ? 'border-violet-300 bg-white text-violet-700 shadow-sm'
+                                    : 'border-violet-200 bg-white/80 text-slate-700 hover:border-violet-300 hover:bg-white'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                          {staffDirectoryOptions.length === 0 ? (
+                            <p className="text-sm text-slate-500">
+                              {tr('No staff names available yet.', 'Aucun nom de staff disponible pour le moment.')}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 flex gap-2">
                       <input

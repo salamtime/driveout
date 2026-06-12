@@ -1,7 +1,21 @@
 import { supabase } from './supabaseClient';
 import { adminApiRequest } from './adminApi';
 import { assertCanCreateStaffUser, clearTenantRuntimeControlsCache } from './TenantLimitService';
-import { getHostContext } from '../utils/hostContext';
+import { getHostContext, isFirstPartyTenantSlug } from '../utils/hostContext';
+
+const getTenantScopedAdminHostname = (host = getHostContext()) => {
+  if (host.kind !== 'tenant') return '';
+
+  if (host.isLocal && host.tenantSlug) {
+    return `${host.tenantSlug}.driveout.io`;
+  }
+
+  if (typeof window !== 'undefined' && window.location?.host) {
+    return String(window.location.host).trim().toLowerCase();
+  }
+
+  return String(host.hostname || '').trim().toLowerCase();
+};
 
 /**
  * Fetches all users from Supabase Auth via a server-side admin endpoint.
@@ -33,10 +47,7 @@ export const addUser = async (email, password, name, role, appProfile = {}) => {
   }
 
   const host = getHostContext();
-  const currentHostname =
-    typeof window !== 'undefined' && window.location?.host
-      ? String(window.location.host).trim().toLowerCase()
-      : '';
+  const currentHostname = getTenantScopedAdminHostname(host);
   const requestPath = host.kind === 'tenant' && currentHostname
     ? `/api/admin/users?hostname=${encodeURIComponent(currentHostname)}`
     : '/api/admin/users';
@@ -178,11 +189,8 @@ export const updateUserProfile = async (userId, updates) => {
  */
 export const deleteUser = async (userId) => {
   const host = getHostContext();
-  if (host.kind === 'tenant') {
-    const currentHostname =
-      typeof window !== 'undefined' && window.location?.host
-        ? String(window.location.host).trim().toLowerCase()
-        : '';
+  if (host.kind === 'tenant' && !isFirstPartyTenantSlug(host.tenantSlug)) {
+    const currentHostname = getTenantScopedAdminHostname(host);
     const detachPath = currentHostname
       ? `/api/admin/users/${userId}?hostname=${encodeURIComponent(currentHostname)}`
       : `/api/admin/users/${userId}`;
@@ -197,7 +205,12 @@ export const deleteUser = async (userId) => {
     return;
   }
 
-  await adminApiRequest(`/api/admin/users/${userId}`, {
+  const currentHostname = getTenantScopedAdminHostname(host);
+  const deletePath = host.kind === 'tenant' && currentHostname
+    ? `/api/admin/users/${userId}?hostname=${encodeURIComponent(currentHostname)}`
+    : `/api/admin/users/${userId}`;
+
+  await adminApiRequest(deletePath, {
     method: 'DELETE',
   });
 };

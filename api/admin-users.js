@@ -26,6 +26,7 @@ import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.j
 import crypto from 'crypto';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set(['business_owner', 'operator', 'business', 'rental_business']);
+const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const BASE_APP_USER_FIELDS = 'id, email, username, full_name, first_name, last_name, role, phone_number, whatsapp_notifications, preferences, permissions, salary_amount, created_at, updated_at, access_enabled, primary_organization_id';
 const BUSINESS_OWNER_APP_USER_FIELDS = `${BASE_APP_USER_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
 
@@ -758,15 +759,97 @@ const resolveOrganizationMemberRole = (role = '') => {
   return 'org_member';
 };
 
-const loadTenantScopedUserIds = async (adminClient, tenantScope) => {
-  if (!tenantScope?.isShared || !tenantScope?.organizationId) {
-    return null;
+const isFirstPartyTenantScope = (tenantScope = {}) => {
+  const normalizedTenantSlug = String(tenantScope?.tenantSlug || '').trim().toLowerCase();
+  return tenantScope?.tenant?.first_party === true || FIRST_PARTY_TENANT_SLUGS.has(normalizedTenantSlug);
+};
+
+const resolveTenantManagementOrganizationId = async (adminClient, tenantScope, { actorUserId = '' } = {}) => {
+  const scopedOrganizationId = String(tenantScope?.organizationId || '').trim();
+  if (scopedOrganizationId) {
+    return scopedOrganizationId;
   }
 
-  const organizationId = String(tenantScope.organizationId || '').trim();
-  if (!organizationId) {
-    return null;
+  const normalizedTenantSlug = String(tenantScope?.tenantSlug || '').trim().toLowerCase();
+  if (!normalizedTenantSlug || !isFirstPartyTenantScope(tenantScope)) {
+    return '';
   }
+
+  const { data, error } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .select('id')
+    .eq('slug', normalizedTenantSlug)
+    .eq('is_platform_organization', false)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error && !isSchemaCompatibilityError(error)) {
+    throw error;
+  }
+
+  const tenantOrganizationId = String(data?.id || '').trim();
+  if (tenantOrganizationId) {
+    return tenantOrganizationId;
+  }
+
+  const normalizedActorUserId = String(actorUserId || '').trim();
+  if (!normalizedActorUserId) {
+    return '';
+  }
+
+  const { data: actorProfile, error: actorProfileError } = await adminClient
+    .from(APP_USERS_TABLE)
+    .select('primary_organization_id')
+    .eq('id', normalizedActorUserId)
+    .maybeSingle();
+
+  if (actorProfileError && !isSchemaCompatibilityError(actorProfileError)) {
+    throw actorProfileError;
+  }
+
+  const actorPrimaryOrganizationId = String(actorProfile?.primary_organization_id || '').trim();
+  if (actorPrimaryOrganizationId) {
+    return actorPrimaryOrganizationId;
+  }
+
+  const { data: ownedOrganization, error: ownedOrganizationError } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .select('id')
+    .eq('owner_user_id', normalizedActorUserId)
+    .eq('is_platform_organization', false)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (ownedOrganizationError && !isSchemaCompatibilityError(ownedOrganizationError)) {
+    throw ownedOrganizationError;
+  }
+
+  const ownedOrganizationId = String(ownedOrganization?.id || '').trim();
+  if (ownedOrganizationId) {
+    return ownedOrganizationId;
+  }
+
+  const { data: actorMembership, error: actorMembershipError } = await adminClient
+    .from(ORGANIZATION_MEMBERS_TABLE)
+    .select('organization_id, membership_status')
+    .eq('user_id', normalizedActorUserId)
+    .in('membership_status', ['active', 'invited'])
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (actorMembershipError && !isSchemaCompatibilityError(actorMembershipError)) {
+    throw actorMembershipError;
+  }
+
+  return String(actorMembership?.organization_id || '').trim();
+};
+
+const loadTenantScopedUserIds = async (adminClient, tenantScope, resolvedOrganizationId = '', options = {}) => {
+  const organizationId = String(resolvedOrganizationId || '').trim() || await resolveTenantManagementOrganizationId(adminClient, tenantScope, options);
+  if (!organizationId) return null;
 
   const [profileResult, membershipResult] = await Promise.all([
     adminClient
@@ -832,16 +915,18 @@ const filterUsersForTenantScope = ({
 const ensureTenantScopedStaffMembership = async ({
   adminClient,
   tenantScope,
+  organizationId: resolvedOrganizationId = '',
+  actorUserId = '',
   userId,
   email = '',
   role = 'employee',
   fullName = '',
 } = {}) => {
-  if (!tenantScope?.isShared || !tenantScope?.organizationId || !userId) {
+  if (!userId) {
     return;
   }
 
-  const organizationId = String(tenantScope.organizationId || '').trim();
+  const organizationId = String(resolvedOrganizationId || '').trim() || await resolveTenantManagementOrganizationId(adminClient, tenantScope, { actorUserId });
   if (!organizationId) {
     return;
   }
@@ -1123,7 +1208,9 @@ export default async function handler(req, res) {
 
     try {
       const tenantScope = await resolveRequestTenantScope({ req, adminClient });
-      const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope);
+      const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope, '', {
+        actorUserId: user?.id || '',
+      });
       const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
 
       if (error) {
@@ -1191,7 +1278,10 @@ export default async function handler(req, res) {
       adminClient,
       payload: req.method === 'PATCH' || req.method === 'POST' ? req.body : null,
     });
-    const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope);
+    const tenantManagementOrganizationId = await resolveTenantManagementOrganizationId(adminClient, tenantScope, {
+      actorUserId: auth.user?.id || '',
+    });
+    const scopedUserIds = await loadTenantScopedUserIds(adminClient, tenantScope, tenantManagementOrganizationId);
 
     if (req.method === 'GET' && !userId) {
       const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
@@ -1281,7 +1371,7 @@ export default async function handler(req, res) {
 
       let existingUser = null;
 
-      if (promote_existing || tenantScope?.isShared) {
+      if (promote_existing || tenantManagementOrganizationId) {
         const { data: existingUsers, error: listError } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
         if (listError) {
           throw listError;
@@ -1329,7 +1419,7 @@ export default async function handler(req, res) {
           createdUser = updatedAuthUser?.user || existingUser;
         }
       } else {
-        if (tenantScope?.isShared && existingUser?.id) {
+        if (tenantManagementOrganizationId && existingUser?.id) {
           const mergedMetadata = {
             ...(existingUser.user_metadata || {}),
             ...fallbackMetadata,
@@ -1409,6 +1499,8 @@ export default async function handler(req, res) {
         await ensureTenantScopedStaffMembership({
           adminClient,
           tenantScope,
+          organizationId: tenantManagementOrganizationId,
+          actorUserId: auth.user?.id || '',
           userId: createdUser.id,
           email: createdUser.email || email,
           role: upsertPayload.role,
@@ -1463,7 +1555,11 @@ export default async function handler(req, res) {
             ''
           ).trim().toLowerCase();
 
-          if ((!effectiveTenantScope?.isShared || !effectiveTenantScope.organizationId) && explicitHostname) {
+          let effectiveTenantManagementOrganizationId = await resolveTenantManagementOrganizationId(adminClient, effectiveTenantScope, {
+            actorUserId: auth.user?.id || '',
+          });
+
+          if (!effectiveTenantManagementOrganizationId && explicitHostname) {
             effectiveTenantScope = await resolveRequestTenantScope({
               req: {
                 ...req,
@@ -1483,6 +1579,9 @@ export default async function handler(req, res) {
                 hostname: explicitHostname,
               },
             });
+            effectiveTenantManagementOrganizationId = await resolveTenantManagementOrganizationId(adminClient, effectiveTenantScope, {
+              actorUserId: auth.user?.id || '',
+            });
           }
 
           console.log('admin-users detach_workspace_user scope:', {
@@ -1491,11 +1590,12 @@ export default async function handler(req, res) {
             tenantSlug: effectiveTenantScope?.tenantSlug || null,
             tenancyMode: effectiveTenantScope?.tenancyMode || null,
             organizationId: effectiveTenantScope?.organizationId || null,
+            managementOrganizationId: effectiveTenantManagementOrganizationId || null,
             isShared: effectiveTenantScope?.isShared === true,
           });
 
-          if (!effectiveTenantScope?.isShared || !effectiveTenantScope.organizationId) {
-            res.status(400).json({ error: 'Workspace detach is only available inside a shared tenant workspace.' });
+          if (!effectiveTenantManagementOrganizationId) {
+            res.status(400).json({ error: 'Workspace detach is only available inside a tenant workspace with an organization scope.' });
             return;
           }
 
@@ -1504,7 +1604,6 @@ export default async function handler(req, res) {
             return;
           }
 
-          const normalizedTenantOrganizationId = String(effectiveTenantScope.organizationId || '').trim();
           const { data: targetProfile, error: targetProfileError } = await adminClient
             .from(APP_USERS_TABLE)
             .select('id, email, primary_organization_id')
@@ -1521,7 +1620,7 @@ export default async function handler(req, res) {
               membership_status: 'suspended',
               updated_at: new Date().toISOString(),
             })
-            .eq('organization_id', normalizedTenantOrganizationId)
+            .eq('organization_id', effectiveTenantManagementOrganizationId)
             .eq('user_id', userId);
 
           if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
@@ -1529,7 +1628,7 @@ export default async function handler(req, res) {
           }
 
           const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
-          if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
+          if (normalizedPrimaryOrganizationId === effectiveTenantManagementOrganizationId) {
             const { error: detachError } = await adminClient
               .from(APP_USERS_TABLE)
               .update({
@@ -1847,8 +1946,8 @@ export default async function handler(req, res) {
       if (app_profile.salary_amount !== undefined && app_profile.salary_amount !== '') {
         appUserUpdate.salary_amount = Number(app_profile.salary_amount) || 0;
       }
-      if (tenantScope?.isShared && tenantScope.organizationId) {
-        appUserUpdate.primary_organization_id = tenantScope.organizationId;
+      if (tenantManagementOrganizationId) {
+        appUserUpdate.primary_organization_id = tenantManagementOrganizationId;
       }
 
       if (Array.isArray(app_profile.staff_id_documents)) {
@@ -1890,6 +1989,8 @@ export default async function handler(req, res) {
       await ensureTenantScopedStaffMembership({
         adminClient,
         tenantScope,
+        organizationId: tenantManagementOrganizationId,
+        actorUserId: auth.user?.id || '',
         userId,
         email: email || updatedUser?.email || '',
         role: app_profile.role || user_metadata?.role || updatedUser?.user_metadata?.role || 'employee',
@@ -1907,15 +2008,14 @@ export default async function handler(req, res) {
 
     if (req.method === 'DELETE' && userId) {
       const isTenantHostRequest = Boolean(String(tenantScope?.tenantSlug || '').trim());
-
-      if (isTenantHostRequest && tenantScope?.tenancyMode === 'shared' && !tenantScope?.organizationId) {
+      if (isTenantHostRequest && !tenantManagementOrganizationId) {
         res.status(409).json({
           error: 'Workspace user removal is unavailable because the tenant organization context could not be resolved.',
         });
         return;
       }
 
-      if (tenantScope?.isShared && tenantScope.organizationId) {
+      if (tenantManagementOrganizationId) {
         const { data: targetProfile, error: targetProfileError } = await adminClient
           .from(APP_USERS_TABLE)
           .select('id, email, primary_organization_id')
@@ -1926,15 +2026,13 @@ export default async function handler(req, res) {
           throw targetProfileError;
         }
 
-        const normalizedTenantOrganizationId = String(tenantScope.organizationId || '').trim();
-
         const { error: membershipDetachError } = await adminClient
           .from(ORGANIZATION_MEMBERS_TABLE)
           .update({
             membership_status: 'suspended',
             updated_at: new Date().toISOString(),
           })
-          .eq('organization_id', normalizedTenantOrganizationId)
+          .eq('organization_id', tenantManagementOrganizationId)
           .eq('user_id', userId);
 
         if (membershipDetachError && !isSchemaCompatibilityError(membershipDetachError)) {
@@ -1942,7 +2040,7 @@ export default async function handler(req, res) {
         }
 
         const normalizedPrimaryOrganizationId = String(targetProfile?.primary_organization_id || '').trim();
-        if (normalizedPrimaryOrganizationId === normalizedTenantOrganizationId) {
+        if (normalizedPrimaryOrganizationId === tenantManagementOrganizationId) {
           const { error: detachError } = await adminClient
             .from(APP_USERS_TABLE)
             .update({

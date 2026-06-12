@@ -15,6 +15,11 @@ const TRANSACTION_TYPE_OPTIONS = [
 ];
 
 const normalizeDecimalInput = (value = '') => String(value ?? '').replace(',', '.');
+const normalizeDecimalTextInput = (value = '') => {
+  const normalized = normalizeDecimalInput(value).replace(/[^\d.]/g, '');
+  const [wholePart = '', ...decimalParts] = normalized.split('.');
+  return decimalParts.length > 0 ? `${wholePart}.${decimalParts.join('')}` : wholePart;
+};
 const parseDecimalInput = (value = '') => {
   const parsed = Number(normalizeDecimalInput(value));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -369,31 +374,40 @@ const AddFuelTransactionModal = ({
       return;
     }
 
-    if (name === 'amount' && (formData.transaction_type === 'vehicle_refill' || formData.transaction_type === 'withdrawal')) {
+    if (name === 'amount' && formData.transaction_type === 'vehicle_refill') {
+      const normalizedValue = normalizeDecimalTextInput(value);
+
+      setFormData((prev) => {
+        const unitPrice = parseDecimalInput(prev.unit_price);
+        const amount = parseDecimalInput(normalizedValue);
+        return {
+          ...prev,
+          amount: normalizedValue,
+          cost: normalizedValue !== '' && amount > 0 && unitPrice > 0 ? (amount * unitPrice).toFixed(2) : prev.cost
+        };
+      });
+
+      if (errors[name]) {
+        setErrors((prev) => ({
+          ...prev,
+          [name]: ''
+        }));
+      }
+      return;
+    }
+
+    if (name === 'amount' && formData.transaction_type === 'withdrawal') {
       const normalizedValue = normalizeDecimalInput(value);
       const numericAmount = Number(normalizedValue);
       const roundedAmount = Number.isFinite(numericAmount) ? roundToHalfLiter(numericAmount) : 0;
-      const safeAmount = formData.transaction_type === 'vehicle_refill' && maxVehicleLiters > 0
-        ? Math.min(roundedAmount, roundToHalfLiter(maxVehicleLiters))
-        : roundedAmount;
+      const safeAmount = roundedAmount;
 
       setFormData((prev) => {
-        if (prev.transaction_type === 'withdrawal') {
-          return {
-            ...prev,
-            amount: normalizedValue === '' ? '' : String(safeAmount),
-            unit_price: '',
-            cost: ''
-          };
-        }
-        const unitPrice = parseDecimalInput(prev.unit_price);
-        const totalCost = parseDecimalInput(prev.cost);
-        const derivedUnitPrice = safeAmount > 0 && totalCost > 0 ? (totalCost / safeAmount).toFixed(2) : '';
         return {
           ...prev,
           amount: normalizedValue === '' ? '' : String(safeAmount),
-          unit_price: unitPrice > 0 ? prev.unit_price : derivedUnitPrice,
-          cost: normalizedValue !== '' && safeAmount > 0 && unitPrice > 0 ? (safeAmount * unitPrice).toFixed(2) : prev.cost
+          unit_price: '',
+          cost: ''
         };
       });
 
@@ -741,6 +755,13 @@ const AddFuelTransactionModal = ({
           `Vous pouvez atteindre seulement ${maxReachableTransferLines}/8 pour le moment (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`
         );
       }
+    }
+
+    if (formData.transaction_type === 'vehicle_refill' && maxVehicleLiters > 0 && amountValue > maxVehicleLiters) {
+      newErrors.amount = tr(
+        `Maximum ${roundTo(maxVehicleLiters, 2)}L can fit in this vehicle right now.`,
+        `Maximum ${roundTo(maxVehicleLiters, 2)}L peut entrer dans ce véhicule pour le moment.`
+      );
     }
 
     if (
@@ -1643,7 +1664,7 @@ const AddFuelTransactionModal = ({
                         {formData.amount ? `+${selectedAddedLinesApprox}/8` : tr('Not set', 'Non défini')}
                       </p>
                       <p className="mt-1 text-xs font-medium text-slate-500">
-                        {formData.amount ? `${roundToHalfLiter(enteredAmountLiters).toFixed(1)}L` : '0.0L'}
+                        {formData.amount ? `${roundTo(enteredAmountLiters, 2).toFixed(2)}L` : '0.00L'}
                       </p>
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1658,15 +1679,13 @@ const AddFuelTransactionModal = ({
                       {tr('Custom liters', 'Litres personnalisés')}
                     </label>
                     <input
-                      type="number"
+                      type="text"
                       name="amount"
                       value={formData.amount}
                       onChange={handleInputChange}
-                      step="0.5"
-                      min="0.5"
-                      max={roundToHalfLiter(maxVehicleLiters) || undefined}
+                      inputMode="decimal"
                       disabled={isVehicleFullForTransfer || litersPickerOptions.length === 0}
-                      className={`mt-2 w-full rounded-xl border px-4 py-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      className={`mt-2 w-full rounded-xl border px-4 py-4 text-lg font-semibold [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-blue-500 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
                         errors.amount ? 'border-red-300' : 'border-gray-300'
                       }`}
                       placeholder={isVehicleFullForTransfer || litersPickerOptions.length === 0 ? tr('Tank full', 'Réservoir plein') : tr('Enter liters', 'Entrez les litres')}

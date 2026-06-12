@@ -1,4 +1,4 @@
-const DEFAULT_EXPENSE_LABELS = ['Food', 'Office', 'Supplies'];
+const DEFAULT_EXPENSE_LABELS = ['Food', 'Payroll', 'Office Supplies', 'Mechanic'];
 const LABELS_MARKER = 'Labels:';
 
 const normalizeLabel = (value = '') =>
