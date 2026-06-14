@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Save, AlertCircle, Car, Filter, DollarSign, Clock, Calendar, CalendarDays, CalendarRange, Printer, Download } from 'lucide-react';
+import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Save, AlertCircle, Car, Filter, DollarSign, Clock, Calendar, CalendarDays, CalendarRange, Printer, Download, Minus } from 'lucide-react';
 import KilometerPricingHelpModal from './KilometerPricingHelpModal';
 import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { getDepositPresetSettings } from '../services/DepositPresetSettingsService';
+import FuelPricingService from '../services/FuelPricingService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../services/systemSettingsApi';
-import { scopeTenantOwnedQuery, shouldScopeSharedTenantData, verifyTenantOwnedRows } from '../services/OrganizationService';
+import { scopeTenantOwnedQuery, verifyTenantOwnedRows } from '../services/OrganizationService';
 import { normalizeDailyReturnPolicy } from '../utils/dailyReturnPolicy';
 
 interface RentalPackage {
-  id: number;
+  id: number | string;
   name: string;
   description: string;
   vehicle_model_id: string;
@@ -264,8 +265,8 @@ const KilometerPricingTab: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [filterVehicleModel, setFilterVehicleModel] = useState<string>('');
   const [filterRateType, setFilterRateType] = useState<string>('');
-  const [deleteLoading, setDeleteLoading] = useState<number | null>(null);
-  const [printToggleLoading, setPrintToggleLoading] = useState<number | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState<number | string | null>(null);
+  const [printToggleLoading, setPrintToggleLoading] = useState<number | string | null>(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const [exportingPrintPng, setExportingPrintPng] = useState(false);
   const [dailyReturnPolicy, setDailyReturnPolicy] = useState(() => normalizeDailyReturnPolicy());
@@ -315,6 +316,53 @@ const KilometerPricingTab: React.FC = () => {
     `Daily rentals return before ${formattedDailyReturnTime} the next day. Late return: ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD per extra hour. After ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} hours, a full extra day applies.`,
     `Les locations journalières reviennent avant ${formattedDailyReturnTime} le lendemain. Retour tardif : ${dailyReturnPolicy.dailyLateReturnHourlyPenaltyMad} MAD par heure supplémentaire. Après ${dailyReturnPolicy.dailyLateReturnFullDayThresholdHours} heures, une journée complète s’applique.`
   );
+  const selectedRateType = rateTypes.find((rateType) => rateType.id === formData.rate_type_id) || null;
+  const selectedRateTypeName = String(selectedRateType?.name || '').toLowerCase();
+  const isSpecialPackageType =
+    packageTypeSelection === HALF_HOUR_SELECTION || packageTypeSelection === HALF_DAY_SELECTION;
+  const selectedPackageRateFamily =
+    packageTypeSelection === HALF_HOUR_SELECTION || selectedRateTypeName.includes('hour')
+      ? 'hourly'
+      : packageTypeSelection === HALF_DAY_SELECTION || selectedRateTypeName.includes('day')
+        ? 'daily'
+        : selectedRateTypeName.includes('week')
+          ? 'weekly'
+          : selectedRateTypeName.includes('month')
+            ? 'monthly'
+            : 'other';
+  const shouldShowDurationControl = !isSpecialPackageType && ['hourly', 'daily'].includes(selectedPackageRateFamily);
+  const packageDurationUnits = Number(formData.duration_units || 0) || 0;
+  const packageDurationMinimum = selectedPackageRateFamily === 'hourly' ? 0.5 : 1;
+  const packageDurationStep = selectedPackageRateFamily === 'hourly' ? 0.5 : 1;
+  const formatPackageDurationLabel = (durationUnits = packageDurationUnits, family = selectedPackageRateFamily) => {
+    const duration = Number(durationUnits || 0) || 0;
+    if (duration <= 0) return tr('Not set', 'Non défini');
+    if (family === 'hourly') {
+      if (duration === 0.5) return tr('30 minutes', '30 minutes');
+      if (duration === 1) return tr('1 hour', '1 heure');
+      return tr(`${duration} hours`, `${duration} heures`);
+    }
+    if (family === 'daily') {
+      if (duration === 1) return tr('1 day', '1 jour');
+      return tr(`${duration} days`, `${duration} jours`);
+    }
+    return String(duration);
+  };
+  const normalizePackageDurationInput = (value: any, family = selectedPackageRateFamily) => {
+    const parsed = Number(String(value ?? '').replace(',', '.'));
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    if (family === 'daily') return Math.max(1, Math.round(parsed));
+    if (family === 'hourly') return Math.max(0.5, Math.round(parsed * 2) / 2);
+    return Math.max(1, parsed);
+  };
+  const handlePackageDurationChange = (value: any) => {
+    handleFormChange('duration_units', normalizePackageDurationInput(value));
+  };
+  const adjustPackageDuration = (direction: 1 | -1) => {
+    const current = Number(formData.duration_units || packageDurationMinimum) || packageDurationMinimum;
+    const next = current + direction * packageDurationStep;
+    handleFormChange('duration_units', Math.max(packageDurationMinimum, Number(next.toFixed(2))));
+  };
 
   const getPackageRateFamily = (pkg: RentalPackage) => {
     if (detectHalfHourPackage(pkg)) return 'hourly';
@@ -496,8 +544,14 @@ const KilometerPricingTab: React.FC = () => {
     setError(null);
   };
 
-  const handleDeletePackage = async (id: number) => {
-    if (!window.confirm('Are you sure you want to delete this package? This action cannot be undone.')) {
+  const handleDeletePackage = async (pkgOrId: RentalPackage | number) => {
+    const targetPackage = typeof pkgOrId === 'object'
+      ? pkgOrId
+      : packages.find((pkg) => String(pkg.id) === String(pkgOrId));
+    const id = typeof pkgOrId === 'object' ? pkgOrId.id : pkgOrId;
+
+    if (!targetPackage || !id) {
+      setError(tr('Package could not be found. Please refresh and try again.', 'Package introuvable. Actualisez puis réessayez.'));
       return;
     }
 
@@ -510,7 +564,7 @@ const KilometerPricingTab: React.FC = () => {
       // First, check if this package is used in any rentals
       let rentalsQuery = supabase
         .from('app_4c3a7a6153_rentals')
-        .select('id, rental_id, organization_id')
+        .select('id, rental_id, organization_id, package_id')
         .eq('package_id', id);
       rentalsQuery = await scopeTenantOwnedQuery(rentalsQuery, 'app_4c3a7a6153_rentals', {
         message: 'Workspace organization context is required to inspect package rentals.',
@@ -525,33 +579,52 @@ const KilometerPricingTab: React.FC = () => {
         message: 'Package rental usage returned rows outside the active workspace.',
       });
 
-      // If package is used in rentals, warn the user
       if (rentals && rentals.length > 0) {
-        const confirmDelete = window.confirm(
-          `This package is used in ${rentals.length} rental(s). Deleting it will remove the package association from these rentals. Continue?`
+        const confirmArchive = window.confirm(
+          tr(
+            `This package is used in ${rentals.length} rental(s). It will be archived for future bookings, and existing rentals will keep their saved package details. Continue?`,
+            `Ce package est utilisé dans ${rentals.length} location(s). Il sera archivé pour les prochaines réservations et les locations existantes conserveront leurs détails enregistrés. Continuer ?`
+          )
         );
         
-        if (!confirmDelete) {
+        if (!confirmArchive) {
           setDeleteLoading(null);
           return;
         }
-        
-        // Update rentals to remove package association
-        let updateQuery = supabase
-          .from('app_4c3a7a6153_rentals')
-          .update({ package_id: null })
-          .eq('package_id', id);
-        updateQuery = await scopeTenantOwnedQuery(updateQuery, 'app_4c3a7a6153_rentals', {
-          message: 'Workspace organization context is required to update package rentals.',
+
+        let archiveQuery = supabase
+          .from('app_4c3a7a6153_rental_km_packages')
+          .update({
+            is_active: false,
+            show_on_print: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id);
+        archiveQuery = await scopeTenantOwnedQuery(archiveQuery, 'app_4c3a7a6153_rental_km_packages', {
+          message: 'Workspace organization context is required to archive packages.',
         });
-        const { error: updateError } = await updateQuery;
-        
-        if (updateError) {
-          console.error('Error updating rentals:', updateError);
-          throw new Error('Failed to update rentals');
+        const { error: archiveError } = await archiveQuery;
+
+        if (archiveError) {
+          console.error('Error archiving package:', archiveError);
+          throw new Error(archiveError.message);
         }
-        
-        console.log(`✅ Updated ${rentals.length} rentals to remove package association`);
+
+        console.log(`✅ Archived package ${id}; preserved ${rentals.length} rental snapshot(s)`);
+        setSuccessMessage(
+          tr(
+            'Package archived. Existing rentals kept their saved package details.',
+            'Package archivé. Les locations existantes ont conservé leurs détails enregistrés.'
+          )
+        );
+        await loadData();
+        setTimeout(() => setSuccessMessage(null), 3000);
+        return;
+      }
+
+      if (!window.confirm(tr('Delete this unused package permanently?', 'Supprimer définitivement ce package non utilisé ?'))) {
+        setDeleteLoading(null);
+        return;
       }
 
       // Check if package is used in mapping table
@@ -640,6 +713,11 @@ const KilometerPricingTab: React.FC = () => {
     const isHalfHour = selection === HALF_HOUR_SELECTION;
     const isHalfDay = selection === HALF_DAY_SELECTION;
     const selectedRateTypeId = isHalfHour || isHalfDay ? hourlyRateTypeId : Number(selection);
+    const selectedRateTypeName = String(
+      rateTypes.find((rateType) => rateType.id === selectedRateTypeId)?.name || ''
+    ).toLowerCase();
+    const wasSpecialSelection =
+      packageTypeSelection === HALF_HOUR_SELECTION || packageTypeSelection === HALF_DAY_SELECTION;
 
     setPackageTypeSelection(selection);
     setFormData((prev) => {
@@ -661,6 +739,15 @@ const KilometerPricingTab: React.FC = () => {
         name: nextName,
         description: nextDescription,
         rate_type_id: selectedRateTypeId,
+        duration_units: isHalfHour
+          ? 0.5
+          : isHalfDay
+            ? 4
+            : selectedRateTypeName.includes('hour')
+              ? Math.max(0.5, Number(wasSpecialSelection ? 1 : prev.duration_units) || 1)
+              : selectedRateTypeName.includes('day')
+                ? Math.max(1, Math.round(Number(wasSpecialSelection ? 1 : prev.duration_units) || 1))
+                : prev.duration_units,
       };
     });
   };
@@ -675,31 +762,14 @@ const KilometerPricingTab: React.FC = () => {
       }
 
       try {
-        const fuelPricingQuery = await scopeTenantOwnedQuery(
-          supabase
-            .from('fuel_pricing')
-            .select('organization_id, price_per_line, hourly_price_per_line, daily_price_per_line')
-            .eq('model_id', formData.vehicle_model_id),
-          'fuel_pricing',
-          {
-            message: 'Workspace organization context is required to load fuel pricing.',
-          }
-        );
-        const { data, error } = await fuelPricingQuery.maybeSingle();
-
-        if (error && error.code !== 'PGRST116') throw error;
         if (cancelled) return;
-        await verifyTenantOwnedRows(data || [], 'fuel_pricing', {
-          message: 'Fuel pricing returned rows outside the active workspace.',
-        });
-
         const selectedRateType = rateTypes.find((rateType) => rateType.id === formData.rate_type_id);
         const rateTypeName = String(selectedRateType?.name || '').toLowerCase();
-        const nextPrice = rateTypeName.includes('hour')
-          ? Number(data?.hourly_price_per_line ?? data?.price_per_line ?? 0) || 0
-          : rateTypeName.includes('day')
-            ? Number(data?.daily_price_per_line ?? data?.price_per_line ?? 0) || 0
-            : Number(data?.price_per_line ?? 0) || 0;
+        const rentalType = rateTypeName.includes('hour') ? 'hourly' : 'daily';
+        const nextPrice = await FuelPricingService.getFuelPricingForModel(
+          formData.vehicle_model_id,
+          rentalType
+        );
 
         setFuelLineChargePreview(nextPrice);
       } catch (err) {
@@ -772,6 +842,12 @@ const KilometerPricingTab: React.FC = () => {
     }
     if (!formData.rate_type_id) {
       return tr('Rate type is required', 'Le type de tarif est obligatoire');
+    }
+    if (
+      shouldShowDurationControl &&
+      (!formData.duration_units || Number(formData.duration_units) <= 0)
+    ) {
+      return tr('Package duration is required and must be greater than 0', 'La durée du package est obligatoire et doit être supérieure à 0');
     }
     
     // All three pricing fields are required together
@@ -1323,11 +1399,16 @@ const KilometerPricingTab: React.FC = () => {
             const rateTypeIcon = getRateTypeIcon(rateTypeName);
             const showOnPrint = isPrintSelected(pkg);
             const packageDisplayNumber = getPackageDisplayNumber(pkg);
+            const isArchivedPackage = pkg.is_active === false;
             
             return (
               <div
                 key={pkg.id}
-                className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                className={`rounded-lg border p-4 transition-shadow hover:shadow-md ${
+                  isArchivedPackage
+                    ? 'border-slate-200 bg-slate-50/80'
+                    : 'border-gray-200 bg-white'
+                }`}
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1">
@@ -1338,9 +1419,15 @@ const KilometerPricingTab: React.FC = () => {
                       <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-violet-600">
                         {tr('Package number', 'Numéro package')}
                       </span>
+                      {isArchivedPackage && (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-400 bg-amber-100 px-2.5 py-1 text-xs font-black uppercase tracking-[0.12em] text-amber-900 shadow-sm shadow-amber-200">
+                          <XCircle className="h-3.5 w-3.5" />
+                          {tr('Archived', 'Archivé')}
+                        </span>
+                      )}
                     </div>
-                    <h4 className="font-semibold text-gray-900">{pkg.name}</h4>
-                    <p className="text-sm text-gray-600 mt-1">{pkg.description}</p>
+                    <h4 className={`font-semibold ${isArchivedPackage ? 'text-slate-600' : 'text-gray-900'}`}>{pkg.name}</h4>
+                    <p className={`mt-1 text-sm ${isArchivedPackage ? 'text-slate-500' : 'text-gray-600'}`}>{pkg.description}</p>
                     
                     {/* Rate Type Badge */}
                     <div className={`flex items-center gap-1 mt-2 text-xs px-2 py-1 rounded-md w-fit border ${rateTypeColor}`}>
@@ -1462,7 +1549,7 @@ const KilometerPricingTab: React.FC = () => {
                     {tr('Edit', 'Modifier')}
                   </button>
                   <button 
-                    onClick={() => handleDeletePackage(pkg.id)}
+                    onClick={() => handleDeletePackage(pkg)}
                     disabled={deleteLoading === pkg.id}
                     className={`min-w-0 flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
                       deleteLoading === pkg.id 
@@ -2043,7 +2130,9 @@ const KilometerPricingTab: React.FC = () => {
                     </button>
                     {rateTypes.map(rt => {
                       const isSelected =
-                        packageTypeSelection !== HALF_DAY_SELECTION && formData.rate_type_id === rt.id;
+                        packageTypeSelection !== HALF_HOUR_SELECTION &&
+                        packageTypeSelection !== HALF_DAY_SELECTION &&
+                        formData.rate_type_id === rt.id;
                       const colorClass = getRateTypeColor(rt.name);
                       const icon = getRateTypeIcon(rt.name);
                       
@@ -2082,6 +2171,65 @@ const KilometerPricingTab: React.FC = () => {
                   )}
                 </div>
 
+                {shouldShowDurationControl && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <label className="block text-sm font-semibold text-slate-900">
+                          {tr('Package duration', 'Durée du package')} <span className="text-red-500">*</span>
+                        </label>
+                        <p className="mt-1 text-xs text-slate-600">
+                          {selectedPackageRateFamily === 'hourly'
+                            ? tr(
+                                'Set how many hours this package covers. The rental stepper will use this duration.',
+                                'Définissez le nombre d’heures couvertes par ce package. Le stepper de location utilisera cette durée.'
+                              )
+                            : tr(
+                                'Set how many days this package covers. The rental stepper will use this duration.',
+                                'Définissez le nombre de jours couverts par ce package. Le stepper de location utilisera cette durée.'
+                              )}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-700 shadow-sm">
+                        {formatPackageDurationLabel()}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => adjustPackageDuration(-1)}
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                        aria-label={tr('Decrease duration', 'Réduire la durée')}
+                      >
+                        <Minus className="h-4 w-4" />
+                      </button>
+                      <input
+                        type="text"
+                        inputMode={selectedPackageRateFamily === 'hourly' ? 'decimal' : 'numeric'}
+                        value={formData.duration_units ?? ''}
+                        onChange={(e) => handlePackageDurationChange(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-center text-lg font-bold text-slate-900 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                        placeholder={selectedPackageRateFamily === 'hourly' ? '2' : '1'}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => adjustPackageDuration(1)}
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                        aria-label={tr('Increase duration', 'Augmenter la durée')}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="mt-2 text-xs font-medium text-slate-500">
+                      {selectedPackageRateFamily === 'hourly'
+                        ? tr('Use 0.5 for 30 minutes, 1 for 1 hour, 3 for 3 hours, etc.', 'Utilisez 0,5 pour 30 minutes, 1 pour 1 heure, 3 pour 3 heures, etc.')
+                        : tr('Use 1 for one day, 2 for two days, etc.', 'Utilisez 1 pour un jour, 2 pour deux jours, etc.')}
+                    </div>
+                  </div>
+                )}
+
                 {/* Fixed Amount - Main Price */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -2108,6 +2256,11 @@ const KilometerPricingTab: React.FC = () => {
                           'Total package price for a fixed 30-minute rental.',
                           'Prix total du package pour une location fixe de 30 minutes.'
                         )
+                      : shouldShowDurationControl
+                        ? tr(
+                            `Total package price for ${formatPackageDurationLabel()}.`,
+                            `Prix total du package pour ${formatPackageDurationLabel()}.`
+                          )
                       : tr(
                           'Total package price for this rate type (e.g., 400 MAD for Hourly, 500 MAD for Daily)',
                           'Prix total du package pour ce type de tarif (ex. 400 MAD pour Horaire, 500 MAD pour Journalier)'
@@ -2230,6 +2383,8 @@ const KilometerPricingTab: React.FC = () => {
             ? 'Half hour'
             : packageTypeSelection === HALF_DAY_SELECTION
               ? 'Half day'
+              : shouldShowDurationControl
+                ? formatPackageDurationLabel()
               : rateTypes.find(rt => rt.id === formData.rate_type_id)?.name
         } package (150 km total):`,
         `Aperçu du package ${
@@ -2237,6 +2392,8 @@ const KilometerPricingTab: React.FC = () => {
             ? 'demi-heure'
             : packageTypeSelection === HALF_DAY_SELECTION
               ? 'demi-journée'
+              : shouldShowDurationControl
+                ? formatPackageDurationLabel()
               : rateTypes.find(rt => rt.id === formData.rate_type_id)?.name
         } sélectionné (150 km au total) :`
       )}

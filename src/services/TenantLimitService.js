@@ -26,6 +26,7 @@ const buildControlsSnapshot = ({
   planType = 'starter',
   planLimits = {},
   featureAccess = {},
+  runtimeLoadFailed = false,
 } = {}) => {
   const normalizedPlanType = String(planType || 'starter').trim().toLowerCase();
   const effectivePlanType = normalizeTenantPlanType(normalizedPlanType);
@@ -41,6 +42,7 @@ const buildControlsSnapshot = ({
       storage_gb: Number(sourceLimits.storage_gb ?? baseLimits.storage_gb) || 0,
     },
     featureAccess: buildEffectiveTenantFeatureAccess(effectivePlanType, normalizeFeatureAccess(featureAccess)),
+    runtimeLoadFailed,
   };
 };
 
@@ -130,11 +132,16 @@ export const getTenantRuntimeControls = async ({ forceRefresh = false } = {}) =>
       })
     );
   } catch (error) {
+    console.warn('Tenant runtime controls unavailable; using session metadata fallback.', error);
     return writeCachedControls(
       buildControlsSnapshot({
         planType: authUser.user_metadata?.plan_type || authUser.app_metadata?.plan_type || 'starter',
         planLimits: {},
-        featureAccess: {},
+        featureAccess:
+          authUser.user_metadata?.feature_access ||
+          authUser.app_metadata?.feature_access ||
+          {},
+        runtimeLoadFailed: true,
       })
     );
   }
@@ -194,13 +201,25 @@ export const assertCanCreateListing = async () =>
 
 export const hasTenantFeatureAccess = async (featureKey) => {
   const controls = await getTenantRuntimeControls();
+  if (controls?.runtimeLoadFailed) {
+    console.warn(`Tenant feature check for "${featureKey}" used metadata fallback after runtime controls failed.`);
+    return true;
+  }
   return controls?.featureAccess?.[featureKey] === true;
+};
+
+const normalizeFeatureMessage = (messageOrOptions = '') => {
+  if (typeof messageOrOptions === 'string') return messageOrOptions;
+  if (messageOrOptions && typeof messageOrOptions === 'object') {
+    return messageOrOptions.message || messageOrOptions.error || '';
+  }
+  return '';
 };
 
 export const assertTenantFeatureEnabled = async (featureKey, message = '') => {
   const hasAccess = await hasTenantFeatureAccess(featureKey);
   if (!hasAccess) {
-    throw new Error(message || 'Your tenant plan does not include this feature.');
+    throw new Error(normalizeFeatureMessage(message) || 'Your tenant plan does not include this feature.');
   }
   return true;
 };

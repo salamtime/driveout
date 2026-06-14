@@ -213,6 +213,47 @@ const getVehicleModelIdValue = (vehicle) => (
   ?? null
 );
 
+const normalizeVehicleModelToken = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const getEquivalentVehicleModelIds = (vehicleModelId, models = [], organizationId = null) => {
+  const requestedModelId = String(vehicleModelId || '').trim();
+  if (!requestedModelId) return [];
+
+  const normalizedModels = Array.isArray(models) ? models : [];
+  const selectedModel = normalizedModels.find((model) => String(model?.id || '') === requestedModelId);
+  if (!selectedModel) return [requestedModelId];
+
+  const selectedName = normalizeVehicleModelToken(selectedModel.name);
+  const selectedCode = normalizeVehicleModelToken(selectedModel.model);
+  const selectedType = normalizeVehicleModelToken(selectedModel.vehicle_type);
+  const selectedOrganizationId = String(organizationId || selectedModel.organization_id || '').trim();
+
+  const equivalentIds = normalizedModels
+    .filter((model) => {
+      const modelId = String(model?.id || '').trim();
+      if (!modelId) return false;
+      if (modelId === requestedModelId) return true;
+
+      const modelName = normalizeVehicleModelToken(model?.name);
+      const modelCode = normalizeVehicleModelToken(model?.model);
+      const modelType = normalizeVehicleModelToken(model?.vehicle_type);
+      const modelOrganizationId = String(model?.organization_id || '').trim();
+
+      const sameName = selectedName && modelName && selectedName === modelName;
+      const sameCode = selectedCode && modelCode && selectedCode === modelCode;
+      const sameType = !selectedType || !modelType || selectedType === modelType;
+      const sameOrganization = !modelOrganizationId || !selectedOrganizationId || modelOrganizationId === selectedOrganizationId;
+      return sameName && sameCode && sameType && sameOrganization;
+    })
+    .map((model) => String(model.id));
+
+  return [...new Set([requestedModelId, ...equivalentIds])];
+};
+
 const isAbortLikeRequestError = (error) => {
   const message = String(error?.message || error || '').toLowerCase();
   const name = String(error?.name || '').toLowerCase();
@@ -440,6 +481,12 @@ const normalizeRequestedRentalDurationUnits = (rentalType, durationUnits) => {
 
 const packageMatchesRateType = (pkg = {}, rentalType) => {
   if (!rentalType) return true;
+  const pkgRateTypeId = Number(pkg?.rate_type_id ?? pkg?.rateTypeId ?? 0) || 0;
+  if (pkgRateTypeId > 0) {
+    if (rentalType === 'hourly') return pkgRateTypeId === 1;
+    if (rentalType === 'daily') return pkgRateTypeId === 2;
+  }
+
   const pkgRateType = String(
     pkg?.rate_types?.name ??
     pkg?.rate_type?.name ??
@@ -490,6 +537,23 @@ const getDurationScopedPackages = (packages = [], rentalType, durationUnits) => 
 
     return isSameDurationUnits(packageDurationUnits, 1);
   });
+};
+
+const buildDurationQuickOptions = (packages = [], rentalType, defaultOptions = []) => {
+  const optionSet = new Set(
+    (defaultOptions || [])
+      .map((option) => Number(option))
+      .filter((option) => Number.isFinite(option) && option > 0)
+  );
+
+  (Array.isArray(packages) ? packages : []).forEach((pkg) => {
+    if (!packageMatchesRateType(pkg, rentalType)) return;
+    const durationUnits = Number(getPackageDurationUnits(pkg) || 0) || 0;
+    if (!Number.isFinite(durationUnits) || durationUnits <= 0) return;
+    optionSet.add(Number(durationUnits.toFixed(2)));
+  });
+
+  return Array.from(optionSet).sort((left, right) => left - right);
 };
 
 const normalizeEditWorkflowFieldValue = (field, value) => {
@@ -749,6 +813,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   const [success, setSuccess] = useState(null);
   const [dateError, setDateError] = useState(null);
   const [selectedQuickDuration, setSelectedQuickDuration] = useState(null);
+  const [customQuickDurationInput, setCustomQuickDurationInput] = useState('');
   
   // Data States
   const [vehicleModels, setVehicleModels] = useState([]);
@@ -2372,6 +2437,7 @@ const calculateFinancials = () => {
         (pkg) => String(pkg.id || '') === String(activeSelectedPackage?.id || '')
       );
     setSelectedQuickDuration(hours);
+    setCustomQuickDurationInput('');
     
     setFormData(prev => ({
       ...prev,
@@ -2419,11 +2485,10 @@ const calculateFinancials = () => {
       const activeSelectedPackage = availablePackages.find(
         (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
       );
-      const selectedPackageRateType = String(activeSelectedPackage?.rate_types?.name || '').toLowerCase();
       const shouldClearSelectedPackage =
         Boolean(formData.selected_package_id) &&
         (
-          selectedPackageRateType !== 'daily'
+          !packageMatchesRateType(activeSelectedPackage, 'daily')
           || !getDurationScopedPackages(availablePackages, 'daily', days).some(
             (pkg) => String(pkg.id || '') === String(activeSelectedPackage?.id || '')
           )
@@ -2454,6 +2519,7 @@ const calculateFinancials = () => {
       }));
       
       setSelectedQuickDuration(days);
+      setCustomQuickDurationInput('');
       if (shouldClearSelectedPackage) {
         setSelectedPackageDraft(null);
       }
@@ -2473,6 +2539,22 @@ const calculateFinancials = () => {
     } else {
       toast.error(tr('Invalid start date/time', 'Date/heure de début invalide'));
     }
+  };
+
+  const handleCustomQuickDurationApply = (rentalType = formData.rental_type) => {
+    const parsedDuration = Number(String(customQuickDurationInput || '').replace(',', '.'));
+    if (!Number.isFinite(parsedDuration) || parsedDuration <= 0) {
+      toast.error(tr('Enter a valid duration', 'Saisissez une durée valide'));
+      return false;
+    }
+
+    if (rentalType === 'hourly') {
+      handleQuickHourSelect(Math.max(0.5, Math.round(parsedDuration * 2) / 2));
+      return true;
+    }
+
+    handleQuickDaySelect(Math.max(1, Math.round(parsedDuration)));
+    return true;
   };
 
   // ==================== PAYMENT STATUS TAB HANDLER ====================
@@ -4776,13 +4858,22 @@ useEffect(() => {
   const fetchKMPackages = async (vehicleModelId, rentalType = null, organizationId = null) => {
     if (!vehicleModelId) return [];
     try {
-      console.log(`📦 Fetching packages for model ID: ${vehicleModelId}, rental type: ${rentalType}, organization: ${organizationId || 'current'}`);
+      const equivalentModelIds = getEquivalentVehicleModelIds(vehicleModelId, vehicleModels, organizationId);
+      const packageModelIds = equivalentModelIds.length > 0 ? equivalentModelIds : [String(vehicleModelId)];
+      console.log(`📦 Fetching packages for model ID: ${vehicleModelId}, rental type: ${rentalType}, organization: ${organizationId || 'current'}`, {
+        packageModelIds,
+      });
       
       let query = supabase
         .from(RENTAL_KM_PACKAGES_TABLE)
         .select('*, rate_types(name)')
-        .eq('vehicle_model_id', vehicleModelId)
         .eq('is_active', true);
+
+      if (packageModelIds.length > 1) {
+        query = query.in('vehicle_model_id', packageModelIds);
+      } else {
+        query = query.eq('vehicle_model_id', packageModelIds[0]);
+      }
       
       // Map rental type to rate_type_id
       if (rentalType === 'hourly') {
@@ -4883,7 +4974,7 @@ useEffect(() => {
       setIsLoadingPackages(false);
       setAvailablePackages([]);
     }
-  }, [formData.vehicle_id, formData.rental_type, availableVehicles, allVehiclesBeforeFilter]);
+  }, [formData.vehicle_id, formData.rental_type, availableVehicles, allVehiclesBeforeFilter, vehicleModels]);
 
   const calculatePackagePrice = (pkg, dur) => {
     if (!pkg || !dur) return null;
@@ -9430,13 +9521,40 @@ const SimplifiedRentalWizard = ({
 
     return activeModelFilter || null;
   }, [activeModelFilter, activeModels]);
-  const lightQuickHourOptions = [0.5, 1, 1.5, 2, 3, 4];
-  const lightQuickDayOptions = [1, 2, 3, 4];
+  const quickHourOptions = useMemo(
+    () => buildDurationQuickOptions(availablePackages, 'hourly', [0.5, 1, 1.5, 2, 3, 4]),
+    [availablePackages]
+  );
+  const quickDayOptions = useMemo(
+    () => buildDurationQuickOptions(availablePackages, 'daily', [1, 2, 3, 4]),
+    [availablePackages]
+  );
+  const lightQuickHourOptions = quickHourOptions;
+  const lightQuickDayOptions = quickDayOptions;
+  const [customQuickDurationInput, setCustomQuickDurationInput] = useState('');
   const currentLightDurationUnits = Number(
     formData.rental_type === 'hourly'
       ? (formData.quantity_hours ?? formData.quantity_days)
       : formData.quantity_days
   ) || 0;
+  const handleCustomQuickDurationApply = useCallback((rentalType = formData.rental_type) => {
+    const parsedDuration = Number(String(customQuickDurationInput || '').replace(',', '.'));
+    if (!Number.isFinite(parsedDuration) || parsedDuration <= 0) {
+      return false;
+    }
+
+    if (rentalType === 'hourly') {
+      const normalizedHours = Math.max(0.5, Math.round(parsedDuration * 2) / 2);
+      handleQuickHourSelect(normalizedHours);
+      setCustomQuickDurationInput('');
+      return true;
+    }
+
+    const normalizedDays = Math.max(1, Math.round(parsedDuration));
+    handleQuickDaySelect(normalizedDays);
+    setCustomQuickDurationInput('');
+    return true;
+  }, [customQuickDurationInput, formData.rental_type, handleQuickDaySelect, handleQuickHourSelect]);
   const selectLightVehicle = useCallback((vehicle, mappedLightPrice = null, pricingMode = null, pricingLabel = '') => {
     const vehicleId = vehicle?.id || '';
     if (!vehicleId) return;
@@ -10081,57 +10199,6 @@ const SimplifiedRentalWizard = ({
     }));
     setLightPackageDecisionMode('undecided');
   }, [setFormData]);
-
-  const handleLightBack = useCallback(() => {
-    setShowLightActionsMenu(false);
-
-    if (hasPackageDecision) {
-      clearSelectedPackage();
-      setLightExpandedSection('package');
-      setLightPackageDecisionMode('undecided');
-      return;
-    }
-
-    if (formData.vehicle_id) {
-      setSelectedDepositTab(null);
-      setCustomDepositAmount('');
-      setLightDepositConfirmed(false);
-      handleInputChange('vehicle_id', '');
-      setLightExpandedSection('vehicle');
-      setLightPackageDecisionMode('undecided');
-      return;
-    }
-
-    if (hasDurationSelection) {
-      clearLightDurationSelection();
-      setLightExpandedSection('setup');
-      setLightShowScheduleEditor(false);
-      return;
-    }
-
-    if (effectiveLightRentalType) {
-      handleInputChange('rental_type', '');
-      setSelectedQuickDuration(null);
-      setLightDurationConfirmed(false);
-      setLightRentalTypeDraft('');
-      setLightExpandedSection('setup');
-      setLightPackageDecisionMode('undecided');
-      return;
-    }
-
-    if (currentStep > 1) {
-      handleBack();
-    }
-  }, [
-    clearLightDurationSelection,
-    clearSelectedPackage,
-    currentStep,
-    effectiveLightRentalType,
-    formData.vehicle_id,
-    handleInputChange,
-    hasDurationSelection,
-    hasPackageDecision,
-  ]);
 
   const handleLightStartOver = useCallback(() => {
     setShowLightActionsMenu(false);
@@ -10994,6 +11061,46 @@ const SimplifiedRentalWizard = ({
                           );
                         })}
                       </div>
+                      <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-3 py-3">
+                        <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                          {effectiveLightRentalType === 'hourly'
+                            ? tr('Custom hours', 'Heures personnalisées')
+                            : tr('Custom days', 'Jours personnalisés')}
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            inputMode={effectiveLightRentalType === 'hourly' ? 'decimal' : 'numeric'}
+                            value={customQuickDurationInput}
+                            onChange={(event) => setCustomQuickDurationInput(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                if (handleCustomQuickDurationApply(effectiveLightRentalType)) {
+                                  setLightDurationConfirmed(true);
+                                  animateLightSectionTransition('vehicle', vehicleStepRef);
+                                }
+                              }
+                            }}
+                            className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-900 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                            placeholder={effectiveLightRentalType === 'hourly' ? '5' : '2'}
+                            disabled={successfullySubmitted}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (handleCustomQuickDurationApply(effectiveLightRentalType)) {
+                                setLightDurationConfirmed(true);
+                                animateLightSectionTransition('vehicle', vehicleStepRef);
+                              }
+                            }}
+                            disabled={successfullySubmitted}
+                            className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {tr('Set', 'Définir')}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
@@ -11560,7 +11667,7 @@ const SimplifiedRentalWizard = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={handleLightBack}
+              onClick={handleLightStepBack}
               className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
             >
               <ChevronLeft className="h-5 w-5" />
@@ -12689,7 +12796,7 @@ const SimplifiedRentalWizard = ({
                   {formData.rental_type === 'hourly' && (
                     <div>
                       <div className="grid grid-cols-3 gap-2 mb-2">
-                        {[0.5, 1, 1.5, 2, 3, 4].map((hours) => (
+                        {quickHourOptions.map((hours) => (
                           <button
                             key={hours}
                             type="button"
@@ -12714,7 +12821,7 @@ const SimplifiedRentalWizard = ({
                   {formData.rental_type === 'daily' && (
                     <div>
                       <div className="grid grid-cols-4 gap-2 mb-2">
-                        {[1, 2, 3, 4].map((days) => (
+                        {quickDayOptions.map((days) => (
                           <button
                             key={days}
                             type="button"
@@ -12733,6 +12840,39 @@ const SimplifiedRentalWizard = ({
                       </div>
                     </div>
                   )}
+
+                  <div className="mt-3 rounded-xl border border-blue-100 bg-white/80 p-3">
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
+                      {formData.rental_type === 'hourly'
+                        ? tr('Custom hours', 'Heures personnalisées')
+                        : tr('Custom days', 'Jours personnalisés')}
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode={formData.rental_type === 'hourly' ? 'decimal' : 'numeric'}
+                        value={customQuickDurationInput}
+                        onChange={(event) => setCustomQuickDurationInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            handleCustomQuickDurationApply(formData.rental_type);
+                          }
+                        }}
+                        className="min-w-0 flex-1 rounded-lg border border-blue-200 px-3 py-2 text-sm font-semibold text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                        placeholder={formData.rental_type === 'hourly' ? '5' : '2'}
+                        disabled={successfullySubmitted}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleCustomQuickDurationApply(formData.rental_type)}
+                        disabled={successfullySubmitted}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {tr('Set', 'Définir')}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
 
