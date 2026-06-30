@@ -5060,6 +5060,7 @@ useEffect(() => {
     setFuelChargeEnabled,
     fuelChargeAmount,
     loadFuelChargeSettings,
+    dailyReturnTimeLabel,
     manuallyClearedVehicleRef,
   };
 };
@@ -9038,6 +9039,7 @@ const SimplifiedRentalWizard = ({
     setFuelChargeEnabled,
     fuelChargeAmount,
     loadFuelChargeSettings,
+    dailyReturnTimeLabel,
     manuallyClearedVehicleRef,
   } = useRentalWizard(initialData, mode, navigate, {
     requiresCustomerVerification,
