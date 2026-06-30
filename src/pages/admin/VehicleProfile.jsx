@@ -1149,6 +1149,7 @@ const VehicleProfile = () => {
   }, [maintenanceHistory, vehicleReports]);
 
   const operationalVehicleStatus = useMemo(() => {
+    const rawVehicleStatus = String(vehicle?.status || '').trim().toLowerCase();
     const hasActiveImpound = (rentalHistory || []).some((record) =>
       (
         Boolean(record?.is_impounded) ||
@@ -1161,12 +1162,16 @@ const VehicleProfile = () => {
       return 'impounded';
     }
 
-    if (vehicle?.status === 'impounded') {
+    if (rawVehicleStatus === 'impounded') {
       return 'impounded';
     }
 
-    if (vehicle?.status === 'out_of_service') {
+    if (rawVehicleStatus === 'out_of_service') {
       return 'out_of_service';
+    }
+
+    if (rawVehicleStatus && !['maintenance', 'in_maintenance'].includes(rawVehicleStatus)) {
+      return rawVehicleStatus;
     }
 
     const hasOpenMaintenance = (maintenanceHistory || []).some((record) =>
@@ -1177,7 +1182,7 @@ const VehicleProfile = () => {
       return 'maintenance';
     }
 
-    return vehicle?.status || 'available';
+    return rawVehicleStatus || 'available';
   }, [maintenanceHistory, rentalHistory, vehicle?.status]);
 
   const fleetAlerts = useMemo(() => getFleetAlertsForVehicle(vehicle), [vehicle]);
