@@ -5,3 +5,5 @@ node_modules/
 .envnode_modules
 .vercel
 .env*.local
+.maestro/env.local.yaml
+.maestro/output/

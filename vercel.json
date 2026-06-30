@@ -53,6 +53,38 @@
     {
       "source": "/",
       "has": [
+        { "type": "host", "value": "www.saharax.co" }
+      ],
+      "destination": "https://saharax.driveout.io",
+      "permanent": true
+    },
+    {
+      "source": "/",
+      "has": [
+        { "type": "host", "value": "saharax.co" }
+      ],
+      "destination": "https://saharax.driveout.io",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        { "type": "host", "value": "www.saharax.co" }
+      ],
+      "destination": "https://saharax.driveout.io/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        { "type": "host", "value": "saharax.co" }
+      ],
+      "destination": "https://saharax.driveout.io/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/",
+      "has": [
         { "type": "host", "value": "admin.saharax.co" }
       ],
       "destination": "/login",

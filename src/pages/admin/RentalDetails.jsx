@@ -7789,7 +7789,7 @@ Click the link above to review and approve the extension.`;
         })
       );
     }
-    if (extensionContext?.extension?.id && !shouldSkipExtensionTelegram) {
+    if (extensionContext?.extension?.id && !extensionContext?.autoApprove && !shouldSkipExtensionTelegram) {
       try {
         await notifyRentalTelegramEvent(
           'rental_extension_requested',

@@ -18,6 +18,7 @@ import RentalService from '../../services/RentalService';
 import VehicleService from '../../services/VehicleService';
 import VehicleModelService from '../../services/VehicleModelService';
 import AppSettingsService from '../../services/AppSettingsService';
+import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
 import { getDepositPresetSettings } from '../../services/DepositPresetSettingsService';
 import enhancedUnifiedCustomerService, { updateCustomerById } from '../../services/EnhancedUnifiedCustomerService';
 import { applyOrganizationMatch, getCurrentOrganizationId, scopeTenantOwnedQuery } from '../../services/OrganizationService';
@@ -43,7 +44,6 @@ import {
   formatDailyReturnPolicyTime,
   normalizeDailyReturnPolicy,
 } from '../../utils/dailyReturnPolicy';
-import { getUsers } from '../../services/UserService';
 import {
   mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
@@ -2332,85 +2332,6 @@ const calculateFinancials = () => {
     return Array.from(customerMap.values());
   }, [customers, rentals]);
 
-  // ==================== URL SHORTENING HELPER ====================
-  const shortenUrl = async (longUrl) => {
-    try {
-      const apiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
-      
-      const response = await fetch(apiUrl);
-      
-      if (!response.ok) {
-        throw new Error(`is.gd API error: ${response.status}`);
-      }
-      
-      const shortUrl = await response.text();
-      
-      if (shortUrl.startsWith('Error:')) {
-        throw new Error(shortUrl);
-      }
-      
-      return shortUrl;
-    } catch (error) {
-      return longUrl;
-    }
-  };
-
-  const sendWhatsAppNotifications = async (pendingTotalRequest, rentalId) => {
-    try {
-      const allUsers = await getUsers();
-      const admins = (allUsers || []).filter(
-        (user) =>
-          ['owner', 'admin'].includes(String(user.role || '')) &&
-          user.whatsapp_notifications &&
-          user.phone_number
-      );
-
-      if (!admins || admins.length === 0) {
-        return 0;
-      }
-
-      let notificationCount = 0;
-      
-      for (const admin of admins) {
-        try {
-          let cleanPhone = admin.phone_number.replace(/[^\d+]/g, '');
-          
-          if (!cleanPhone.startsWith('+')) {
-            cleanPhone = '+212' + cleanPhone.replace(/^0+/, '');
-          }
-
-          const longUrl = `${window.location.origin}/admin/rentals/${rentalId}`;
-          const shortUrl = await shortenUrl(longUrl);
-          
-          const messageText = 
-            `SAHARAX - Rental Approval Required\n\n` +
-            `Price Override Request: ${pendingTotalRequest} MAD\n` +
-            `Rental ID: ${rentalId.substring(0, 8)}...\n\n` +
-            `Approval Link: ${shortUrl}\n\n` +
-            `Thank you!`;
-          
-          const message = encodeURIComponent(messageText);
-
-          const whatsappUrl = `https://wa.me/${cleanPhone}?text=${message}`;
-
-          window.open(whatsappUrl, '_blank');
-          
-          notificationCount++;
-
-          if (notificationCount < admins.length) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        } catch (err) {
-        }
-      }
-
-      return notificationCount;
-
-    } catch (err) {
-      return 0;
-    }
-  };
-
   const generateCustomerId = () => {
     const timestamp = Date.now();
     const randomString = Math.random().toString(36).substring(2, 11);
@@ -3388,6 +3309,64 @@ const calculateFinancials = () => {
     return Object.keys(newErrors).length === 0;
   };
 
+  const getPriceApprovalActorName = () => String(
+    userProfile?.fullName ||
+    userProfile?.full_name ||
+    userProfile?.name ||
+    userProfile?.email ||
+    tr('Staff member', 'Membre du personnel')
+  ).trim();
+
+  const buildRentalWizardVehicleLabel = (rentalLike = {}, draft = {}) => {
+    const vehicleRecord = findVehicleRecord(draft.vehicle_id || rentalLike.vehicle_id);
+    return [
+      rentalLike.vehicle_plate_number ||
+        rentalLike.selected_vehicle_plate_snapshot ||
+        draft.vehicle_plate_number ||
+        getVehicleDisplayNumber(vehicleRecord, ''),
+      rentalLike.selected_vehicle_model_snapshot ||
+        draft.selected_vehicle_model_snapshot ||
+        vehicleRecord?.model ||
+        vehicleRecord?.name,
+    ]
+      .filter(Boolean)
+      .join(' • ') || tr('Selected vehicle', 'Véhicule sélectionné');
+  };
+
+  const sendPriceApprovalTelegramRequest = async ({ rental, request }) => {
+    if (!rental?.id || !request?.requestedPrice) return false;
+
+    return notifyRentalTelegramEvent(
+      'rental_price_change_requested',
+      {
+        id: rental.id,
+        reference: rental.rental_id || rental.reference || '',
+        vehicle: buildRentalWizardVehicleLabel(rental, request.draft || {}),
+        customer: rental.customer_name || request.draft?.customer_name || '',
+        start: rental.rental_start_date || request.draft?.rental_start_date || '',
+        end: rental.rental_end_date || request.draft?.rental_end_date || '',
+        total: request.currentPrice,
+        amountPaid: rental.deposit_amount || request.draft?.deposit_amount || 0,
+        remaining: rental.remaining_amount || request.draft?.remaining_amount || 0,
+        requestedBy: getPriceApprovalActorName(),
+        currentPrice: request.currentPrice,
+        requestedPrice: request.requestedPrice,
+        reason: request.reason || tr(
+          'Manual price override submitted during rental creation.',
+          'Modification manuelle du prix soumise lors de la création de la location.'
+        ),
+        approvalSection: 'approvals',
+        approvalType: 'price',
+        approvalRequestId: rental.id,
+        organization_id: rental.organization_id || request.draft?.organization_id || '',
+        tenant_id: rental.tenant_id || request.draft?.tenant_id || '',
+        business_account_id: rental.business_account_id || request.draft?.business_account_id || '',
+        tenant_slug: rental.tenant_slug || request.draft?.tenant_slug || '',
+      },
+      { throwOnError: true }
+    );
+  };
+
   const handleSubmit = async () => {
     if (successfullySubmitted) {
       return;
@@ -4179,6 +4158,8 @@ const calculateFinancials = () => {
         quantity_days: submissionData.quantity_days
       });
       
+      let pendingPriceApprovalRequest = null;
+
       if (!isCustomerVerificationOnlyMode) {
         const usesPackagePricing =
           isPackagePricingEnabledForRentalDraft(submissionData) &&
@@ -4216,10 +4197,16 @@ const calculateFinancials = () => {
 
         if (isPriceOverride) {
           if (!canAutoApprovePrice) {
+            const requestedPrice = submissionData.total_amount;
             submissionData.approval_status = 'pending';
-            submissionData.pending_total_request = submissionData.total_amount;
+            submissionData.pending_total_request = requestedPrice;
             submissionData.total_amount = originalTotal;
             submissionData.remaining_amount = originalTotal - (submissionData.deposit_amount || 0);
+            pendingPriceApprovalRequest = {
+              currentPrice: originalTotal,
+              requestedPrice,
+              draft: submissionData,
+            };
           } else {
             submissionData.approval_status = 'approved';
             submissionData.pending_total_request = null;
@@ -4467,18 +4454,24 @@ const calculateFinancials = () => {
           successMsg += ' ⏳ Price override submitted for admin approval.';
           
           try {
-            const notificationCount = await sendWhatsAppNotifications(
-              submissionData.pending_total_request, 
-              result.data.id
-            );
-            
-            if (notificationCount > 0) {
-              toast.success(`📱 ${tr('WhatsApp notifications sent to', 'Notifications WhatsApp envoyées à')} ${notificationCount} ${tr('admin(s)', 'administrateur(s)')}`);
-            } else {
-              toast.info(tr('⚠️ No admins with WhatsApp enabled found. Approval request saved.', "⚠️ Aucun administrateur avec WhatsApp activé n'a été trouvé. La demande d'approbation a été enregistrée."));
-            }
-          } catch (whatsappError) {
-            toast.warning(tr('⚠️ Approval request saved, but WhatsApp notifications failed', "⚠️ La demande d'approbation a été enregistrée, mais les notifications WhatsApp ont échoué"));
+            await sendPriceApprovalTelegramRequest({
+              rental: result.data,
+              request: pendingPriceApprovalRequest || {
+                currentPrice: result.data?.total_amount || submissionData.total_amount || 0,
+                requestedPrice: submissionData.pending_total_request,
+                draft: submissionData,
+              },
+            });
+            toast.success(tr(
+              'Telegram approval request sent to admins.',
+              'Demande d’approbation Telegram envoyée aux administrateurs.'
+            ));
+          } catch (telegramError) {
+            console.warn('Price approval Telegram alert failed:', telegramError);
+            toast.warning(tr(
+              'Approval request saved, but Telegram notification failed.',
+              'La demande d’approbation a été enregistrée, mais la notification Telegram a échoué.'
+            ));
           }
         }
         

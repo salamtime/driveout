@@ -40,7 +40,6 @@ import {
   X,
   LogOut,
   Home,
-  Sparkles,
   Store,
   Star,
   CircleHelp,
@@ -49,6 +48,7 @@ import {
 } from 'lucide-react';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
+const DRIVEOUT_ADMIN_LOGO_URL = '/assets/driveout-mark.svg';
 
 const getTenantLogoFallback = () => {
   if (typeof window === 'undefined') return '';
@@ -1007,8 +1007,12 @@ const AdminLayout = () => {
                   className="h-11 w-11 rounded-2xl border border-violet-100/80 bg-white object-cover shadow-[0_14px_30px_rgba(79,70,229,0.16)]"
                 />
               ) : (
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]">
-                  <Sparkles className="h-5 w-5" />
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-violet-100/80 bg-white shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
+                  <img
+                    src={DRIVEOUT_ADMIN_LOGO_URL}
+                    alt="Driveout logo"
+                    className="h-11 w-11 rounded-2xl object-contain"
+                  />
                 </div>
               )}
               <div>
