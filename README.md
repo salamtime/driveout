@@ -1,4 +1,14 @@
-# QuadVenture Fleet Management System
+# Driveout
+
+## Repository Safety
+
+This project publishes from the GitHub repository `salamtime/driveout`.
+
+Before pushing, the versioned Git hook in `.githooks/pre-push` verifies the remote and blocks pushes to the old `rental-system-frontend` repository or any other repository. The same check can be run manually:
+
+```bash
+npm run repo:verify
+```
 
 ## Known Issues & Workarounds
 

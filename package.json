@@ -1,5 +1,5 @@
 {
-  "name": "rental-system-frontend",
+  "name": "driveout",
   "private": true,
   "version": "9.4.0",
   "type": "module",
@@ -10,6 +10,7 @@
     "dev:admin": "vite --port 5175 --strictPort",
     "dev:offroad": "vite --port 5174 --strictPort",
     "build": "vite build",
+    "repo:verify": "bash scripts/verify-driveout-repo.sh",
     "schema:release:current": "node -e \"import('./api/_lib/tenantSchemaRelease.js').then(({ CURRENT_TENANT_SCHEMA_RELEASE }) => console.log(JSON.stringify(CURRENT_TENANT_SCHEMA_RELEASE, null, 2)))\"",
     "schema:release:tenant": "node scripts/run-tenant-schema-release.mjs",
     "schema:upgrade:tenant": "node tmp/run_tenant_schema_upgrade_guarded.mjs",
@@ -30,9 +31,9 @@
     "audit:owner1:exact-clone-plan": "node tmp/exact_zero_owner1_clone_guarded.mjs",
     "audit:shared-tenancy:isolation": "node scripts/audit-shared-tenant-isolation.mjs",
     "audit:fleet:visibility": "node scripts/audit-vehicle-operational-visibility.mjs",
-    "deploy:production": "node scripts/deploy-production.mjs",
-    "deploy:production:tenant-release": "node scripts/deploy-production-with-tenant-release.mjs",
-    "deploy:preview:hobby": "node scripts/deploy-preview-hobby.mjs",
+    "deploy:production": "npm run repo:verify && node scripts/deploy-production.mjs",
+    "deploy:production:tenant-release": "npm run repo:verify && node scripts/deploy-production-with-tenant-release.mjs",
+    "deploy:preview:hobby": "npm run repo:verify && node scripts/deploy-preview-hobby.mjs",
     "translations:build": "node scripts/build-translation-catalog.mjs",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
